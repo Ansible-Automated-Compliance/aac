@@ -52,7 +52,7 @@ PyYAML==6.0.3
 rich==15.0.0
 
 # API development (if building REST API)
-fastapi==0.143.2
+fastapi==0.156.1
 uvicorn==0.54.0
 
 # Authentication and security
