@@ -1,0 +1,81 @@
+---
+# rotation_postgres.yml — Step 3 of AAC Credential Rotation Workflow
+#
+# Generates a new PostgreSQL compliance DB password, applies it, validates
+# the connection, and writes the new password to the rotation temp directory
+# for vault update (Step 5).
+#
+# Survey variables (set at workflow level):
+#   rotate_postgres (bool) — set to false to skip this step
+#
+# Part of workflow: "AAC - Rotate Credentials"
+
+- name: Rotate PostgreSQL Password
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - ../vars/site_config.yml
+
+  vars:
+    # aap_host: <set via extra_vars / survey / inventory>   # default aac_host
+    pg_port:      5432
+    rotation_dir: "/tmp/aac_cred_rotation"
+
+    # Survey default — override at workflow level
+    rotate_postgres: false
+
+  tasks:
+
+    - name: Skip if not selected
+      meta: end_play
+      when: not (rotate_postgres | bool)
+
+    - name: Generate new PostgreSQL password
+      set_fact:
+        new_pg_password: "{{ lookup('password', '/dev/null length=32 chars=ascii_letters,digits') }}"
+      no_log: true
+
+    - name: Apply new password to PostgreSQL
+      community.postgresql.postgresql_user:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port }}"
+        login_user: postgres
+        login_password: "{{ compliance_db_password }}"
+        name: postgres
+        password: "{{ new_pg_password }}"
+      no_log: true
+
+    - name: Validate new password — test connection
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port }}"
+        login_user: postgres
+        login_password: "{{ new_pg_password }}"
+        login_db: compliance
+        query: "SELECT COUNT(*) AS row_count FROM compliance_results"
+      register: pg_validate
+      no_log: true
+
+    - name: Validate new password — confirm data accessible
+      assert:
+        that: pg_validate.query_result is defined
+        fail_msg: "PostgreSQL validation failed — cannot query compliance_results with new password"
+        success_msg: "PostgreSQL validation passed — {{ pg_validate.query_result[0].row_count }} rows accessible"
+
+    - name: Write new password to rotation directory
+      copy:
+        dest: "{{ rotation_dir }}/pg_password.env"
+        mode: "0600"
+        content: "{{ new_pg_password }}"
+      delegate_to: "{{ (aap_host | default(aac_host)) }}"
+      become: true
+      no_log: true
+
+    - name: PostgreSQL rotation complete
+      debug:
+        msg:
+          - "✅ New PostgreSQL password generated and applied"
+          - "✅ Connection validated — {{ pg_validate.query_result[0].row_count }} rows in compliance_results"
+          - "✅ Password written to rotation directory for vault update"

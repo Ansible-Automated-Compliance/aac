@@ -1,0 +1,82 @@
+---
+# aws_metadata.yml — Collect AWS instance metadata (runs only on AWS instances)
+
+- name: Get AWS instance ID
+  uri:
+    use_proxy: false
+    url: "http://169.254.169.254/latest/meta-data/instance-id"
+    timeout: 3
+  register: aws_instance_id_resp
+  failed_when: false
+  changed_when: false
+
+- name: Get AWS instance type
+  uri:
+    use_proxy: false
+    url: "http://169.254.169.254/latest/meta-data/instance-type"
+    timeout: 3
+  register: aws_instance_type_resp
+  failed_when: false
+  changed_when: false
+
+- name: Get AWS region
+  uri:
+    use_proxy: false
+    url: "http://169.254.169.254/latest/meta-data/placement/region"
+    timeout: 3
+  register: aws_region_resp
+  failed_when: false
+  changed_when: false
+
+- name: Get AWS availability zone
+  uri:
+    use_proxy: false
+    url: "http://169.254.169.254/latest/meta-data/placement/availability-zone"
+    timeout: 3
+  register: aws_az_resp
+  failed_when: false
+  changed_when: false
+
+- name: Get AWS account ID
+  uri:
+    use_proxy: false
+    url: "http://169.254.169.254/latest/dynamic/instance-identity/document"
+    timeout: 3
+    return_content: true
+  register: aws_identity_resp
+  failed_when: false
+  changed_when: false
+
+- name: Get AWS IAM role (if any)
+  uri:
+    use_proxy: false
+    url: "http://169.254.169.254/latest/meta-data/iam/security-credentials/"
+    timeout: 3
+  register: aws_iam_resp
+  failed_when: false
+  changed_when: false
+
+- name: Get AWS VPC and security groups
+  uri:
+    use_proxy: false
+    url: "http://169.254.169.254/latest/meta-data/network/interfaces/macs/"
+    timeout: 3
+  register: aws_mac_resp
+  failed_when: false
+  changed_when: false
+
+- name: Set AWS metadata facts
+  set_fact:
+    aac_aws_instance_id:   "{{ aws_instance_id_resp.content | default('') }}"
+    aac_aws_instance_type: "{{ aws_instance_type_resp.content | default('') }}"
+    aac_aws_region:        "{{ aws_region_resp.content | default('') }}"
+    aac_aws_az:            "{{ aws_az_resp.content | default('') }}"
+    aac_aws_account_id: >-
+      {{ (aws_identity_resp.content | default('{}') | from_json).accountId | default('') }}
+    aac_aws_ami_id: >-
+      {{ (aws_identity_resp.content | default('{}') | from_json).imageId | default('') }}
+    aac_aws_iam_role:      "{{ aws_iam_resp.content | default('') }}"
+    aac_aws_vpc_id:        ""
+    aac_aws_subnet_id:     ""
+    aac_aws_security_groups: []
+    aac_aws_tags:          "{{ hostvars[inventory_hostname].ec2_tags | default({}) }}"

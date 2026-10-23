@@ -1,0 +1,17 @@
+---
+# Decommission records for the estate continuity check.
+#
+# Copy to ansible/vars/decisions/estate_continuity.yml. A host leaves the
+# estate cleanly only through a record here (or one the registry already
+# holds): who retired it, under what reference, and when. A host that vanishes
+# without one is reported as missing, or as removed without a record, even when
+# AAP knows who deleted it.
+#
+# All three of ref, by and date are required. A record without them is ignored,
+# so the host stays a finding.
+
+retirements:
+  - hostname: "app-legacy-01"        # the AAP inventory host name
+    ref: "CHG0012345"                # change or decommission ticket
+    by: "Jane Smith"                 # a named person, not a team alias
+    date: "2026-10-15"               # YYYY-MM-DD or a full ISO-8601 timestamp

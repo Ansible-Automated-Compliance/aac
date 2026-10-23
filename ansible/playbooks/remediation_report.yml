@@ -1,0 +1,294 @@
+---
+# remediation_report.yml — Remediation status report
+#
+# Queries remediation_status joined with compliance_results to produce
+# a per-host, per-policy view of open issues, ownership, and due dates.
+# No SSH required — pure PostgreSQL query.
+#
+# AAP Job Template: "AAC - Remediation Report"
+# Credentials: Ansible Vault
+# EE: AAC Compliance EE
+# Survey:
+#   report_status    — filter by status: all / open / in_progress / needs_reassessment (default: all)
+#   report_hostname  — filter by hostname or "all" (default: all)
+#   report_policy    — filter by policy name or "all" (default: all)
+
+- name: Generate remediation status report
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - [ "../vars/vault_secrets.yml", "../vars/empty_fallback.yml" ]
+    - ../vars/site_config.yml
+
+  vars:
+    pg_password: "{{ compliance_db_password }}"
+    # report_status: <set via extra_vars / survey / inventory>   # default 'all'
+    # report_hostname: <set via extra_vars / survey / inventory>   # default 'all'
+    # report_policy: <set via extra_vars / survey / inventory>   # default 'all'
+
+  tasks:
+
+    # ── Overall summary counts ────────────────────────────────────────────────
+
+    - name: Query remediation status summary
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port | default(5433) }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: |
+          SELECT
+            status,
+            COUNT(*)                   AS host_policy_count,
+            COUNT(DISTINCT hostname)   AS host_count,
+            SUM(violation_count)       AS total_violations
+          FROM remediation_status
+          GROUP BY status
+          ORDER BY
+            CASE status
+              WHEN 'open'               THEN 1
+              WHEN 'in_progress'        THEN 2
+              WHEN 'needs_reassessment' THEN 3
+              WHEN 'accepted_risk'      THEN 4
+              WHEN 'resolved'           THEN 5
+            END
+      register: summary_counts
+
+    - name: Query overdue items (due_date in past and not resolved)
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port | default(5433) }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: |
+          SELECT COUNT(*) AS overdue_count
+          FROM remediation_status
+          WHERE due_date < CURRENT_DATE
+            AND status NOT IN ('resolved', 'accepted_risk')
+      register: overdue_count
+
+    # ── Detailed per-host+policy view ─────────────────────────────────────────
+
+    - name: Query detailed remediation items
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port | default(5433) }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        # survey filters are bound parameters, never spliced into the SQL text
+        named_args:
+          report_status: "{{ (report_status | default('all', true)) }}"
+          report_hostname: "{{ (report_hostname | default('all', true)) }}"
+          report_policy: "{{ (report_policy | default('all', true)) }}"
+        query: |
+          SELECT
+            rs.hostname,
+            rs.policy_name,
+            rs.policy_version,
+            rs.status,
+            rs.violation_count,
+            cr.compliance_percentage,
+            rs.first_detected::date          AS first_detected,
+            rs.last_assessed::date           AS last_assessed,
+            rs.resolved_at::date             AS resolved_at,
+            rs.owner,
+            rs.due_date,
+            rs.ticket_id,
+            rs.notes,
+            CASE
+              WHEN rs.due_date IS NOT NULL AND rs.due_date < CURRENT_DATE
+                AND rs.status NOT IN ('resolved', 'accepted_risk')
+              THEN true ELSE false
+            END AS is_overdue,
+            CASE
+              WHEN rs.due_date IS NOT NULL AND rs.due_date >= CURRENT_DATE
+                AND rs.due_date <= CURRENT_DATE + INTERVAL '7 days'
+                AND rs.status NOT IN ('resolved', 'accepted_risk')
+              THEN true ELSE false
+            END AS due_soon
+          FROM remediation_status rs
+          LEFT JOIN compliance_results cr ON cr.id = rs.latest_result_id
+          WHERE 1=1
+            {% if (report_status | default('all', true)) != 'all' %}
+            AND rs.status = %(report_status)s
+            {% endif %}
+            {% if (report_hostname | default('all', true)) != 'all' %}
+            AND rs.hostname = %(report_hostname)s
+            {% endif %}
+            {% if (report_policy | default('all', true)) != 'all' %}
+            AND rs.policy_name = %(report_policy)s
+            {% endif %}
+          ORDER BY
+            CASE rs.status
+              WHEN 'open'               THEN 1
+              WHEN 'in_progress'        THEN 2
+              WHEN 'needs_reassessment' THEN 3
+              WHEN 'accepted_risk'      THEN 4
+              WHEN 'resolved'           THEN 5
+            END,
+            rs.due_date ASC NULLS LAST,
+            rs.violation_count DESC,
+            rs.hostname,
+            rs.policy_name
+      register: detail_rows
+
+    # ── Policy version drift (hosts not yet on latest version) ───────────────
+
+    - name: Query policy version drift
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port | default(5433) }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: |
+          SELECT
+            policy_name,
+            COUNT(DISTINCT hostname)                               AS total_hosts,
+            COUNT(DISTINCT hostname) FILTER (WHERE status = 'needs_reassessment') AS stale_hosts,
+            array_agg(DISTINCT policy_version)                    AS versions_in_use
+          FROM remediation_status
+          GROUP BY policy_name
+          HAVING COUNT(DISTINCT policy_version) > 1
+             OR COUNT(DISTINCT hostname) FILTER (WHERE status = 'needs_reassessment') > 0
+          ORDER BY policy_name
+      register: version_drift
+
+    # ── Most common violations across fleet ───────────────────────────────────
+
+    - name: Query top violations across fleet
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port | default(5433) }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: |
+          SELECT
+            cr.policy_name,
+            violation_text,
+            COUNT(*) AS affected_hosts
+          FROM compliance_results cr,
+               jsonb_array_elements_text(
+                 CASE jsonb_typeof(cr.violations)
+                   WHEN 'array' THEN cr.violations
+                   ELSE '[]'::jsonb
+                 END
+               ) AS violation_text
+          WHERE cr.id IN (
+            SELECT latest_result_id FROM remediation_status
+            WHERE status NOT IN ('resolved', 'accepted_risk')
+              AND latest_result_id IS NOT NULL
+          )
+          GROUP BY cr.policy_name, violation_text
+          ORDER BY affected_hosts DESC
+          LIMIT 20
+      register: top_violations
+
+    # ── Host compliance score trend (last 30 days) ────────────────────────────
+
+    - name: Query compliance score trend
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port | default(5433) }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: |
+          SELECT
+            cr.metadata->>'hostname'          AS hostname,
+            cr.policy_name,
+            cr.evaluation_timestamp::date     AS eval_date,
+            cr.compliance_percentage,
+            cr.failed_controls
+          FROM compliance_results cr
+          WHERE cr.evaluation_timestamp >= now() - INTERVAL '30 days'
+            AND cr.metadata->>'hostname' IS NOT NULL
+          ORDER BY cr.metadata->>'hostname', cr.policy_name, cr.evaluation_timestamp
+      register: trend_data
+
+    # ── Print report ──────────────────────────────────────────────────────────
+
+    - name: Print header
+      debug:
+        msg: |
+          ══════════════════════════════════════════════════════════════════
+          AAC REMEDIATION STATUS REPORT
+          Generated: {{ ansible_date_time.iso8601 | default(now()) }}
+          Filter: status={{ (report_status | default('all', true)) }}  host={{ (report_hostname | default('all', true)) }}  policy={{ (report_policy | default('all', true)) }}
+          ══════════════════════════════════════════════════════════════════
+
+    - name: Print overall summary
+      debug:
+        msg: |
+          ── SUMMARY ──────────────────────────────────────────────────────
+          {% for row in summary_counts.query_result %}
+          {{ '%-20s' | format(row.status | upper) }}  {{ row.host_policy_count }} combinations  ({{ row.host_count }} hosts)  {{ row.total_violations }} total violations
+          {% endfor %}
+          OVERDUE (past due date):  {{ overdue_count.query_result[0].overdue_count }}
+
+    - name: Print policy version drift
+      debug:
+        msg: |
+          ── POLICY VERSION DRIFT ─────────────────────────────────────────
+          {% if version_drift.query_result | length == 0 %}
+          All hosts are on current policy versions. ✅
+          {% else %}
+          {% for row in version_drift.query_result %}
+          {{ row.policy_name }}: {{ row.stale_hosts }}/{{ row.total_hosts }} hosts need reassessment  versions={{ row.versions_in_use | join(', ') }}
+          {% endfor %}
+          {% endif %}
+
+    - name: Print open and in-progress items
+      debug:
+        msg: |
+          ── OPEN / IN-PROGRESS / NEEDS REASSESSMENT ──────────────────────
+          {% set active = detail_rows.query_result | selectattr('status', 'in', ['open', 'in_progress', 'needs_reassessment']) | list %}
+          {% if active | length == 0 %}
+          No open items. ✅
+          {% else %}
+          {% for row in active %}
+          {{ '[OVERDUE] ' if row.is_overdue else '[DUE SOON]' if row.due_soon else '           ' }}{{ '%-35s' | format(row.hostname) }}  {{ '%-30s' | format(row.policy_name) }}  {{ '%-20s' | format(row.status) }}  {{ row.violation_count }} violations  {{ row.compliance_percentage | default('?') }}%{% if row.owner %}  owner={{ row.owner }}{% endif %}{% if row.due_date %}  due={{ row.due_date }}{% endif %}{% if row.ticket_id %}  ticket={{ row.ticket_id }}{% endif %}
+          {% endfor %}
+          {% endif %}
+
+    - name: Print top violations across fleet
+      debug:
+        msg: |
+          ── TOP VIOLATIONS (fleet-wide, open items only) ─────────────────
+          {% if top_violations.query_result | length == 0 %}
+          No open violations.
+          {% else %}
+          {% for row in top_violations.query_result %}
+          {{ '%3d' | format(row.affected_hosts) }} hosts  [{{ row.policy_name }}]  {{ row.violation_text | truncate(80) }}
+          {% endfor %}
+          {% endif %}
+
+    - name: Print resolved items (if showing all)
+      debug:
+        msg: |
+          ── RESOLVED ─────────────────────────────────────────────────────
+          {% set resolved = detail_rows.query_result | selectattr('status', 'equalto', 'resolved') | list %}
+          {% if resolved | length == 0 %}
+          No resolved items in current filter.
+          {% else %}
+          {% for row in resolved %}
+          {{ '%-35s' | format(row.hostname) }}  {{ '%-30s' | format(row.policy_name) }}  resolved {{ row.resolved_at }}
+          {% endfor %}
+          {% endif %}
+      when: (report_status | default('all', true)) == 'all'
+
+    - name: Print footer
+      debug:
+        msg: |
+          ══════════════════════════════════════════════════════════════════
+          To assign ownership:  update remediation_status via AAC - Update Remediation Status
+          To re-evaluate:       run AAC - Evaluate Stored Facts (no SSH required)
+          To collect new facts: run AAC - Collect Facts
+          To view in Grafana:   {{ grafana_url }}/d/aac-compliance-001
+          ══════════════════════════════════════════════════════════════════

@@ -1,0 +1,288 @@
+---
+# drift_report.yml — Configuration drift and change history report
+#
+# Queries fact_changes to show:
+#   - Unauthorized changes (is_authorized=false) — require review
+#   - Recent change history per host
+#   - Hosts with no baseline set
+#   - Compliance impact of unreviewed changes (via remediation_status)
+#
+# AAP Job Template: "AAC - Drift Report"
+# Credentials: Ansible Vault
+# EE: AAC Compliance EE
+# Survey:
+#   report_hostname  — specific hostname or "all" (default: all)
+#   include_resolved — include authorized changes in history (default: false)
+#   days_back        — how many days of history to show (default: 30)
+
+- name: Generate configuration drift report
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - ../vars/site_config.yml
+
+  vars:
+    pg_password: "{{ compliance_db_password }}"
+    # report_hostname: <set via extra_vars / survey / inventory>   # default 'all'
+    # include_resolved: <set via extra_vars / survey / inventory>   # default 'false'
+    # days_back: <set via extra_vars / survey / inventory>   # default 30 | int
+
+  tasks:
+
+    # ── Unauthorized changes (require review) ─────────────────────────────────
+
+    - name: Query unauthorized changes
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port | default(5433) }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: |
+          SELECT
+            fc.id,
+            fc.hostname,
+            fc.detected_at,
+            fc.change_summary,
+            (fc.changed_keys->>'total_changes')::int        AS total_changes,
+            (fc.changed_keys->>'security_change_count')::int AS security_changes,
+            fc.changed_keys->>'highest_severity'             AS severity,
+            fc.changed_keys->'changes'                       AS change_detail,
+            prev.collection_timestamp                        AS prev_snapshot,
+            curr.collection_timestamp                        AS curr_snapshot,
+            rs.status                                        AS remediation_status,
+            rs.violation_count
+          FROM fact_changes fc
+          LEFT JOIN compliance_facts prev ON prev.id = fc.previous_facts_id
+          LEFT JOIN compliance_facts curr ON curr.id = fc.current_facts_id
+          LEFT JOIN remediation_status rs  ON rs.hostname = fc.hostname
+          WHERE fc.is_authorized = false
+            AND fc.detected_at >= now() - (%s || ' days')::interval
+            {% if (report_hostname | default('all', true)) != 'all' %}
+            AND fc.hostname = %s
+            {% endif %}
+          ORDER BY
+            CASE fc.changed_keys->>'highest_severity'
+              WHEN 'critical' THEN 1
+              WHEN 'high'     THEN 2
+              WHEN 'medium'   THEN 3
+              ELSE 4
+            END,
+            fc.detected_at DESC
+        positional_args: >-
+          {%- set args = [(days_back | default(30)) | string] -%}
+          {%- if (report_hostname | default('all', true)) != 'all' -%}{{ args.append((report_hostname | default('all', true))) or '' }}{%- endif -%}
+          {{ args }}
+      register: unauthorized_changes
+
+    # ── Summary counts ────────────────────────────────────────────────────────
+
+    - name: Query drift summary statistics
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port | default(5433) }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: |
+          SELECT
+            COUNT(*)                                                    AS total_changes,
+            COUNT(*) FILTER (WHERE is_authorized = false)               AS unauthorized,
+            COUNT(*) FILTER (WHERE is_authorized = true)                AS authorized,
+            COUNT(DISTINCT hostname)                                     AS hosts_affected,
+            COUNT(*) FILTER (
+              WHERE changed_keys->>'highest_severity' = 'critical'
+              AND is_authorized = false
+            ) AS critical_unauthorized,
+            COUNT(*) FILTER (
+              WHERE changed_keys->>'highest_severity' = 'high'
+              AND is_authorized = false
+            ) AS high_unauthorized
+          FROM fact_changes
+          WHERE detected_at >= now() - (%s || ' days')::interval
+            {% if (report_hostname | default('all', true)) != 'all' %}
+            AND hostname = %s
+            {% endif %}
+        positional_args: >-
+          {%- set args = [(days_back | default(30)) | string] -%}
+          {%- if (report_hostname | default('all', true)) != 'all' -%}{{ args.append((report_hostname | default('all', true))) or '' }}{%- endif -%}
+          {{ args }}
+      register: drift_stats
+
+    # ── Change velocity per host ──────────────────────────────────────────────
+
+    - name: Query change frequency per host
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port | default(5433) }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: |
+          SELECT
+            hostname,
+            COUNT(*)                                          AS total_events,
+            COUNT(*) FILTER (WHERE is_authorized = false)    AS unauthorized_count,
+            MAX(detected_at)::date                           AS last_change,
+            string_agg(DISTINCT changed_keys->>'highest_severity', ', ')
+              FILTER (WHERE is_authorized = false)           AS unauthorized_severities
+          FROM fact_changes
+          WHERE detected_at >= now() - (%s || ' days')::interval
+            {% if (report_hostname | default('all', true)) != 'all' %}
+            AND hostname = %s
+            {% endif %}
+          GROUP BY hostname
+          ORDER BY unauthorized_count DESC, total_events DESC
+        positional_args: >-
+          {%- set args = [(days_back | default(30)) | string] -%}
+          {%- if (report_hostname | default('all', true)) != 'all' -%}{{ args.append((report_hostname | default('all', true))) or '' }}{%- endif -%}
+          {{ args }}
+      register: host_velocity
+
+    # ── Hosts with no baseline set ────────────────────────────────────────────
+
+    - name: Query hosts missing a baseline
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port | default(5433) }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: |
+          SELECT DISTINCT hostname
+          FROM compliance_facts
+          WHERE hostname NOT IN (
+            SELECT DISTINCT hostname FROM compliance_facts WHERE is_baseline = true
+          )
+          ORDER BY hostname
+      register: no_baseline_hosts
+
+    # ── Authorized changes (history) ─────────────────────────────────────────
+
+    - name: Query authorized change history
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port | default(5433) }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: |
+          SELECT
+            fc.id,
+            fc.hostname,
+            fc.detected_at::date         AS change_date,
+            fc.authorized_by,
+            fc.authorized_at::date       AS authorized_date,
+            fc.change_ticket,
+            fc.change_summary
+          FROM fact_changes fc
+          WHERE fc.is_authorized = true
+            AND fc.detected_at >= now() - (%s || ' days')::interval
+            {% if (report_hostname | default('all', true)) != 'all' %}
+            AND fc.hostname = %s
+            {% endif %}
+          ORDER BY fc.detected_at DESC
+          LIMIT 20
+        positional_args: >-
+          {%- set args = [(days_back | default(30)) | string] -%}
+          {%- if (report_hostname | default('all', true)) != 'all' -%}{{ args.append((report_hostname | default('all', true))) or '' }}{%- endif -%}
+          {{ args }}
+      register: authorized_history
+      when: (include_resolved | default('false', true)) | string | lower == 'true'
+
+    # ── Print report ──────────────────────────────────────────────────────────
+
+    - name: Print report header and summary
+      debug:
+        msg: |
+          ══════════════════════════════════════════════════════════════════
+          AAC CONFIGURATION DRIFT REPORT
+          Generated:  {{ ansible_date_time.iso8601 | default('') }}
+          Period:     Last {{ (days_back | default(30)) }} days
+          Filter:     host={{ (report_hostname | default('all', true)) }}
+          ══════════════════════════════════════════════════════════════════
+
+          ── SUMMARY ──────────────────────────────────────────────────────
+          Total change events:        {{ drift_stats.query_result[0].total_changes }}
+          Unauthorized (need review): {{ drift_stats.query_result[0].unauthorized }}
+          Authorized (approved):      {{ drift_stats.query_result[0].authorized }}
+          Hosts affected:             {{ drift_stats.query_result[0].hosts_affected }}
+          Critical unauthorized:      {{ drift_stats.query_result[0].critical_unauthorized }}
+          High unauthorized:          {{ drift_stats.query_result[0].high_unauthorized }}
+          Hosts without baseline:     {{ no_baseline_hosts.query_result | length }}
+
+    - name: Print unauthorized changes requiring review
+      debug:
+        msg: |
+          ── UNAUTHORIZED CHANGES — REQUIRES REVIEW ───────────────────────
+          {% if unauthorized_changes.query_result | length == 0 %}
+          ✅ No unauthorized changes in the last {{ (days_back | default(30)) }} days.
+          {% else %}
+          {% for row in unauthorized_changes.query_result %}
+          [{{ row.severity | upper if row.severity else 'INFO' }}] Change ID: {{ row.id }}
+            Host:      {{ row.hostname }}
+            Detected:  {{ row.detected_at }}
+            Changes:   {{ row.total_changes }} total, {{ row.security_changes }} security-relevant
+            Summary:   {{ row.change_summary }}
+            Snapshot:  {{ row.prev_snapshot }} → {{ row.curr_snapshot }}
+            {% if row.remediation_status %}Compliance: {{ row.remediation_status }} ({{ row.violation_count }} violations){% endif %}
+
+            To authorize: Run 'AAC - Authorize Change' with change_id={{ row.id }}
+
+          {% endfor %}
+          {% endif %}
+
+    - name: Print host change velocity
+      debug:
+        msg: |
+          ── CHANGE FREQUENCY BY HOST ─────────────────────────────────────
+          {% if host_velocity.query_result | length == 0 %}
+          No change events recorded.
+          {% else %}
+          {% for row in host_velocity.query_result %}
+          {{ '%-40s' | format(row.hostname) }}  {{ '%3d' | format(row.unauthorized_count) }} unauthorized  {{ '%3d' | format(row.total_events) }} total  last={{ row.last_change }}{% if row.unauthorized_severities %}  [{{ row.unauthorized_severities }}]{% endif %}
+
+          {% endfor %}
+          {% endif %}
+
+    - name: Print hosts without a baseline
+      debug:
+        msg: |
+          ── HOSTS WITHOUT A BASELINE ─────────────────────────────────────
+          {% if no_baseline_hosts.query_result | length == 0 %}
+          ✅ All hosts have a baseline snapshot set.
+          {% else %}
+          The following hosts have no baseline — drift cannot be compared to
+          a known-good state. Run 'AAC - Set Baseline' (Phase 3) to tag a
+          snapshot as the approved baseline for each host.
+          {% for row in no_baseline_hosts.query_result %}
+            - {{ row.hostname }}
+          {% endfor %}
+          {% endif %}
+
+    - name: Print authorized change history
+      debug:
+        msg: |
+          ── AUTHORIZED CHANGE HISTORY (last {{ (days_back | default(30)) }} days) ─────────
+          {% if (authorized_history.query_result | default([])) | length == 0 %}
+          No authorized changes in this period.
+          {% else %}
+          {% for row in authorized_history.query_result %}
+          ID={{ row.id }}  {{ row.hostname }}  {{ row.change_date }}  by={{ row.authorized_by }}{% if row.change_ticket %}  ticket={{ row.change_ticket }}{% endif %}
+            {{ row.change_summary | truncate(100) }}
+          {% endfor %}
+          {% endif %}
+      when: (include_resolved | default('false', true)) | string | lower == 'true'
+
+    - name: Print footer
+      debug:
+        msg: |
+          ══════════════════════════════════════════════════════════════════
+          To authorize a change:    Run 'AAC - Authorize Change' with change_id=<ID>
+          To set a baseline:        Run 'AAC - Set Baseline' (Phase 3)
+          To re-evaluate compliance after drift:
+                                    Run 'AAC - Evaluate Stored Facts'
+          Real-time drift detection: EDA rulebook compliance_drift_detection.yml
+          ══════════════════════════════════════════════════════════════════

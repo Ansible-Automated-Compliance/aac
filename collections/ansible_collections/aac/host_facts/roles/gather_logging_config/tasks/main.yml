@@ -1,0 +1,458 @@
+---
+# tasks file for gather_logging_config
+
+# =============================================================================
+# CIS 4.2.1.1 - ENSURE RSYSLOG IS INSTALLED
+# =============================================================================
+
+- name: Check if rsyslog is installed
+  shell: rpm -q rsyslog
+  register: rsyslog_installed_check
+  changed_when: false
+  failed_when: false
+
+- name: Parse rsyslog installation status
+  set_fact:
+    rsyslog_installed: "{{ rsyslog_installed_check.rc == 0 }}"
+    rsyslog_version: "{{ rsyslog_installed_check.stdout if rsyslog_installed_check.rc == 0 else 'not installed' }}"
+
+# =============================================================================
+# CIS 4.2.1.2 - ENSURE RSYSLOG SERVICE IS ENABLED AND ACTIVE
+# =============================================================================
+
+- name: Check rsyslog service status
+  systemd:
+    name: rsyslog
+  register: rsyslog_service_status
+  failed_when: false
+
+- name: Parse rsyslog service state
+  set_fact:
+    rsyslog_service_active: "{{ rsyslog_service_status.status.ActiveState == 'active' if rsyslog_service_status.status is defined else false }}"
+    rsyslog_service_enabled: "{{ rsyslog_service_status.status.UnitFileState in ['enabled', 'enabled-runtime'] if rsyslog_service_status.status is defined else false }}"
+
+# =============================================================================
+# CIS 4.2.1.3 - ENSURE JOURNALD IS CONFIGURED TO SEND LOGS TO RSYSLOG
+# =============================================================================
+
+- name: Read /etc/systemd/journald.conf
+  slurp:
+    src: /etc/systemd/journald.conf
+  register: journald_conf_content
+  failed_when: false
+
+- name: Parse journald configuration
+  set_fact:
+    journald_config: |-
+      {% set config = {} %}
+      {% if journald_conf_content is succeeded %}
+        {% for line in (journald_conf_content.content | b64decode).split('\n') %}
+          {% if line and not line.startswith('#') and '=' in line %}
+            {% set key_value = line.split('=', 1) %}
+            {% set key = key_value[0].strip() %}
+            {% set value = key_value[1].strip() %}
+            {% set _ = config.update({key: value}) %}
+          {% endif %}
+        {% endfor %}
+      {% endif %}
+      {{ config }}
+
+# =============================================================================
+# CIS 4.2.1.4 - ENSURE RSYSLOG DEFAULT FILE PERMISSIONS ARE CONFIGURED
+# =============================================================================
+
+- name: Read /etc/rsyslog.conf
+  slurp:
+    src: /etc/rsyslog.conf
+  register: rsyslog_conf_content
+  failed_when: false
+
+- name: Check for $FileCreateMode in rsyslog.conf
+  set_fact:
+    rsyslog_file_create_mode: |-
+      {% set mode = 'not set' %}
+      {% if rsyslog_conf_content is succeeded %}
+        {% for line in (rsyslog_conf_content.content | b64decode).split('\n') %}
+          {% if '$FileCreateMode' in line and not line.strip().startswith('#') %}
+            {% set parts = line.split() %}
+            {% if parts | length >= 2 %}
+              {% set mode = parts[1] %}
+            {% endif %}
+          {% endif %}
+        {% endfor %}
+      {% endif %}
+      {{ mode }}
+
+# =============================================================================
+# CIS 4.2.1.5 - ENSURE LOGGING IS CONFIGURED (RSYSLOG RULES)
+# =============================================================================
+
+- name: Parse rsyslog logging rules
+  set_fact:
+    rsyslog_logging_rules: |-
+      {% set rules = [] %}
+      {% if rsyslog_conf_content is succeeded %}
+        {% for line in (rsyslog_conf_content.content | b64decode).split('\n') %}
+          {% if line and not line.strip().startswith('#') and ('*.' in line or '*.info' in line or 'auth' in line or 'authpriv' in line or 'cron' in line or 'mail' in line) %}
+            {% set _ = rules.append(line.strip()) %}
+          {% endif %}
+        {% endfor %}
+      {% endif %}
+      {{ rules }}
+
+# =============================================================================
+# CIS 4.2.1.6 - ENSURE RSYSLOG IS CONFIGURED TO SEND LOGS TO REMOTE LOG HOST
+# =============================================================================
+
+- name: Check for remote logging configuration
+  set_fact:
+    rsyslog_remote_logging: |-
+      {% set remote_configs = [] %}
+      {% if rsyslog_conf_content is succeeded %}
+        {% for line in (rsyslog_conf_content.content | b64decode).split('\n') %}
+          {% if line and not line.strip().startswith('#') and ('@@' in line or '@' in line) %}
+            {% set _ = remote_configs.append(line.strip()) %}
+          {% endif %}
+        {% endfor %}
+      {% endif %}
+      {{ remote_configs }}
+
+- name: Check /etc/rsyslog.d/ for remote logging
+  find:
+    paths: /etc/rsyslog.d/
+    patterns: "*.conf"
+  register: rsyslog_d_files
+  failed_when: false
+
+- name: Read rsyslog.d files for remote logging
+  slurp:
+    src: "{{ item.path }}"
+  loop: "{{ rsyslog_d_files.files | default([]) }}"
+  register: rsyslog_d_contents
+  failed_when: false
+
+- name: Parse remote logging from rsyslog.d
+  set_fact:
+    rsyslog_d_remote_logging: |-
+      {% set remote_configs = [] %}
+      {% for file_result in rsyslog_d_contents.results | default([]) %}
+        {% if file_result is succeeded %}
+          {% for line in (file_result.content | b64decode).split('\n') %}
+            {% if line and not line.strip().startswith('#') and ('@@' in line or '@' in line) %}
+              {% set _ = remote_configs.append({
+                'file': file_result.item.path,
+                'config': line.strip()
+              }) %}
+            {% endif %}
+          {% endfor %}
+        {% endif %}
+      {% endfor %}
+      {{ remote_configs }}
+
+# =============================================================================
+# CIS 4.2.2.1 - ENSURE JOURNALD IS CONFIGURED TO COMPRESS LARGE LOG FILES
+# =============================================================================
+
+- name: Check journald Compress setting
+  set_fact:
+    journald_compress_enabled: "{{ journald_config.get('Compress', 'yes') }}"
+
+# =============================================================================
+# CIS 4.2.2.2 - ENSURE JOURNALD IS CONFIGURED TO WRITE LOGS TO PERSISTENT DISK
+# =============================================================================
+
+- name: Check journald Storage setting
+  set_fact:
+    journald_storage: "{{ journald_config.get('Storage', 'auto') }}"
+
+# =============================================================================
+# CIS 4.2.2.3 - ENSURE JOURNALD SERVICE IS ACTIVE
+# =============================================================================
+
+- name: Check systemd-journald service status
+  systemd:
+    name: systemd-journald
+  register: journald_service_status
+  failed_when: false
+
+- name: Parse journald service state
+  set_fact:
+    journald_service_active: "{{ journald_service_status.status.ActiveState == 'active' if journald_service_status.status is defined else false }}"
+    journald_service_enabled: "{{ journald_service_status.status.UnitFileState in ['enabled', 'static', 'enabled-runtime'] if journald_service_status.status is defined else false }}"
+
+# =============================================================================
+# LOG FILE PERMISSIONS (CIS 4.2.3)
+# =============================================================================
+
+- name: Check permissions on critical log files
+  stat:
+    path: "{{ item.key }}"
+  loop: "{{ expected_log_permissions | dict2items }}"
+  register: log_file_permissions_check
+  failed_when: false
+
+- name: Analyze log file permissions
+  set_fact:
+    log_file_permissions_analysis: |-
+      {% set analysis = [] %}
+      {% for result in log_file_permissions_check.results %}
+        {% if result.stat.exists %}
+          {% set expected = result.item.value %}
+          {% set actual_mode = '%04o' | format(result.stat.mode) %}
+          {% set expected_mode = expected.mode %}
+          {% set mode_compliant = actual_mode[-3:] <= expected_mode[-3:] %}
+          {% set owner_compliant = result.stat.pw_name == expected.owner %}
+          {% set group_compliant = result.stat.gr_name == expected.group %}
+          {% set _ = analysis.append({
+            'file': result.item.key,
+            'exists': true,
+            'actual_mode': actual_mode,
+            'expected_mode': expected_mode,
+            'mode_compliant': mode_compliant,
+            'actual_owner': result.stat.pw_name,
+            'expected_owner': expected.owner,
+            'owner_compliant': owner_compliant,
+            'actual_group': result.stat.gr_name,
+            'expected_group': expected.group,
+            'group_compliant': group_compliant,
+            'fully_compliant': mode_compliant and owner_compliant and group_compliant
+          }) %}
+        {% else %}
+          {% set _ = analysis.append({
+            'file': result.item.key,
+            'exists': false,
+            'fully_compliant': false
+          }) %}
+        {% endif %}
+      {% endfor %}
+      {{ analysis }}
+
+# =============================================================================
+# LOG DIRECTORY PERMISSIONS
+# =============================================================================
+
+- name: Check log directory permissions
+  stat:
+    path: "{{ item }}"
+  loop: "{{ log_directories }}"
+  register: log_dir_permissions_check
+  failed_when: false
+
+- name: Analyze log directory permissions
+  set_fact:
+    log_directory_analysis: |-
+      {% set analysis = [] %}
+      {% for result in log_dir_permissions_check.results %}
+        {% if result.stat.exists %}
+          {% set actual_mode = '%04o' | format(result.stat.mode) %}
+          {% set _ = analysis.append({
+            'directory': result.item,
+            'exists': true,
+            'mode': actual_mode,
+            'owner': result.stat.pw_name,
+            'group': result.stat.gr_name,
+            'is_directory': result.stat.isdir
+          }) %}
+        {% else %}
+          {% set _ = analysis.append({
+            'directory': result.item,
+            'exists': false
+          }) %}
+        {% endif %}
+      {% endfor %}
+      {{ analysis }}
+
+# =============================================================================
+# CHECK FOR UNAUTHORIZED LOG FILES
+# =============================================================================
+
+- name: Find all log files in /var/log
+  find:
+    paths: /var/log
+    file_type: file
+    recurse: yes
+    patterns: "*.log"
+  register: all_log_files
+  failed_when: false
+
+- name: Check permissions on all log files
+  stat:
+    path: "{{ item.path }}"
+  loop: "{{ all_log_files.files | default([]) }}"
+  register: all_log_files_permissions
+  failed_when: false
+
+- name: Find log files with excessive permissions
+  set_fact:
+    # Same three bugs as the sticky-bit analysis, so this task could never render
+    # and these facts were never collected: `&` is not a Jinja operator, `0o007`
+    # is not Jinja syntax, `stat.mode` is an octal STRING so `| int` reads it as
+    # decimal, and `'%04o' | format(<string>)` raises.
+    # Intent preserved: flag a log file if ANY other-permission bit is set, or if
+    # the group-write bit is set. Last octal digit is other, second-last is group,
+    # and the write bit within a digit is 2.
+    excessive_permission_logs: |-
+      {% set excessive = [] %}
+      {% for result in all_log_files_permissions.results | default([]) %}
+        {% if result.stat.exists %}
+          {% set mode = result.stat.mode | string %}
+          {% set other = mode[-1] | int %}
+          {% set group = mode[-2] | int %}
+          {% if other > 0 or (group % 4) >= 2 %}
+            {% set _ = excessive.append({
+              'file': result.stat.path,
+              'mode': mode,
+              'owner': result.stat.pw_name,
+              'group': result.stat.gr_name,
+              'issue': 'world-accessible or group-writable'
+            }) %}
+          {% endif %}
+        {% endif %}
+      {% endfor %}
+      {{ excessive }}
+
+# =============================================================================
+# LOGROTATE CONFIGURATION
+# =============================================================================
+
+- name: Check if logrotate is installed
+  shell: rpm -q logrotate
+  register: logrotate_installed_check
+  changed_when: false
+  failed_when: false
+
+- name: Read /etc/logrotate.conf
+  slurp:
+    src: /etc/logrotate.conf
+  register: logrotate_conf_content
+  failed_when: false
+
+- name: Parse logrotate configuration
+  set_fact:
+    logrotate_config: |-
+      {% set config = {} %}
+      {% if logrotate_conf_content is succeeded %}
+        {% set content = logrotate_conf_content.content | b64decode %}
+        {% set _ = config.update({'raw_config': content.split('\n') | length}) %}
+        {% if 'rotate' in content %}
+          {% set _ = config.update({'rotate_configured': true}) %}
+        {% endif %}
+        {% if 'weekly' in content or 'daily' in content or 'monthly' in content %}
+          {% set _ = config.update({'schedule_configured': true}) %}
+        {% endif %}
+      {% endif %}
+      {{ config }}
+
+# =============================================================================
+# COMPREHENSIVE LOGGING FACTS ASSEMBLY
+# =============================================================================
+
+- name: Set comprehensive logging facts
+  set_fact:
+    host_logging_facts:
+      rsyslog:
+        installed: "{{ rsyslog_installed }}"
+        version: "{{ rsyslog_version }}"
+        service_active: "{{ rsyslog_service_active }}"
+        service_enabled: "{{ rsyslog_service_enabled }}"
+        file_create_mode: "{{ rsyslog_file_create_mode }}"
+        logging_rules_count: "{{ rsyslog_logging_rules | length }}"
+        logging_rules: "{{ rsyslog_logging_rules }}"
+        remote_logging_configured: "{{ (rsyslog_remote_logging | length > 0) or (rsyslog_d_remote_logging | length > 0) }}"
+        remote_logging_configs: "{{ rsyslog_remote_logging }}"
+        remote_logging_d_configs: "{{ rsyslog_d_remote_logging }}"
+        compliant: >-
+          {{
+            rsyslog_installed and
+            rsyslog_service_active and
+            rsyslog_service_enabled and
+            rsyslog_file_create_mode in ['0640', '0600']
+          }}
+      journald:
+        config: "{{ journald_config }}"
+        compress_enabled: "{{ journald_compress_enabled }}"
+        storage_mode: "{{ journald_storage }}"
+        forward_to_syslog: "{{ journald_config.get('ForwardToSyslog', 'no') }}"
+        service_active: "{{ journald_service_active }}"
+        service_enabled: "{{ journald_service_enabled }}"
+        compliant: >-
+          {{
+            journald_service_active and
+            journald_compress_enabled == 'yes' and
+            journald_storage == 'persistent' and
+            journald_config.get('ForwardToSyslog', 'no') == 'yes'
+          }}
+      log_file_permissions:
+        expected_files: "{{ expected_log_permissions.keys() | list }}"
+        analysis: "{{ log_file_permissions_analysis }}"
+        all_compliant: >-
+          {{
+            log_file_permissions_analysis | selectattr('fully_compliant', 'equalto', false) | list | length == 0
+          }}
+        files_with_issues_count: >-
+          {{
+            log_file_permissions_analysis | selectattr('fully_compliant', 'equalto', false) | list | length
+          }}
+      log_directories:
+        analysis: "{{ log_directory_analysis }}"
+      excessive_permissions:
+        files: "{{ excessive_permission_logs }}"
+        count: "{{ excessive_permission_logs | length }}"
+        has_issues: "{{ excessive_permission_logs | length > 0 }}"
+      logrotate:
+        installed: "{{ logrotate_installed_check.rc == 0 }}"
+        config_summary: "{{ logrotate_config }}"
+      compliance_checks:
+        rsyslog_installed_and_enabled: >-
+          {{
+            rsyslog_installed and
+            rsyslog_service_active and
+            rsyslog_service_enabled
+          }}
+        journald_active_and_configured: >-
+          {{
+            journald_service_active and
+            journald_compress_enabled == 'yes' and
+            journald_storage == 'persistent'
+          }}
+        journald_forwards_to_rsyslog: "{{ journald_config.get('ForwardToSyslog', 'no') == 'yes' }}"
+        rsyslog_file_permissions_configured: "{{ rsyslog_file_create_mode in ['0640', '0600'] }}"
+        log_files_have_correct_permissions: >-
+          {{
+            log_file_permissions_analysis | selectattr('fully_compliant', 'equalto', false) | list | length == 0
+          }}
+        no_excessive_log_permissions: "{{ excessive_permission_logs | length == 0 }}"
+        remote_logging_configured: "{{ (rsyslog_remote_logging | length > 0) or (rsyslog_d_remote_logging | length > 0) }}"
+        logrotate_installed: "{{ logrotate_installed_check.rc == 0 }}"
+      collection_timestamp: "{{ ansible_date_time.iso8601 }}"
+
+- name: Display logging configuration summary
+  debug:
+    msg:
+      - "=========================================="
+      - "Logging Configuration Facts"
+      - "=========================================="
+      - "rsyslog:"
+      - "  Installed: {{ rsyslog_installed }}"
+      - "  Service Active: {{ rsyslog_service_active }}"
+      - "  Service Enabled: {{ rsyslog_service_enabled }}"
+      - "  FileCreateMode: {{ rsyslog_file_create_mode }}"
+      - "  Logging Rules: {{ rsyslog_logging_rules | length }}"
+      - "  Remote Logging: {{ (rsyslog_remote_logging | length > 0) or (rsyslog_d_remote_logging | length > 0) }}"
+      - ""
+      - "journald:"
+      - "  Service Active: {{ journald_service_active }}"
+      - "  Storage Mode: {{ journald_storage }}"
+      - "  Compress: {{ journald_compress_enabled }}"
+      - "  Forward to Syslog: {{ journald_config.get('ForwardToSyslog', 'no') }}"
+      - ""
+      - "Log File Permissions:"
+      - "  Compliant Files: {{ log_file_permissions_analysis | selectattr('fully_compliant', 'equalto', true) | list | length }}/{{ log_file_permissions_analysis | length }}"
+      - "  Excessive Permissions: {{ excessive_permission_logs | length }} files"
+      - ""
+      - "Compliance Summary:"
+      - "  rsyslog: {{ host_logging_facts.compliance_checks.rsyslog_installed_and_enabled }}"
+      - "  journald: {{ host_logging_facts.compliance_checks.journald_active_and_configured }}"
+      - "  Log Permissions: {{ host_logging_facts.compliance_checks.log_files_have_correct_permissions }}"
+      - "  Remote Logging: {{ host_logging_facts.compliance_checks.remote_logging_configured }}"
+      - "=========================================="

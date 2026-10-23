@@ -1,0 +1,189 @@
+---
+# aac_gather_facts.yml — AAC Core Facts Store: nightly collection (ADR-001)
+#
+# Collects comprehensive facts from ALL managed hosts (Linux, Windows, AWS)
+# and stores them in the host_facts table in PostgreSQL.
+#
+# Architecture (ADR-001):
+#   Play 1 — SSH/WinRM to each managed host, collect all 14 fact domains
+#   Play 2 — Store collected facts to PostgreSQL (runs on controller only)
+#
+# The host_facts table is the single source of truth for system state.
+# All compliance frameworks (CIS, NIST, PCI-DSS, SOC 2, etc.) read from
+# host_facts — no SSH required for assessment runs.
+#
+# AAP Job Template: "AAC - Gather Facts (All Systems)"
+# Credentials: Compliance SSH Credential, Ansible Vault
+# EE: AAC Compliance EE
+# Inventory: Compliance Infrastructure (includes AWS dynamic inventory)
+# Schedule: Nightly at 02:00 UTC
+# Survey:
+#   target_hosts — inventory group to collect from (default: all)
+
+# ── Play 1: Collect facts from managed hosts ─────────────────────────────────
+
+- name: Collect comprehensive facts from all managed hosts
+  hosts: "{{ target_hosts | default('all') }}"
+  gather_facts: yes
+  # Parameterised: a controller or container host in the inventory has no sudo,
+  # and an unconditional `become: yes` fails its setup step outright.
+  #
+  # Windows is excluded automatically. The become plugin defaults to sudo, and
+  # applying it over WinRM fails the setup step with "The powershell shell
+  # family is incompatible with the sudo become plugin" — before a single fact
+  # is gathered. Privilege escalation is not needed there anyway: the WinRM
+  # account is already an administrator.
+  become: "{{ aac_facts_become | default(true) and ansible_connection | default('ssh') != 'winrm' }}"
+  ignore_unreachable: true
+
+  vars_files:
+    - ../vars/site_config.yml
+
+  # No database credential here: this play only collects facts into variables.
+  # The DB write happens in the storage play below.
+
+  roles:
+    - role: aac_facts_collector
+
+  post_tasks:
+    # A host that fails or is unreachable in this play is dropped from EVERY
+    # later play. That is how storage silently stopped working: the controller
+    # host failed `setup` here, so the storage play below inherited an empty
+    # host list, ran zero tasks, and reported success. Facts were collected and
+    # discarded for 19 days.
+    #
+    # Clearing host errors lets storage run for the hosts that DID succeed.
+    # Per-host failures are still visible in the recap.
+    - name: Allow storage to proceed for hosts that collected successfully
+      ansible.builtin.meta: clear_host_errors
+
+# ── Play 2: Store to PostgreSQL (runs on controller) ─────────────────────────
+
+- name: Store collected facts to PostgreSQL
+  # Where the DB write executes — NOT which hosts were assessed. Defaults to the
+  # controller running the job, overridable for a split control plane.
+  # Deliberately not a variable. Every PostgreSQL write in this repo runs on
+  # the controller, so an override here would be wrong rather than useful --
+  # and `aac_storage_host` was set by nothing, which made it a knob that looked
+  # adjustable and silently was not.
+  hosts: localhost
+  connection: "{{ aac_storage_connection | default('local') }}"
+  gather_facts: false
+
+  vars_files:
+    - ../vars/site_config.yml
+    - [ "../vars/vault_secrets.yml", "../vars/empty_fallback.yml" ]
+
+  vars:
+    # Deliberately NOT defaulted. A default like 'compliance' committed to
+    # source control is a real-looking credential that turns a missing secret
+    # into a silent connection attempt instead of a clear failure. Sourced from
+    # vault_secrets.yml (tracked in this repo) or overridden via extra_vars.
+    pg_password: "{{ compliance_db_password }}"
+    # Every host that actually produced facts in play 1, whatever the inventory
+    # shape — group, pattern, single hostname or dynamic source.
+    aac_hosts_with_facts: >-
+      {{ hostvars | dict2items
+         | selectattr('value.aac_core_facts', 'defined')
+         | map(attribute='key') | list }}
+
+  tasks:
+
+    - name: Require the database credential
+      ansible.builtin.assert:
+        that:
+          - compliance_db_password is defined
+          - compliance_db_password | length > 0
+        fail_msg: >-
+          compliance_db_password is not set. Supply it via
+          ansible/vars/vault_secrets.yml or -e compliance_db_password=...
+          There is deliberately no default: a committed fallback password would
+          turn a missing secret into a silent connection attempt rather than
+          this message.
+        quiet: true
+
+    - name: Store facts for each managed host
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port | default(5432) }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: |
+          INSERT INTO host_facts
+            (host_id, hostname, ip_address, os_family, os_distribution, os_version,
+             cloud_provider, aws_instance_id, aws_region,
+             collected_at, schema_version, checksum, facts)
+          VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), %s, %s, %s::jsonb)
+        positional_args:
+          # Identity must be the INVENTORY name, not what the machine calls
+          # itself. `ansible_hostname`/`ansible_fqdn` are assigned by the
+          # platform: an EC2 instance gets a new private DNS name on every
+          # stop/start, and a container gets its id. Keying on those means each
+          # collection invents a NEW host rather than updating the existing one,
+          # which is how the estate accumulated 85 container ids and 9 ip-*
+          # entries against only 8 real hosts — and why an inventory host's row
+          # could never be refreshed. An AWS instance id is stable and remains
+          # the preferred host_id; `item` is the stable fallback.
+          - "{{ hostvars[item].aac_aws_instance_id | default('') or item }}"
+          - "{{ item }}"
+          - "{{ hostvars[item].ansible_default_ipv4.address | default('') }}"
+          - "{{ hostvars[item].ansible_os_family | default('unknown') }}"
+          - "{{ hostvars[item].ansible_distribution | default('unknown') }}"
+          - "{{ hostvars[item].ansible_distribution_version | default('unknown') }}"
+          - "{{ 'aws' if hostvars[item].aac_on_aws | default(false) else 'on_prem' }}"
+          - "{{ hostvars[item].aac_aws_instance_id | default('') }}"
+          - "{{ hostvars[item].aac_aws_region | default('') }}"
+          - "{{ hostvars[item].aac_facts_schema_version | default('1.0') }}"
+          - "{{ hostvars[item].aac_facts_checksum | default('') }}"
+          - "{{ hostvars[item].aac_core_facts | to_json }}"
+      # `groups[target_hosts]` only resolved when target_hosts named a GROUP —
+      # it silently produced an empty list for a hostname, a pattern, or a
+      # dynamic-inventory host. Selecting on who actually produced facts works
+      # for any inventory shape.
+      loop: "{{ aac_hosts_with_facts }}"
+      register: storage_results
+      ignore_errors: true
+
+    - name: Also store to legacy compliance_facts table (backward compatibility)
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port | default(5432) }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: |
+          INSERT INTO compliance_facts
+            (hostname, platform, facts_version, facts_data, checksum)
+          VALUES (%s, %s, %s, %s::jsonb, %s)
+        positional_args:
+          - "{{ hostvars[item].ansible_hostname | default(item) }}"
+          - "{{ hostvars[item].ansible_distribution | default('unknown') }} {{ hostvars[item].ansible_distribution_major_version | default('') }}"
+          - "2.1"
+          - "{{ hostvars[item].aac_core_facts | to_json }}"
+          - "{{ hostvars[item].aac_facts_checksum | default('') }}"
+      loop: "{{ aac_hosts_with_facts }}"
+      when: hostvars[item].aac_core_facts is defined
+      ignore_errors: true
+      failed_when: false
+
+    - name: Collection summary
+      vars:
+        stored_count: "{{ storage_results.results | default([]) | selectattr('changed', 'defined') | selectattr('changed', 'equalto', true) | list | length }}"
+        failed_count:  "{{ storage_results.results | default([]) | selectattr('failed', 'defined') | selectattr('failed', 'equalto', true) | list | length }}"
+      debug:
+        msg:
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "  AAC Core Facts Collection Complete"
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "  Hosts with facts: {{ aac_hosts_with_facts | length }}"
+          - "  Facts stored:    {{ stored_count }}"
+          - "  Errors:          {{ failed_count }}"
+          - ""
+          - "  Facts are in host_facts table — query anytime:"
+          - "    SELECT hostname, os_distribution, collected_at"
+          - "    FROM host_facts_latest ORDER BY hostname;"
+          - ""
+          - "  Run any assessment playbook — no SSH required."
+          - "  All frameworks read from host_facts, not live endpoints."
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

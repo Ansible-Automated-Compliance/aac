@@ -1,0 +1,229 @@
+---
+# nerc_cip_exposure_assessment.yml — rank open NERC-CIP findings by regulatory exposure
+#
+# Closes a NERC-CIP exposure-assessment gap identified in internal design review:
+# AAC already scores and COSTS every violation (what it takes to fix). It did not
+# express what it costs to LEAVE OPEN. This does.
+#
+# The whole argument rests on one number nothing else in the stack holds:
+# `technical_debt_items.debt_age_days` — how long a finding has been open.
+# Penalties are assessed per violation per day, so duration is the multiplier.
+#
+#   exposure_index = weight(VRF x VSL) * days_open
+#
+# FAIL CLOSED. A standard whose VRF has not been verified against NERC's published
+# matrix is NOT scored and NOT silently defaulted — it is reported as unscored.
+# A model that quietly assumes a middle value produces a confident ranking built
+# on nothing, which is worse than an incomplete one that says so.
+#
+# Reports a RANKING. The currency estimate is off unless deliberately enabled.
+#
+# AAP Job Template: "AAC - NERC-CIP Exposure Assessment"
+# Credentials: Ansible Vault    EE: AAC Compliance EE
+
+- name: Rank open NERC-CIP findings by regulatory exposure
+  hosts: localhost
+  connection: local
+  gather_facts: true
+
+  vars_files:
+    - [ "../vars/vault_secrets.yml", "../vars/empty_fallback.yml" ]
+    - ../vars/site_config.yml
+    - ../files/nerc_cip_exposure_model.yml
+
+  vars:
+    pg_port: "{{ compliance_db_port | default(5432) }}"
+    pg_db: "compliance"
+    pg_user: "postgres"
+    pg_password: "{{ compliance_db_password }}"
+    exposure_framework: "nerc_cip"
+    # Currency is opt-in twice: here AND in the model file. Both must agree.
+    exposure_enable_currency: false
+    # Persist the ranking, or report only.
+    exposure_store: true
+
+  tasks:
+
+    - name: Ensure the exposure table exists
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: |
+          CREATE TABLE IF NOT EXISTS nerc_cip_exposure (
+            id               BIGSERIAL PRIMARY KEY,
+            assessed_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+            model_version    VARCHAR(32),
+            hostname         VARCHAR(255),
+            cip_standard     VARCHAR(32),
+            cip_requirement  VARCHAR(64),
+            violation        TEXT,
+            severity         VARCHAR(32),
+            vsl              VARCHAR(32),
+            vrf              VARCHAR(32),
+            weight           NUMERIC,
+            days_open        INTEGER,
+            exposure_index   NUMERIC,
+            scored           BOOLEAN NOT NULL,
+            unscored_reason  TEXT,
+            metadata         JSONB
+          );
+          CREATE INDEX IF NOT EXISTS idx_nerc_exposure_assessed
+            ON nerc_cip_exposure (assessed_at DESC);
+
+    - name: Read the open findings for this framework
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: |
+          SELECT id, hostname, violation, severity,
+                 COALESCE(debt_age_days, GREATEST(0, EXTRACT(DAY FROM (now() - first_seen))::int)) AS days_open
+            FROM technical_debt_items
+           WHERE framework = %(fw)s
+             AND status = 'open'
+           ORDER BY severity, days_open DESC
+        named_args:
+          fw: "{{ exposure_framework }}"
+      register: findings
+
+    - name: Stop when there is nothing open
+      ansible.builtin.meta: end_play
+      when: findings.query_result | length == 0
+
+    - name: Score each finding against the exposure model
+      ansible.builtin.set_fact:
+        scored_rows: >-
+          {{ scored_rows | default([]) + [ _row ] }}
+      vars:
+        # CIP-0NN is the first token of the violation text in AAC's NERC output.
+        _std: "{{ (item.violation | regex_search('CIP-[0-9]{3}')) | default('', true) }}"
+        _req: "{{ (item.violation | regex_search('CIP-[0-9]{3}(-[0-9]+)?\\s+R[0-9.]+')) | default('', true) }}"
+        _std_entry: "{{ standards[_std] | default({}) }}"
+        _req_entry: "{{ requirements[_req] | default({}) }}"
+        # requirement-level wins where present
+        _entry: "{{ _req_entry if (_req_entry | length > 0) else _std_entry }}"
+        _vrf: "{{ _entry.vrf | default('unknown') }}"
+        _conf: "{{ _entry.confidence | default('unverified') }}"
+        _vsl: "{{ severity_to_vsl[item.severity | upper] | default('') }}"
+        _nef: "{{ _entry.not_enforceable_before | default('') }}"
+        _future: "{{ (_nef | length > 0) and (_nef > (ansible_date_time.date)) }}"
+        _scorable: "{{ (_conf == 'verified') and (_vrf in exposure_weights) and (_vsl | length > 0) and (not _future) }}"
+        _weight: "{{ (exposure_weights[_vrf][_vsl] | default(0)) if _scorable else 0 }}"
+        _reason: >-
+          {{ 'not enforceable until ' ~ _nef if _future
+             else ('no CIP standard parsed from the finding text' if _std | length == 0
+             else ('VRF for ' ~ _std ~ ' is ' ~ _conf ~ ' — verify against the NERC VRF/VSL matrix before scoring'
+                   if _conf != 'verified'
+             else ('severity ' ~ (item.severity | default('?')) ~ ' has no VSL mapping'))) }}
+        _row:
+          hostname: "{{ item.hostname }}"
+          cip_standard: "{{ _std }}"
+          cip_requirement: "{{ _req }}"
+          violation: "{{ item.violation }}"
+          severity: "{{ item.severity }}"
+          vsl: "{{ _vsl }}"
+          vrf: "{{ _vrf }}"
+          weight: "{{ _weight | float }}"
+          days_open: "{{ item.days_open | int }}"
+          exposure_index: "{{ (_weight | float) * (item.days_open | int) }}"
+          scored: "{{ _scorable }}"
+          unscored_reason: "{{ '' if _scorable else _reason }}"
+      loop: "{{ findings.query_result }}"
+      loop_control:
+        label: "{{ (item.violation | truncate(60)) }}"
+
+    - name: Summarise coverage of the model
+      ansible.builtin.set_fact:
+        n_total: "{{ scored_rows | length }}"
+        n_scored: "{{ scored_rows | selectattr('scored') | list | length }}"
+        n_unscored: "{{ scored_rows | rejectattr('scored') | list | length }}"
+
+    - name: Report model coverage before any ranking
+      ansible.builtin.debug:
+        msg:
+          - "Model version      : {{ model_version }} ({{ model_status }})"
+          - "Open findings      : {{ n_total }}"
+          - "Scored             : {{ n_scored }}"
+          - "UNSCORED           : {{ n_unscored }}"
+          - "{{ 'NOTE: nothing is scored yet. The model ships with VRFs unverified by design — populate them from NERC published matrices and set confidence: verified.' if (n_scored | int) == 0 else '' }}"
+
+    - name: Show why each unscored finding was excluded
+      ansible.builtin.debug:
+        msg: "{{ item.cip_standard | default('?') }} [{{ item.severity }}, {{ item.days_open }}d] — {{ item.unscored_reason }}"
+      loop: "{{ scored_rows | rejectattr('scored') | list }}"
+      loop_control:
+        label: "{{ item.cip_standard | default('?') }}"
+      when: n_unscored | int > 0
+
+    - name: Rank by exposure, worst first
+      ansible.builtin.debug:
+        msg: >-
+          {{ item.cip_standard }}{{ ' ' ~ item.cip_requirement if item.cip_requirement else '' }}
+          — exposure {{ item.exposure_index }}
+          ({{ item.vrf }}/{{ item.vsl }} weight {{ item.weight }} x {{ item.days_open }} days open)
+          on {{ item.hostname }}
+      loop: "{{ scored_rows | selectattr('scored') | sort(attribute='exposure_index', reverse=true) | list }}"
+      loop_control:
+        label: "{{ item.cip_standard }}"
+      when: n_scored | int > 0
+
+    - name: Aggregate exposure by CIP family
+      ansible.builtin.debug:
+        msg: >-
+          {{ item }} — total exposure
+          {{ scored_rows | selectattr('scored') | selectattr('cip_standard','equalto',item)
+             | map(attribute='exposure_index') | map('float') | sum }}
+          across
+          {{ scored_rows | selectattr('scored') | selectattr('cip_standard','equalto',item) | list | length }}
+          finding(s)
+      loop: "{{ scored_rows | selectattr('scored') | map(attribute='cip_standard') | unique | list }}"
+      when: n_scored | int > 0
+
+    - name: Persist the ranking
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: |
+          INSERT INTO nerc_cip_exposure
+            (model_version, hostname, cip_standard, cip_requirement, violation,
+             severity, vsl, vrf, weight, days_open, exposure_index, scored,
+             unscored_reason, metadata)
+          VALUES
+            (%(mv)s, %(host)s, %(std)s, %(req)s, %(viol)s, %(sev)s, %(vsl)s, %(vrf)s,
+             %(w)s, %(d)s, %(e)s, %(sc)s, %(ur)s, %(meta)s)
+        named_args:
+          mv: "{{ model_version }}"
+          host: "{{ item.hostname }}"
+          std: "{{ item.cip_standard }}"
+          req: "{{ item.cip_requirement }}"
+          viol: "{{ item.violation }}"
+          sev: "{{ item.severity }}"
+          vsl: "{{ item.vsl }}"
+          vrf: "{{ item.vrf }}"
+          w: "{{ item.weight }}"
+          d: "{{ item.days_open }}"
+          e: "{{ item.exposure_index }}"
+          sc: "{{ item.scored }}"
+          ur: "{{ item.unscored_reason }}"
+          meta: "{{ {'currency_enabled': (exposure_enable_currency | bool) and (currency.enabled | bool)} | to_json }}"
+      loop: "{{ scored_rows }}"
+      loop_control:
+        label: "{{ item.cip_standard | default('?') }}"
+      when: exposure_store | bool
+
+    - name: State the limits of what was just produced
+      ansible.builtin.debug:
+        msg:
+          - "This is a PRIORITISATION ranking, not a penalty prediction."
+          - "Exposure index = VRF/VSL weight x days open. It has no currency unit."
+          - "Currency estimate: {{ 'ENABLED — treat as an internal comparison only' if ((exposure_enable_currency | bool) and (currency.enabled | bool)) else 'disabled (default)' }}"
+          - "Unscored findings are excluded, never assumed — {{ n_unscored }} excluded this run."
+          - "Verify VRFs against NERC published matrices for the registered standard version before presenting any ranking externally."

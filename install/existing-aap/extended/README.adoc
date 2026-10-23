@@ -1,0 +1,1031 @@
+= AAC on Existing AAP — Production-Oriented Install Guide
+:toc: left
+:toclevels: 3
+:sectanchors:
+:sectnums:
+
+Estimated time: 2 to 4 hours for a careful first install.
+
+== What you get
+
+- OPA containers (`opa-security`, `opa-compliance`, `opa-ot`)
+- REGO policies loaded from the `policies/` submodule
+- A *dedicated* AAC PostgreSQL database
+- Grafana dashboards
+- An AAP project + job templates
+- An Execution Environment
+
+== Architecture recommendation
+
+Prefer a dedicated AAC host to provide clear blast radius, capacity, and naming. Do not risk AAP data or container names. The EDA and MCP configurations are optional for a first production cut.
+
+== Prerequisites
+
+- AAP *2.5.5* or later
+- RHEL for `aac_host`
+- Outbound HTTPS to GitHub, console.redhat.com, and registry.redhat.io
+- Firewall capacity for AAC ports
+
+== AAC Host setup
+
+=== Basic requirements
+
+RHEL server with `compliance` user, registered to Red Hat.
+
+[source,bash]
+----
+ssh compliance@<aac-host>
+echo "compliance ALL=(ALL) NOPASSWD: ALL" | sudo tee /etc/sudoers.d/compliance
+sudo dnf install -y podman ansible-core vim tree jq curl pip bash-completion
+sudo dnf upgrade -y && sudo systemctl reboot
+mkdir ~/repos/
+----
+
+=== Repository checkout
+
+[source,bash]
+----
+cd ~/repos/
+# Pick one — HTTPS or SSH:
+# git clone https://github.com/ansible-automated-compliance/aac.git
+git clone https://github.com/ansible-automated-compliance/aac.git
+cd compliance
+git submodule update --init --recursive
+tree -L 2 policies/benchmarks/
+----
+
+You might have to generate and register SSH key with GitHub.
+
+[source,bash]
+----
+ssh-keygen -t ed25519 -C "compliance@<aac-host>"
+cat ~/.ssh/id_ed25519.pub
+----
+
+Add the public key to GitHub.
+
+== Secrets setup
+
+Make a copy of the example secrets file and edit the PLACEHOLDERs. Never commit real secrets.
+
+[source,bash]
+----
+cp ansible/vars/vault_secrets.yml.example ansible/vars/vault_secrets.yml
+----
+
+NOTE: Credentials are *not* inherited by all templates in a project — attach them per job template.
+
+[source,bash]
+----
+vim ansible/vars/vault_secrets.yml
+----
+
+[source,yaml]
+----
+---
+# CATEGORY 1 — MUST PROVIDE (personal credentials — unique per installer)
+vault_redhat_username: some_username
+vault_redhat_offline_token: PLACEHOLDER_paste_your_offline_token_here
+vault_github_pat: ghp_PLACEHOLDER_paste_your_pat_here
+vault_quay_username: some_username
+vault_quay_password: some_password
+
+# CATEGORY 4 — MUST SET
+vault_aap_admin_password: CHANGE_ME
+
+# CATEGORY 5 — CAN USE DEFAULTS
+compliance_db_password: compliance
+compliance_reader_password: compliance
+grafana_admin_password: <grafana-admin-password>
+
+# CATEGORY 6 — CAA
+caa_signing_private_key: |
+  # Paste the ENTIRE contents of your cosign.key here as an indented
+  # block scalar, including its BEGIN/END header and footer lines.
+  # Generate one with: cosign generate-key-pair
+caa_signing_password: ""
+----
+
+=== CAA signing key (required for CIS playbooks that enable CAA)
+
+Generate keys using the cosign binary from a container.
+
+[source,bash]
+----
+cid=$(podman create registry.access.redhat.com/hi/cosign:3)
+podman cp "$cid":/usr/bin/cosign ./cosign
+podman rm "$cid"
+chmod +x ./cosign
+COSIGN_PASSWORD="" ./cosign generate-key-pair
+----
+
+IMPORTANT: The *public* key is for auditors (`cosign verify-blob`); do *not* inject it as the signing secret on the template.
+
+=== Encrypt vault_secrets.yml
+
+[source,bash]
+----
+ansible-vault encrypt ansible/vars/vault_secrets.yml
+----
+
+=== Container secrets (podman)
+
+Create podman secrets so passwords never appear in `podman run` commands or process listings.
+
+[source,bash]
+----
+podman secret list
+printf 'compliance' | podman secret create compliance_db_password -
+printf 'compliance' | podman secret create compliance_reader_password -
+printf '<grafana-admin-password>' | podman secret create grafana_admin_password -
+podman secret list
+----
+
+To rotate a secret later:
+
+[source,bash]
+----
+podman secret rm compliance_db_password
+printf 'new_password' | podman secret create compliance_db_password -
+----
+
+== OPA installation
+
+=== Prerequisites
+
+First, lets create the `/opt/opa/compliance` and `/etc/opa` directories and set the correct permissions.
+
+[source,bash]
+----
+sudo mkdir -p /opt/opa/compliance /etc/opa
+sudo chown -R compliance:compliance /opt/opa/compliance /etc/opa
+----
+
+=== OPA Containers installation
+
+Now run the installation playbook
+
+[source,bash]
+----
+ansible-playbook -J ansible/playbooks/deploy_opa_containers.yml \
+  -e "aac_host=<aac-host>" -e "become_user=root" \
+  -e "become=true" -e "become_method=sudo"
+----
+
+Verify:
+
+[source,bash]
+----
+curl -s http://<aac-host>:8181/health
+curl -s http://<aac-host>:8182/health
+curl -s http://<aac-host>:8183/health
+# Expect HTTP 200 / JSON health
+----
+
+=== PostgreSQL installation
+
+[source,bash]
+----
+podman volume create compliance_pgdata
+
+podman run -d --name aac-postgresql \
+  -p 5432:5432 \
+  -e POSTGRESQL_USER=compliance \
+  -e POSTGRESQL_DATABASE=compliance \
+  --secret compliance_db_password,type=env,target=POSTGRESQL_PASSWORD \
+  -v compliance_pgdata:/var/lib/pgsql/data \
+  --restart=always \
+  registry.redhat.io/rhel9/postgresql-15:latest
+----
+
+Now initialize the database without using the EE container.
+
+Install the dependencies 
+
+[source,bash]
+----
+pip3 install --user psycopg2-binary
+ansible-galaxy collection install community.postgresql
+----
+
+[source,bash]
+----
+ansible-playbook -J ansible/playbooks/postgres_database_init.yml \
+  -e "aac_host=<aac-host>" \
+  -e "pg_host=<aac-host>" \
+  -e "pg_user=compliance" \
+  -e "aac_db_container_name=aac-postgresql" \
+  -e "aac_db_skip_container_deploy=true"
+----
+
+NOTE: The error in TASK `[aac_compliance_db : Create compliance_reader role]` is expected and can be ignored.
+
+Verify:
+
+[source,bash]
+----
+podman exec -it aac-postgresql psql -U compliance -d compliance -c "\dt"
+----
+
+Expect:
+
+[source,sql]
+----
+ Schema |           Name            | Type  |   Owner
+--------+---------------------------+-------+------------
+ public | compliance_certifications | table | compliance
+ public | compliance_facts          | table | compliance
+ public | compliance_results        | table | compliance
+ public | customer_frameworks       | table | compliance
+ public | framework_catalog         | table | compliance
+ public | host_facts                | table | compliance
+ public | remediation_budgets       | table | compliance
+ public | remediation_rates         | table | compliance
+ public | sidecar_datasets          | table | compliance
+ public | technical_debt_items      | table | compliance
+ public | technical_debt_summary    | table | compliance
+(11 rows)
+----
+
+=== REGO policy loading
+
+The README verify curls are *not* the load step.
+
+Install the dependencies
+
+[source,bash]
+----
+ansible-galaxy collection install amazon.aws
+----
+
+[source,bash]
+----
+ansible-playbook -J ansible/playbooks/load_opa_policies.yml \
+  -e "opa_security_url=http://<aac-host>:8181" \
+  -e "opa_compliance_url=http://<aac-host>:8182" \
+  -e "opa_ot_url=http://<aac-host>:8183"
+----
+
+Verify:
+
+[source,bash]
+----
+curl -s http://<aac-host>:8181/v1/policies | jq '.result | length'
+curl -s http://<aac-host>:8182/v1/policies | jq '.result | length'
+curl -s http://<aac-host>:8183/v1/policies | jq '.result | length'
+----
+
+Combined expected: on the order of 460+ policies (varies by submodule revision)
+
+Empty `{"result":[]}` after deploy is normal *until* this step runs.
+
+=== Grafana installation
+
+Install Grafana
+
+[source,bash]
+----
+podman volume create compliance_grafanadata
+podman run -d --name aac-grafana \
+  --network=host \
+  --restart=always \
+  -v compliance_grafanadata:/var/lib/grafana \
+  -e GF_SECURITY_ADMIN_USER=admin \
+  --secret grafana_admin_password,type=env,target=GF_SECURITY_ADMIN_PASSWORD \
+  -e GF_SERVER_HTTP_ADDR=0.0.0.0 \
+  -e GF_SERVER_PORT=3000 \
+  -e GF_SERVER_ROOT_URL=http://<aac-host>:3000 \
+  -e GF_INSTALL_PLUGINS=grafana-postgresql-datasource \
+  registry.redhat.io/rhel9/grafana:latest
+----
+
+TIP: `GF_SECURITY_ADMIN_PASSWORD` only takes effect on first-time initialisation against an empty database. If you re-create the container and authentication fails, delete the volume first: `podman volume rm compliance_grafanadata && podman volume create compliance_grafanadata`.
+
+Verify:
+
+[source,bash]
+----
+curl -s http://<aac-host>:3000/api/health
+----
+
+NOTE: `ansible/playbooks/deploy_grafana_dashboard.yml` does *not* start Grafana. It only configures the datasource + imports dashboards against an *existing* Grafana on `:3000`.
+
+[source,bash]
+----
+ansible-playbook -J ansible/playbooks/deploy_grafana_dashboard.yml \
+  -e "grafana_url=http://<aac-host>:3000" \
+  -e "pg_host=<aac-host>"
+----
+
+=== Firewall configuration
+
+NOTE: Do not open 5432 on the firewall if AAP can reach Postgres on a private interface
+
+[source,bash]
+----
+for port in 3000 5432 8181 8182 8183; do
+  sudo firewall-cmd --permanent --add-port=${port}/tcp
+done
+sudo firewall-cmd --reload
+sudo firewall-cmd --list-ports
+----
+
+=== Quadlets
+
+Turn off the broken system units (as root once only)
+
+[source,bash]
+----
+sudo systemctl disable --now container-opa-security.service \
+  container-opa-compliance.service container-opa-ot.service
+
+sudo rm -f /etc/systemd/system/container-opa-*.service \
+  /etc/systemd/system/container-aac-postgresql.service \
+  /etc/systemd/system/container-aac-grafana.service
+
+sudo systemctl daemon-reload
+----
+
+As compliance — generate Quadlets for containers
+
+[source,bash]
+----
+mkdir -p ~/.config/containers/systemd/
+cd ~/.config/containers/systemd/
+----
+
+Copy the files in the quadlets directory to the systemd directory
+
+Remove the hand-started containers so Quadlet owns them
+
+[source,bash]
+----
+podman rm -f opa-security opa-compliance opa-ot aac-postgresql aac-grafana
+----
+
+Enable on the user bus (no sudo)
+
+[source,bash]
+----
+systemctl --user daemon-reload
+systemctl --user list-unit-files | grep -E 'opa|aac'
+systemctl --user start \
+  opa-security.service \
+  opa-compliance.service \
+  opa-ot.service \
+  aac-postgresql.service \
+  aac-grafana.service
+systemctl --user is-active \
+  opa-security.service \
+  opa-compliance.service \
+  opa-ot.service \
+  aac-postgresql.service \
+  aac-grafana.service
+----
+
+Survive logout/reboot without an interactive login
+
+[source,bash]
+----
+loginctl enable-linger compliance
+loginctl show-user compliance -p Linger
+systemctl --user --failed
+----
+
+== AAP Integration
+
+=== GitHub PAT credentials
+
+Ensure you have credentials for the GitHub PAT (Source Control) in AAP.
+
+[source,yaml]
+----
+Credential Name: GitHub PAT
+Description: GitHub Personal Access Token for compliance repository
+Credential Type: GitHub Personal Access Token
+Token: your GitHub PAT
+----
+
+Ensure you also have the PAT as source control credential in AAP.
+
+[source,yaml]
+----
+Credential Name: GitHub PAT (Source Control)
+Description: GitHub Personal Access Token for compliance repository (Source Control)
+Credential Type: source control
+Password: your GitHub PAT
+Username: your GitHub username
+Token: <empty>
+----
+
+=== Create Vault credential
+
+[source,yaml]
+----
+Credential Name: AAC Vault
+Description: AAC Vault password for compliance project
+Credential Type: Vault
+Password: your Vault password
+----
+
+=== Build and push the Compliance EE
+
+[source,bash]
+----
+cd ee
+podman login registry.redhat.io
+ansible-builder build -v --container-runtime podman -t quay.io/jumedina/aac-compliance-ee:latest
+podman login quay.io
+podman push quay.io/jumedina/aac-compliance-ee:latest
+----
+
+=== Create Remote Registry for Quay.io in AAP
+
+[source,yaml]
+----
+Remote Registry Name: Quay.io
+Remote Registry URL: https://quay.io
+Username: your Quay.io username
+Password: your Quay.io password
+----
+
+=== Create the Compliance EE in AAP
+
+[source,bash]
+----
+Name: compliance-ee
+Description: OPA Compliance Execution Environment
+Upstream Name: jumedina/aac-compliance-ee
+Registry: Quay.io
+Tag to include: latest
+Tag to exclude: <empty>
+----
+
+=== Make the EE usable in the controller
+
+[source,yaml]
+----
+Name: compliance-ee
+Description: OPA Compliance Execution Environment
+Image: <aap-host>/compliance-ee:latest
+Pull Policy: Always pull container before running
+Organization: <empty>
+Registry credential: Private Hub
+----
+
+[NOTE]
+====
+Ensure your controller has credentials to your HUB
+
+[source,yaml]
+----
+Name: Private Hub
+Description: Private Hub
+Organization: <empty>
+Credential Type: Container Registry
+Authentication URL: https://<aap-host>
+Username: admin
+Password: <your password>
+----
+====
+
+=== Project Creation and Sync
+
+[source,yaml]
+----
+Project Name: OPA Compliance Policies
+Description: OPA Compliance Policies
+Organization: default
+Execution Environment: compliance-ee
+Source Control Type: git
+Source Control URL: https://github.com/ansible-automated-compliance/aac.git
+Source Control Branch: main
+Source Control Credential: GitHub PAT (Source Control)
+Enable update revision on launch
+Enable Track submodules
+----
+
+[NOTE]
+====
+Synching the project uses the `Control Plane Execution Environment` by default.
+This project used to carry a `collections/requirements.yml` requiring the
+`redhat.openshift` collection, which made the sync fail. *That file has been
+removed* — nothing used the collection, and every OpenShift object is handled
+with `kubernetes.core` from the AAC Compliance EE. If you hit a sync failure
+here, do not re-add a requirements file; see `collections/README.md` for the
+failure mode and the recovery. The options below are kept for older checkouts:
+
+. Remove the `redhat.openshift` collection from the `collections/requirements.yml` file
+. Go to AAP UI -> Settings -> Automation Execution -> Job -> Click Edit, and set `Enable Collections Download` option to `Disabled`
+====
+
+=== Launch the Compliance assessment
+
+Launch Job template: `ansible/playbooks/cis_rhel9_assessment.yml` from AAP UI.
+
+==== CIS RHEL 9 Assessment Job Template
+
+[source,yaml]
+----
+Job Template Name: CIS RHEL 9 Assessment
+Description: CIS RHEL 9 Assessment
+Job Type: Run
+Inventory: locals
+Project: OPA Compliance Policies
+Playbook: ansible/playbooks/cis_rhel9_assessment.yml
+Execution Environment: compliance-ee
+Credential: local-root | Machine, AAC Vault | Vault
+Enable Privilege Escalation
+Extra Variables:
+  pg_host: <aac-host>
+  pg_port: 5432
+  pg_db: compliance
+  pg_user: compliance
+  # disable CAA for now if needed the CA needs to be passed
+  aac_caa_enabled: false
+  # password comes from vault / compliance_db_password
+  opa_security_url: http://<aac-host>:8181
+----
+
+Verify: 
+
+Open the grafana dashboard `http://<aac-host>:3000` and go to the `AAC Infrastructure Compliance` dashboard with the `cis` tag.
+
+Click the refresh button on the top right of the dashboard to see the results.
+
+[NOTE]
+====
+Troubleshoot if there is data in the database but not in the dashboard.
+
+From the AAC host:
+
+[source,bash]
+----
+podman exec -it aac-postgresql psql -U compliance -d compliance \
+   -c "SELECT hostname,compliance_percentage FROM compliance_results;"
+
+   hostname    | compliance_percentage 
+---------------+-----------------------
+ <vuln-host> |                100.00
+ <vuln-host> |                100.00
+----
+
+Verify the data source is as follows:
+
+[source,yaml]
+----
+Name: aac-compliance-db
+Type: PostgreSQL
+Url: <aac-host>:5432
+User: compliance
+Password: <from vault>
+TLS Mode: Disable
+----
+====
+
+==== AAC_Comply_AnsibleDeny Job Template
+
+[source,yaml]
+----
+Job Template Name: AAC_Comply_AnsibleDeny
+Description: AAC Comply Ansible Deny
+Job Type: Run
+Inventory: locals
+Project: OPA Compliance Policies
+Playbook: aac_comply_demo_preflight.yml
+Execution Environment: compliance-ee
+Credential: local-root | Machine, AAC Vault | Vault
+Enable Privilege Escalation
+Extra Variables:
+  opa_comply_url: http://<aac-host>:8181
+  smart_meter_url: http://<aac-host>:8182
+  required_comply_templates:
+    - "AAC_Comply_AnsibleDeny"
+----
+
+==== AAC_GoldenImage_Enforcement Workflow Template
+
+[source,yaml]
+----
+Workflow Template Name: AAC_GoldenImage_Enforcement
+Description: AAC_GoldenImage_Enforcement
+Organization: default
+Inventory: locals
+Extra Variables: Enable the option prompt on launch
+----
+
+Step1: 
+Job Template: CIS RHEL 9 Assessment
+
+Step2.1:
+Approval: "I approve"
+Status: Run on Success
+
+Step2.2:
+Approval: "I have failed!"
+Status: Run on Fail
+
+Step3: 
+Job Template: AAC_GoldenImage_Enforcement
+
+Step4.1: 
+Approval: "I approve"
+Status: Run on Success
+
+Step4.2:
+Approval: "I have failed!"
+Status: Run on Fail
+
+IMPORTANT: Do not forget to "save" the workflow template after creating it.
+
+== Deploy EDA server
+
+=== Credentials setup
+
+From the AAP dashboard, under Automation Decisions:
+
+==== Create GitHub PAT credential
+
+[source,yaml]
+----
+Credential Name: GitHub PAT (Source Control)
+Description: GitHub Personal Access Token for compliance repository (Source Control)
+Organization: default
+Credential Type: source control
+Password: your GitHub PAT
+Username: your GitHub username
+----
+
+==== Create AAP Controller Token credential
+
+[source,yaml]
+----
+Credential Name: AAP Controller Token
+Description: AAP Controller Token
+Organization: default
+Credential Type: Red Hat Ansible Automation Platform
+Red Hat Ansible Automation Platform URL: https://<aap-host>/api/controller/
+Username: admin
+Password: <your password>
+----
+
+==== Create Hub Default Decision Environment Container Registry credential
+
+[source,yaml]
+----
+Credential Name: Hub Default Decision Environment Container Registry
+Description: Hub Default Decision Environment Container Registry
+Organization: default
+Credential Type: Container Registry
+Container Registry URL: <aap-host>
+Username: admin
+Password: <your password or token>
+----
+
+==== Create Red Hat Ansible Automation Platform Container Registry credential
+
+[source,yaml]
+----
+Credential Name: Red Hat Container Registry
+Description: Red Hat Container Registry
+Organization: default
+Credential Type: Container Registry
+Container Registry URL: registry.redhat.io
+Username: <your username>
+Password: <your password or token>
+----
+
+=== Create a new Project
+
+[source,yaml]
+----
+Project Name: OPA Compliance Vulnerability Detection
+Description: OPA Compliance Vulnerability Detection
+Organization: default
+Source Control Type: git
+Source Control URL: https://github.com/ansible-automated-compliance/aac.git
+Source Control Branch: main
+Source Control Credential: GitHub PAT (Source Control)
+----
+
+Sync the project
+
+=== Create Rulebook Activations
+
+All rulebooks live in `extensions/eda/rulebooks/` 
+
+[%headers,cols="2,2,3",align="center",width="100%",stripes="even"]
+|===
+| Port | Rulebook                        | Purpose
+| 5000 | `compliance_webhook_events.yml` | CIS / NERC-CIP / CAF assessment trigger
+| 5001 | `ami_events.yml`                | AMI / smart meter events (Optional)
+| 5002 | `ai_governance_enforcement.yml` | AI governance enforcement (Optional)
+| 5003 | `sentinel_github_webhook.yml`   | Sentinel GitHub push webhook
+| 5004 | `golden_image_enforcement.yml`  | Golden image drift detection
+|===
+
+All activations use the following:
+
+- Decision Environment: Default Decision Environment (`registry.redhat.io/ansible-automation-platform-26/de-supported-rhel9:latest`)
+- Credential: AAP Controller Token
+- Restart policy: always
+
+=== Firewall configuration for EDA webhooks
+
+On the AAP host (`<aap-host>`), not the AAC host — EDA listens there:
+
+[source,bash]
+----
+for port in 5000 5001 5002 5003 5004; do
+  sudo firewall-cmd --permanent --add-port=${port}/tcp
+done
+sudo firewall-cmd --reload
+sudo firewall-cmd --list-ports
+----
+
+=== Testing and Demonstration
+
+==== Verify activations are running
+
+In the AAP UI under *Automation Decisions -> Rulebook Activations*, confirm every activation shows *Running*. If an activation shows *Failed* or *Stopped*, click into it and check the *History* tab for the error. Common causes:
+
+- *Credential mismatch* — the activation must use the `AAP Controller Token` credential, not a machine credential.
+- *Port conflict* — another activation (or process) already bound to the same port. Check with `ss -tlnp | grep <port>` on the AAP host.
+- *Decision Environment pull failure* — the DE image pull needs the `Red Hat Container Registry` credential attached to the DE definition. Check *Automation Decisions -> Decision Environments*.
+
+==== Test the Compliance Webhook rulebook (port 5000)
+
+Send a manual compliance check event from any host that can reach the AAP EDA server:
+
+[source,bash]
+----
+curl -X POST http://<aap-host>:5000/endpoint \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "event_type": "manual_check",
+    "hosts": "all",
+    "requested_by": "install-test",
+    "reason": "EDA webhook validation"
+  }'
+----
+
+Expect: HTTP 200 response. Within a few seconds, a *CIS RHEL 9 Assessment* job should appear in *Automation Execution -> Jobs* in the AAP UI.
+
+==== Test the Golden Image Enforcement rulebook (port 5004)
+
+[source,bash]
+----
+curl -X POST http://<aap-host>:5004/endpoint \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "drift_trigger": "webhook",
+    "changed_file": "/opt/golden-image/test.conf",
+    "change_type": "modified",
+    "target_host": "demo-rhel9"
+  }'
+----
+
+Expect: the *AAC_GoldenImage_Enforcement* workflow launches in AAP.
+
+==== Test the Sentinel GitHub Webhook rulebook (port 5003)
+
+Simulate a GitHub push event:
+
+[source,bash]
+----
+curl -X POST http://<aap-host>:5003/endpoint \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "ref": "refs/heads/main",
+    "after": "abc123def456",
+    "repository": {
+      "full_name": "ansible-automated-compliance/aac"
+    },
+    "commits": [{
+      "modified": ["ansible/playbooks/test_playbook.yml"],
+      "added": []
+    }]
+  }'
+----
+
+Expect: the *AAC_Comply_AnsibleDeny* job template launches.
+Expect: A workflow approval
+Expect: AAC_Comply_AnsibleDeny job template to fail
+Expect: A second workflow approval
+
+// == Deploy MCP server
+
+// Run **"AAC - Deploy MCP Server"** or:
+
+// ```bash
+// ansible-playbook ansible/playbooks/deploy_mcp_server.yml \
+//   -e "aac_host=<host>" \
+//   --vault-password-file ~/.vault_pass
+// ```
+
+// Verify:
+// ```bash
+// curl -s --max-time 5 -H "Authorization: Bearer <token>" \
+//   http://<host>:8004/sse | head -c 200
+// # Expected: event: endpoint\ndata: /messages/?session_id=...
+// ```
+
+// If `firewalld` is active on the target host, open these permanently:
+
+// ```bash
+// for port in 3000 5000 5001 5002 5003 5004 5432 8004 8085 8086 8087 8181 8182 8183; do
+//   sudo firewall-cmd --permanent --add-port=${port}/tcp
+// done
+// sudo firewall-cmd --reload
+// ```
+
+// ## Step 2 — Configure credentials
+
+// Ensure these credentials exist in AAP (Settings → Credentials):
+
+// | Name | Type | Variables |
+// |------|------|-----------|
+// | Compliance SSH Credential | Machine | SSH key for target hosts |
+// | Ansible Vault | Vault | Vault password |
+// | AWS Compliance Lab | AWS | Access key + secret (if using AWS inventory) |
+
+== Native AAP Policy as Code
+
+=== Configuration
+
+This section wires the OPA you already run on the AAC host (`<aac-host>`) into *Ansible Automation Platform*'s built-in Policy as Code feature. That is separate from AAC assessment
+playbooks: PAC blocks/allows *job launches* in the AAP console *before* the playbook runs.
+
+Reference: Red Hat docs —
+https://docs.redhat.com/en/documentation/red_hat_ansible_automation_platform/2.6/integrate-assembly_controller_pac
+
+IMPORTANT: PAC evaluates *job context* (extra_vars, template, inventory, credentials, launching user). It does *not* parse playbook YAML.
+
+==== Step 1 — Point AAP at your OPA server
+
+In the AAP UI go to *Settings* → *Job* / *Policy settings*, Set:
+
+[cols="2,3",options="header"]
+|===
+| Setting | Value for this install
+| OPA Server hostname (`OPA_HOST`) | `<aac-host>`
+| OPA server port (`OPA_PORT`) | `8181`
+| OPA SSL (`OPA_SSL`) | `False` (HTTP lab)
+| OPA authentication type | `None` (lab)
+| OPA request timeout | `5` (seconds; default 1.5 is tight on lab links)
+| OPA request retry count | `2`
+|===
+
+Save.
+
+Verify from the AAP host:
+
+[source,bash]
+----
+curl -s -o /dev/null -w '%{http_code}\n' http://<aac-host>:8181/health
+# Expect 200
+----
+
+==== Step 2 - Create a centralized PAC policy repository
+
+At the AAC host, create a directory for PAC policies:
+
+[source,bash]
+----
+sudo mkdir -p /opt/opa/compliance/policies/pac
+sudo chown -R compliance:compliance /opt/opa/compliance/policies/pac
+----
+
+==== Step 3 — Create a simple PAC Rego policy
+
+Create a file `hello_aap_pac.rego` in the PAC policy repository:
+
+[source,bash]
+----
+touch /opt/opa/compliance/policies/pac/hello_aap_pac.rego
+----
+
+[source,rego]
+----
+package hello.aap.pac
+
+import rego.v1
+
+# AAP Policy as Code contract: rule must evaluate to
+# { "allowed": bool, "violations": [string] }
+default result := {
+	"allowed": false,
+	"violations": ["hello.aap.pac: evaluation produced no decision"],
+}
+
+allowed_envs := {"development", "production"}
+
+violations contains msg if {
+	env := object.get(object.get(input, "extra_vars", {}), "environment_cli", "")
+	not env in allowed_envs
+	msg := sprintf(
+		"PAC deny: extra_vars.environment_cli must be one of %v (got %v)",
+		[allowed_envs, env],
+	)
+}
+
+result := {
+	"allowed": count(violations) == 0,
+	"violations": [v | some v in violations],
+}
+----
+
+Load it into the security OPA (package path → API path):
+
+[source,bash]
+----
+curl -X PUT --data-binary @hello_aap_pac.rego \
+  http://<aac-host>:8181/v1/policies/hello_aap_pac
+
+# Smoke-test with empty extra_vars → deny
+curl -s http://<aac-host>:8181/v1/data/hello/aap/pac/result \
+  -H 'Content-Type: application/json' \
+  -d '{"input":{"extra_vars":{}}}' | jq .
+
+# Smoke-test with valid extra_vars → allow
+curl -s http://<aac-host>:8181/v1/data/hello/aap/pac/result \
+  -H 'Content-Type: application/json' \
+  -d '{"input":{"extra_vars":{"environment_cli":"development"}}}' | jq .
+----
+
+Expect `allowed: false` then `allowed: true`.
+
+The OPA policy name you will type in AAP is `hello.aap.pac/result`
+
+==== Step 4 — Create the hello-aap project in AAP
+
+Create a new project in AAP:
+
+[source,yaml]
+----
+Project Name: hello-aap
+Organization: default
+Source Control Type: git
+Source Control URL: https://github.com/R0tt3nT0m4t0/hello-aap.git
+Source Control Branch: main
+Source Control Credential: GitHub PAT (Source Control)
+----
+
+Sync the project until status is successful.
+
+==== Step 5 — Job template (no PAC yet)
+
+Use an inventory that can reach a test host (or limit scope later).
+For a *policy-only* proof you only need the launch to reach OPA;
+the playbook can still fail later on SSH — the PAC deny happens first.
+
+[source,yaml]
+----
+Job Template Name: Hello AAP — PAC demo
+Organization: default
+Job Type: Run
+Inventory: <your inventory>
+Project: hello-aap
+Playbook: playbook.yml
+Execution Environment: Default Execution Environment  # or compliance-ee
+Credentials: <Machine credential for the inventory>
+Privilege Escalation: as required by the playbook
+Extra Variables: (leave empty for the deny test)
+OPA policy:   << leave empty for now >>
+----
+
+Save. Optionally enable *Prompt on launch* for Extra Variables.
+
+==== Step 6 — Attach the policy (enforcement point)
+
+Edit the job template (or the Organization / Inventory — JT is clearest for a lab):
+. Open *Hello AAP — PAC demo*
+. Find *OPA policy*
+. Enter: `hello.aap.pac/result`
+. Save
+
+Enforcement levels (any one is enough for the demo):
+
+* *Job template* — only this template
+* *Inventory* — every job using that inventory
+* *Organization* — every template in the org (broad; avoid for first test)
+If no resource has an OPA policy set, AAP will not call OPA.
+
+==== Step 7 — Prove deny, then allow
+
+*Deny (missing / invalid environment_cli):*
+. Launch *Hello AAP — PAC demo* with no extra vars
+  (or `-e environment_cli=staging`).
+. Expect the job to be *blocked before playbook start*, with a
+  violation message from Rego (similar to
+  `PAC deny: extra_vars.environment_cli must be one of ...`).
+
+*Allow:*
+. Launch again with Extra Variables:
+[source,yaml]
+----
+environment_cli: development
+----
+. Expect PAC to allow; the job proceeds to normal Ansible execution
+  (SSH / firewalld / httpd as in hello-aap).
+

@@ -1,0 +1,297 @@
+---
+# DISA STIG Oracle Database 19c assessment using OPA
+#
+# Collect  — ../tasks/collect_oracle_db_facts.yml on the database host as the
+#            Oracle software owner: the STIG's own queries through
+#            `sqlplus / as sysdba` (OS authentication, no password handled) plus
+#            the network files, listener security and directory modes the STIG
+#            checks outside the database
+# Map      — ../tasks/oracle_db_build_opa_input.yml (never fabricates; site
+#            allowlists only remove rows the STIG query returned; the rules that
+#            need a human review — 45 pure reviews, 2 hybrid, 4 AO exceptions —
+#            are attestations, false until a named person has done the review:
+#            ansible/vars/oracle_stig_attestations.yml)
+# Evaluate — POST {{ opa_security_url }}/v1/data/stig/oracle_database_19c/main/compliance_report
+#            (fail-closed: empty input reports every rule Open)
+# Store    — compliance_results + a CAA row, every number from OPA's report
+#
+# AAP Job Template: "AAC - STIG Oracle Database 19c Assessment"
+# Credentials: Compliance SSH Credential (machine, to the database host), Ansible Vault
+# Survey / extra_vars:
+#   oracle_home, oracle_sid      — the instance (or oracle_env_file to source them)
+#   oracle_os_user               — Oracle software owner (default oracle)
+#   oracle_facts_file            — OPTIONAL path to a previously collected
+#                                  oracle_raw JSON (the shipped
+#                                  tests/stig_mapper/fixture_oracle19c_raw.json
+#                                  is a synthetic instance). When set, nothing
+#                                  is collected from the host and the stored
+#                                  row carries metadata.facts_source = "file"
+#                                  — for demonstrations without an instance.
+#   oracle_stig_attestations, oracle_authorized_*, oracle_expected_patch_id
+#                                — see ansible/vars/oracle_stig_attestations.yml.example
+
+- name: DISA STIG Oracle Database 19c Assessment
+  hosts: all
+  gather_facts: yes
+  become: yes
+
+  vars_files:
+    - [ "../vars/oracle_stig_attestations.yml", "../vars/empty_fallback.yml" ]
+
+  vars:
+    framework: "stig_oracle_database_19c"
+    report_dir: "{{ playbook_dir }}/../../reports"
+    timestamp: "{{ ansible_date_time.iso8601_basic_short }}"
+    pg_db: "compliance"
+    pg_user: "postgres"
+
+  tasks:
+    # site_config.yml / vault_secrets.yml are gitignored and absent from a synced
+    # AAP project checkout — load them OPTIONALLY (the export playbooks do the
+    # same) so routing and credentials can also arrive as extra_vars / survey /
+    # inventory. The assertions below name what is missing.
+    - name: Load optional local config
+      ansible.builtin.include_vars: "{{ item }}"
+      with_first_found:
+        - files: ["{{ playbook_dir }}/../vars/site_config.yml"]
+          skip: true
+
+    - name: Load optional local secrets
+      ansible.builtin.include_vars: "{{ item }}"
+      with_first_found:
+        - files: ["{{ playbook_dir }}/../vars/vault_secrets.yml"]
+          skip: true
+      no_log: true
+
+    - name: Require the OPA routing tables, the database password and the framework registration
+      ansible.builtin.assert:
+        that:
+          - opa_framework_map is defined
+          - opa_framework_path is defined
+          - opa_endpoints is defined
+          - (compliance_db_password | default('', true)) | length > 0
+          - framework in opa_framework_map
+          - framework in opa_framework_path
+        fail_msg: >-
+          '{{ framework }}' must be in opa_framework_map AND opa_framework_path in
+          site_config.yml (see ansible/vars/site_config.yml.example).
+
+    - name: Ensure report directory exists
+      file:
+        path: "{{ report_dir }}"
+        state: directory
+        mode: '0755'
+      delegate_to: localhost
+      become: no
+      run_once: true
+
+    # ── Collect ──────────────────────────────────────────────────────────────
+    - name: Collect Oracle Database facts from the instance
+      include_tasks: ../tasks/collect_oracle_db_facts.yml
+      when: (oracle_facts_file | default('', true)) | length == 0
+
+    # oracle_facts_file is survey input that names a file to read on the
+    # execution node and store as evidence: only a .json inside this project
+    # checkout is accepted (the shipped fixture, or a file the operator placed
+    # there), never an arbitrary path.
+    - name: Resolve the facts file against the project checkout
+      set_fact:
+        _project_root: "{{ (playbook_dir ~ '/../../') | realpath }}"
+        _facts_file_abs: "{{ ((playbook_dir ~ '/../../') | realpath) ~ '/' ~ (oracle_facts_file | regex_replace('^/+', '')) }}"
+      delegate_to: localhost
+      become: no
+      when: (oracle_facts_file | default('', true)) | length > 0
+
+    - name: Refuse a facts file outside the project checkout
+      ansible.builtin.assert:
+        that:
+          - oracle_facts_file is match('^[A-Za-z0-9._/-]+\\.json$')
+          - (_facts_file_abs | realpath) is match('^' ~ (_project_root | regex_escape) ~ '/')
+          - (_facts_file_abs | realpath) is file
+        fail_msg: >-
+          oracle_facts_file must be a .json path relative to the project checkout
+          (e.g. tests/stig_mapper/fixture_oracle19c_raw.json); got '{{ oracle_facts_file }}'.
+      delegate_to: localhost
+      become: no
+      when: (oracle_facts_file | default('', true)) | length > 0
+
+    - name: Load previously collected Oracle facts from the file
+      set_fact:
+        oracle_raw: "{{ lookup('file', _facts_file_abs | realpath) | from_json }}"
+      delegate_to: localhost
+      become: no
+      when: (oracle_facts_file | default('', true)) | length > 0
+
+    - name: Refuse to continue without raw facts
+      ansible.builtin.assert:
+        that:
+          - oracle_raw is defined
+          - (oracle_raw.sql_raw | default('')) is search('@@instance@@')
+        fail_msg: >-
+          No Oracle facts: sqlplus did not print the @@instance@@ line. Check
+          oracle_home / oracle_sid / oracle_os_user and that `sqlplus / as sysdba`
+          works for that user. Output was:
+          {{ (oracle_raw.sql_raw | default('')) | truncate(600) }}
+
+    # ── Map ──────────────────────────────────────────────────────────────────
+    - name: Build Oracle OPA input from collected facts (shared mapper)
+      include_tasks: ../tasks/oracle_db_build_opa_input.yml
+      vars:
+        opa_hostname: "{{ inventory_hostname }}"
+
+    - name: Save OPA input to local file
+      copy:
+        content: "{{ opa_input | to_nice_json }}"
+        dest: "{{ report_dir }}/{{ inventory_hostname }}_{{ framework }}_facts_{{ timestamp }}.json"
+      delegate_to: localhost
+      become: no
+
+    # ── Evaluate ─────────────────────────────────────────────────────────────
+    - name: Resolve OPA endpoint
+      include_tasks: ../tasks/resolve_opa_url.yml
+
+    - name: Resolve evidence provenance (policy SHA + real subject)
+      ansible.builtin.include_tasks: ../tasks/resolve_evidence_provenance.yml
+      vars:
+        evidence_subject: "{{ inventory_hostname }}"
+
+    - name: Query OPA — Oracle Database 19c STIG compliance report
+      uri:
+        use_proxy: false
+        url: "{{ opa_server_url }}/v1/data/{{ opa_framework_path[framework] }}/main/compliance_report"
+        method: POST
+        body_format: json
+        body:
+          input: "{{ opa_input }}"
+        return_content: yes
+        status_code: 200
+      register: opa_response
+      delegate_to: localhost
+      become: no
+      failed_when: false
+
+    - name: Refuse to fabricate a result when OPA did not answer
+      ansible.builtin.assert:
+        that:
+          - (opa_response.status | default(-1)) == 200
+          - opa_response.json.result is defined
+          - opa_response.json.result.total_controls is defined
+          - opa_response.json.result.facts_supplied is defined
+          - opa_response.json.result.facts_supplied | bool
+        fail_msg: >-
+          OPA did not return an evaluation (status
+          {{ opa_response.status | default('no connection') }} from
+          {{ opa_server_url }}/v1/data/{{ opa_framework_path[framework] }}/main/compliance_report).
+          Refusing to continue: no answer from the policy engine means NO
+          ASSESSMENT, never a clean one. Is the `stigs` loader key loaded?
+          OPA said: {{ (opa_response.json | default(opa_response.content | default(opa_response.msg | default('nothing')))) | to_json | truncate(600) }}
+
+    - name: Read the STIG version label from the module metadata
+      uri:
+        use_proxy: false
+        url: "{{ opa_server_url }}/v1/data/{{ opa_framework_path[framework] }}/stig_assessment/metadata"
+        method: POST
+        body_format: json
+        body:
+          input: "{{ opa_input }}"
+        return_content: yes
+        status_code: 200
+      register: stig_meta
+      delegate_to: localhost
+      become: no
+      failed_when: false
+
+    - name: Extract report fields
+      set_fact:
+        compliance_result: "{{ opa_response.json.result }}"
+        assessment_timestamp: "{{ ansible_date_time.iso8601 }}"
+        violations: "{{ opa_response.json.result.violations | default([]) }}"
+        is_compliant: "{{ opa_response.json.result.compliant | default(false) | bool }}"
+        total_controls: "{{ opa_response.json.result.total_controls | int }}"
+        passed_controls: "{{ opa_response.json.result.passed_controls | default(0) | int }}"
+        failed_controls: "{{ opa_response.json.result.failed_controls | default(0) | int }}"
+        compliance_score: "{{ opa_response.json.result.compliance_percentage | default(0) | float }}"
+        stig_version: "{{ (stig_meta.json.result.version | default('')) if (stig_meta.status | default(0)) == 200 else '' }}"
+        stig_title: "{{ (stig_meta.json.result.stig_title | default('Oracle Database 19c Security Technical Implementation Guide')) if (stig_meta.status | default(0)) == 200 else 'Oracle Database 19c Security Technical Implementation Guide' }}"
+        attested_count: "{{ (oracle_stig_attestations | default({})) | dict2items | selectattr('value', 'equalto', true) | list | length }}"
+        facts_source: "{{ 'file' if (oracle_facts_file | default('', true)) | length > 0 else 'instance' }}"
+
+    - name: Generate compliance report file
+      copy:
+        content: "{{ {
+            'assessment_metadata': {
+              'hostname': inventory_hostname,
+              'assessment_time': assessment_timestamp,
+              'framework': framework,
+              'benchmark': stig_title,
+              'benchmark_version': stig_version,
+              'facts_source': facts_source,
+              'instance_name': opa_input.oracle.instance_name,
+              'oracle_version': opa_input.oracle.version,
+              'attestations_true': attested_count | int,
+              'attested_by': oracle_stig_attested_by | default(''),
+              'facts_missing': opa_input.system_info.facts_missing
+            },
+            'compliance_summary': {
+              'is_compliant': is_compliant,
+              'total_controls': total_controls | int,
+              'passed_controls': passed_controls | int,
+              'failed_controls': failed_controls | int,
+              'compliance_percentage': compliance_score | float
+            },
+            'violations': violations
+          } | to_nice_json }}"
+        dest: "{{ report_dir }}/{{ inventory_hostname }}_{{ framework }}_report_{{ timestamp }}.json"
+      delegate_to: localhost
+      become: no
+
+    - name: Display compliance summary
+      debug:
+        msg: |
+          ========================================
+          {{ stig_title }} {{ stig_version }}
+          ========================================
+          Host / instance: {{ inventory_hostname }} / {{ opa_input.oracle.instance_name }} ({{ opa_input.oracle.version }}), facts from {{ facts_source }}
+          Rules evaluated: {{ total_controls }} — Open: {{ failed_controls }} — Not a finding: {{ passed_controls }}
+          Attestations on file: {{ attested_count }} of {{ oracle_stig_attestations | default({}) | length }}{{ (' (' ~ oracle_stig_attested_by ~ ')') if (oracle_stig_attested_by | default('')) else '' }}
+          SQL facts missing: {{ opa_input.system_info.facts_missing | join(', ') if opa_input.system_info.facts_missing else 'none' }}
+          Compliance: {{ compliance_score }}%
+
+    - name: Open findings (first 10)
+      debug:
+        msg: "{{ violations[:10] | map(attribute='stig_id') | zip(violations[:10] | map(attribute='severity'), violations[:10] | map(attribute='rule_title')) | list }}"
+      when: violations | length > 0
+
+    # ── Store ────────────────────────────────────────────────────────────────
+    - name: Store Oracle Database STIG results to PostgreSQL (+ CAA row)
+      include_role:
+        name: aac_store_results
+      vars:
+        pg_password:               "{{ compliance_db_password }}"
+        aac_result_framework:      "{{ framework }}"
+        aac_result_policy_name:    "DISA STIG Oracle Database 19c"
+        aac_result_policy_version: "{{ stig_title }}{{ (' ' ~ stig_version) if stig_version else '' }}"
+        aac_result_total_controls: "{{ total_controls | int }}"
+        aac_result_violations:     "{{ violations }}"
+        aac_result_failed_controls: "{{ failed_controls | int }}"
+        aac_result_passed_controls: "{{ passed_controls | int }}"
+        aac_result_compliance_pct:  "{{ compliance_score | float }}"
+        aac_result_metadata: "{{ {'hostname': inventory_hostname, 'framework': framework, 'benchmark': stig_title, 'benchmark_version': stig_version, 'assessment_time': assessment_timestamp, 'is_compliant': is_compliant, 'facts_source': facts_source, 'instance_name': opa_input.oracle.instance_name, 'oracle_version': opa_input.oracle.version, 'attestations_true': attested_count | int, 'attested_by': oracle_stig_attested_by | default(''), 'facts_missing': opa_input.system_info.facts_missing, 'evaluation_endpoint': opa_framework_path[framework] ~ '/main/compliance_report', 'cat_i_open': violations | selectattr('severity', 'equalto', 'CAT I') | list | length} }}"
+        aac_result_opa_server: "{{ opa_server_url }}"
+        aac_caa_enabled: true
+        aac_result_caa_framework_version: "{{ stig_version | default('', true) }}"
+        aac_result_caa_result:
+          framework:             "{{ framework }}"
+          benchmark:             "{{ stig_title }}"
+          benchmark_version:     "{{ stig_version }}"
+          compliant:             "{{ is_compliant | bool }}"
+          compliance_percentage: "{{ compliance_score | float }}"
+          total_controls:        "{{ total_controls | int }}"
+          passed_controls:       "{{ passed_controls | int }}"
+          failed_controls:       "{{ failed_controls | int }}"
+          violations:            "{{ violations }}"
+        aac_result_caa_input: "{{ opa_input }}"
+
+    - name: Results stored to PostgreSQL
+      debug:
+        msg: "Stored DISA STIG Oracle Database 19c result for {{ inventory_hostname }}/{{ opa_input.oracle.instance_name }}: {{ compliance_score }}% ({{ passed_controls }}/{{ total_controls }} rules, facts from {{ facts_source }})"

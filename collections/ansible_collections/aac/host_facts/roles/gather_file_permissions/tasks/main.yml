@@ -1,0 +1,390 @@
+---
+# tasks file for gather_file_permissions
+
+# =============================================================================
+# CIS 6.1.1 - AUDIT SYSTEM FILE PERMISSIONS
+# =============================================================================
+
+- name: Check permissions on critical system files
+  stat:
+    path: "{{ item.key }}"
+  loop: "{{ critical_file_permissions | dict2items }}"
+  register: critical_files_check
+  failed_when: false
+
+- name: Analyze critical file permissions
+  set_fact:
+    critical_files_analysis: |-
+      {% set analysis = [] %}
+      {% for result in critical_files_check.results %}
+        {% if result.stat.exists %}
+          {% set expected = result.item.value %}
+          {% set actual_mode = '%04o' | format(result.stat.mode) %}
+          {% set expected_mode = expected.mode %}
+          {% set mode_compliant = actual_mode[-4:] == expected_mode or (expected_mode == '0000' and actual_mode[-3:] <= '000') %}
+          {% set owner_compliant = result.stat.pw_name == expected.owner %}
+          {% set group_compliant = result.stat.gr_name == expected.group %}
+          {% set _ = analysis.append({
+            'file': result.item.key,
+            'exists': true,
+            'actual_mode': actual_mode,
+            'expected_mode': expected_mode,
+            'mode_compliant': mode_compliant,
+            'actual_owner': result.stat.pw_name,
+            'expected_owner': expected.owner,
+            'owner_compliant': owner_compliant,
+            'actual_group': result.stat.gr_name,
+            'expected_group': expected.group,
+            'group_compliant': group_compliant,
+            'fully_compliant': mode_compliant and owner_compliant and group_compliant
+          }) %}
+        {% else %}
+          {% set _ = analysis.append({
+            'file': result.item.key,
+            'exists': false,
+            'fully_compliant': result.item.key in ['/etc/security/opasswd']
+          }) %}
+        {% endif %}
+      {% endfor %}
+      {{ analysis }}
+
+# =============================================================================
+# CIS 6.1.2 - ENSURE PERMISSIONS ON /etc/passwd ARE CONFIGURED
+# CIS 6.1.3 - ENSURE PERMISSIONS ON /etc/passwd- ARE CONFIGURED
+# CIS 6.1.4 - ENSURE PERMISSIONS ON /etc/group ARE CONFIGURED
+# CIS 6.1.5 - ENSURE PERMISSIONS ON /etc/group- ARE CONFIGURED
+# CIS 6.1.6 - ENSURE PERMISSIONS ON /etc/shadow ARE CONFIGURED
+# CIS 6.1.7 - ENSURE PERMISSIONS ON /etc/shadow- ARE CONFIGURED
+# CIS 6.1.8 - ENSURE PERMISSIONS ON /etc/gshadow ARE CONFIGURED
+# CIS 6.1.9 - ENSURE PERMISSIONS ON /etc/gshadow- ARE CONFIGURED
+# =============================================================================
+# (Covered by critical_files_analysis above)
+
+# =============================================================================
+# CIS 6.1.10 - ENSURE NO WORLD WRITABLE FILES EXIST
+# =============================================================================
+
+- name: Search for world-writable files
+  shell: |
+    df --local -P | awk '{if (NR!=1) print $6}' | xargs -I '{}' find '{}' -xdev -type f -perm -0002 -print 2>/dev/null | head -{{ max_world_writable_files }}
+  register: world_writable_files_raw
+  changed_when: false
+  failed_when: false
+
+- name: Get details on world-writable files
+  stat:
+    path: "{{ item }}"
+  loop: "{{ world_writable_files_raw.stdout_lines }}"
+  register: world_writable_files_details
+  failed_when: false
+
+- name: Analyze world-writable files
+  set_fact:
+    world_writable_files: |-
+      {% set files = [] %}
+      {% for result in world_writable_files_details.results | default([]) %}
+        {% if result.stat.exists %}
+          {% set _ = files.append({
+            'path': result.stat.path,
+            'mode': '%04o' | format(result.stat.mode),
+            'owner': result.stat.pw_name,
+            'group': result.stat.gr_name,
+            'size': result.stat.size
+          }) %}
+        {% endif %}
+      {% endfor %}
+      {{ files }}
+
+# =============================================================================
+# CIS 6.1.11 - ENSURE NO UNOWNED FILES OR DIRECTORIES EXIST
+# =============================================================================
+
+- name: Search for unowned files
+  shell: |
+    df --local -P | awk '{if (NR!=1) print $6}' | xargs -I '{}' find '{}' -xdev -nouser -print 2>/dev/null | head -{{ max_unowned_files }}
+  register: unowned_files_raw
+  changed_when: false
+  failed_when: false
+
+- name: Get details on unowned files
+  stat:
+    path: "{{ item }}"
+  loop: "{{ unowned_files_raw.stdout_lines }}"
+  register: unowned_files_details
+  failed_when: false
+
+- name: Analyze unowned files
+  set_fact:
+    unowned_files: |-
+      {% set files = [] %}
+      {% for result in unowned_files_details.results | default([]) %}
+        {% if result.stat.exists %}
+          {% set _ = files.append({
+            'path': result.stat.path,
+            'mode': '%04o' | format(result.stat.mode),
+            'uid': result.stat.uid,
+            'gid': result.stat.gid,
+            'size': result.stat.size
+          }) %}
+        {% endif %}
+      {% endfor %}
+      {{ files }}
+
+# =============================================================================
+# CIS 6.1.12 - ENSURE NO UNGROUPED FILES OR DIRECTORIES EXIST
+# =============================================================================
+
+- name: Search for ungrouped files
+  shell: |
+    df --local -P | awk '{if (NR!=1) print $6}' | xargs -I '{}' find '{}' -xdev -nogroup -print 2>/dev/null | head -{{ max_unowned_files }}
+  register: ungrouped_files_raw
+  changed_when: false
+  failed_when: false
+
+- name: Get details on ungrouped files
+  stat:
+    path: "{{ item }}"
+  loop: "{{ ungrouped_files_raw.stdout_lines }}"
+  register: ungrouped_files_details
+  failed_when: false
+
+- name: Analyze ungrouped files
+  set_fact:
+    ungrouped_files: |-
+      {% set files = [] %}
+      {% for result in ungrouped_files_details.results | default([]) %}
+        {% if result.stat.exists %}
+          {% set _ = files.append({
+            'path': result.stat.path,
+            'mode': '%04o' | format(result.stat.mode),
+            'uid': result.stat.uid,
+            'gid': result.stat.gid,
+            'size': result.stat.size
+          }) %}
+        {% endif %}
+      {% endfor %}
+      {{ files }}
+
+# =============================================================================
+# CIS 6.1.13 - AUDIT SUID EXECUTABLES
+# =============================================================================
+
+- name: Search for SUID executables
+  shell: |
+    df --local -P | awk '{if (NR!=1) print $6}' | xargs -I '{}' find '{}' -xdev -type f -perm -4000 -print 2>/dev/null | head -{{ max_suid_sgid_results }}
+  register: suid_files_raw
+  changed_when: false
+  failed_when: false
+
+- name: Get details on SUID files
+  stat:
+    path: "{{ item }}"
+  loop: "{{ suid_files_raw.stdout_lines }}"
+  register: suid_files_details
+  failed_when: false
+
+- name: Analyze SUID files
+  set_fact:
+    suid_files_analysis: |-
+      {% set files = [] %}
+      {% for result in suid_files_details.results | default([]) %}
+        {% if result.stat.exists %}
+          {% set is_known = result.stat.path in known_suid_binaries %}
+          {% set _ = files.append({
+            'path': result.stat.path,
+            'mode': '%04o' | format(result.stat.mode),
+            'owner': result.stat.pw_name,
+            'group': result.stat.gr_name,
+            'size': result.stat.size,
+            'known_binary': is_known,
+            'review_required': not is_known
+          }) %}
+        {% endif %}
+      {% endfor %}
+      {{ files }}
+
+# =============================================================================
+# CIS 6.1.14 - AUDIT SGID EXECUTABLES
+# =============================================================================
+
+- name: Search for SGID executables
+  shell: |
+    df --local -P | awk '{if (NR!=1) print $6}' | xargs -I '{}' find '{}' -xdev -type f -perm -2000 -print 2>/dev/null | head -{{ max_suid_sgid_results }}
+  register: sgid_files_raw
+  changed_when: false
+  failed_when: false
+
+- name: Get details on SGID files
+  stat:
+    path: "{{ item }}"
+  loop: "{{ sgid_files_raw.stdout_lines }}"
+  register: sgid_files_details
+  failed_when: false
+
+- name: Analyze SGID files
+  set_fact:
+    sgid_files_analysis: |-
+      {% set files = [] %}
+      {% for result in sgid_files_details.results | default([]) %}
+        {% if result.stat.exists %}
+          {% set _ = files.append({
+            'path': result.stat.path,
+            'mode': '%04o' | format(result.stat.mode),
+            'owner': result.stat.pw_name,
+            'group': result.stat.gr_name,
+            'size': result.stat.size
+          }) %}
+        {% endif %}
+      {% endfor %}
+      {{ files }}
+
+# =============================================================================
+# ADDITIONAL PERMISSION CHECKS
+# =============================================================================
+
+- name: Check for files with no mode 644 or 755 in /etc
+  shell: |
+    find /etc -type f ! -perm 644 ! -perm 755 ! -perm 600 ! -perm 400 ! -perm 640 -print 2>/dev/null | head -50
+  register: unusual_etc_permissions
+  changed_when: false
+  failed_when: false
+
+- name: Check SSH private key permissions
+  shell: |
+    find /etc/ssh -type f -name 'ssh_host_*_key' -print 2>/dev/null
+  register: ssh_private_keys
+  changed_when: false
+  failed_when: false
+
+- name: Get details on SSH private keys
+  stat:
+    path: "{{ item }}"
+  loop: "{{ ssh_private_keys.stdout_lines }}"
+  register: ssh_private_key_details
+  failed_when: false
+
+- name: Analyze SSH private key permissions
+  set_fact:
+    ssh_private_key_analysis: |-
+      {% set keys = [] %}
+      {% for result in ssh_private_key_details.results | default([]) %}
+        {% if result.stat.exists %}
+          {% set actual_mode = '%04o' | format(result.stat.mode) %}
+          {% set mode_compliant = actual_mode[-3:] <= '600' %}
+          {% set owner_compliant = result.stat.pw_name == 'root' %}
+          {% set _ = keys.append({
+            'path': result.stat.path,
+            'mode': actual_mode,
+            'owner': result.stat.pw_name,
+            'group': result.stat.gr_name,
+            'mode_compliant': mode_compliant,
+            'owner_compliant': owner_compliant,
+            'fully_compliant': mode_compliant and owner_compliant
+          }) %}
+        {% endif %}
+      {% endfor %}
+      {{ keys }}
+
+# =============================================================================
+# COMPREHENSIVE FILE PERMISSIONS FACTS ASSEMBLY
+# =============================================================================
+
+- name: Set comprehensive file permissions facts
+  set_fact:
+    host_file_permissions_facts:
+      critical_files:
+        expected_count: "{{ critical_file_permissions.keys() | list | length }}"
+        analysis: "{{ critical_files_analysis }}"
+        all_compliant: >-
+          {{
+            critical_files_analysis | selectattr('fully_compliant', 'equalto', false) | list | length == 0
+          }}
+        non_compliant_count: >-
+          {{
+            critical_files_analysis | selectattr('fully_compliant', 'equalto', false) | list | length
+          }}
+      world_writable:
+        files: "{{ world_writable_files }}"
+        count: "{{ world_writable_files | length }}"
+        has_issues: "{{ world_writable_files | length > 0 }}"
+        compliant: "{{ world_writable_files | length == 0 }}"
+      unowned_files:
+        files: "{{ unowned_files }}"
+        count: "{{ unowned_files | length }}"
+        has_issues: "{{ unowned_files | length > 0 }}"
+        compliant: "{{ unowned_files | length == 0 }}"
+      ungrouped_files:
+        files: "{{ ungrouped_files }}"
+        count: "{{ ungrouped_files | length }}"
+        has_issues: "{{ ungrouped_files | length > 0 }}"
+        compliant: "{{ ungrouped_files | length == 0 }}"
+      suid_files:
+        all_files: "{{ suid_files_analysis }}"
+        total_count: "{{ suid_files_analysis | length }}"
+        known_binaries: "{{ suid_files_analysis | selectattr('known_binary', 'equalto', true) | list }}"
+        known_count: "{{ suid_files_analysis | selectattr('known_binary', 'equalto', true) | list | length }}"
+        unknown_binaries: "{{ suid_files_analysis | selectattr('review_required', 'equalto', true) | list }}"
+        unknown_count: "{{ suid_files_analysis | selectattr('review_required', 'equalto', true) | list | length }}"
+        requires_review: "{{ suid_files_analysis | selectattr('review_required', 'equalto', true) | list | length > 0 }}"
+      sgid_files:
+        files: "{{ sgid_files_analysis }}"
+        count: "{{ sgid_files_analysis | length }}"
+      ssh_private_keys:
+        analysis: "{{ ssh_private_key_analysis }}"
+        all_compliant: >-
+          {{
+            ssh_private_key_analysis | selectattr('fully_compliant', 'equalto', false) | list | length == 0
+          }}
+      unusual_etc_permissions:
+        files: "{{ unusual_etc_permissions.stdout_lines }}"
+        count: "{{ unusual_etc_permissions.stdout_lines | length }}"
+      compliance_checks:
+        critical_files_correct: >-
+          {{
+            critical_files_analysis | selectattr('fully_compliant', 'equalto', false) | list | length == 0
+          }}
+        no_world_writable_files: "{{ world_writable_files | length == 0 }}"
+        no_unowned_files: "{{ unowned_files | length == 0 }}"
+        no_ungrouped_files: "{{ ungrouped_files | length == 0 }}"
+        suid_files_reviewed: >-
+          {{
+            suid_files_analysis | selectattr('review_required', 'equalto', true) | list | length == 0
+          }}
+        ssh_keys_secure: >-
+          {{
+            ssh_private_key_analysis | selectattr('fully_compliant', 'equalto', false) | list | length == 0
+          }}
+      collection_timestamp: "{{ ansible_date_time.iso8601 }}"
+
+- name: Display file permissions summary
+  debug:
+    msg:
+      - "=========================================="
+      - "File Permissions Facts"
+      - "=========================================="
+      - "Critical System Files:"
+      - "  Total Checked: {{ critical_files_analysis | length }}"
+      - "  Compliant: {{ critical_files_analysis | selectattr('fully_compliant', 'equalto', true) | list | length }}"
+      - "  Non-Compliant: {{ critical_files_analysis | selectattr('fully_compliant', 'equalto', false) | list | length }}"
+      - ""
+      - "Security Issues:"
+      - "  World-Writable Files: {{ world_writable_files | length }}"
+      - "  Unowned Files: {{ unowned_files | length }}"
+      - "  Ungrouped Files: {{ ungrouped_files | length }}"
+      - ""
+      - "SUID/SGID Executables:"
+      - "  SUID Files: {{ suid_files_analysis | length }}"
+      - "    Known Safe: {{ suid_files_analysis | selectattr('known_binary', 'equalto', true) | list | length }}"
+      - "    Requires Review: {{ suid_files_analysis | selectattr('review_required', 'equalto', true) | list | length }}"
+      - "  SGID Files: {{ sgid_files_analysis | length }}"
+      - ""
+      - "SSH Private Keys:"
+      - "  Total: {{ ssh_private_key_analysis | length }}"
+      - "  Compliant: {{ ssh_private_key_analysis | selectattr('fully_compliant', 'equalto', true) | list | length }}"
+      - ""
+      - "Compliance Summary:"
+      - "  Critical Files: {{ host_file_permissions_facts.compliance_checks.critical_files_correct }}"
+      - "  No World-Writable: {{ host_file_permissions_facts.compliance_checks.no_world_writable_files }}"
+      - "  No Unowned Files: {{ host_file_permissions_facts.compliance_checks.no_unowned_files }}"
+      - "  SSH Keys Secure: {{ host_file_permissions_facts.compliance_checks.ssh_keys_secure }}"
+      - "=========================================="

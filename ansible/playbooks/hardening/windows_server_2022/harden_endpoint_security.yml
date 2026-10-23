@@ -1,0 +1,175 @@
+---
+# harden_endpoint_security.yml — CIS Windows Server 2022 Hardening: Endpoint Security
+#
+# Configures Windows Defender AV, ASR rules, firewall profiles (Section 18.10 — 18 controls).
+# BitLocker OS drive policy is set where possible (TPM not available on EC2 t3.micro).
+#
+# Domain ownership: Security Engineering / Endpoint Security
+# Controls addressed: 18 (windows_defender) + 6 of 13 (bitlocker policy, no TPM hw)
+# AAP Job Template: "CIS Windows 2022 Harden - Endpoint Security" (Security Engineering team)
+# Credentials: Windows Compliance Lab (ID 7) + Ansible Vault (ID 8)
+# EE: AAC Compliance EE
+
+- name: CIS Windows Server 2022 — Endpoint Security Hardening
+  hosts: "{{ target_hosts | default('all') }}"
+  gather_facts: false
+
+  vars_files:
+    - [ "../../vars/vault_secrets.yml", "../../vars/empty_fallback.yml" ]
+
+  tasks:
+
+    # ── Section 18.10: Windows Defender AV ────────────────────────────────────
+
+    - name: Enable real-time protection (CIS AV basics)
+      win_shell: |
+        Set-MpPreference -DisableRealtimeMonitoring $false
+        Set-MpPreference -DisableBehaviorMonitoring $false
+        Set-MpPreference -DisableOnAccessProtection $false
+        Set-MpPreference -DisableIOAVProtection $false
+      changed_when: true
+      failed_when: false
+
+    - name: Configure signature update interval to 8 hours (CIS — sig age < 7 days)
+      win_shell: |
+        Set-MpPreference -SignatureUpdateInterval 8
+      changed_when: true
+      failed_when: false
+
+    - name: Enable cloud protection and block at first sight
+      win_shell: |
+        Set-MpPreference -MAPSReporting Advanced
+        Set-MpPreference -DisableBlockAtFirstSeen $false
+        Set-MpPreference -CloudBlockLevel 2
+      changed_when: true
+      failed_when: false
+
+    - name: Enable Attack Surface Reduction rules (CIS ASR)
+      win_shell: |
+        # Enable core ASR rules in block mode
+        # Rule IDs per Microsoft/CIS recommendations
+        $rules = @(
+          # Block executable content from email/webmail
+          'BE9BA2D9-53EA-4CDC-84E5-9B1EEEE46550',
+          # Block Office apps from creating child processes
+          'D4F940AB-401B-4EFC-AADC-AD5F3C50688A',
+          # Block Office apps from creating executable content
+          '3B576869-A4EC-4529-8536-B80A7769E899',
+          # Block Office apps from injecting code into other processes
+          '75668C1F-73B5-4CF0-BB93-3ECF5CB7CC84',
+          # Block JavaScript/VBScript from launching downloaded executables
+          'D3E037E1-3EB8-44C8-A917-57927947596D',
+          # Block execution of potentially obfuscated scripts
+          '5BEB7EFE-FD9A-4556-801D-275E5FFC04CC',
+          # Block Win32 API calls from Office macros
+          '92E97FA1-2EDF-4476-BDD6-9DD0B4DDDC7B',
+          # Block credential stealing from Windows LSASS
+          '9E6C4E1F-7D60-472F-BA1A-A39EF669E4B2',
+          # Block untrusted/unsigned processes from USB
+          'B2B3F03D-6A65-4F7B-A9C7-1C7EF74A9BA4',
+          # Block persistence through WMI event subscription
+          'E6DB77E5-3DF2-4CF1-B95A-636979351E5B'
+        )
+        foreach ($rule in $rules) {
+          Add-MpPreference -AttackSurfaceReductionRules_Ids $rule `
+            -AttackSurfaceReductionRules_Actions Enabled 2>$null
+        }
+      changed_when: true
+      failed_when: false
+
+    - name: Enable Controlled Folder Access
+      win_shell: |
+        Set-MpPreference -EnableControlledFolderAccess Enabled
+      changed_when: true
+      failed_when: false
+
+    - name: Enable Network Protection in block mode
+      win_shell: |
+        Set-MpPreference -EnableNetworkProtection Enabled
+      changed_when: true
+      failed_when: false
+
+    # ── Firewall Profiles ──────────────────────────────────────────────────────
+
+    - name: Enable Windows Firewall on all profiles
+      win_shell: |
+        netsh advfirewall set allprofiles state on
+        Set-NetFirewallProfile -Profile Domain,Private,Public -Enabled True
+      changed_when: true
+      failed_when: false
+
+    - name: Set default inbound action to Block on all profiles
+      win_shell: |
+        Set-NetFirewallProfile -Profile Domain,Private,Public -DefaultInboundAction Block
+        Set-NetFirewallProfile -Profile Domain,Private,Public -DefaultOutboundAction Allow
+      changed_when: true
+      failed_when: false
+
+    - name: Ensure WinRM inbound rule exists (preserve management access)
+      win_shell: |
+        $rules = Get-NetFirewallRule -DisplayName "WinRM HTTP*" -ErrorAction SilentlyContinue
+        if (-not $rules) {
+          New-NetFirewallRule -DisplayName "WinRM HTTP" -Direction Inbound `
+            -LocalPort 5985 -Protocol TCP -Action Allow
+        }
+      changed_when: true
+      failed_when: false
+
+    # ── BitLocker OS Drive Policy (CIS — registry settings only; no TPM on EC2) ──
+
+    - name: Set BitLocker OS drive policy — require additional auth at startup (CIS)
+      win_regedit:
+        path: HKLM:\SOFTWARE\Policies\Microsoft\FVE
+        name: UseAdvancedStartup
+        data: 1
+        type: dword
+
+    - name: Set BitLocker — do not allow without TPM (CIS)
+      win_regedit:
+        path: HKLM:\SOFTWARE\Policies\Microsoft\FVE
+        name: EnableBDEWithNoTPM
+        data: 0
+        type: dword
+
+    - name: Set BitLocker minimum PIN length to 6 (CIS)
+      win_regedit:
+        path: HKLM:\SOFTWARE\Policies\Microsoft\FVE
+        name: MinimumPIN
+        data: 6
+        type: dword
+
+    - name: Enable BitLocker OS recovery to AD (CIS)
+      win_regedit:
+        path: HKLM:\SOFTWARE\Policies\Microsoft\FVE
+        name: OSActiveDirectoryBackup
+        data: 1
+        type: dword
+
+    - name: Deny write access to removable drives without BitLocker (CIS)
+      win_regedit:
+        path: HKLM:\SOFTWARE\Policies\Microsoft\FVE
+        name: RDVDenyWriteAccess
+        data: 1
+        type: dword
+
+    - name: Deny cross-org removable drives (CIS)
+      win_regedit:
+        path: HKLM:\SOFTWARE\Policies\Microsoft\FVE
+        name: RDVDenyCrossOrg
+        data: 1
+        type: dword
+
+    - name: Trigger signature update
+      win_shell: |
+        Update-MpSignature -ErrorAction SilentlyContinue
+      changed_when: false
+      failed_when: false
+
+    - name: Endpoint security hardening complete
+      debug:
+        msg: |
+          Endpoint security hardening complete.
+          NOTE: BitLocker OS drive encryption (os_drive_encrypted) will remain non-compliant
+          because EC2 t3.micro instances have no TPM hardware module.
+          All other BitLocker policy settings have been applied.
+          Run assessment to verify compliance score improvement.

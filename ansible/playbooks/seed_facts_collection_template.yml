@@ -1,0 +1,522 @@
+---
+# seed_facts_collection_template.yml — Create AAP templates for ADR-001 fact collection
+#
+# Creates:
+#   "AAC - Init Facts Schema"         — one-time schema setup
+#   "AAC - Gather Facts (All Systems)"  — comprehensive nightly collection
+#   "AAC - Store Sidecar Dataset"       — store org-context sidecar data
+#
+# Also creates the nightly 02:00 UTC schedule on "AAC - Gather Facts (All Systems)".
+#
+# Run once after install, then managed through AAP.
+# AAP Job Template: "AAC - Seed Facts Collection Templates"
+# Credentials: Ansible Vault
+# Inventory: localhost
+
+- name: Seed AAC Facts Collection Templates
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - ../vars/site_config.yml
+
+  vars:
+    aap_api: "{{ aap_url }}/api/controller/v2"
+    aap_headers:
+      Authorization: "Bearer {{ aap_token }}"
+      Content-Type: "application/json"
+    pg_password: "{{ compliance_db_password }}"
+
+  tasks:
+
+    # ── Resolve AAP object IDs ─────────────────────────────────────────────────
+    - name: Get inventory ID
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/inventories/?name={{ aap_inventory_name | urlencode }}"
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+      register: inv_lookup
+
+    - name: Set inventory ID
+      set_fact:
+        inv_id: "{{ inv_lookup.json.results[0].id }}"
+
+    - name: Get execution environment ID
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/execution_environments/?name={{ aap_ee_name | urlencode }}"
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+      register: ee_lookup
+
+    - name: Set EE ID
+      set_fact:
+        ee_id: "{{ ee_lookup.json.results[0].id if ee_lookup.json.count > 0 else 6 }}"
+
+    - name: Get project ID
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/projects/?name={{ aap_project_name | urlencode }}"
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+      register: proj_lookup
+
+    - name: Set project ID
+      set_fact:
+        proj_id: "{{ proj_lookup.json.results[0].id }}"
+
+    - name: Get Vault credential ID
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/credentials/?name={{ aap_vault_credential_name | urlencode }}"
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+      register: vault_cred_lookup
+
+    - name: Set Vault credential ID
+      set_fact:
+        vault_cred_id: "{{ vault_cred_lookup.json.results[0].id }}"
+
+    - name: Get SSH credential ID
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/credentials/?name={{ aap_ssh_credential_name | urlencode }}"
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+      register: ssh_cred_lookup
+
+    - name: Set SSH credential ID
+      set_fact:
+        ssh_cred_id: "{{ ssh_cred_lookup.json.results[0].id if ssh_cred_lookup.json.count > 0 else '' }}"
+
+    - name: Get Windows credential ID
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/credentials/?name={{ aap_windows_credential_name | default('Windows Lab Administrator') | urlencode }}"
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+      register: win_cred_lookup
+
+    - name: Set Windows credential ID
+      set_fact:
+        win_cred_id: "{{ win_cred_lookup.json.results[0].id if win_cred_lookup.json.count > 0 else '' }}"
+
+    # ── Template: AAC - Init Facts Schema ─────────────────────────────────────
+    - name: Check if 'AAC - Init Facts Schema' exists
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/job_templates/?name=AAC+-+Init+Facts+Schema"
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+      register: init_schema_existing
+
+    - name: Create 'AAC - Init Facts Schema' template
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/job_templates/"
+        method: POST
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+        body_format: json
+        body:
+          name: "AAC - Init Facts Schema"
+          description: "Create host_facts and sidecar_datasets tables in PostgreSQL (ADR-001). Safe to re-run."
+          job_type: run
+          inventory: "{{ inv_id }}"
+          project: "{{ proj_id }}"
+          playbook: "ansible/playbooks/aac_init_facts_schema.yml"
+          execution_environment: "{{ ee_id }}"
+          become_enabled: false
+        status_code: [200, 201]
+      register: init_schema_created
+      when: init_schema_existing.json.count == 0
+
+    - name: Set Init Schema template ID
+      set_fact:
+        init_schema_jt_id: >-
+          {{ init_schema_existing.json.results[0].id
+             if init_schema_existing.json.count > 0
+             else init_schema_created.json.id }}
+
+    - name: Attach Vault credential to Init Schema template
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/job_templates/{{ init_schema_jt_id }}/credentials/"
+        method: POST
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+        body_format: json
+        body:
+          id: "{{ vault_cred_id | int }}"
+        status_code: [200, 201, 204]
+      failed_when: false
+      when: init_schema_existing.json.count == 0
+
+    # ── Template: AAC - Gather Facts (All Systems) ────────────────────────────
+    - name: Check if 'AAC - Gather Facts (All Systems)' exists
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/job_templates/?name=AAC+-+Gather+Facts+%28All+Systems%29"
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+      register: gather_facts_existing
+
+    - name: Create 'AAC - Gather Facts (All Systems)' template
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/job_templates/"
+        method: POST
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+        body_format: json
+        body:
+          name: "AAC - Gather Facts (All Systems)"
+          description: >-
+            Collect comprehensive facts from all managed hosts (Linux, Windows, AWS) and store
+            in host_facts PostgreSQL table. Runs nightly at 02:00 UTC. No SSH required for
+            subsequent compliance assessments — all frameworks read from host_facts.
+          job_type: run
+          inventory: "{{ inv_id }}"
+          project: "{{ proj_id }}"
+          playbook: "ansible/playbooks/aac_gather_facts.yml"
+          execution_environment: "{{ ee_id }}"
+          become_enabled: false
+          ask_variables_on_launch: false
+          survey_enabled: true
+        status_code: [200, 201]
+      register: gather_facts_created
+      when: gather_facts_existing.json.count == 0
+
+    - name: Set Gather Facts template ID
+      set_fact:
+        gather_facts_jt_id: >-
+          {{ gather_facts_existing.json.results[0].id
+             if gather_facts_existing.json.count > 0
+             else gather_facts_created.json.id }}
+
+    - name: Add survey to Gather Facts template
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/job_templates/{{ gather_facts_jt_id }}/survey_spec/"
+        method: POST
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+        body_format: json
+        body:
+          name: "Gather Facts Survey"
+          description: ""
+          spec:
+            - question_name: "Target Hosts"
+              question_description: "Inventory group to collect from (default: all)"
+              variable: target_hosts
+              type: text
+              default: "all"
+              required: false
+        status_code: [200, 201]
+      failed_when: false
+      when: gather_facts_existing.json.count == 0
+
+    - name: Attach Vault credential to Gather Facts template
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/job_templates/{{ gather_facts_jt_id }}/credentials/"
+        method: POST
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+        body_format: json
+        body:
+          id: "{{ vault_cred_id | int }}"
+        status_code: [200, 201, 204]
+      failed_when: false
+      when: gather_facts_existing.json.count == 0
+
+    - name: Attach SSH credential to Gather Facts template
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/job_templates/{{ gather_facts_jt_id }}/credentials/"
+        method: POST
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+        body_format: json
+        body:
+          id: "{{ ssh_cred_id | int }}"
+        status_code: [200, 201, 204]
+      failed_when: false
+      when:
+        - gather_facts_existing.json.count == 0
+        - ssh_cred_id != ''
+
+    # ── Template: AAC - Gather Facts (Windows Lab) ────────────────────────────
+    # A job template carries ONE Machine credential, and the Linux templates
+    # carry an SSH key. The Windows host authenticates over WinRM with a
+    # password, so it needs its own template — without one, Windows facts are
+    # collected by nothing: both Linux gather templates fail against it with
+    # "basic: auth method basic requires a password". Same playbook, same EE
+    # (the compliance EE ships pywinrm); only the credential and limit differ.
+    # This mirrors the wiring proven by AAC_GoldenImageWin_Check.
+    - name: Check if 'AAC - Gather Facts (Windows Lab)' exists
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/job_templates/?name=AAC+-+Gather+Facts+%28Windows+Lab%29"
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+      register: gather_win_existing
+
+    - name: Create 'AAC - Gather Facts (Windows Lab)' template
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/job_templates/"
+        method: POST
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+        body_format: json
+        body:
+          name: "AAC - Gather Facts (Windows Lab)"
+          description: >-
+            Collect facts from the Windows lab host over WinRM and store in
+            host_facts. Exists because a job template carries one Machine
+            credential: the Linux gather templates hold an SSH key, this one
+            holds the Windows Administrator password.
+          job_type: run
+          inventory: "{{ inv_id }}"
+          project: "{{ proj_id }}"
+          playbook: "ansible/playbooks/aac_gather_facts.yml"
+          execution_environment: "{{ ee_id }}"
+          limit: "compliance-lab-windows2022,localhost"
+          become_enabled: false
+          ask_variables_on_launch: false
+        status_code: [200, 201]
+      register: gather_win_created
+      when: gather_win_existing.json.count == 0
+
+    - name: Set Windows Gather template ID
+      set_fact:
+        gather_win_jt_id: >-
+          {{ gather_win_existing.json.results[0].id
+             if gather_win_existing.json.count > 0
+             else gather_win_created.json.id }}
+
+    - name: Attach Vault credential to Windows Gather template
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/job_templates/{{ gather_win_jt_id }}/credentials/"
+        method: POST
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+        body_format: json
+        body:
+          id: "{{ vault_cred_id | int }}"
+        status_code: [200, 201, 204]
+      failed_when: false
+      when: gather_win_existing.json.count == 0
+
+    - name: Attach Windows credential to Windows Gather template
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/job_templates/{{ gather_win_jt_id }}/credentials/"
+        method: POST
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+        body_format: json
+        body:
+          id: "{{ win_cred_id | int }}"
+        status_code: [200, 201, 204]
+      failed_when: false
+      when:
+        - gather_win_existing.json.count == 0
+        - win_cred_id != ''
+
+    # ── Nightly schedule ───────────────────────────────────────────────────────
+    - name: Check if nightly schedule exists
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/job_templates/{{ gather_facts_jt_id }}/schedules/?name=AAC+Nightly+Fact+Collection"
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+      register: schedule_existing
+
+    - name: Create nightly fact collection schedule (02:00 UTC)
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/job_templates/{{ gather_facts_jt_id }}/schedules/"
+        method: POST
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+        body_format: json
+        body:
+          name: "AAC Nightly Fact Collection"
+          description: "Collect facts from all managed hosts nightly at 02:00 UTC (ADR-001)"
+          enabled: true
+          rrule: "DTSTART:20260101T020000Z RRULE:FREQ=DAILY"
+          extra_data:
+            target_hosts: "all"
+        status_code: [200, 201]
+      when: schedule_existing.json.count == 0
+      failed_when: false
+
+    # ── Template: AAC - Store Sidecar Dataset ─────────────────────────────────
+    - name: Check if 'AAC - Store Sidecar Dataset' exists
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/job_templates/?name=AAC+-+Store+Sidecar+Dataset"
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+      register: sidecar_existing
+
+    - name: Create 'AAC - Store Sidecar Dataset' template
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/job_templates/"
+        method: POST
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+        body_format: json
+        body:
+          name: "AAC - Store Sidecar Dataset"
+          description: >-
+            Store organizational context (Digital Sovereignty, NERC-CIP, etc.) to
+            sidecar_datasets table. Run on same schedule as AAC - Gather Facts so
+            core facts and sidecar data stay time-aligned (ADR-001).
+          job_type: run
+          inventory: "{{ inv_id }}"
+          project: "{{ proj_id }}"
+          playbook: "ansible/playbooks/aac_store_sidecar.yml"
+          execution_environment: "{{ ee_id }}"
+          become_enabled: false
+          survey_enabled: true
+        status_code: [200, 201]
+      register: sidecar_created
+      when: sidecar_existing.json.count == 0
+      failed_when: false
+
+    - name: Set Sidecar template ID
+      set_fact:
+        sidecar_jt_id: >-
+          {{ sidecar_existing.json.results[0].id
+             if sidecar_existing.json.count > 0
+             else sidecar_created.json.id | default('') }}
+
+    - name: Add survey to Store Sidecar template
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/job_templates/{{ sidecar_jt_id }}/survey_spec/"
+        method: POST
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+        body_format: json
+        body:
+          name: "Sidecar Dataset Survey"
+          description: ""
+          spec:
+            - question_name: "Sidecar Type"
+              question_description: "Type of sidecar dataset"
+              variable: sidecar_type
+              type: multiplechoice
+              choices: "digital_sovereignty\nnerc_cip\nhardware_supply_chain\nai_governance"
+              default: "digital_sovereignty"
+              required: true
+            - question_name: "Entity ID"
+              question_description: "Organization or site name this sidecar applies to"
+              variable: entity_id
+              type: text
+              default: "default_org"
+              required: true
+            - question_name: "Sidecar File"
+              question_description: "Path to sidecar JSON/YAML file (relative to project root)"
+              variable: sidecar_file
+              type: text
+              default: "examples/sidecars/digital_sovereignty.yml"
+              required: true
+        status_code: [200, 201]
+      failed_when: false
+      when: sidecar_existing.json.count == 0
+
+    - name: Attach Vault credential to Sidecar template
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/job_templates/{{ sidecar_jt_id }}/credentials/"
+        method: POST
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+        body_format: json
+        body:
+          id: "{{ vault_cred_id | int }}"
+        status_code: [200, 201, 204]
+      failed_when: false
+      when:
+        - sidecar_existing.json.count == 0
+        - sidecar_jt_id != ''
+
+    # ── Sidecar nightly schedule (time-aligned with gather_facts) ──────────────
+    # ADR-001: Sidecars run on the same nightly window as core gather_facts so
+    # that compliance assessments join host_facts and sidecar_datasets from the
+    # same collection window. The sidecar_datasets_latest view always returns the
+    # most recent sidecar, which will match the most recent host_facts snapshot.
+    - name: Check if sidecar nightly schedule exists
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/job_templates/{{ sidecar_jt_id }}/schedules/?name=AAC+Nightly+Sidecar+Collection"
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+      register: sidecar_schedule_existing
+      when: sidecar_jt_id != ''
+
+    - name: Create nightly sidecar collection schedule (02:00 UTC — same window as gather_facts)
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/job_templates/{{ sidecar_jt_id }}/schedules/"
+        method: POST
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+        body_format: json
+        body:
+          name: "AAC Nightly Sidecar Collection"
+          description: >-
+            Collect sidecar datasets nightly at 02:00 UTC — time-aligned with
+            AAC - Gather Facts so host_facts and sidecar_datasets share the same
+            collection window for accurate compliance assessments (ADR-001).
+          enabled: true
+          rrule: "DTSTART:20260101T020000Z RRULE:FREQ=DAILY"
+          extra_data:
+            sidecar_type: "digital_sovereignty"
+            entity_id: "{{ aap_inventory_name | default('default_org') }}"
+            sidecar_file: "examples/sidecars/digital_sovereignty.yml"
+        status_code: [200, 201]
+      when:
+        - sidecar_jt_id != ''
+        - sidecar_schedule_existing.json.count == 0
+      failed_when: false
+
+    # ── Summary ────────────────────────────────────────────────────────────────
+    - name: Seed summary
+      debug:
+        msg:
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "  AAC Core Facts Store — Templates Created (ADR-001)"
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "  Template {{ init_schema_jt_id }}:  AAC - Init Facts Schema"
+          - "  Template {{ gather_facts_jt_id }}:  AAC - Gather Facts (All Systems)"
+          - "  Template {{ sidecar_jt_id }}:  AAC - Store Sidecar Dataset"
+          - ""
+          - "  NIGHTLY SCHEDULES (02:00 UTC — time-aligned, ADR-001):"
+          - "  • AAC Nightly Fact Collection    → gather_facts on all systems"
+          - "  • AAC Nightly Sidecar Collection → sidecar_datasets (digital_sovereignty)"
+          - ""
+          - "  Both schedules fire at the same 02:00 UTC window so that"
+          - "  host_facts and sidecar_datasets are always from the same"
+          - "  collection period. sidecar_datasets_latest and host_facts_latest"
+          - "  views always return matching snapshots for compliance joins."
+          - ""
+          - "  SETUP SEQUENCE:"
+          - "  1. Run 'AAC - Init Facts Schema'           (one time)"
+          - "  2. Run 'AAC - Gather Facts (All Systems)'  (test run)"
+          - "  3. Run 'AAC - Store Sidecar Dataset'       (test run, per sidecar type)"
+          - "  4. Both schedules run nightly at 02:00 UTC automatically"
+          - ""
+          - "  After first collection, all assessments read from"
+          - "  host_facts — no SSH to managed hosts required."
+          - "  Sentinel audit sweep uses host_facts for blast radius"
+          - "  analysis without any live endpoint queries."
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

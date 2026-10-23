@@ -1,0 +1,152 @@
+---
+# set_baseline.yml — Tag a fact snapshot as the approved baseline for a host
+#
+# A baseline is the "known good" state — the configuration that has been
+# reviewed, hardened, and approved by the security team. Once set:
+#   - compare_to_baseline.yml shows what has drifted from this state
+#   - generate_remediation_playbook.yml generates tasks to restore it
+#   - drift_report.yml flags hosts with no baseline set
+#
+# Only one baseline is allowed per host at a time.
+# Setting a new baseline clears the previous one (old snapshot is retained
+# in compliance_facts, just no longer marked is_baseline=true).
+#
+# AAP Job Template: "AAC - Set Baseline"
+# Credentials: Ansible Vault
+# EE: AAC Compliance EE
+# Survey:
+#   target_hostname  — hostname to baseline (required)
+#   baseline_label   — human-readable label e.g. "post-hardening-2026-03-17" (required)
+#   snapshot_date    — use "latest" or ISO date YYYY-MM-DD (default: latest)
+
+- name: Set compliance baseline for a host
+  hosts: localhost
+  connection: local
+  gather_facts: true   # needed for ansible_date_time
+
+  vars_files:
+    - [ "../vars/vault_secrets.yml", "../vars/empty_fallback.yml" ]
+    - ../vars/site_config.yml
+
+  vars:
+    pg_password:     "{{ compliance_db_password }}"
+    # snapshot_date: <set via extra_vars / survey / inventory>   # default 'latest'
+
+  tasks:
+
+    - name: Validate required inputs
+      fail:
+        msg: "target_hostname and baseline_label are required."
+      when: target_hostname is not defined or baseline_label is not defined or baseline_label == ''
+
+    - name: Find snapshot to baseline
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port | default(5433) }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: |
+          SELECT id, hostname, platform, collection_timestamp, checksum, is_baseline
+          FROM compliance_facts
+          WHERE hostname = %s
+          {% if (snapshot_date | default('latest', true)) != 'latest' %}
+            AND collection_timestamp::date = %s::date
+          {% endif %}
+          ORDER BY collection_timestamp DESC
+          LIMIT 1
+        positional_args: >-
+          {%- set args = [target_hostname] -%}
+          {%- if (snapshot_date | default('latest', true)) != 'latest' -%}{{ args.append((snapshot_date | default('latest', true))) or '' }}{%- endif -%}
+          {{ args }}
+      register: snapshot_result
+
+    - name: Fail if no snapshot found
+      fail:
+        msg: >
+          No fact snapshot found for hostname='{{ target_hostname }}'
+          {% if (snapshot_date | default('latest', true)) != 'latest' %}on date {{ (snapshot_date | default('latest', true)) }}{% endif %}.
+          Run 'AAC - Collect Facts' first.
+      when: snapshot_result.query_result | length == 0
+
+    - name: Show snapshot to be baselined
+      debug:
+        msg:
+          - "Host:      {{ snapshot_result.query_result[0].hostname }}"
+          - "Snapshot:  {{ snapshot_result.query_result[0].collection_timestamp }}"
+          - "Platform:  {{ snapshot_result.query_result[0].platform }}"
+          - "Label:     {{ baseline_label }}"
+          - "Currently baseline: {{ snapshot_result.query_result[0].is_baseline | default(false) }}"
+
+    - name: Clear previous baseline for this host
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port | default(5433) }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: |
+          UPDATE compliance_facts
+          SET is_baseline    = false,
+              baseline_label = NULL
+          WHERE hostname    = %s
+            AND is_baseline = true
+          RETURNING id, baseline_label
+        positional_args:
+          - "{{ target_hostname }}"
+      register: cleared
+
+    - name: Report cleared baselines
+      debug:
+        msg: "Cleared previous baseline: snapshot ID {{ item.id }} (was '{{ item.baseline_label }}')"
+      loop: "{{ cleared.query_result if (cleared.query_result is iterable and cleared.query_result is not mapping) else [] }}"
+      when: cleared.query_result is iterable and cleared.query_result is not mapping and cleared.query_result | length > 0
+
+    - name: Set new baseline
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port | default(5433) }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: |
+          UPDATE compliance_facts
+          SET is_baseline    = true,
+              baseline_label = %s
+          WHERE id = %s
+          RETURNING id, hostname, collection_timestamp, baseline_label
+        positional_args:
+          - "{{ baseline_label }}"
+          - "{{ snapshot_result.query_result[0].id }}"
+      register: set_result
+
+    - name: Log to remediation_actions
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port | default(5433) }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: |
+          INSERT INTO remediation_actions
+            (hostname, action_type, facts_after_id, performed_by, notes)
+          VALUES (%s, 'reset_to_baseline', %s, 'aap_admin',
+                  'Baseline set: ' || %s || ' (snapshot ID ' || %s || ')')
+        positional_args:
+          - "{{ target_hostname }}"
+          - "{{ snapshot_result.query_result[0].id }}"
+          - "{{ baseline_label }}"
+          - "{{ snapshot_result.query_result[0].id | string }}"
+
+    - name: Baseline set confirmation
+      debug:
+        msg:
+          - "✅ Baseline set for {{ target_hostname }}"
+          - "   Snapshot ID:  {{ set_result.query_result[0].id }}"
+          - "   Collected:    {{ set_result.query_result[0].collection_timestamp }}"
+          - "   Label:        {{ set_result.query_result[0].baseline_label }}"
+          - ""
+          - "   Next steps:"
+          - "   - Run 'AAC - Compare to Baseline' to verify current state matches"
+          - "   - Schedule 'AAC - Collect and Assess' to monitor drift from this baseline"
+          - "   - If drift is detected, run 'AAC - Generate Remediation Playbook'"

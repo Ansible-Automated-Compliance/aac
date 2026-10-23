@@ -1,0 +1,5 @@
+{
+  "_comment": "The files the demo sim container (debian:bookworm-slim, see deploy_pfsense_aws.yml) returns for sshd_config and motd: Debian defaults, Banner commented out. Abridged from the image after the Containerfile sed edits (checked 2026-10-21).",
+  "sshd_config": "Include /etc/ssh/sshd_config.d/*.conf\n#Port 22\nPermitRootLogin yes\nPasswordAuthentication yes\nKbdInteractiveAuthentication no\nUsePAM yes\nX11Forwarding yes\nPrintMotd no\n# no default banner path\n#Banner none\nAcceptEnv LANG LC_*\nSubsystem\tsftp\t/usr/lib/openssh/sftp-server\n",
+  "motd": "\nThe programs included with the Debian GNU/Linux system are free software;\nthe exact distribution terms for each program are described in the\nindividual files in /usr/share/doc/*/copyright.\n\nDebian GNU/Linux comes with ABSOLUTELY NO WARRANTY, to the extent\npermitted by applicable law.\n"
+}

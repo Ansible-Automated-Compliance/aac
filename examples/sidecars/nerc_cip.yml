@@ -1,0 +1,145 @@
+---
+# NERC-CIP Sidecar Dataset (ADR-001)
+#
+# BES Cyber System classification and topology data that cannot be
+# discovered from endpoint facts alone. Requires human judgment to
+# assign CIP impact levels and ESP boundaries.
+#
+# Maintained by: OT Security / Reliability Coordinator
+# Review frequency: Annually, or on any topology change
+# Stored via: AAC - Store Sidecar Dataset (sidecar_type: nerc_cip)
+
+schema_version: "1.0"
+source: manual
+review_date: "2026-03-19"
+reviewed_by: "OT Security Team"
+
+# ── BES Cyber Systems ─────────────────────────────────────────────────────────
+bes_cyber_systems:
+  - system_id: EMS-001
+    name: Energy Management System
+    description: Primary EMS controlling transmission grid operations
+    impact_level: high          # high | medium | low
+    esp_id: ESP-EAST-01
+    functional_obligations:
+      - real_time_operations
+      - reliability_coordination
+    cip_applicable:
+      - CIP-002
+      - CIP-003
+      - CIP-004
+      - CIP-005
+      - CIP-006
+      - CIP-007
+      - CIP-008
+      - CIP-009
+      - CIP-010
+      - CIP-011
+      - CIP-013
+      - CIP-015
+
+  - system_id: SCADA-001
+    name: Substation SCADA
+    description: SCADA system for substation monitoring and control
+    impact_level: medium
+    esp_id: ESP-EAST-01
+    functional_obligations:
+      - substation_automation
+    cip_applicable:
+      - CIP-002
+      - CIP-003
+      - CIP-005
+      - CIP-007
+      - CIP-010
+
+  - system_id: RTU-SUB-001
+    name: Substation RTU
+    description: Remote terminal unit at main substation
+    impact_level: low
+    esp_id: ESP-FIELD-01
+    functional_obligations:
+      - telemetry
+    cip_applicable:
+      - CIP-002
+
+# ── Control Centers ───────────────────────────────────────────────────────────
+control_centers:
+  - center_id: CC-PRIMARY
+    name: Primary Control Center
+    location: DE-NORTH
+    reliability_standard: CIP-006
+    physical_security_perimeter_id: PSP-001
+    twenty_four_seven_staffed: true
+
+  - center_id: CC-BACKUP
+    name: Backup Control Center
+    location: DE-SOUTH
+    reliability_standard: CIP-006
+    physical_security_perimeter_id: PSP-002
+    twenty_four_seven_staffed: false
+
+# ── Electronic Security Perimeters ────────────────────────────────────────────
+esp_boundaries:
+  - esp_id: ESP-EAST-01
+    name: East Operations ESP
+    electronic_access_points:
+      - EAP-001
+      - EAP-002
+    physical_security_perimeter_id: PSP-001
+    bes_cyber_systems:
+      - EMS-001
+      - SCADA-001
+    ingress_filtering: true
+    egress_filtering: true
+    monitoring_enabled: true
+
+  - esp_id: ESP-FIELD-01
+    name: Field Equipment ESP
+    electronic_access_points:
+      - EAP-003
+    physical_security_perimeter_id: PSP-003
+    bes_cyber_systems:
+      - RTU-SUB-001
+    ingress_filtering: true
+    egress_filtering: false
+    monitoring_enabled: true
+
+# ── Electronic Access Points ──────────────────────────────────────────────────
+electronic_access_points:
+  - eap_id: EAP-001
+    esp_id: ESP-EAST-01
+    type: firewall
+    vendor: Cisco
+    two_factor_auth: true
+    monitoring: true
+
+  - eap_id: EAP-002
+    esp_id: ESP-EAST-01
+    type: vpn_gateway
+    vendor: Fortinet
+    two_factor_auth: true
+    monitoring: true
+
+  - eap_id: EAP-003
+    esp_id: ESP-FIELD-01
+    type: firewall
+    vendor: Cisco
+    two_factor_auth: false
+    monitoring: true
+
+# ── Supply Chain (CIP-013) ────────────────────────────────────────────────────
+supply_chain_plan:
+  documented: true
+  last_reviewed: "2026-01-15T00:00:00Z"
+  vendor_risk_assessed: true
+  software_integrity_verification: true
+  hardware_authenticity_verification: true
+
+# ── INSM (CIP-015) ────────────────────────────────────────────────────────────
+insm_configuration:
+  deployed: true
+  coverage_pct: 95
+  alert_on_anomaly: true
+  logs_retained_days: 90
+  baseline_established: true
+  baseline_date: "2026-01-01T00:00:00Z"

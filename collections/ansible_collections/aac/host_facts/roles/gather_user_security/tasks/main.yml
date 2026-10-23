@@ -1,0 +1,512 @@
+---
+# tasks file for gather_user_security
+
+# =============================================================================
+# USER ACCOUNT ENUMERATION
+# =============================================================================
+
+- name: Read /etc/passwd
+  slurp:
+    src: /etc/passwd
+  register: passwd_file
+
+- name: Read /etc/shadow
+  slurp:
+    src: /etc/shadow
+  register: shadow_file
+  failed_when: false
+
+- name: Read /etc/group
+  slurp:
+    src: /etc/group
+  register: group_file
+
+- name: Parse passwd file
+  set_fact:
+    passwd_users: |
+      {{ passwd_file.content | b64decode | split('\n') |
+         select('match', '^[^#].*') |
+         map('split', ':') |
+         selectattr('0', 'defined') |
+         map('extract_user_from_passwd') |
+         list }}
+  vars:
+    extract_user_from_passwd: |
+      {
+        "name": "{{ item.0 }}",
+        "password_field": "{{ item.1 }}",
+        "uid": {{ item.2 | int }},
+        "gid": {{ item.3 | int }},
+        "gecos": "{{ item.4 }}",
+        "home_directory": "{{ item.5 }}",
+        "shell": "{{ item.6 }}"
+      }
+
+- name: Parse shadow file
+  set_fact:
+    shadow_users: |
+      {% set users = [] %}
+      {% for line in (shadow_file.content | b64decode).split('\n') %}
+        {% if line and not line.startswith('#') %}
+          {% set fields = line.split(':') %}
+          {% if fields | length >= 9 %}
+            {% set user_data = {
+              'name': fields[0],
+              'password': fields[1],
+              'last_changed': fields[2],
+              'min_days': fields[3],
+              'max_days': fields[4],
+              'warn_days': fields[5],
+              'inactive_days': fields[6],
+              'expire_date': fields[7]
+            } %}
+            {% set _ = users.append(user_data) %}
+          {% endif %}
+        {% endif %}
+      {% endfor %}
+      {{ users }}
+  when:
+    - shadow_file is defined
+    - shadow_file.content is defined
+
+- name: Parse group file
+  set_fact:
+    all_groups: |
+      {% set groups = [] %}
+      {% for line in (group_file.content | b64decode).split('\n') %}
+        {% if line and not line.startswith('#') %}
+          {% set fields = line.split(':') %}
+          {% if fields | length >= 4 %}
+            {% set group_data = {
+              'name': fields[0],
+              'gid': fields[2] | int,
+              'members': fields[3].split(',') if fields[3] else []
+            } %}
+            {% set _ = groups.append(group_data) %}
+          {% endif %}
+        {% endif %}
+      {% endfor %}
+      {{ groups }}
+
+- name: Get current date for password expiration checks
+  shell: date +%s
+  register: current_timestamp
+  changed_when: false
+
+- name: Calculate current date in days since epoch
+  set_fact:
+    current_date_days: "{{ (current_timestamp.stdout | int / 86400) | int }}"
+
+# =============================================================================
+# USER CLASSIFICATION
+# =============================================================================
+
+- name: Identify interactive users
+  set_fact:
+    interactive_users: |
+      {{ passwd_users |
+         selectattr('uid', '>=', system_uid_min) |
+         rejectattr('shell', 'in', disabled_shells) |
+         list }}
+
+- name: Identify system accounts
+  set_fact:
+    system_accounts: |
+      {{ passwd_users |
+         selectattr('uid', '<', system_uid_min) |
+         selectattr('uid', '!=', 0) |
+         list }}
+
+# =============================================================================
+# PASSWORD AGING VALIDATION
+# =============================================================================
+
+- name: Check password aging for all users
+  shell: |
+    chage -l {{ item.name }} 2>/dev/null || echo "Error"
+  loop: "{{ passwd_users }}"
+  register: password_aging_raw
+  changed_when: false
+  failed_when: false
+
+- name: Parse password aging information
+  set_fact:
+    users_with_password_aging: |
+      {% set users = [] %}
+      {% for result in password_aging_raw.results %}
+        {% if 'Error' not in result.stdout %}
+          {% set aging = {} %}
+          {% for line in result.stdout.split('\n') %}
+            {% if ':' in line %}
+              {% set key_value = line.split(':', 1) %}
+              {% set key = key_value[0].strip() %}
+              {% set value = key_value[1].strip() %}
+              {% set _ = aging.update({key: value}) %}
+            {% endif %}
+          {% endfor %}
+          {% set user_data = {
+            'name': result.item.name,
+            'uid': result.item.uid,
+            'aging_info': aging
+          } %}
+          {% set _ = users.append(user_data) %}
+        {% endif %}
+      {% endfor %}
+      {{ users }}
+
+# =============================================================================
+# HOME DIRECTORY VALIDATION
+# =============================================================================
+
+- name: Check home directory existence and permissions
+  stat:
+    path: "{{ item.home_directory }}"
+  loop: "{{ interactive_users }}"
+  register: home_dir_stats
+  failed_when: false
+
+- name: Build home directory information
+  set_fact:
+    home_directory_info: |
+      {% set homes = [] %}
+      {% for result in home_dir_stats.results %}
+        {% if result.stat is defined and result.stat.exists %}
+          {% set home_data = {
+            'user': result.item.name,
+            'path': result.item.home_directory,
+            'exists': true,
+            'owner': result.stat.pw_name,
+            'group': result.stat.gr_name,
+            'mode': '%04o' | format(result.stat.mode),
+            'permissions_octal': '%o' | format(result.stat.mode)[-3:],
+            'owned_by_user': result.stat.pw_name == result.item.name
+          } %}
+        {% else %}
+          {% set home_data = {
+            'user': result.item.name,
+            'path': result.item.home_directory,
+            'exists': false
+          } %}
+        {% endif %}
+        {% set _ = homes.append(home_data) %}
+      {% endfor %}
+      {{ homes }}
+
+# =============================================================================
+# USER DOTFILE SECURITY CHECKS
+# =============================================================================
+
+- name: Check for insecure dotfiles in user home directories
+  shell: |
+    if [ -d "{{ item.0.home_directory }}" ]; then
+      if [ -f "{{ item.0.home_directory }}/{{ item.1 }}" ]; then
+        echo "exists"
+      else
+        echo "not_found"
+      fi
+    else
+      echo "no_home"
+    fi
+  loop: "{{ interactive_users | product(user_dotfiles_to_check) | list }}"
+  register: dotfile_checks
+  changed_when: false
+
+- name: Build dotfile security violations list
+  set_fact:
+    dotfile_violations: |
+      {% set violations = [] %}
+      {% for result in dotfile_checks.results %}
+        {% if result.stdout == 'exists' %}
+          {% set violation = {
+            'user': result.item[0].name,
+            'file': result.item[1],
+            'path': result.item[0].home_directory + '/' + result.item[1]
+          } %}
+          {% set _ = violations.append(violation) %}
+        {% endif %}
+      {% endfor %}
+      {{ violations }}
+
+# =============================================================================
+# SHELL TIMEOUT AND UMASK
+# =============================================================================
+
+- name: Check for TMOUT in shell configuration files
+  shell: |
+    TIMEOUT=""
+    for file in /etc/profile /etc/bashrc /etc/profile.d/*.sh; do
+      if [ -f "$file" ]; then
+        TMOUT_VAL=$(grep -h "^[[:space:]]*TMOUT=" "$file" 2>/dev/null | tail -1 | cut -d= -f2 | tr -d ' ')
+        if [ -n "$TMOUT_VAL" ]; then
+          TIMEOUT="$TMOUT_VAL"
+        fi
+      fi
+    done
+    echo "${TIMEOUT:-0}"
+  register: shell_timeout_check
+  changed_when: false
+
+- name: Check for default umask
+  shell: |
+    UMASK=""
+    for file in /etc/profile /etc/bashrc /etc/login.defs; do
+      if [ -f "$file" ]; then
+        UMASK_VAL=$(grep -h "^[[:space:]]*umask\|^[[:space:]]*UMASK" "$file" 2>/dev/null | grep -v '^#' | tail -1 | awk '{print $NF}')
+        if [ -n "$UMASK_VAL" ]; then
+          UMASK="$UMASK_VAL"
+        fi
+      fi
+    done
+    echo "${UMASK:-022}"
+  register: umask_check
+  changed_when: false
+
+# =============================================================================
+# ROOT PATH INTEGRITY
+# =============================================================================
+
+- name: Get root user PATH
+  shell: |
+    su - root -c 'echo $PATH' 2>/dev/null || echo "$PATH"
+  register: root_path
+  changed_when: false
+
+- name: Parse root PATH directories
+  set_fact:
+    root_path_directories: "{{ root_path.stdout.split(':') }}"
+
+- name: Check root PATH directories for security issues
+  shell: |
+    if [ -d "{{ item }}" ]; then
+      OWNER=$(stat -c '%U' "{{ item }}" 2>/dev/null || echo "unknown")
+      PERMS=$(stat -c '%a' "{{ item }}" 2>/dev/null || echo "unknown")
+      WORLD_WRITABLE=$(echo "$PERMS" | grep -E '[0-9][0-9][2367]$' && echo "true" || echo "false")
+      echo "$OWNER|$PERMS|$WORLD_WRITABLE"
+    else
+      echo "notfound|000|false"
+    fi
+  loop: "{{ root_path_directories }}"
+  register: root_path_dir_checks
+  changed_when: false
+
+- name: Build root PATH security analysis
+  set_fact:
+    root_path_analysis: |
+      {% set dirs = [] %}
+      {% for result in root_path_dir_checks.results %}
+        {% if result.stdout != '' %}
+          {% set parts = result.stdout.split('|') %}
+          {% set dir_data = {
+            'path': result.item,
+            'owner': parts[0],
+            'permissions': parts[1],
+            'world_writable': parts[2] == 'true',
+            'exists': parts[0] != 'notfound'
+          } %}
+          {% set _ = dirs.append(dir_data) %}
+        {% endif %}
+      {% endfor %}
+      {{ dirs }}
+
+- name: Check for empty or current directory in PATH
+  set_fact:
+    root_path_has_dot: "{{ '.' in root_path_directories }}"
+    root_path_has_empty: "{{ '' in root_path_directories }}"
+
+# =============================================================================
+# DUPLICATE UID/GID CHECKS
+# =============================================================================
+
+- name: Find duplicate UIDs
+  set_fact:
+    duplicate_uids: |
+      {% set uid_counts = {} %}
+      {% for user in passwd_users %}
+        {% if user.uid in uid_counts %}
+          {% set _ = uid_counts.update({user.uid: uid_counts[user.uid] + [user.name]}) %}
+        {% else %}
+          {% set _ = uid_counts.update({user.uid: [user.name]}) %}
+        {% endif %}
+      {% endfor %}
+      {% set duplicates = [] %}
+      {% for uid, users in uid_counts.items() %}
+        {% if users | length > 1 %}
+          {% set _ = duplicates.append({'uid': uid, 'users': users}) %}
+        {% endif %}
+      {% endfor %}
+      {{ duplicates }}
+
+- name: Find duplicate GIDs
+  set_fact:
+    duplicate_gids: |
+      {% set gid_counts = {} %}
+      {% for group in all_groups %}
+        {% if group.gid in gid_counts %}
+          {% set _ = gid_counts.update({group.gid: gid_counts[group.gid] + [group.name]}) %}
+        {% else %}
+          {% set _ = gid_counts.update({group.gid: [group.name]}) %}
+        {% endif %}
+      {% endfor %}
+      {% set duplicates = [] %}
+      {% for gid, groups in gid_counts.items() %}
+        {% if groups | length > 1 %}
+          {% set _ = duplicates.append({'gid': gid, 'groups': groups}) %}
+        {% endif %}
+      {% endfor %}
+      {{ duplicates }}
+
+- name: Find duplicate usernames
+  set_fact:
+    duplicate_usernames: |
+      {% set name_counts = {} %}
+      {% for user in passwd_users %}
+        {% if user.name in name_counts %}
+          {% set _ = name_counts.update({user.name: name_counts[user.name] + [user.uid]}) %}
+        {% else %}
+          {% set _ = name_counts.update({user.name: [user.uid]}) %}
+        {% endif %}
+      {% endfor %}
+      {% set duplicates = [] %}
+      {% for name, uids in name_counts.items() %}
+        {% if uids | length > 1 %}
+          {% set _ = duplicates.append({'username': name, 'uids': uids}) %}
+        {% endif %}
+      {% endfor %}
+      {{ duplicates }}
+
+# =============================================================================
+# SYSTEM ACCOUNT SECURITY
+# =============================================================================
+
+- name: Check system accounts for security issues
+  set_fact:
+    system_account_violations: |
+      {% set violations = [] %}
+      {% for user in system_accounts %}
+        {% set has_violation = false %}
+        {% set violation_reasons = [] %}
+
+        {# Check if shell is not disabled #}
+        {% if user.shell not in disabled_shells %}
+          {% set has_violation = true %}
+          {% set _ = violation_reasons.append('shell_not_disabled') %}
+        {% endif %}
+
+        {# Check if has a password set (shadow file) #}
+        {% set shadow_entry = shadow_users | selectattr('name', 'equalto', user.name) | first | default(none) %}
+        {% if shadow_entry and shadow_entry.password not in disabled_password_indicators %}
+          {% set has_violation = true %}
+          {% set _ = violation_reasons.append('password_set') %}
+        {% endif %}
+
+        {% if has_violation %}
+          {% set violation = {
+            'user': user.name,
+            'uid': user.uid,
+            'shell': user.shell,
+            'violations': violation_reasons
+          } %}
+          {% set _ = violations.append(violation) %}
+        {% endif %}
+      {% endfor %}
+      {{ violations }}
+
+# =============================================================================
+# ROOT ACCOUNT VALIDATION
+# =============================================================================
+
+- name: Find all UID 0 accounts
+  set_fact:
+    uid_zero_accounts: |
+      {{ passwd_users | selectattr('uid', 'equalto', 0) | list }}
+
+- name: Check root account GID
+  set_fact:
+    root_user_info: "{{ passwd_users | selectattr('name', 'equalto', 'root') | first | default({}) }}"
+    root_gid_correct: "{{ (passwd_users | selectattr('name', 'equalto', 'root') | first | default({'gid': -1})).gid == 0 }}"
+
+# =============================================================================
+# COMPREHENSIVE FACTS ASSEMBLY
+# =============================================================================
+
+- name: Set comprehensive user security facts
+  set_fact:
+    host_user_security_facts:
+      users:
+        all_users: "{{ passwd_users }}"
+        interactive_users: "{{ interactive_users }}"
+        system_accounts: "{{ system_accounts }}"
+        total_users: "{{ passwd_users | length }}"
+        interactive_count: "{{ interactive_users | length }}"
+        system_count: "{{ system_accounts | length }}"
+      groups:
+        all_groups: "{{ all_groups }}"
+        total_groups: "{{ all_groups | length }}"
+      password_aging:
+        users_with_aging: "{{ users_with_password_aging }}"
+      home_directories:
+        info: "{{ home_directory_info }}"
+        missing: "{{ home_directory_info | rejectattr('exists') | list }}"
+        wrong_owner: "{{ home_directory_info | selectattr('exists') | rejectattr('owned_by_user') | list }}"
+        insecure_permissions: "{{ home_directory_info | selectattr('exists') | selectattr('permissions_octal', '>', expected_home_dir_mode) | list }}"
+      dotfiles:
+        violations: "{{ dotfile_violations }}"
+        has_violations: "{{ dotfile_violations | length > 0 }}"
+      shell_security:
+        timeout: "{{ shell_timeout_check.stdout | int }}"
+        timeout_configured: "{{ shell_timeout_check.stdout | int > 0 }}"
+        timeout_acceptable: "{{ shell_timeout_check.stdout | int <= max_acceptable_timeout and shell_timeout_check.stdout | int > 0 }}"
+      umask:
+        value: "{{ umask_check.stdout }}"
+        acceptable: "{{ umask_check.stdout | int >= (max_acceptable_umask | int) }}"
+      root_account:
+        uid_zero_accounts: "{{ uid_zero_accounts }}"
+        multiple_uid_zero: "{{ uid_zero_accounts | length > 1 }}"
+        root_gid: "{{ root_user_info.gid | default(-1) }}"
+        root_gid_correct: "{{ root_gid_correct }}"
+        path: "{{ root_path.stdout }}"
+        path_directories: "{{ root_path_directories }}"
+        path_analysis: "{{ root_path_analysis }}"
+        path_has_dot: "{{ root_path_has_dot }}"
+        path_has_empty: "{{ root_path_has_empty }}"
+        path_world_writable: "{{ root_path_analysis | selectattr('world_writable') | list }}"
+      duplicates:
+        uids: "{{ duplicate_uids }}"
+        gids: "{{ duplicate_gids }}"
+        usernames: "{{ duplicate_usernames }}"
+        has_duplicate_uids: "{{ duplicate_uids | length > 0 }}"
+        has_duplicate_gids: "{{ duplicate_gids | length > 0 }}"
+        has_duplicate_usernames: "{{ duplicate_usernames | length > 0 }}"
+      system_account_security:
+        violations: "{{ system_account_violations }}"
+        has_violations: "{{ system_account_violations | length > 0 }}"
+      shadow_integrity:
+        shadow_readable: "{{ shadow_file.content is defined }}"
+        users_in_passwd: "{{ passwd_users | length }}"
+        users_in_shadow: "{{ shadow_users | length if shadow_users is defined else 0 }}"
+        shadow_passwd_sync: "{{ passwd_users | length == (shadow_users | length if shadow_users is defined else 0) }}"
+      collection_timestamp: "{{ ansible_date_time.iso8601 }}"
+
+- name: Display user security facts summary
+  debug:
+    msg:
+      - "=========================================="
+      - "User Security Facts Collection Complete"
+      - "=========================================="
+      - "Total users: {{ host_user_security_facts.users.total_users }}"
+      - "Interactive users: {{ host_user_security_facts.users.interactive_count }}"
+      - "System accounts: {{ host_user_security_facts.users.system_count }}"
+      - ""
+      - "Security Issues Found:"
+      - "  Duplicate UIDs: {{ host_user_security_facts.duplicates.has_duplicate_uids }}"
+      - "  Duplicate GIDs: {{ host_user_security_facts.duplicates.has_duplicate_gids }}"
+      - "  Multiple UID 0 accounts: {{ host_user_security_facts.root_account.multiple_uid_zero }}"
+      - "  Insecure dotfiles: {{ host_user_security_facts.dotfiles.has_violations }}"
+      - "  System account violations: {{ host_user_security_facts.system_account_security.has_violations }}"
+      - "  Missing home directories: {{ host_user_security_facts.home_directories.missing | length }}"
+      - ""
+      - "Configuration:"
+      - "  Shell timeout: {{ host_user_security_facts.shell_security.timeout }} seconds"
+      - "  Default umask: {{ host_user_security_facts.umask.value }}"
+      - "  Root PATH has '.': {{ host_user_security_facts.root_account.path_has_dot }}"
+      - "=========================================="

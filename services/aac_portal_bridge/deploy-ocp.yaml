@@ -1,0 +1,70 @@
+# deploy-ocp.yaml — AAC Portal Bridge on OpenShift (aac namespace)
+#
+# Prereqs:
+#   1. Build + push the image (on the amd64 build host):
+#        podman build -t quay.io/rh-ee-tcoulter/aac-portal-bridge:v1.0.0 .
+#        podman push quay.io/rh-ee-tcoulter/aac-portal-bridge:v1.0.0
+#   2. Create the secret with the DB password + the bridge token(s):
+#        oc -n aac create secret generic aac-portal-bridge \
+#          --from-literal=PG_PASSWORD=REPLACE_WITH_COMPLIANCE_DB_PASSWORD \
+#          --from-literal=AAC_BRIDGE_TOKENS=REPLACE_TOKEN_ID:REPLACE_TOKEN_SECRET
+#   3. oc apply -f deploy-ocp.yaml
+#   The external URL (the tenant's aac_bridge_url in the portal) is the Route host.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aac-portal-bridge
+  namespace: aac
+  labels: {app: aac-portal-bridge, app.kubernetes.io/part-of: aac}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: aac-portal-bridge}
+  template:
+    metadata:
+      labels: {app: aac-portal-bridge}
+    spec:
+      containers:
+        - name: bridge
+          image: quay.io/rh-ee-tcoulter/aac-portal-bridge:v1.0.0
+          ports:
+            - containerPort: 8005
+          env:
+            - {name: PG_HOST, value: compliance-db.aac.svc.cluster.local}
+            - {name: PG_PORT, value: "5432"}
+            - {name: PG_DB,   value: compliance}
+            - {name: PG_USER, value: compliance_reader}
+            - name: PG_PASSWORD
+              valueFrom: {secretKeyRef: {name: aac-portal-bridge, key: PG_PASSWORD}}
+            - name: AAC_BRIDGE_TOKENS
+              valueFrom: {secretKeyRef: {name: aac-portal-bridge, key: AAC_BRIDGE_TOKENS}}
+          readinessProbe:
+            httpGet: {path: /api/aac/v1/healthz, port: 8005}
+            initialDelaySeconds: 5
+            periodSeconds: 15
+          resources:
+            requests: {cpu: 50m, memory: 128Mi}
+            limits:   {cpu: 500m, memory: 512Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: aac-portal-bridge
+  namespace: aac
+  labels: {app: aac-portal-bridge}
+spec:
+  selector: {app: aac-portal-bridge}
+  ports:
+    - {name: http, port: 8005, targetPort: 8005}
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: aac-portal-bridge
+  namespace: aac
+  labels: {app: aac-portal-bridge}
+spec:
+  to: {kind: Service, name: aac-portal-bridge}
+  port: {targetPort: http}
+  tls: {termination: edge, insecureEdgeTerminationPolicy: Redirect}

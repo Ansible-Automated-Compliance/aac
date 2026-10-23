@@ -1,0 +1,60 @@
+---
+# Example decisions file — copy to ansible/vars/decisions/<framework>.yml.
+#
+# Decisions are the customer's half of the findings workbook: who owns a
+# finding, whether it is remediated or kept, why, who approved it and until
+# when. The workbook joins this file to the live findings on every run, so a
+# decision made once is carried forward automatically. Evidence is never
+# edited; this file is the only place a decision is written.
+#
+# Field reference: ansible/vars/decisions/README.md
+framework: cis_m365_v7
+
+# How long an accepted deviation stands before it must be renewed. An accept
+# without an explicit `expires` gets approved + this many days, and is flagged.
+review_cycle_days: 90
+
+# Default owner by section / control prefix (longest match wins). Most
+# findings then arrive with an owner already filled in; only exceptions need
+# a per-finding entry below.
+default_owners:
+  "1": "M365 platform team"
+  "2": "Security operations"
+  "3": "Records and data protection"
+  "5": "Identity team"
+  "6": "Messaging team"
+  "7": "Collaboration team"
+  "8": "Messaging team"
+  "9": "Data platform team"
+  _default: "Security operations"
+
+decisions:
+  # Keep a deviation, with a business justification, time-boxed.
+  - control_id: "6.5.1"
+    subject: "*"
+    owner: "Messaging team lead"
+    decision: accept
+    justification: "Legacy multifunction printers need basic authentication until the Q1 replacement (project PRJ-118); mitigated by Conditional Access blocking legacy auth from outside the corporate network."
+    approver: "jane.doe@example.com"
+    approved: "2026-10-13"
+    expires: "2027-01-31"
+    ticket: "CHG-4411"
+
+  # Remediate, with the customer's own criticality standing next to ours.
+  - control_id: "1.1.3"
+    subject: "contoso.onmicrosoft.com"
+    owner: "M365 platform team"
+    decision: remediate
+    justification: "Second break-glass global admin to be created in the 2026-10-20 change window."
+    approver: "john.smith@example.com"
+    approved: "2026-10-13"
+    risk_override: Critical
+    ticket: "CHG-4412"
+
+  # Under review — an owner is assigned, no decision yet.
+  - control_id: "5.1.2.2"
+    subject: "*"
+    owner: "Identity team"
+    decision: review
+    approver: "ann.lee@example.com"
+    approved: "2026-10-13"

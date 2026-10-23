@@ -1,0 +1,35 @@
+# CODEOWNERS — routes review to whoever owns each area.
+#
+# TWO maintainers own the repository and review each other's changes:
+#   Tim Coulter   @ynotbhatc
+#   Juan Medina   @R0tt3nT0m4t0
+# Because an author cannot approve their own PR, listing both on every rule
+# means each change requires the OTHER maintainer's review — the two-approver
+# model described in docs/CHANGE_GOVERNANCE.md §6. Add more team handles per
+# area as the team grows.
+# Order matters: the LAST matching pattern wins, so every rule lists both owners.
+
+# Default: everything
+*                           @ynotbhatc @R0tt3nT0m4t0
+
+# Product core — the handover surface an engineering team owns first
+/ansible/roles/             @ynotbhatc @R0tt3nT0m4t0
+/ansible/tasks/             @ynotbhatc @R0tt3nT0m4t0
+/ansible/playbooks/         @ynotbhatc @R0tt3nT0m4t0
+/extensions/eda/            @ynotbhatc @R0tt3nT0m4t0
+/install/                   @ynotbhatc @R0tt3nT0m4t0
+/scripts/                   @ynotbhatc @R0tt3nT0m4t0
+
+# Release + governance machinery — highest-scrutiny paths
+/.github/                   @ynotbhatc @R0tt3nT0m4t0
+/VERSION                    @ynotbhatc @R0tt3nT0m4t0
+/RELEASING.md               @ynotbhatc @R0tt3nT0m4t0
+/CHANGELOG.md               @ynotbhatc @R0tt3nT0m4t0
+/docs/CHANGE_GOVERNANCE.md  @ynotbhatc @R0tt3nT0m4t0
+
+# Policy library pointer (content gate lives in the submodule itself)
+/policies                   @ynotbhatc @R0tt3nT0m4t0
+
+# Demo content — migrates to the aac-demos repo at Phase 6; a separate
+# demo-owning team can take these rows before then
+/demos/                     @ynotbhatc @R0tt3nT0m4t0

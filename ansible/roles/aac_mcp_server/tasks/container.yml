@@ -1,0 +1,38 @@
+---
+# Stop any existing MCP container and start a fresh one.
+# The AAP token is passed via the mcp.env EnvironmentFile, not as a plain -e arg,
+# so it never appears in `podman inspect` output or job logs.
+
+- name: Stop and remove existing MCP container
+  shell: |
+    podman stop {{ aac_mcp_container_name }} 2>/dev/null || true
+    podman rm   {{ aac_mcp_container_name }} 2>/dev/null || true
+  delegate_to: "{{ aac_host }}"
+  changed_when: false
+
+- name: Start MCP server container
+  # Token is read from mcp.env at runtime — not embedded in the command.
+  shell: |
+    source {{ aac_mcp_app_dir }}/mcp.env
+    source {{ aac_mcp_app_dir }}/mcp-decision-log.env 2>/dev/null || true
+    podman run -d \
+      --name {{ aac_mcp_container_name }} \
+      --network {{ aac_mcp_network }} \
+      --restart=always \
+      -v {{ aac_mcp_app_dir }}:/app:{{ aac_mcp_volume_opts }} \
+      -e AAP_GATEWAY_URL={{ aac_mcp_gateway_url }} \
+      -e AAP_SERVICE_URL={{ aac_mcp_controller_url }} \
+      -e CONTROLLER_OPENAPI_SPEC_URL={{ aac_mcp_openapi_spec_url }} \
+      -e OPA_URL={{ aac_mcp_opa_url }} \
+      -e OPA_GOVERNANCE_ENABLED={{ aac_mcp_opa_governance_enabled | lower }} \
+      -e MCP_AGENT_ID={{ (aac_mcp_agent_id | default('', true)) | quote }} \
+      ${DECISION_LOG_DSN:+-e DECISION_LOG_DSN=${DECISION_LOG_DSN}} \
+      -e DECISION_LOG_REQUIRED={{ aac_mcp_decision_log_required | lower }} \
+      -e AAP_TOKEN=${AAP_TOKEN} \
+      -e PYTHONPATH=/app \
+      -e HOST=0.0.0.0 \
+      -e PORT={{ aac_mcp_port }} \
+      {{ aac_mcp_image }} \
+      python {{ aac_mcp_entrypoint }}
+  delegate_to: "{{ aac_host }}"
+  no_log: true

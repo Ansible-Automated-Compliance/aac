@@ -1,0 +1,45 @@
+---
+# aac_facts_collector role defaults
+
+aac_facts_schema_version: "1.0"
+
+# Fact domains to collect (set to false to skip a domain)
+aac_collect_packages:     true
+aac_collect_services:     true
+aac_collect_users:        true
+aac_collect_network:      true
+aac_collect_ssh:          true
+aac_collect_audit:        true
+aac_collect_filesystem:   true
+aac_collect_kernel:       true
+aac_collect_selinux:      true
+aac_collect_pam:          true
+aac_collect_cron:         true
+aac_collect_processes:    true
+aac_collect_certificates: true
+aac_collect_aws_meta:     true   # auto-skipped if not on AWS
+aac_collect_app_deps:     true   # Java / Python / Node application dependencies
+
+# ── Application dependency collection bounds ─────────────────────────────────
+# Every probe is capped so collection cost stays predictable across a fleet.
+# Hitting a cap is reported per host (see linux_app_deps.yml) because a silently
+# truncated inventory would understate exposure.
+aac_app_deps_python_interpreters:
+  - python3
+  - /usr/bin/python3
+  - /usr/local/bin/python3
+aac_app_deps_java_roots:
+  - /opt
+  - /srv
+  - /usr/share
+  - /var/lib
+aac_app_deps_node_roots:
+  - /opt
+  - /srv
+  - /var/www
+aac_app_deps_find_depth:   6
+aac_app_deps_max_jars:     2000
+aac_app_deps_max_python:   3000
+aac_app_deps_max_java:     3000
+aac_app_deps_max_node:     3000
+aac_app_deps_max_node_dirs: 50

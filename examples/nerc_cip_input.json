@@ -1,0 +1,517 @@
+{
+  "organization": {
+    "name": "Electric Utility Company",
+    "entity_type": "transmission_operator",
+    "nerc_registration": "TOP-001",
+    "assessment_date": "2025-01-06T10:00:00Z"
+  },
+  "bes_cyber_systems": [
+    {
+      "system_id": "BCS-001",
+      "system_name": "Energy Management System",
+      "impact_categorization": "high",
+      "functional_obligations": ["real_time_operations", "transmission_planning"],
+      "cyber_assets": [
+        {
+          "asset_id": "CA-001",
+          "asset_name": "EMS Server Primary",
+          "asset_type": "server",
+          "operating_system": "Windows Server 2019",
+          "network_accessible": true
+        },
+        {
+          "asset_id": "CA-002", 
+          "asset_name": "EMS Database",
+          "asset_type": "database",
+          "operating_system": "Linux RHEL 8",
+          "network_accessible": true
+        }
+      ]
+    },
+    {
+      "system_id": "BCS-002",
+      "system_name": "Substation Control System",
+      "impact_categorization": "medium",
+      "functional_obligations": ["protection_systems", "monitoring"],
+      "cyber_assets": [
+        {
+          "asset_id": "CA-003",
+          "asset_name": "SCADA HMI",
+          "asset_type": "workstation",
+          "operating_system": "Windows 10",
+          "network_accessible": true
+        }
+      ]
+    }
+  ],
+  "categorization_documentation": {
+    "criteria_defined": true,
+    "methodology_documented": true,
+    "rationale_provided": true,
+    "last_review_date": "2024-02-15T09:00:00Z"
+  },
+  "cybersecurity_organization": {
+    "senior_manager": {
+      "designated": true,
+      "name": "John Smith",
+      "title": "Chief Information Security Officer",
+      "authority_documented": true,
+      "responsibilities_defined": true
+    },
+    "policies": {
+      "documented": true,
+      "approved": true,
+      "last_review_date": "2023-01-15T09:00:00Z"
+    },
+    "information_sharing_plan": {
+      "documented": true,
+      "contacts_current": true
+    },
+    "delegated_authority": {
+      "documented": true,
+      "current": true
+    }
+  },
+  "personnel": [
+    {
+      "person_id": "P-001",
+      "name": "Alice Johnson",
+      "access_level": "authorized_electronic_access",
+      "employment_status": "active",
+      "risk_assessment": {
+        "completed": true,
+        "completion_date": "2023-03-01T09:00:00Z"
+      },
+      "cybersecurity_training": {
+        "completed": true,
+        "completion_date": "2024-06-01T09:00:00Z"
+      }
+    },
+    {
+      "person_id": "P-002",
+      "name": "Bob Wilson",
+      "access_level": "authorized_unescorted_physical_access",
+      "employment_status": "terminated",
+      "termination_date": "2024-12-01T17:00:00Z",
+      "risk_assessment": {
+        "completed": true,
+        "completion_date": "2022-01-15T09:00:00Z"
+      },
+      "access_revocation": {
+        "completed": true,
+        "completion_date": "2024-12-02T08:00:00Z"
+      }
+    }
+  ],
+  "personnel_changes": [
+    {
+      "change_id": "PC-001",
+      "person_id": "P-002",
+      "change_type": "termination",
+      "change_date": "2024-12-01T17:00:00Z",
+      "requires_notification": true,
+      "notification": {
+        "completed": true,
+        "completion_date": "2024-12-03T09:00:00Z"
+      }
+    }
+  ],
+  "electronic_security_perimeters": {
+    "BCS-001": {
+      "documented": true,
+      "boundary_defined": true,
+      "electronic_access_points_identified": true,
+      "monitoring": {
+        "enabled": true,
+        "logging_enabled": true,
+        "alerting_configured": true
+      }
+    },
+    "BCS-002": {
+      "documented": true,
+      "boundary_defined": true,
+      "electronic_access_points_identified": true,
+      "monitoring": {
+        "enabled": true,
+        "logging_enabled": true,
+        "alerting_configured": true
+      }
+    }
+  },
+  "electronic_access_points": [
+    {
+      "eap_id": "EAP-001",
+      "system_id": "BCS-001",
+      "access_control": {
+        "enabled": true,
+        "authentication_required": true,
+        "authorization_verified": true
+      },
+      "monitoring": {
+        "enabled": true
+      },
+      "logging": {
+        "enabled": true
+      }
+    }
+  ],
+  "remote_access_sessions": [
+    {
+      "session_id": "RA-001",
+      "user_id": "P-001",
+      "system_id": "BCS-001",
+      "multi_factor_authentication": true,
+      "encryption_enabled": true,
+      "session_monitoring": true,
+      "termination_controls": true
+    }
+  ],
+  "physical_security_perimeters": {
+    "BCS-001": {
+      "boundary_defined": true,
+      "access_points_identified": true,
+      "controls_documented": true
+    },
+    "BCS-002": {
+      "boundary_defined": true,
+      "access_points_identified": true,
+      "controls_documented": true
+    }
+  },
+  "physical_access_controls": [
+    {
+      "control_id": "PAC-001",
+      "location": "Control Center Main",
+      "authentication_required": true,
+      "authorization_verified": true,
+      "monitoring_enabled": true,
+      "logging_enabled": true,
+      "visitor_escort_required": true
+    }
+  ],
+  "physical_locations": [
+    {
+      "location_id": "LOC-001",
+      "location_name": "Primary Control Center",
+      "monitoring": {
+        "enabled": true,
+        "recording_enabled": true,
+        "retention_adequate": true
+      }
+    }
+  ],
+  "visitor_control_program": {
+    "documented": true,
+    "escort_procedures": true,
+    "access_logging": true,
+    "identification_required": true
+  },
+  "patch_management": {
+    "BCS-001": {
+      "process_documented": true,
+      "vulnerability_assessment_performed": true,
+      "patch_installation_tracking": true,
+      "emergency_procedures_defined": true
+    },
+    "BCS-002": {
+      "process_documented": true,
+      "vulnerability_assessment_performed": true,
+      "patch_installation_tracking": true,
+      "emergency_procedures_defined": true
+    }
+  },
+  "network_port_management": {
+    "BCS-001": {
+      "ports_documented": true,
+      "unnecessary_ports_disabled": true,
+      "port_review_current": true
+    },
+    "BCS-002": {
+      "ports_documented": true,
+      "unnecessary_ports_disabled": true,
+      "port_review_current": true
+    }
+  },
+  "malicious_code_protection": {
+    "BCS-001": {
+      "antivirus_installed": true,
+      "signatures_current": true,
+      "scanning_enabled": true,
+      "alternate_controls_documented": true
+    },
+    "BCS-002": {
+      "antivirus_installed": true,
+      "signatures_current": true,
+      "scanning_enabled": true,
+      "alternate_controls_documented": true
+    }
+  },
+  "security_monitoring": {
+    "BCS-001": {
+      "logging_enabled": true,
+      "log_retention_adequate": true,
+      "event_correlation": true,
+      "alerting_configured": true
+    },
+    "BCS-002": {
+      "logging_enabled": true,
+      "log_retention_adequate": true,
+      "event_correlation": true,
+      "alerting_configured": true
+    }
+  },
+  "system_access_controls": {
+    "BCS-001": {
+      "user_authentication": true,
+      "account_management": true,
+      "password_policy_enforced": true,
+      "session_management": true
+    },
+    "BCS-002": {
+      "user_authentication": true,
+      "account_management": true,
+      "password_policy_enforced": true,
+      "session_management": true
+    }
+  },
+  "incident_response_plan": {
+    "documented": true,
+    "approved": true,
+    "last_review_date": "2024-03-01T09:00:00Z"
+  },
+  "incident_reporting": {
+    "procedures_documented": true,
+    "contact_information_current": true,
+    "reporting_criteria_defined": true,
+    "escalation_procedures_defined": true
+  },
+  "incident_response_testing": {
+    "last_test_date": "2024-05-15T09:00:00Z",
+    "test_documented": true,
+    "lessons_learned_captured": true
+  },
+  "incident_response_team": [
+    {
+      "member_id": "IRT-001",
+      "name": "Security Manager",
+      "role": "incident_commander",
+      "training": {
+        "completed": true,
+        "completion_date": "2024-04-01T09:00:00Z"
+      }
+    }
+  ],
+  "recovery_plans": {
+    "BCS-001": {
+      "documented": true,
+      "procedures_defined": true,
+      "contact_information_current": true,
+      "recovery_time_objectives_defined": true,
+      "last_review_date": "2024-02-01T09:00:00Z"
+    },
+    "BCS-002": {
+      "documented": true,
+      "procedures_defined": true,
+      "contact_information_current": true,
+      "recovery_time_objectives_defined": true,
+      "last_review_date": "2024-02-01T09:00:00Z"
+    }
+  },
+  "backup_procedures": {
+    "BCS-001": {
+      "procedures_documented": true,
+      "backup_schedule_defined": true,
+      "backup_testing_performed": true,
+      "offsite_storage_implemented": true
+    },
+    "BCS-002": {
+      "procedures_documented": true,
+      "backup_schedule_defined": true,
+      "backup_testing_performed": true,
+      "offsite_storage_implemented": true
+    }
+  },
+  "recovery_testing": {
+    "BCS-001": {
+      "last_test_date": "2024-03-15T09:00:00Z",
+      "test_documented": true,
+      "issues_resolved": true
+    },
+    "BCS-002": {
+      "last_test_date": "2024-03-15T09:00:00Z",
+      "test_documented": true,
+      "issues_resolved": true
+    }
+  },
+  "baseline_configurations": {
+    "BCS-001": {
+      "documented": true,
+      "current": true,
+      "authorized": true,
+      "change_controlled": true
+    },
+    "BCS-002": {
+      "documented": true,
+      "current": true,
+      "authorized": true,
+      "change_controlled": true
+    }
+  },
+  "configuration_changes": [
+    {
+      "change_id": "CC-001",
+      "system_id": "BCS-001",
+      "approval_required": true,
+      "approval_documented": true,
+      "testing_performed": true,
+      "implementation_documented": true,
+      "rollback_plan_defined": true
+    }
+  ],
+  "vulnerability_assessments": {
+    "BCS-001": {
+      "completion_date": "2024-06-01T09:00:00Z",
+      "documented": true,
+      "remediation_plan_exists": true
+    },
+    "BCS-002": {
+      "completion_date": "2024-06-01T09:00:00Z",
+      "documented": true,
+      "remediation_plan_exists": true
+    }
+  },
+  "configuration_monitoring": {
+    "BCS-001": {
+      "enabled": true,
+      "change_detection": true,
+      "alerting_configured": true,
+      "baseline_comparison": true
+    },
+    "BCS-002": {
+      "enabled": true,
+      "change_detection": true,
+      "alerting_configured": true,
+      "baseline_comparison": true
+    }
+  },
+  "bes_cyber_system_information": {
+    "inventory_maintained": true,
+    "classification_performed": true,
+    "handling_procedures_defined": true
+  },
+  "information_protection": {
+    "procedures_documented": true,
+    "storage_controls_implemented": true,
+    "transmission_controls_implemented": true,
+    "access_controls_enforced": true
+  },
+  "information_access": [
+    {
+      "access_id": "IA-001",
+      "user_id": "P-001",
+      "authorization_documented": true,
+      "need_to_know_verified": true,
+      "access_review_performed": true,
+      "access_termination_timely": true
+    }
+  ],
+  "information_disposal": {
+    "procedures_documented": true,
+    "secure_deletion_methods": true,
+    "disposal_documentation": true,
+    "media_sanitization": true
+  },
+  "control_center_communications": {
+    "inventory_maintained": true,
+    "criticality_assessed": true,
+    "protection_requirements_defined": true,
+    "links": [
+      {
+        "link_id": "CCL-001",
+        "source": "Primary Control Center",
+        "destination": "Backup Control Center",
+        "encryption_enabled": true,
+        "authentication_implemented": true,
+        "integrity_protection": true,
+        "availability_protection": true
+      }
+    ]
+  },
+  "communication_monitoring": {
+    "enabled": true,
+    "logging_implemented": true,
+    "anomaly_detection": true,
+    "alerting_configured": true
+  },
+  "communication_contingency": {
+    "plans_documented": true,
+    "backup_communications": true,
+    "testing_performed": true,
+    "recovery_procedures": true
+  },
+  "supply_chain_plan": {
+    "documented": true,
+    "approved": true,
+    "current": true,
+    "vendor_requirements_defined": true
+  },
+  "vendors": [
+    {
+      "vendor_id": "V-001",
+      "vendor_name": "Critical System Vendor",
+      "criticality_level": "high",
+      "services_provided": ["software_maintenance", "technical_support"]
+    }
+  ],
+  "vendor_risk_assessments": {
+    "V-001": {
+      "completed": true,
+      "completion_date": "2023-01-15T09:00:00Z",
+      "risks_identified": true,
+      "mitigation_plan_exists": true
+    }
+  },
+  "supply_chain_monitoring": {
+    "enabled": true,
+    "threat_intelligence": true,
+    "vulnerability_tracking": true,
+    "incident_detection": true
+  },
+  "supply_chain_incident_response": {
+    "procedures_documented": true,
+    "vendor_contacts_current": true,
+    "information_sharing_agreements": true,
+    "coordination_tested": true
+  },
+  "security_control_testing_program": {
+    "documented": true,
+    "approved": true,
+    "scope_defined": true,
+    "frequency_defined": true
+  },
+  "penetration_testing": {
+    "BCS-001": {
+      "completion_date": "2023-06-01T09:00:00Z",
+      "documented": true,
+      "findings_addressed": true
+    }
+  },
+  "vulnerability_testing": {
+    "BCS-001": {
+      "completion_date": "2024-08-01T09:00:00Z",
+      "documented": true,
+      "remediation_planned": true
+    },
+    "BCS-002": {
+      "completion_date": "2024-08-01T09:00:00Z",
+      "documented": true,
+      "remediation_planned": true
+    }
+  },
+  "security_control_validation": {
+    "procedures_documented": true,
+    "results_documented": true,
+    "deficiencies_tracked": true,
+    "corrective_actions_planned": true
+  }
+}

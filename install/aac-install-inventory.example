@@ -1,0 +1,198 @@
+# ============================================================================
+# AAC INSTALL INVENTORY  —  copy this file, edit it, keep it out of git
+# ============================================================================
+#
+#   cp install/aac-install-inventory.example install/aac-install-inventory
+#   $EDITOR install/aac-install-inventory
+#   ansible-playbook -i install/aac-install-inventory ansible/playbooks/install.yml
+#
+# This is the single place where site-specific values live. It is patterned on
+# the Ansible Automation Platform containerized installer's `inventory` file
+# for a reason: if you have installed AAP, you already know how this works.
+# You fill in one file, you pass it with `-i`, and nothing else needs editing.
+#
+# THE RULE THIS FILE EXISTS TO ENFORCE
+# ------------------------------------
+# No host, IP, URL, password or environment name belongs anywhere else in this
+# repository. If you find yourself editing a playbook, a script or a README to
+# make an install work, that is a bug — file it. Every value that differs
+# between your site and ours is below.
+#
+# WHAT SHIPS AND WHAT DOES NOT
+# ----------------------------
+# `aac-install-inventory.example` (this file) is tracked in git and contains
+# ONLY placeholders. Your filled-in `aac-install-inventory` is gitignored and
+# never leaves your machine. This is the same split AAP uses between
+# `inventory-growth` and the inventory you actually run, and it is deliberate:
+# a filled-in file in git is how one site's addresses end up in another site's
+# install. That has happened to this project before.
+#
+# CI enforces both halves — see .github/workflows/install-config-hygiene.yml.
+#
+# ============================================================================
+
+
+# ─── HOST GROUPS ────────────────────────────────────────────────────────────
+#
+# One line per host. Use a resolvable hostname or an IP address.
+#
+# For the common single-node case, the same host appears in several groups —
+# that is expected and supported. For an OpenShift/CRC topology, leave these
+# groups pointing at the cluster's entry host and set `topology=openshift`
+# under [all:vars] below; the services are addressed by in-cluster DNS rather
+# than by these hostnames.
+
+# The AAP controller that AAC drives. AAC does not install AAP — this is your
+# existing controller.
+[aac_controller]
+# aap.example.com
+
+# Host running the three OPA policy-decision services.
+[aac_opa]
+# opa.example.com
+
+# PostgreSQL holding the compliance evidence.
+# If you are pointing AAC at an existing enterprise database, list it here AND
+# set aac_db_skip_container_deploy=true under [all:vars] — AAC will install the
+# schema only and will not deploy a database.
+[aac_database]
+# db.example.com
+
+# Grafana for the compliance dashboards. Optional; omit to skip.
+[aac_grafana]
+# grafana.example.com
+
+# Systems to be assessed. Most sites use an existing AAP inventory instead and
+# leave this empty — set aap_inventory_name below to point at it.
+[aac_targets]
+# host1.example.com
+# host2.example.com
+
+
+# ─── SITE VARIABLES ─────────────────────────────────────────────────────────
+
+[all:vars]
+
+# ── Environment profile ────────────────────────────────────────────────────
+# REQUIRED. One of: customer | lab | macaap | rhpds
+#
+# This selects ansible/vars/profiles/<name>.yml, which carries the topology
+# defaults for that kind of environment. There is deliberately NO default: an
+# unset profile fails the run rather than silently choosing one. `lab` used to
+# be the fallback, and that is precisely how lab addresses reached customer
+# installs.
+#
+# Unless you are a maintainer working in the Red Hat lab, this is `customer`.
+env_profile=customer
+
+# Topology: containers | openshift
+#   containers — three OPA containers on host:port (8181/8182/8183), the
+#                classic layout, and what most customer installs use.
+#   openshift  — services addressed by in-cluster DNS; host:port is ignored.
+topology=containers
+
+
+# ── The one value most installs need ───────────────────────────────────────
+# The host running AAC's services. Every URL below derives from this unless you
+# override it explicitly, so on a single-node install this may be the only
+# line you change.
+aac_host=<aac-host>
+
+# OS user for SSH to aac_host — used when a task must write a file to the host
+# rather than into the ephemeral execution-environment container.
+aap_ssh_user=<ssh-user>
+
+
+# ── AAP ────────────────────────────────────────────────────────────────────
+aap_url=https://<aap-host>
+# The externally reachable controller URL, if it differs from aap_url (common
+# when aap_url is an in-cluster service name).
+external_aap_url=https://<aap-host>
+aap_admin_user=admin
+# aap_admin_password: NOT set here. See "Secrets" at the bottom of this file.
+
+
+# ── OPA — three purpose-specific policy services ───────────────────────────
+# security   — CIS benchmarks, NIST, STIGs
+# compliance — ISO 27001, SOC 2, PCI-DSS, SOX, FISMA and the other regulatory
+#              frameworks
+# ot         — NERC-CIP, IEC 62443, AMI, and the other OT frameworks
+#
+# The split is by purpose, not by load. Playbooks resolve the right one from
+# the framework name; you never name an OPA URL in a playbook.
+opa_security_url=http://<opa-host>:8181
+opa_compliance_url=http://<opa-host>:8182
+opa_ot_url=http://<opa-host>:8183
+
+
+# ── PostgreSQL — the compliance evidence store ─────────────────────────────
+# This database holds your audit evidence. Its history is the thing an auditor
+# reads, so put it somewhere that gets backed up.
+pg_host=<db-host>
+pg_port=5432
+pg_db=compliance
+pg_user=<db-owner>
+# pg_password: NOT set here. See "Secrets".
+
+# Set true when pointing at an existing enterprise database: AAC installs the
+# schema and does not deploy a PostgreSQL container.
+aac_db_skip_container_deploy=false
+
+
+# ── Grafana ────────────────────────────────────────────────────────────────
+grafana_url=http://<grafana-host>:3000
+grafana_port=3000
+# grafana_admin_password: NOT set here. See "Secrets".
+
+
+# ── MCP server (optional) ──────────────────────────────────────────────────
+# Exposes AAP to MCP-speaking clients. Omit if you are not using it.
+mcp_url=http://<mcp-host>:8004
+mcp_port=8004
+
+
+# ── Execution environment ──────────────────────────────────────────────────
+# The container image AAC's job templates run in. Must be reachable from your
+# controller — mirror it into your own registry or Private Automation Hub if
+# your environment has no route to the internet.
+ee_image=<registry>/aac-compliance-ee:v1.3.0
+
+
+# ── Source control ─────────────────────────────────────────────────────────
+# Where the AAP project syncs its playbooks from. Point at your own fork if you
+# are maintaining local changes.
+git_repo_url=https://github.com/ansible-automated-compliance/aac.git
+git_branch=main
+
+
+# ── Names of the objects AAC creates in AAP ────────────────────────────────
+# Change these only if they would collide with objects you already have.
+aap_project_name=Compliance Automation
+aap_inventory_name=Compliance Infrastructure
+aap_ee_name=AAC Compliance EE
+aap_vault_credential_name=Ansible Vault
+aap_ssh_credential_name=Compliance SSH Credential
+
+
+# ── Secrets ────────────────────────────────────────────────────────────────
+#
+# No password belongs in this file. Passwords set here would sit in plaintext
+# on the filesystem and get copied around with the inventory.
+#
+# Choose one:
+#
+#   secret_source=aap_credential   (recommended)
+#       Secrets come from AAP credentials attached to the job template. Nothing
+#       sensitive is on disk. This is the right answer for anything production.
+#
+#   secret_source=vault_file
+#       Secrets come from an ansible-vault encrypted file for CLI runs:
+#           cp ansible/vars/vault_secrets.yml.example ansible/vars/vault_secrets.yml
+#           $EDITOR ansible/vars/vault_secrets.yml
+#           ansible-vault encrypt ansible/vars/vault_secrets.yml
+#       The file is gitignored. Encrypt it — the schema copy in git is
+#       placeholders only and must stay that way.
+#
+# Either way the variable names are the same:
+#   aap_admin_password, compliance_db_password, grafana_admin_password
+secret_source=aap_credential

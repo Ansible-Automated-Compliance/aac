@@ -1,0 +1,337 @@
+---
+# tasks file for gather_grub_security
+
+# =============================================================================
+# BOOT FIRMWARE TYPE DETECTION (UEFI vs BIOS)
+# =============================================================================
+
+- name: Check if system is UEFI or BIOS
+  stat:
+    path: /sys/firmware/efi
+  register: efi_directory
+  failed_when: false
+
+- name: Set boot firmware type
+  set_fact:
+    is_uefi_boot: "{{ efi_directory.stat.exists }}"
+    grub_cfg_file: "{{ uefi_grub_config if efi_directory.stat.exists else grub_config_file }}"
+
+# =============================================================================
+# CIS 1.4.1: BOOTLOADER PASSWORD PROTECTION
+# =============================================================================
+
+- name: Check if GRUB password is set (user.cfg method - RHEL 9)
+  stat:
+    path: "{{ grub_user_config }}"
+  register: grub_user_cfg_stat
+
+- name: Read GRUB user.cfg if exists
+  slurp:
+    src: "{{ grub_user_config }}"
+  register: grub_user_cfg_content
+  when: grub_user_cfg_stat.stat.exists
+  failed_when: false
+
+- name: Parse GRUB user.cfg for password
+  set_fact:
+    grub_user_cfg_has_password: "{{ 'password_pbkdf2' in (grub_user_cfg_content.content | b64decode) }}"
+  when: grub_user_cfg_stat.stat.exists
+
+- name: Check main GRUB config for password (fallback method)
+  shell: |
+    grep -E "^password_pbkdf2|^password" {{ grub_cfg_file }} 2>/dev/null && echo "true" || echo "false"
+  register: grub_cfg_password_check
+  changed_when: false
+  failed_when: false
+
+- name: Check GRUB defaults for password configuration
+  shell: |
+    grep -E "^GRUB_ENABLE_CRYPTODISK|GRUB_PASSWORD" {{ grub_defaults_file }} 2>/dev/null || echo "none"
+  register: grub_defaults_password
+  changed_when: false
+  failed_when: false
+
+- name: Determine if bootloader password is set
+  set_fact:
+    bootloader_password_set: >-
+      {{
+        (grub_user_cfg_stat.stat.exists and (grub_user_cfg_has_password | default(false))) or
+        (grub_cfg_password_check.stdout == "true")
+      }}
+
+# =============================================================================
+# CIS 1.4.2: BOOTLOADER CONFIGURATION FILE PERMISSIONS
+# =============================================================================
+
+- name: Get GRUB configuration file stats
+  stat:
+    path: "{{ grub_cfg_file }}"
+  register: grub_cfg_stat
+  failed_when: false
+
+- name: Get GRUB user.cfg file stats (if exists)
+  stat:
+    path: "{{ grub_user_config }}"
+  register: grub_user_cfg_perms
+  when: grub_user_cfg_stat.stat.exists
+
+- name: Get GRUB defaults file stats
+  stat:
+    path: "{{ grub_defaults_file }}"
+  register: grub_defaults_stat
+  failed_when: false
+
+- name: Check GRUB directory permissions
+  stat:
+    path: /boot/grub2
+  register: grub_dir_stat
+  when: not is_uefi_boot
+  failed_when: false
+
+- name: Check EFI GRUB directory permissions (UEFI systems)
+  stat:
+    path: /boot/efi/EFI/redhat
+  register: efi_grub_dir_stat
+  when: is_uefi_boot
+  failed_when: false
+
+- name: Analyze GRUB configuration file permissions
+  set_fact:
+    grub_config_permissions:
+      grub_cfg:
+        path: "{{ grub_cfg_file }}"
+        exists: "{{ grub_cfg_stat.stat.exists | default(false) }}"
+        owner: "{{ grub_cfg_stat.stat.pw_name | default('unknown') }}"
+        group: "{{ grub_cfg_stat.stat.gr_name | default('unknown') }}"
+        mode: "{{ '%04o' | format(grub_cfg_stat.stat.mode) | default('unknown') if grub_cfg_stat.stat.exists else 'unknown' }}"
+        is_secure: >-
+          {{
+            grub_cfg_stat.stat.exists and
+            grub_cfg_stat.stat.pw_name == expected_grub_owner and
+            grub_cfg_stat.stat.gr_name == expected_grub_group and
+            (grub_cfg_stat.stat.mode | int <= 384)
+          }}
+      user_cfg:
+        path: "{{ grub_user_config }}"
+        exists: "{{ grub_user_cfg_stat.stat.exists }}"
+        owner: "{{ grub_user_cfg_perms.stat.pw_name | default('N/A') if grub_user_cfg_stat.stat.exists else 'N/A' }}"
+        group: "{{ grub_user_cfg_perms.stat.gr_name | default('N/A') if grub_user_cfg_stat.stat.exists else 'N/A' }}"
+        mode: "{{ '%04o' | format(grub_user_cfg_perms.stat.mode) if grub_user_cfg_stat.stat.exists else 'N/A' }}"
+        is_secure: >-
+          {{
+            (not grub_user_cfg_stat.stat.exists) or
+            (grub_user_cfg_perms.stat.pw_name == expected_grub_owner and
+             grub_user_cfg_perms.stat.gr_name == expected_grub_group and
+             (grub_user_cfg_perms.stat.mode | int <= 384))
+          }}
+      defaults:
+        path: "{{ grub_defaults_file }}"
+        exists: "{{ grub_defaults_stat.stat.exists | default(false) }}"
+        owner: "{{ grub_defaults_stat.stat.pw_name | default('unknown') }}"
+        group: "{{ grub_defaults_stat.stat.gr_name | default('unknown') }}"
+        mode: "{{ '%04o' | format(grub_defaults_stat.stat.mode) if grub_defaults_stat.stat.exists else 'unknown' }}"
+        is_secure: >-
+          {{
+            grub_defaults_stat.stat.exists and
+            grub_defaults_stat.stat.pw_name == expected_grub_owner and
+            grub_defaults_stat.stat.gr_name == expected_grub_group and
+            (grub_defaults_stat.stat.mode | int <= 420)
+          }}
+
+# =============================================================================
+# CIS 1.4.3: SINGLE USER MODE AUTHENTICATION
+# =============================================================================
+
+- name: Check rescue.service configuration
+  shell: |
+    systemctl show rescue.service | grep -E "^ExecStart=" || echo "ExecStart=unknown"
+  register: rescue_service_exec
+  changed_when: false
+  failed_when: false
+
+- name: Check emergency.service configuration
+  shell: |
+    systemctl show emergency.service | grep -E "^ExecStart=" || echo "ExecStart=unknown"
+  register: emergency_service_exec
+  changed_when: false
+  failed_when: false
+
+- name: Check if sulogin is used for rescue mode
+  set_fact:
+    rescue_requires_auth: "{{ 'sulogin' in rescue_service_exec.stdout }}"
+    emergency_requires_auth: "{{ 'sulogin' in emergency_service_exec.stdout }}"
+
+- name: Check systemd rescue.service unit file
+  slurp:
+    src: /usr/lib/systemd/system/rescue.service
+  register: rescue_service_file
+  failed_when: false
+
+- name: Check systemd emergency.service unit file
+  slurp:
+    src: /usr/lib/systemd/system/emergency.service
+  register: emergency_service_file
+  failed_when: false
+
+- name: Analyze rescue service authentication
+  set_fact:
+    rescue_service_analysis:
+      exec_start: "{{ rescue_service_exec.stdout }}"
+      requires_password: "{{ 'sulogin' in rescue_service_exec.stdout }}"
+      unit_file_exists: "{{ rescue_service_file is succeeded }}"
+      configuration: "{{ (rescue_service_file.content | b64decode).split('\\n') if rescue_service_file is succeeded else [] }}"
+
+- name: Analyze emergency service authentication
+  set_fact:
+    emergency_service_analysis:
+      exec_start: "{{ emergency_service_exec.stdout }}"
+      requires_password: "{{ 'sulogin' in emergency_service_exec.stdout }}"
+      unit_file_exists: "{{ emergency_service_file is succeeded }}"
+      configuration: "{{ (emergency_service_file.content | b64decode).split('\\n') if emergency_service_file is succeeded else [] }}"
+
+- name: Check for root password set (required for single-user auth)
+  shell: |
+    passwd -S root | awk '{print $2}'
+  register: root_password_status
+  changed_when: false
+  failed_when: false
+
+- name: Determine single-user authentication status
+  set_fact:
+    single_user_auth_configured: >-
+      {{
+        rescue_requires_auth and
+        emergency_requires_auth and
+        (root_password_status.stdout in ['PS', 'P'])
+      }}
+
+# =============================================================================
+# ADDITIONAL GRUB SECURITY CHECKS
+# =============================================================================
+
+- name: Check for GRUB timeout configuration
+  shell: |
+    grep "^GRUB_TIMEOUT=" {{ grub_defaults_file }} 2>/dev/null | cut -d= -f2
+  register: grub_timeout
+  changed_when: false
+  failed_when: false
+
+- name: Check for GRUB kernel parameters (security-related)
+  shell: |
+    grep "^GRUB_CMDLINE_LINUX=" {{ grub_defaults_file }} 2>/dev/null || echo "GRUB_CMDLINE_LINUX=not_found"
+  register: grub_cmdline
+  changed_when: false
+  failed_when: false
+
+- name: Extract kernel command line parameters
+  set_fact:
+    grub_kernel_params: "{{ grub_cmdline.stdout | regex_replace('^GRUB_CMDLINE_LINUX=', '') | regex_replace('\"', '') }}"
+  when: grub_cmdline.stdout != "GRUB_CMDLINE_LINUX=not_found"
+
+- name: Check if audit is enabled in kernel parameters
+  set_fact:
+    kernel_audit_enabled: "{{ 'audit=1' in (grub_kernel_params | default('')) }}"
+    kernel_audit_backlog: "{{ grub_kernel_params | default('') | regex_search('audit_backlog_limit=([0-9]+)', '\\\\1') | first | default('not_set') }}"
+
+- name: Check GRUB configuration for secure boot settings
+  shell: |
+    mokutil --sb-state 2>/dev/null || echo "mokutil not available"
+  register: secure_boot_status
+  changed_when: false
+  failed_when: false
+  when: is_uefi_boot
+
+- name: List all GRUB menu entries
+  shell: |
+    awk -F\\' '/menuentry / {print $2}' {{ grub_cfg_file }} 2>/dev/null || echo "none"
+  register: grub_menu_entries
+  changed_when: false
+  failed_when: false
+
+- name: Check for GRUB_DISABLE_RECOVERY setting
+  shell: |
+    grep "^GRUB_DISABLE_RECOVERY=" {{ grub_defaults_file }} 2>/dev/null | cut -d= -f2
+  register: grub_disable_recovery
+  changed_when: false
+  failed_when: false
+
+# =============================================================================
+# COMPREHENSIVE FACTS ASSEMBLY
+# =============================================================================
+
+- name: Set comprehensive GRUB security facts
+  set_fact:
+    host_grub_facts:
+      boot_firmware:
+        type: "{{ 'UEFI' if is_uefi_boot else 'BIOS' }}"
+        is_uefi: "{{ is_uefi_boot }}"
+        grub_config_path: "{{ grub_cfg_file }}"
+        secure_boot_status: "{{ secure_boot_status.stdout if is_uefi_boot else 'N/A (BIOS)' }}"
+      bootloader_password:
+        is_set: "{{ bootloader_password_set }}"
+        user_cfg_exists: "{{ grub_user_cfg_stat.stat.exists }}"
+        user_cfg_has_password: "{{ grub_user_cfg_has_password | default(false) }}"
+        main_cfg_has_password: "{{ grub_cfg_password_check.stdout == 'true' }}"
+        defaults_password_config: "{{ grub_defaults_password.stdout }}"
+      config_file_permissions: "{{ grub_config_permissions }}"
+      single_user_mode:
+        authentication_required: "{{ single_user_auth_configured }}"
+        rescue_service:
+          requires_auth: "{{ rescue_requires_auth }}"
+          exec_start: "{{ rescue_service_exec.stdout }}"
+        emergency_service:
+          requires_auth: "{{ emergency_requires_auth }}"
+          exec_start: "{{ emergency_service_exec.stdout }}"
+        root_password_set: "{{ root_password_status.stdout in ['PS', 'P'] }}"
+        root_password_status: "{{ root_password_status.stdout }}"
+      grub_configuration:
+        timeout: "{{ grub_timeout.stdout | default('not_set') }}"
+        disable_recovery: "{{ grub_disable_recovery.stdout | default('not_set') }}"
+        kernel_parameters: "{{ grub_kernel_params | default('not_found') }}"
+        audit_enabled: "{{ kernel_audit_enabled | default(false) }}"
+        audit_backlog_limit: "{{ kernel_audit_backlog | default('not_set') }}"
+        menu_entries: "{{ grub_menu_entries.stdout_lines }}"
+      compliance_checks:
+        bootloader_password_set: "{{ bootloader_password_set }}"
+        grub_cfg_secure: "{{ grub_config_permissions.grub_cfg.is_secure }}"
+        user_cfg_secure: "{{ grub_config_permissions.user_cfg.is_secure }}"
+        defaults_secure: "{{ grub_config_permissions.defaults.is_secure }}"
+        all_configs_secure: >-
+          {{
+            grub_config_permissions.grub_cfg.is_secure and
+            grub_config_permissions.user_cfg.is_secure and
+            grub_config_permissions.defaults.is_secure
+          }}
+        single_user_auth_required: "{{ single_user_auth_configured }}"
+      collection_timestamp: "{{ ansible_date_time.iso8601 }}"
+
+- name: Display GRUB security facts summary
+  debug:
+    msg:
+      - "=========================================="
+      - "GRUB Bootloader Security Facts"
+      - "=========================================="
+      - "Boot Firmware: {{ host_grub_facts.boot_firmware.type }}"
+      - "GRUB Config: {{ host_grub_facts.boot_firmware.grub_config_path }}"
+      - ""
+      - "CIS 1.4.1 - Bootloader Password:"
+      - "  Password Set: {{ host_grub_facts.bootloader_password.is_set }}"
+      - "  user.cfg exists: {{ host_grub_facts.bootloader_password.user_cfg_exists }}"
+      - ""
+      - "CIS 1.4.2 - Configuration File Permissions:"
+      - "  grub.cfg secure: {{ host_grub_facts.config_file_permissions.grub_cfg.is_secure }}"
+      - "  grub.cfg: {{ host_grub_facts.config_file_permissions.grub_cfg.owner }}:{{ host_grub_facts.config_file_permissions.grub_cfg.group }} {{ host_grub_facts.config_file_permissions.grub_cfg.mode }}"
+      - "  user.cfg secure: {{ host_grub_facts.config_file_permissions.user_cfg.is_secure }}"
+      - "  defaults secure: {{ host_grub_facts.config_file_permissions.defaults.is_secure }}"
+      - ""
+      - "CIS 1.4.3 - Single-User Mode Authentication:"
+      - "  Authentication Required: {{ host_grub_facts.single_user_mode.authentication_required }}"
+      - "  Rescue Service: {{ host_grub_facts.single_user_mode.rescue_service.requires_auth }}"
+      - "  Emergency Service: {{ host_grub_facts.single_user_mode.emergency_service.requires_auth }}"
+      - "  Root Password Set: {{ host_grub_facts.single_user_mode.root_password_set }}"
+      - ""
+      - "Compliance Status:"
+      - "  ✓ Bootloader Password: {{ host_grub_facts.compliance_checks.bootloader_password_set }}"
+      - "  ✓ Config Files Secure: {{ host_grub_facts.compliance_checks.all_configs_secure }}"
+      - "  ✓ Single-User Auth: {{ host_grub_facts.compliance_checks.single_user_auth_required }}"
+      - "=========================================="

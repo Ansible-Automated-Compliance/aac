@@ -1,0 +1,25 @@
+---
+# Create policy directories on aac_host and set the SELinux container file context.
+
+- name: Create OPA policy directories
+  file:
+    path: "{{ aac_opa_policy_base_dir }}/{{ item.policy_subdir }}"
+    state: directory
+    mode: "0755"
+  loop: "{{ aac_opa_containers }}"
+  loop_control:
+    label: "{{ item.name }}"
+  delegate_to: "{{ aac_host }}"
+  become: true
+
+- name: Set SELinux context on policy directories
+  # Allows the container to read host-mounted policy dirs (container_file_t).
+  # Silently ignored if SELinux is not enforcing.
+  command: "chcon -R -t container_file_t {{ aac_opa_policy_base_dir }}/{{ item.policy_subdir }}"
+  loop: "{{ aac_opa_containers }}"
+  loop_control:
+    label: "{{ item.name }}"
+  delegate_to: "{{ aac_host }}"
+  become: true
+  ignore_errors: true
+  changed_when: false

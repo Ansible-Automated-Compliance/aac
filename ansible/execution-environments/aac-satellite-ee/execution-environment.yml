@@ -1,0 +1,121 @@
+---
+# aac-satellite-ee — execution environment for AAC × Red Hat Satellite
+#
+# WHY A SEPARATE EE
+#
+# The Satellite work needs redhat.satellite, which is Red Hat CERTIFIED content
+# and therefore resolves from Automation Hub with a subscription token rather
+# than from public Galaxy. Putting a certified-only dependency into the shared
+# compliance EE would make every AAC job template depend on Automation Hub
+# reachability and on a valid offline token, which is the wrong trade for
+# templates that have nothing to do with Satellite.
+#
+# Multiple purpose-built EEs is the established pattern here — aac-m365-ee,
+# aac-windows-ee, aac-ami-ee. Register this one and point only the Satellite
+# templates at it.
+#
+# WHY CERTIFIED RATHER THAN theforeman.foreman
+#
+# redhat.satellite is derived from the theforeman.foreman community collection
+# but is entitled to support through an AAP subscription. Where a certified
+# collection exists and covers the need, it is the one to use — the same call
+# made for the VMware work. The inventory plugin is redhat.satellite.foreman
+# (plugins/inventory/foreman.py in the collection).
+#
+# WHAT USES IT
+#
+#   ansible/inventory/satellite.foreman.yml          — dynamic inventory
+#   ansible/playbooks/satellite_content_precheck.yml — content availability
+#
+# The pre-check itself deliberately uses only ansible.builtin.uri, so it runs in
+# any EE. The certified collection is what the inventory plugin needs, and what
+# richer Satellite operations will need next.
+
+version: 3
+
+images:
+  base_image:
+    name: quay.io/ansible/creator-ee:v24.2.0
+
+options:
+  # creator-ee:v24.2.0 is Fedora 39 and ships dnf5/microdnf with NO /usr/bin/dnf.
+  # ansible-builder's assemble script defaults to /usr/bin/dnf and dies with a bare
+  # `exit status 127` the moment any bindep needs installing — which reads as a
+  # broken build script rather than a missing binary. Same setting aac-m365-ee uses.
+  package_manager_path: /usr/bin/microdnf
+
+build_arg_defaults:
+  # Empty by default. A hub presenting a self-signed certificate needs `-c` here
+  # (`--build-arg ANSIBLE_GALAXY_CLI_COLLECTION_OPTS=-c`): `validate_certs = False`
+  # in the galaxy_server block covers the API calls but NOT the artifact download,
+  # which still fails CERTIFICATE_VERIFY_FAILED after resolving the version. That
+  # split is easy to misread as a network fault. Verified against the hub.
+  ANSIBLE_GALAXY_CLI_COLLECTION_OPTS: ''
+
+dependencies:
+  galaxy: requirements.yml
+  python: requirements.txt
+  # bindep must be declared to be used. Without this line the compilers are
+  # absent and any sdist-only python dependency fails mid-build.
+  system: bindep.txt
+  ansible_core:
+    package_pip: ansible-core>=2.15.0
+  ansible_runner:
+    package_pip: ansible-runner>=2.3.0
+
+# ansible.cfg is not picked up implicitly — it has to be copied into the build
+# context and then into the image. It carries the `enable_plugins` line the
+# foreman inventory plugin needs at RUNTIME.
+additional_build_files:
+  - src: ansible.cfg
+    dest: configs
+
+additional_build_steps:
+  prepend_galaxy:
+    # redhat.satellite is certified content and is NOT on public Galaxy —
+    # `ansible-galaxy collection download redhat.satellite` against
+    # galaxy.ansible.com fails to resolve. The galaxy stage therefore needs
+    # credentialed access to an Automation Hub.
+    #
+    # The config is written HERE, in the galaxy stage, from build args. The
+    # galaxy stage is discarded — only the collections it produced are copied
+    # forward — so the token never reaches the shipped image. Do not move this
+    # into a committed file: that is how tokens end up in git.
+    #
+    # GALAXY_HUB_AUTH_URL defaults to EMPTY, and that is deliberate.
+    #
+    # auth_url means "exchange this token through Red Hat SSO", which is right
+    # for a console.redhat.com OFFLINE token and wrong for a private hub GATEWAY
+    # token — the exchange fails with `HTTP Error 400: Bad Request` while
+    # resolving versions, which reads like the collection is missing rather than
+    # like an auth-mode mismatch. Verified both ways against the hub.
+    #
+    # It cannot default to the SSO URL and be cleared at build time: podman does
+    # NOT override a non-empty ARG default with `--build-arg NAME=`, so the SSO
+    # URL would survive and every private-hub build would fail. A console.redhat.com
+    # build must therefore pass GALAXY_HUB_AUTH_URL explicitly.
+    - ARG GALAXY_HUB_URL=https://console.redhat.com/api/automation-hub/content/published/
+    - ARG GALAXY_HUB_AUTH_URL=
+    - ARG GALAXY_HUB_TOKEN=
+    - ARG GALAXY_HUB_VALIDATE_CERTS=True
+    - >-
+      RUN printf '[galaxy]\nserver_list = automation_hub, release_galaxy\n\n[galaxy_server.automation_hub]\nurl = %s\ntoken = %s\nvalidate_certs = %s\n%s\n\n[galaxy_server.release_galaxy]\nurl = https://galaxy.ansible.com/\n'
+      "$GALAXY_HUB_URL" "$GALAXY_HUB_TOKEN" "$GALAXY_HUB_VALIDATE_CERTS"
+      "${GALAXY_HUB_AUTH_URL:+auth_url = $GALAXY_HUB_AUTH_URL}"
+      > /etc/ansible/ansible.cfg
+  prepend_final:
+    # The inventory plugin caches to jsonfile; give it a writable location that
+    # is not the image layer, so a cache write never fails a job at runtime.
+    - RUN mkdir -p /tmp/foreman_cache && chmod 0777 /tmp/foreman_cache
+    # The runtime config — enable_plugins for the foreman inventory plugin.
+    # Token-free by construction; the credentialed copy lived only in the
+    # galaxy stage.
+    - COPY _build/configs/ansible.cfg /etc/ansible/ansible.cfg
+  append_final:
+    # Fail the BUILD rather than a 2am job if the certified collection did not
+    # resolve. A missing collection otherwise surfaces as an inventory plugin
+    # that silently returns no hosts.
+    - >-
+      RUN ansible-doc -t inventory redhat.satellite.foreman >/dev/null 2>&1
+      || (echo "BUILD FAILED - redhat.satellite.foreman not present; check the
+      Automation Hub token and that the collection resolved" >&2 && exit 1)

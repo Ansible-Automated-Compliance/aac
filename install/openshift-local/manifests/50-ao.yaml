@@ -1,0 +1,44 @@
+---
+# Automation Orchestrator on OpenShift Local, pointed at the PostgreSQL from
+# 40-ao-postgres.yaml. Apply after the operator's CSV shows Succeeded and the
+# ao_temporal database exists (guide, section 7.1):
+#   oc apply -f install/openshift-local/manifests/50-ao.yaml
+#
+# workflowHttpRequestAllowedHosts is the outbound allow list for workflow HTTP
+# nodes: a workflow may only call hosts listed here. The platform's own route is
+# listed so workflows can reach AAP; add any OPA or MCP host the AAC workflows
+# call when you install AAC (the extended guide names them).
+apiVersion: aap.ansible.com/v1alpha1
+kind: AutomationOrchestrator
+metadata:
+  name: ao
+  namespace: automation-orchestrator
+spec:
+  ingress:
+    type: Route
+    host: ao-automation-orchestrator.apps-crc.testing
+  imagePullSecrets:
+    - name: redhat-registry-pull-secret
+  postgres:
+    host: ao-postgres.automation-orchestrator.svc.cluster.local
+    port: 5432
+    sslMode: disable
+    poolSize: 20
+    maxOverflow: 10
+    poolTimeoutSeconds: 5
+    backendDatabase:
+      secretRef:
+        name: ao-backend-db
+    temporalDatabase:
+      secretRef:
+        name: ao-temporal-db
+  redis:
+    replicas: 1
+  backgroundWorker:
+    hpa:
+      minReplicas: 1
+      maxReplicas: 2
+      targetCPUUtilization: 80
+  workflowHttpRequestAllowedHosts:
+    - aap-aap-operator.apps-crc.testing
+    - aap.aap-operator.svc.cluster.local

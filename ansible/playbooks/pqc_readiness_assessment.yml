@@ -1,0 +1,280 @@
+---
+# PQC Readiness assessment (EO 14412 / OMB M-26-15, NIST IR 8547, FIPS 203/204/205,
+# CNSA 2.0) for Linux hosts, using the Rego library's frameworks/federal/pqc.
+#
+# Collect  — ../tasks/collect_pqc_crypto_facts.yml: the host's certificates,
+#            SSH host keys, sshd's effective key exchange and the key-exchange
+#            group its TLS listeners negotiate (read-only; names and algorithms
+#            only, no key material)
+# Map      — ../tasks/pqc_build_opa_input.yml: collector lines + the site's
+#            attestations (ansible/vars/pqc_attestations.yml) → input.pqc.*
+#            (never fabricates; absent attestations stay absent)
+# Evaluate — POST {{ opa_compliance_url }}/v1/data/pqc/main/compliance_report
+#            (fail-closed: no facts and no attestations = every control violated)
+# Store    — compliance_results + a CAA row, every number from OPA's report
+#
+# AAP Job Template: "AAC - PQC Readiness Assessment"
+# Credentials: Compliance SSH Credential (machine), Ansible Vault
+# Survey / extra_vars:
+#   pqc_tls_probe_ports   — local TLS ports to probe when listening (default
+#                           443 636 6443 8443 9443); integers only
+#   pqc_extra_cert_dirs   — directories of *.crt / *.pem to read in addition to
+#                           /etc/pki/tls/certs
+#   pqc_attestations, pqc_migration_planned_assets, pqc_migration_planned_default,
+#   pqc_attested_by       — see ansible/vars/pqc_attestations.yml.example
+#
+# Before the first run: load the `pqc` loader key on opa-compliance
+# ("AAC - Load OPA Policies") and have `pqc: compliance` in opa_framework_map
+# (ansible/vars/site_config.yml.example carries it).
+#
+# Scoring: the policy reports controls_evaluated (10, 14 or 18 by profile) and
+# a violation list in which the data-driven checks produce one entry per asset.
+# failed_controls is capped at controls_evaluated, so a host with many
+# quantum-vulnerable assets scores 0% on that control class rather than a
+# negative number; the asset counts themselves are stored in metadata.
+
+- name: PQC Readiness Assessment (Linux hosts)
+  hosts: all
+  gather_facts: yes
+  become: yes
+
+  vars:
+    framework: pqc
+    report_dir: "{{ playbook_dir }}/../../reports"
+    timestamp: "{{ ansible_date_time.iso8601_basic_short }}"
+    pqc_policy_label: "PQC Readiness"
+    pqc_policy_version: "PQC Readiness v1.0 (FIPS 203/204/205, NIST IR 8547, EO 14412, OMB M-26-15, CNSA 2.0)"
+    pqc_tls_probe_ports: [443, 636, 6443, 8443, 9443]
+    pqc_extra_cert_dirs: []
+    # pg_* come from the profile / site_config.yml; the store role maps them.
+    _severity_by_source:
+      "PQC Crypto-Agility": medium
+      "PQC OMB M-26-15": high
+      "PQC EO 14412": high
+      "PQC NIST IR 8547": high
+      "PQC FIPS 180-4": high
+      "PQC CNSA 2.0": high
+      "PQC Input Contract": high
+
+  tasks:
+    # site_config.yml / vault_secrets.yml / pqc_attestations.yml are gitignored
+    # and absent from a synced AAP project checkout — load them OPTIONALLY so
+    # routing, credentials and attestations can also arrive as extra_vars / a
+    # survey / a credential. The assertion below names what is missing.
+    - name: Load optional local config
+      ansible.builtin.include_vars: "{{ item }}"
+      with_first_found:
+        - files: ["{{ playbook_dir }}/../vars/site_config.yml"]
+          skip: true
+
+    - name: Load optional local secrets
+      ansible.builtin.include_vars: "{{ item }}"
+      with_first_found:
+        - files: ["{{ playbook_dir }}/../vars/vault_secrets.yml"]
+          skip: true
+      no_log: true
+
+    - name: Load optional site attestations
+      ansible.builtin.include_vars: "{{ item }}"
+      with_first_found:
+        - files: ["{{ playbook_dir }}/../vars/pqc_attestations.yml"]
+          skip: true
+
+    - name: Require the OPA routing tables and the database password
+      ansible.builtin.assert:
+        that:
+          - opa_framework_map is defined
+          - opa_endpoints is defined
+          - framework in opa_framework_map
+          - (compliance_db_password | default('', true)) | length > 0
+        fail_msg: >-
+          opa_framework_map / opa_endpoints / compliance_db_password are not set, or
+          '{{ framework }}' is not in opa_framework_map: provide ansible/vars/site_config.yml
+          and vault_secrets.yml in the checkout, or pass them as extra_vars / a credential
+          (site_config.yml.example maps pqc to the compliance engine).
+
+    - name: Refuse non-numeric TLS probe ports
+      ansible.builtin.assert:
+        that:
+          - pqc_tls_probe_ports | map('string') | map('regex_search', '^[0-9]{1,5}$') | select('none') | list | length == 0
+        fail_msg: "pqc_tls_probe_ports must be a list of integers (got {{ pqc_tls_probe_ports }})"
+
+    - name: Ensure report directory exists
+      file:
+        path: "{{ report_dir }}"
+        state: directory
+        mode: '0755'
+      delegate_to: localhost
+      become: no
+      run_once: true
+
+    - name: Collect the host cryptographic inventory
+      include_tasks: ../tasks/collect_pqc_crypto_facts.yml
+
+    - name: Build PQC OPA input from collected facts and attestations
+      include_tasks: ../tasks/pqc_build_opa_input.yml
+      vars:
+        opa_hostname: "{{ inventory_hostname }}"
+
+    - name: Refuse to evaluate when the collector did not run to the end
+      ansible.builtin.assert:
+        that:
+          - opa_input.system_info.collector_ok | bool
+        fail_msg: >-
+          The crypto inventory collector on {{ inventory_hostname }} did not end in end:ok
+          (notes: {{ opa_input.system_info.collector_notes }}; rc={{ pqc_raw.rc | default('n/a') }}).
+          Refusing to store a result built on partial evidence. Is openssl installed?
+
+    - name: Save OPA input to local file
+      copy:
+        content: "{{ opa_input | to_nice_json }}"
+        dest: "{{ report_dir }}/{{ inventory_hostname }}_{{ framework }}_facts_{{ timestamp }}.json"
+      delegate_to: localhost
+      become: no
+
+    - name: Resolve OPA endpoint
+      include_tasks: ../tasks/resolve_opa_url.yml
+
+    - name: Resolve evidence provenance (policy SHA + real subject)
+      ansible.builtin.include_tasks: ../tasks/resolve_evidence_provenance.yml
+      vars:
+        evidence_subject: "{{ inventory_hostname }}"
+
+    - name: Query OPA — PQC Readiness compliance report
+      uri:
+        use_proxy: false
+        url: "{{ opa_server_url }}/v1/data/{{ opa_framework_path[framework] | default(framework) }}/main/compliance_report"
+        method: POST
+        body_format: json
+        body:
+          input: "{{ opa_input }}"
+        return_content: yes
+        status_code: 200
+      register: opa_response
+      delegate_to: localhost
+      become: no
+      failed_when: false
+
+    - name: Refuse to fabricate a result when OPA did not answer
+      ansible.builtin.assert:
+        that:
+          - (opa_response.status | default(-1)) == 200
+          - opa_response.json.result is defined
+          - opa_response.json.result.controls_evaluated is defined
+          - opa_response.json.result.violation_count is defined
+        fail_msg: >-
+          OPA did not return an evaluation (status
+          {{ opa_response.status | default('no connection') }} from
+          {{ opa_server_url }}/v1/data/{{ opa_framework_path[framework] | default(framework) }}/main/compliance_report).
+          Refusing to continue: no answer from the policy engine means NO
+          ASSESSMENT, never a clean one. Is the `pqc` loader key loaded on this engine?
+          OPA said: {{ (opa_response.json | default(opa_response.content | default(opa_response.msg | default('nothing')))) | to_json | truncate(600) }}
+
+    - name: Normalise violations (the policy emits messages; the evidence row wants control_id + severity)
+      set_fact:
+        pqc_violations: >-
+          {%- set out = [] -%}
+          {%- for v in (opa_response.json.result.violations | default([])) -%}
+            {%- if v is mapping -%}
+              {%- set _ = out.append(v) -%}
+            {%- else -%}
+              {%- set src = (v | string).split(':')[0] | trim -%}
+              {%- set _ = out.append({'control_id': src, 'severity': _severity_by_source.get(src, 'high'), 'message': v | string}) -%}
+            {%- endif -%}
+          {%- endfor -%}
+          {{ out }}
+
+    - name: Extract report fields
+      set_fact:
+        compliance_result: "{{ opa_response.json.result }}"
+        assessment_timestamp: "{{ ansible_date_time.iso8601 }}"
+        is_compliant: "{{ opa_response.json.result.compliant | default(false) | bool }}"
+        total_controls: "{{ opa_response.json.result.controls_evaluated | int }}"
+        failed_controls: "{{ [opa_response.json.result.violation_count | int, opa_response.json.result.controls_evaluated | int] | min }}"
+
+    - name: Derive the score from the report
+      set_fact:
+        passed_controls: "{{ (total_controls | int) - (failed_controls | int) }}"
+        compliance_score: "{{ (((total_controls | int) - (failed_controls | int)) * 100.0 / (total_controls | int)) | round(1) if (total_controls | int) > 0 else 0.0 }}"
+
+    - name: Generate compliance report file
+      copy:
+        content: "{{ {
+            'assessment_metadata': {
+              'hostname': inventory_hostname,
+              'assessment_time': assessment_timestamp,
+              'framework': framework,
+              'benchmark': pqc_policy_label,
+              'benchmark_version': compliance_result.version | default(''),
+              'profile': compliance_result.profile | default('general'),
+              'opa_path': (opa_framework_path[framework] | default(framework)) ~ '/main/compliance_report'
+            },
+            'system_info': opa_input.system_info,
+            'inventory_posture': {
+              'assets_total': compliance_result.inventory_assets_total | default(0),
+              'assets_pqc': compliance_result.inventory_assets_pqc | default(0),
+              'assets_quantum_vulnerable': compliance_result.inventory_assets_quantum_vulnerable | default(0)
+            },
+            'compliance_summary': {
+              'is_compliant': is_compliant,
+              'total_controls': total_controls | int,
+              'passed_controls': passed_controls | int,
+              'failed_controls': failed_controls | int,
+              'compliance_percentage': compliance_score | float
+            },
+            'violations': pqc_violations
+          } | to_nice_json }}"
+        dest: "{{ report_dir }}/{{ inventory_hostname }}_{{ framework }}_report_{{ timestamp }}.json"
+      delegate_to: localhost
+      become: no
+
+    - name: Display compliance summary
+      debug:
+        msg: |
+          ========================================
+          {{ pqc_policy_label }} — profile {{ compliance_result.profile | default('general') }}
+          ========================================
+          Hostname: {{ inventory_hostname }} ({{ ansible_distribution }} {{ ansible_distribution_version }}; openssl {{ opa_input.system_info.openssl_version }}; ML-KEM available: {{ opa_input.system_info.mlkem_available }}; crypto policy: {{ opa_input.system_info.crypto_policy }})
+          Inventory: {{ compliance_result.inventory_assets_total | default(0) }} assets, {{ compliance_result.inventory_assets_pqc | default(0) }} PQC, {{ compliance_result.inventory_assets_quantum_vulnerable | default(0) }} quantum-vulnerable
+          Controls evaluated: {{ total_controls }} — violated: {{ failed_controls }} — violation entries: {{ pqc_violations | length }}
+          Attestations on file: {{ 'yes (' ~ opa_input.system_info.attested_by ~ ')' if opa_input.system_info.attested_by else 'none' }}
+          Compliance: {{ compliance_score }}%
+          Report: {{ report_dir }}/{{ inventory_hostname }}_{{ framework }}_report_{{ timestamp }}.json
+
+    - name: Violations (first 10)
+      debug:
+        msg: "{{ pqc_violations[:10] | map(attribute='message') | list }}"
+      when: pqc_violations | length > 0
+
+    - name: Store PQC results to PostgreSQL (+ CAA row)
+      include_role:
+        name: aac_store_results
+      vars:
+        pg_password:               "{{ compliance_db_password }}"
+        aac_result_framework:      "{{ framework }}"
+        aac_result_policy_name:    "{{ pqc_policy_label }}"
+        aac_result_policy_version: "{{ pqc_policy_version }}"
+        aac_result_total_controls: "{{ total_controls | int }}"
+        aac_result_violations:     "{{ pqc_violations }}"
+        aac_result_failed_controls: "{{ failed_controls | int }}"
+        aac_result_passed_controls: "{{ passed_controls | int }}"
+        aac_result_compliance_pct:  "{{ compliance_score | float }}"
+        aac_result_metadata: "{{ {'hostname': inventory_hostname, 'distribution': ansible_distribution, 'distribution_version': ansible_distribution_version, 'assessment_time': assessment_timestamp, 'is_compliant': is_compliant, 'framework': framework, 'benchmark': pqc_policy_label, 'benchmark_version': compliance_result.version | default(''), 'profile': compliance_result.profile | default('general'), 'controls_evaluated': total_controls | int, 'violation_entries': pqc_violations | length, 'inventory_assets_total': compliance_result.inventory_assets_total | default(0), 'inventory_assets_pqc': compliance_result.inventory_assets_pqc | default(0), 'inventory_assets_quantum_vulnerable': compliance_result.inventory_assets_quantum_vulnerable | default(0), 'openssl_version': opa_input.system_info.openssl_version, 'mlkem_available': opa_input.system_info.mlkem_available, 'crypto_policy': opa_input.system_info.crypto_policy, 'fips_enabled': opa_input.system_info.fips_enabled, 'collector_notes': opa_input.system_info.collector_notes, 'attested_by': opa_input.system_info.attested_by, 'evaluation_endpoint': (opa_framework_path[framework] | default(framework)) ~ '/main/compliance_report'} }}"
+        aac_result_opa_server: "{{ opa_server_url }}"
+        aac_caa_enabled: true
+        aac_result_caa_framework_version: "{{ compliance_result.version | default('1.0') }}"
+        aac_result_caa_result:
+          framework:             "{{ framework }}"
+          benchmark:             "{{ pqc_policy_label }}"
+          benchmark_version:     "{{ compliance_result.version | default('') }}"
+          compliant:             "{{ is_compliant | bool }}"
+          compliance_percentage: "{{ compliance_score | float }}"
+          total_controls:        "{{ total_controls | int }}"
+          passed_controls:       "{{ passed_controls | int }}"
+          failed_controls:       "{{ failed_controls | int }}"
+          violations:            "{{ pqc_violations }}"
+        aac_result_caa_input: "{{ opa_input }}"
+
+    - name: Results stored to PostgreSQL
+      debug:
+        msg: "Stored {{ pqc_policy_label }} result for {{ inventory_hostname }}: {{ compliance_score }}% ({{ passed_controls }}/{{ total_controls }} controls; {{ compliance_result.inventory_assets_quantum_vulnerable | default(0) }} quantum-vulnerable assets)"

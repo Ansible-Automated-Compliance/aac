@@ -1,0 +1,11 @@
+fastapi>=0.143.2
+uvicorn>=0.54.0
+httpx>=0.28.1
+pydantic>=2.14.1
+python-dotenv>=1.2.4
+sse-starlette>=3.5.0
+psycopg[binary]>=3.3.6
+mcp==2.3.0
+# ansible_mcp_tools is NOT on PyPI (verified 2026-09-21) — it ships from the
+# Ansible Lightspeed MCP tools source and is installed by the EE/image build
+# (Template 45). The image build must provide it before server_opa.py starts.

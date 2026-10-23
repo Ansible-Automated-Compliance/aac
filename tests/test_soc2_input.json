@@ -1,0 +1,1354 @@
+{
+  "access_controls": {
+    "role_based_access": true,
+    "least_privilege_principle": true,
+    "regular_access_reviews": true,
+    "privileged_users": [
+      {
+        "username": "admin",
+        "mfa_enabled": true
+      },
+      {
+        "username": "dbadmin", 
+        "mfa_enabled": true
+      }
+    ],
+    "access_logging": {
+      "enabled": true,
+      "includes_failed_attempts": true,
+      "retention_days": 365
+    },
+    "shared_accounts": [],
+    "service_accounts": [
+      {
+        "unique_identifier": true,
+        "regular_password_change": true
+      }
+    ],
+    "periodic_reviews": {
+      "enabled": true,
+      "frequency_days": 90,
+      "documented": true
+    }
+  },
+  "network_security": {
+    "segmentation": {
+      "enabled": true,
+      "zones": 3
+    },
+    "firewalls": {
+      "configured": true
+    },
+    "intrusion_detection": {
+      "enabled": true
+    }
+  },
+  "remote_access": {
+    "vpn_required": true,
+    "vpn_encryption": {
+      "enabled": true
+    },
+    "session_timeout": {
+      "configured": true,
+      "max_idle_minutes": 30
+    }
+  },
+  "database_security": {
+    "authentication_required": true,
+    "connection_encryption": true,
+    "access_logging": true,
+    "privileged_accounts": [
+      {
+        "regular_review": true
+      }
+    ]
+  },
+  "user_management": {
+    "automated_provisioning": true,
+    "automated_deprovisioning": true,
+    "approval_workflow": true
+  },
+  "openshift": {
+    "rbac": {
+      "enabled": true,
+      "cluster_admin_users_limited": true,
+      "cluster_admin_users": 2,
+      "service_accounts_restricted": true
+    },
+    "security": {
+      "pod_security_standards": {
+        "enabled": true,
+        "level": "restricted"
+      },
+      "security_context_constraints": {
+        "default_restricted": true
+      }
+    },
+    "network_policies": {
+      "enabled": true,
+      "default_deny": true,
+      "policies": 5
+    },
+    "image_security": {
+      "scanning_enabled": true,
+      "vulnerability_threshold": {
+        "critical": 0,
+        "high": 2
+      },
+      "trusted_registries_only": true
+    },
+    "control_plane": {
+      "replicas": 3
+    },
+    "worker_nodes": {
+      "count": 5
+    },
+    "etcd": {
+      "ha_configured": true
+    },
+    "load_balancer": {
+      "configured": true
+    },
+    "autoscaling": {
+      "horizontal_pod_autoscaler": {
+        "enabled": true
+      },
+      "cluster_autoscaler": {
+        "enabled": true
+      },
+      "vertical_pod_autoscaler": {
+        "enabled": true
+      }
+    },
+    "workloads": [
+      {
+        "name": "web-app",
+        "pod_disruption_budget": {
+          "configured": true
+        },
+        "resources": {
+          "requests": {
+            "defined": true
+          },
+          "limits": {
+            "defined": true
+          }
+        },
+        "health_checks": {
+          "readiness_probe": {
+            "configured": true
+          },
+          "liveness_probe": {
+            "configured": true
+          }
+        }
+      }
+    ],
+    "resource_management": {
+      "quotas": {
+        "enabled": true
+      },
+      "limit_ranges": {
+        "enabled": true
+      }
+    },
+    "privacy": {
+      "data_isolation": {
+        "namespace_separation": true,
+        "pod_security_policies": true
+      },
+      "secrets_management": {
+        "personal_data_encryption": true
+      }
+    },
+    "applications": {
+      "privacy": {
+        "data_anonymization": {
+          "enabled": true
+        },
+        "pseudonymization": {
+          "enabled": true
+        },
+        "encryption_at_field_level": true
+      }
+    },
+    "service_mesh": {
+      "enabled": true,
+      "mtls_enabled": true,
+      "traffic_policies": {
+        "enforced": true,
+        "encryption_required": true
+      },
+      "observability": {
+        "enabled": true
+      },
+      "privacy": {
+        "traffic_encryption": true,
+        "data_flow_monitoring": true,
+        "policy_enforcement": true
+      }
+    },
+    "pipelines": {
+      "rbac_enabled": true,
+      "secrets_management": {
+        "enabled": true
+      },
+      "audit_logging": true,
+      "approval_gates": {
+        "required": true
+      }
+    },
+    "secrets": {
+      "external_secret_management": true,
+      "encryption_at_rest": true,
+      "rbac_controlled": true,
+      "rotation_policy": {
+        "enabled": true
+      }
+    },
+    "pods": {
+      "security_context": {
+        "non_root": true,
+        "read_only_filesystem": true
+      },
+      "resource_isolation": {
+        "enabled": true
+      }
+    },
+    "images": {
+      "vulnerability_scanning": true,
+      "trusted_registries_only": true,
+      "image_signing": {
+        "required": true
+      },
+      "base_image_minimal": true
+    }
+  },
+  "availability": {
+    "sla": {
+      "target_uptime": 99.9
+    },
+    "current_uptime": 99.95,
+    "downtime_tracking": {
+      "enabled": true
+    }
+  },
+  "monitoring": {
+    "infrastructure": {
+      "enabled": true
+    },
+    "application": {
+      "enabled": true
+    },
+    "alerts": {
+      "configured": true,
+      "response_time_sla": 10
+    }
+  },
+  "capacity_management": {
+    "monitoring": {
+      "enabled": true
+    },
+    "thresholds": {
+      "cpu_warning": 75,
+      "memory_warning": 80,
+      "storage_warning": 85
+    },
+    "forecasting": {
+      "enabled": true
+    }
+  },
+  "maintenance": {
+    "scheduled_windows": {
+      "defined": true
+    },
+    "change_management": {
+      "process_documented": true
+    },
+    "rollback_procedures": {
+      "documented": true
+    },
+    "testing": {
+      "required_before_production": true
+    }
+  },
+  "backup": {
+    "automated_backups": {
+      "enabled": true
+    },
+    "frequency": {
+      "daily": true
+    },
+    "retention": {
+      "days": 90
+    },
+    "recovery_testing": {
+      "frequency_days": 60
+    },
+    "offsite_storage": {
+      "enabled": true
+    }
+  },
+  "incident_response": {
+    "procedures_documented": true,
+    "team_defined": true,
+    "escalation_matrix": {
+      "defined": true
+    },
+    "communication_plan": {
+      "defined": true
+    }
+  },
+  "infrastructure": {
+    "zones": {
+      "count": 3
+    },
+    "load_balancing": {
+      "cross_zone": true
+    },
+    "data_replication": {
+      "cross_zone": true
+    }
+  },
+  "network": {
+    "redundant_connections": {
+      "count": 2
+    },
+    "failover": {
+      "automatic": true
+    },
+    "monitoring": {
+      "enabled": true
+    }
+  },
+  "storage": {
+    "replication": {
+      "enabled": true,
+      "factor": 3
+    },
+    "backup": {
+      "automated": true
+    },
+    "snapshots": {
+      "enabled": true
+    }
+  },
+  "performance": {
+    "response_time": {
+      "monitoring": true
+    },
+    "throughput": {
+      "monitoring": true
+    },
+    "resource_utilization": {
+      "monitoring": true
+    },
+    "alerts": {
+      "configured": true
+    },
+    "thresholds": {
+      "response_time_ms": 1500,
+      "error_rate_percent": 0.5,
+      "cpu_utilization_percent": 75
+    }
+  },
+  "data_processing": {
+    "input_validation": {
+      "enabled": true,
+      "data_type_checking": true,
+      "range_checking": true,
+      "format_validation": true
+    },
+    "integrity_checks": {
+      "checksums": {
+        "enabled": true
+      },
+      "digital_signatures": {
+        "enabled": true
+      },
+      "hash_verification": true
+    },
+    "error_handling": {
+      "logging": {
+        "enabled": true,
+        "detailed": true
+      },
+      "alerts": {
+        "configured": true
+      },
+      "recovery_procedures": {
+        "documented": true
+      }
+    },
+    "authorization": {
+      "required": true,
+      "approval_workflow": true,
+      "audit_trail": true
+    },
+    "access_controls": {
+      "role_based": true,
+      "least_privilege": true,
+      "regular_reviews": true
+    },
+    "monitoring": {
+      "real_time": true,
+      "anomaly_detection": true,
+      "threshold_alerts": true
+    },
+    "transactions": {
+      "sequence_checking": true,
+      "batch_totals": true,
+      "reconciliation": {
+        "enabled": true,
+        "frequency_hours": 6
+      }
+    },
+    "transmission": {
+      "encryption_in_transit": true,
+      "message_authentication": true,
+      "delivery_confirmation": true
+    },
+    "queues": {
+      "monitoring": {
+        "enabled": true
+      },
+      "dead_letter_handling": true,
+      "retention_policies": {
+        "defined": true
+      }
+    }
+  },
+  "applications": {
+    "apis": {
+      "input_validation": true,
+      "rate_limiting": true,
+      "authentication_required": true,
+      "response_validation": true
+    }
+  },
+  "databases": {
+    "transactions": {
+      "acid_compliance": true,
+      "rollback_capability": true,
+      "deadlock_detection": true
+    },
+    "integrity_constraints": {
+      "enforced": true
+    },
+    "encryption": {
+      "transparent_data_encryption": true
+    },
+    "access_controls": {
+      "column_level_encryption": true,
+      "view_based_access": true
+    },
+    "auditing": {
+      "access_logging": true
+    }
+  },
+  "messaging": {
+    "exactly_once_delivery": {
+      "enabled": true
+    },
+    "message_ordering": {
+      "maintained": true
+    },
+    "duplicate_detection": {
+      "enabled": true
+    },
+    "poison_message_handling": true
+  },
+  "data_quality": {
+    "completeness_checks": true,
+    "consistency_checks": true,
+    "accuracy_validation": true,
+    "timeliness_validation": true
+  },
+  "data_lineage": {
+    "tracking": {
+      "enabled": true
+    },
+    "transformation_logging": true,
+    "source_attribution": true
+  },
+  "data_classification": {
+    "system_defined": true,
+    "categories": {
+      "public": {
+        "defined": true
+      },
+      "internal": {
+        "defined": true
+      },
+      "confidential": {
+        "defined": true
+      },
+      "restricted": {
+        "defined": true
+      }
+    },
+    "access_controls": {
+      "role_based": true,
+      "need_to_know": true,
+      "regular_reviews": true
+    }
+  },
+  "data_handling": {
+    "procedures": {
+      "documented": true,
+      "training_provided": true,
+      "compliance_monitoring": true
+    }
+  },
+  "encryption": {
+    "in_transit": {
+      "enabled": true,
+      "protocols": {
+        "tls_version": 1.3
+      },
+      "cipher_suites": {
+        "strong_only": true
+      },
+      "certificate_management": {
+        "automated": true
+      }
+    },
+    "at_rest": {
+      "enabled": true,
+      "algorithm": {
+        "strength": 256
+      },
+      "key_management": {
+        "centralized": true
+      },
+      "database_encryption": true
+    }
+  },
+  "storage": {
+    "filesystem": {
+      "encryption": {
+        "enabled": true,
+        "full_disk": true
+      }
+    },
+    "removable_media": {
+      "encryption": {
+        "required": true
+      }
+    }
+  },
+  "apis": {
+    "authentication": {
+      "required": true
+    },
+    "authorization": {
+      "implemented": true
+    },
+    "encryption": {
+      "https_only": true
+    },
+    "rate_limiting": {
+      "enabled": true
+    }
+  },
+  "dlp": {
+    "monitoring": {
+      "enabled": true
+    },
+    "policies": {
+      "data_classification_based": true
+    },
+    "detection": {
+      "content_inspection": true
+    },
+    "response": {
+      "automatic_blocking": true
+    }
+  },
+  "communication": {
+    "email": {
+      "encryption_required": true
+    },
+    "messaging": {
+      "end_to_end_encryption": true
+    },
+    "file_sharing": {
+      "controlled_platforms": true
+    }
+  },
+  "mobile_devices": {
+    "mdm_enrollment": {
+      "required": true
+    },
+    "encryption": {
+      "device_level": true
+    },
+    "remote_wipe": {
+      "capability": true
+    },
+    "app_management": {
+      "controlled": true
+    }
+  },
+  "data_retention": {
+    "policies": {
+      "documented": true,
+      "classification_based": true,
+      "automated_enforcement": true
+    }
+  },
+  "data_disposal": {
+    "procedures": {
+      "documented": true
+    },
+    "methods": {
+      "cryptographic_erasure": true
+    },
+    "verification": {
+      "completion_verified": true
+    },
+    "media_destruction": {
+      "certified": true
+    }
+  },
+  "access_logging": {
+    "confidential_data": {
+      "enabled": true,
+      "detailed": true,
+      "real_time_monitoring": true,
+      "retention_period": 2555
+    }
+  },
+  "anomaly_detection": {
+    "unusual_access_patterns": true,
+    "privileged_user_monitoring": true,
+    "data_exfiltration_detection": true,
+    "automated_alerts": true
+  },
+  "privacy": {
+    "collection": {
+      "policy_documented": true,
+      "legal_basis_identified": true,
+      "purpose_limitation": true,
+      "data_minimization": true
+    },
+    "consent": {
+      "explicit_consent_required": true,
+      "consent_tracking": {
+        "enabled": true
+      },
+      "withdrawal_mechanism": {
+        "available": true
+      },
+      "granular_consent": {
+        "supported": true
+      }
+    },
+    "data_subject_rights": {
+      "access_request": {
+        "supported": true
+      },
+      "rectification": {
+        "supported": true
+      },
+      "erasure": {
+        "supported": true
+      },
+      "portability": {
+        "supported": true
+      }
+    },
+    "use": {
+      "purpose_limitation": true,
+      "compatible_use_only": true,
+      "access_controls": {
+        "role_based": true
+      },
+      "processing_logging": true
+    },
+    "retention": {
+      "policies_documented": true,
+      "automated_deletion": true,
+      "legal_hold_management": true,
+      "retention_schedules": {
+        "defined": true
+      }
+    },
+    "data_quality": {
+      "accuracy_verification": true,
+      "regular_updates": true,
+      "correction_procedures": true
+    },
+    "third_party_sharing": {
+      "documented_agreements": true,
+      "due_diligence_performed": true,
+      "data_processing_agreements": true,
+      "regular_assessments": true
+    },
+    "cross_border_transfers": {
+      "adequacy_decisions": {
+        "verified": true
+      },
+      "safeguards": {
+        "implemented": true
+      },
+      "transfer_logging": true
+    },
+    "breach_notification": {
+      "procedures_documented": true,
+      "timeline_compliance": {
+        "authorities": 24,
+        "individuals": 48
+      },
+      "assessment_criteria": {
+        "defined": true
+      }
+    },
+    "by_design": {
+      "default_privacy_settings": true,
+      "privacy_impact_assessments": true,
+      "data_protection_officer": {
+        "appointed": true
+      },
+      "privacy_training": {
+        "provided": true
+      }
+    },
+    "technical_measures": {
+      "encryption": {
+        "personal_data": true
+      },
+      "anonymization": {
+        "automated": true
+      },
+      "access_logging": {
+        "personal_data": true
+      },
+      "data_masking": {
+        "non_production": true
+      }
+    },
+    "organizational_measures": {
+      "policies_documented": true,
+      "staff_training": true,
+      "vendor_management": true,
+      "regular_audits": true
+    },
+    "monitoring": {
+      "data_processing_activities": true,
+      "consent_compliance": true,
+      "retention_compliance": true,
+      "automated_alerts": true
+    },
+    "compliance": {
+      "regular_reports": {
+        "generated": true
+      },
+      "metrics": {
+        "tracked": true
+      },
+      "management_review": {
+        "conducted": true
+      },
+      "continuous_improvement": true
+    },
+    "data_subject_requests": {
+      "automated_workflow": true,
+      "identity_verification": true,
+      "response_timeline": 25,
+      "request_logging": true
+    },
+    "gdpr": {
+      "lawful_basis": {
+        "documented": true
+      },
+      "dpo_appointed": true,
+      "privacy_notices": {
+        "compliant": true
+      },
+      "records_of_processing": true
+    },
+    "ccpa": {
+      "consumer_rights": {
+        "supported": true
+      },
+      "opt_out_mechanisms": {
+        "available": true
+      },
+      "privacy_policy": {
+        "compliant": true
+      },
+      "sale_disclosure": true
+    },
+    "regional_laws": {
+      "identification_completed": true,
+      "compliance_assessment": {
+        "conducted": true
+      },
+      "implementation": {
+        "verified": true
+      }
+    }
+  },
+  "soc2": {
+    "service_commitments": {
+      "security": {
+        "defined": true
+      },
+      "suitability_of_design": true,
+      "operating_effectiveness": true
+    },
+    "system_boundaries": {
+      "infrastructure": {
+        "documented": true
+      },
+      "software": {
+        "documented": true
+      },
+      "people": {
+        "documented": true
+      },
+      "procedures": {
+        "documented": true
+      },
+      "data": {
+        "documented": true
+      }
+    },
+    "risk_management": {
+      "risk_assessment": {
+        "periodic": true,
+        "methodology": {
+          "defined": true
+        }
+      },
+      "risk_identification": {
+        "comprehensive": true
+      },
+      "risk_response": {
+        "documented": true
+      },
+      "monitoring": {
+        "continuous": true
+      },
+      "reporting": {
+        "regular": true
+      },
+      "escalation": {
+        "procedures": {
+          "defined": true
+        }
+      }
+    },
+    "control_environment": {
+      "governance": {
+        "board_oversight": true,
+        "management_philosophy": true
+      },
+      "integrity": {
+        "code_of_conduct": true
+      },
+      "competence": {
+        "defined_roles": true
+      }
+    },
+    "human_resources": {
+      "background_checks": true,
+      "training_programs": true,
+      "performance_evaluations": true,
+      "disciplinary_procedures": true
+    },
+    "vendor_management": {
+      "due_diligence": {
+        "performed": true
+      },
+      "contracts": {
+        "security_requirements": true
+      },
+      "monitoring": {
+        "ongoing": true
+      },
+      "termination": {
+        "procedures": {
+          "defined": true
+        }
+      }
+    },
+    "subservice_organizations": [],
+    "change_management": {
+      "process": {
+        "documented": true
+      },
+      "approval": {
+        "required": true
+      },
+      "testing": {
+        "required": true
+      },
+      "rollback": {
+        "procedures": {
+          "defined": true
+        }
+      }
+    },
+    "configuration_management": {
+      "baseline": {
+        "established": true
+      },
+      "version_control": true,
+      "unauthorized_changes": {
+        "detection": true
+      }
+    },
+    "incident_response": {
+      "program": {
+        "established": true
+      },
+      "team": {
+        "defined": true
+      },
+      "procedures": {
+        "documented": true
+      },
+      "testing": {
+        "regular": true
+      }
+    },
+    "business_continuity": {
+      "plan": {
+        "documented": true
+      },
+      "testing": {
+        "annual": true
+      },
+      "recovery_objectives": {
+        "defined": true
+      },
+      "communication": {
+        "plan": {
+          "defined": true
+        }
+      }
+    },
+    "monitoring": {
+      "infrastructure": {
+        "comprehensive": true
+      },
+      "applications": {
+        "comprehensive": true
+      },
+      "security_events": {
+        "real_time": true
+      },
+      "performance": {
+        "continuous": true
+      }
+    },
+    "logging": {
+      "centralized": true,
+      "integrity_protection": true,
+      "retention": {
+        "adequate": true
+      },
+      "review": {
+        "regular": true
+      }
+    },
+    "operating_effectiveness": {
+      "testing_period_months": 12,
+      "continuous_monitoring": true,
+      "exception_reporting": true,
+      "management_response": {
+        "documented": true
+      }
+    }
+  },
+  "network": {
+    "architecture": {
+      "segmentation": {
+        "enabled": true,
+        "dmz": {
+          "configured": true
+        },
+        "internal_zones": {
+          "count": 3
+        },
+        "zero_trust": {
+          "enabled": true
+        }
+      },
+      "segmentation": {
+        "enabled": true,
+        "zones": 3
+      },
+      "firewalls": {
+        "configured": true
+      }
+    },
+    "topology": {
+      "documentation": {
+        "current": true,
+        "detailed": true
+      },
+      "change_management": {
+        "required": true
+      },
+      "reviews": {
+        "periodic": true
+      }
+    },
+    "redundancy": {
+      "multiple_paths": {
+        "enabled": true
+      },
+      "failover": {
+        "automatic": true
+      },
+      "load_balancing": {
+        "configured": true
+      },
+      "geographic_distribution": {
+        "enabled": true
+      }
+    },
+    "firewalls": {
+      "perimeter": {
+        "configured": true
+      },
+      "internal": {
+        "configured": true
+      },
+      "rules": {
+        "default_deny": true,
+        "regular_review": true
+      },
+      "logging": {
+        "enabled": true
+      },
+      "ngfw": {
+        "deep_packet_inspection": true,
+        "application_control": true,
+        "intrusion_prevention": true,
+        "threat_intelligence": true
+      }
+    },
+    "waf": {
+      "enabled": true,
+      "rules": {
+        "owasp_top10": true,
+        "custom_rules": {
+          "configured": true
+        }
+      },
+      "monitoring": {
+        "real_time": true
+      },
+      "false_positive_tuning": true
+    },
+    "access_control": {
+      "nac": {
+        "enabled": true
+      },
+      "device_authentication": {
+        "required": true
+      },
+      "posture_assessment": {
+        "enabled": true
+      },
+      "quarantine": {
+        "automated": true
+      },
+      "dot1x": {
+        "enabled": true,
+        "certificate_based": true,
+        "radius_integration": true,
+        "dynamic_vlan_assignment": true
+      }
+    },
+    "wireless": {
+      "encryption": {
+        "wpa3_enabled": true
+      },
+      "guest_isolation": {
+        "enabled": true
+      },
+      "rogue_ap_detection": {
+        "enabled": true
+      },
+      "certificate_authentication": true
+    },
+    "monitoring": {
+      "traffic_analysis": {
+        "enabled": true
+      },
+      "flow_monitoring": {
+        "netflow_enabled": true
+      },
+      "packet_capture": {
+        "strategic_points": true
+      },
+      "performance": {
+        "continuous": true
+      },
+      "siem": {
+        "integration": {
+          "enabled": true
+        },
+        "log_correlation": true,
+        "real_time_alerting": true,
+        "threat_hunting": true
+      }
+    },
+    "security": {
+      "ids": {
+        "network_based": {
+          "enabled": true
+        },
+        "host_based": {
+          "enabled": true
+        }
+      },
+      "ips": {
+        "inline_deployment": true,
+        "signature_updates": {
+          "automatic": true
+        },
+        "custom_rules": {
+          "configured": true
+        }
+      }
+    },
+    "encryption": {
+      "in_transit": {
+        "tls_minimum_version": 1.3,
+        "perfect_forward_secrecy": true
+      },
+      "ipsec": {
+        "configured": true
+      },
+      "macsec": {
+        "enabled": true
+      }
+    },
+    "vpn": {
+      "multi_factor_authentication": {
+        "required": true
+      },
+      "split_tunneling": {
+        "disabled": true
+      },
+      "encryption": {
+        "strong_ciphers": true
+      },
+      "session_management": {
+        "timeout_configured": true
+      },
+      "logging": {
+        "detailed": true
+      }
+    },
+    "remote_access": {
+      "zero_trust": {
+        "implemented": true
+      },
+      "conditional_access": {
+        "enabled": true
+      },
+      "device_compliance": {
+        "required": true
+      },
+      "session_recording": {
+        "enabled": true
+      }
+    },
+    "sdn": {
+      "controller_security": {
+        "hardened": true
+      },
+      "flow_rules": {
+        "validated": true
+      },
+      "network_policies": {
+        "enforced": true
+      },
+      "micro_segmentation": {
+        "enabled": true
+      }
+    },
+    "containers": {
+      "network_policies": {
+        "enabled": true
+      },
+      "service_mesh": {
+        "security": {
+          "enabled": true
+        }
+      },
+      "ingress_controls": {
+        "configured": true
+      },
+      "egress_filtering": {
+        "enabled": true
+      }
+    },
+    "multi_cloud": {
+      "consistent_policies": true,
+      "encrypted_interconnects": true,
+      "centralized_management": true,
+      "security_orchestration": true
+    },
+    "incident_response": {
+      "detection": {
+        "automated": true
+      },
+      "isolation": {
+        "automated": true
+      },
+      "forensics": {
+        "packet_capture": true
+      },
+      "communication": {
+        "defined": true
+      }
+    },
+    "ddos_protection": {
+      "detection": {
+        "enabled": true
+      },
+      "mitigation": {
+        "automatic": true
+      },
+      "cloud_based": {
+        "enabled": true
+      },
+      "capacity": {
+        "sufficient": true
+      }
+    },
+    "forensics": {
+      "packet_capture": {
+        "continuous": true
+      },
+      "flow_analysis": {
+        "retained": true
+      },
+      "timeline_reconstruction": true,
+      "legal_compliance": true
+    }
+  },
+  "systems": {
+    "architecture": {
+      "documentation": {
+        "current": true,
+        "detailed": true
+      },
+      "design_principles": {
+        "security_by_design": true
+      },
+      "scalability": {
+        "horizontal": {
+          "supported": true
+        }
+      },
+      "fault_tolerance": {
+        "designed": true
+      }
+    },
+    "iac": {
+      "enabled": true,
+      "version_control": {
+        "git_managed": true
+      },
+      "validation": {
+        "automated": true
+      },
+      "deployment": {
+        "automated": true
+      },
+      "rollback": {
+        "capability": true
+      }
+    },
+    "standardization": {
+      "base_images": {
+        "standardized": true
+      },
+      "configurations": {
+        "templated": true
+      },
+      "naming_conventions": {
+        "enforced": true
+      },
+      "tagging": {
+        "consistent": true
+      }
+    },
+    "hardening": {
+      "cis_benchmarks": {
+        "applied": true
+      },
+      "unnecessary_services": {
+        "disabled": true
+      },
+      "kernel_parameters": {
+        "secured": true
+      },
+      "file_permissions": {
+        "restrictive": true
+      },
+      "network_services": {
+        "minimized": true
+      }
+    }
+  },
+  "security": {
+    "soc": {
+      "coverage": {
+        "twenty_four_seven": true
+      },
+      "staffing": {
+        "qualified_analysts": true
+      },
+      "procedures": {
+        "documented": true
+      },
+      "escalation": {
+        "defined": true
+      },
+      "metrics": {
+        "tracked": true
+      }
+    },
+    "siem": {
+      "platform": {
+        "enterprise_grade": true
+      },
+      "log_sources": {
+        "comprehensive": true
+      },
+      "correlation": {
+        "rules": true
+      },
+      "alerting": {
+        "real_time": true
+      },
+      "retention": {
+        "compliant": true
+      }
+    },
+    "analytics": {
+      "machine_learning": {
+        "enabled": true
+      },
+      "behavioral": {
+        "analysis": true
+      },
+      "anomaly_detection": {
+        "automated": true
+      },
+      "threat_scoring": {
+        "implemented": true
+      }
+    }
+  }
+}

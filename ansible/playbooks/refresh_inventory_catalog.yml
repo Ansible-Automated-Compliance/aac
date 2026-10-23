@@ -1,0 +1,174 @@
+---
+# refresh_inventory_catalog.yml — rebuild the AAC software-inventory catalog
+#
+# Transforms the latest host_facts installed-package inventory into the normalized
+# installed_inventory table and refreshes the inventory_catalog materialized view
+# that the AAC Portal Bridge serves (GET /api/aac/v1/inventory_catalog).
+#
+# Run after aac_gather_facts (which populates host_facts). Idempotent: it ensures
+# the schema, fully rebuilds installed_inventory from host_facts_latest, and
+# refreshes the catalog.
+#
+# AAP Job Template: "AAC - Refresh Inventory Catalog (patch intelligence)"
+# Credentials: Ansible Vault
+# EE: AAC Compliance EE (community.postgresql)
+# Schedule: nightly, after the fact-collection job.
+
+- name: Rebuild AAC inventory catalog from host_facts
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - [ "../vars/vault_secrets.yml", "../vars/empty_fallback.yml" ]
+    - ../vars/site_config.yml
+
+  vars:
+    pg_port: "{{ compliance_db_port | default(5432) }}"
+    pg_db: "compliance"
+    pg_user: "postgres"
+    pg_password: "{{ compliance_db_password }}"
+
+  tasks:
+    - name: Ensure inventory schema exists (tables + matview)
+      # postgresql_script, NOT postgresql_query: `path_to_script` was removed
+      # from postgresql_query in community.postgresql 3.0, so this task had
+      # been failing on the current EE with "Unsupported parameters".
+      community.postgresql.postgresql_script:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        path: "{{ playbook_dir }}/../files/inventory_catalog_schema.sql"
+      register: schema_apply
+
+    - name: Rebuild installed_inventory + refresh catalog from host_facts_latest
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: "{{ item }}"
+      loop:
+        # 1) clear
+        - "TRUNCATE installed_inventory"
+        # 2) Linux (rpm/deb) packages from package_facts
+        - >-
+          INSERT INTO installed_inventory
+            (hostname, package_name, package_version, package_vendor, cpe,
+             os_family, os_version, architecture, source, first_seen_at, last_seen_at)
+          SELECT hf.hostname, pkg,
+                 (hf.facts->'packages'->'installed'->pkg->0->>'version'),
+                 lower(pkg), NULL,
+                 hf.os_family, hf.os_version,
+                 (hf.facts->'packages'->'installed'->pkg->0->>'arch'),
+                 COALESCE(hf.facts->'packages'->>'package_manager','package_facts'),
+                 hf.collected_at, hf.collected_at
+            FROM host_facts_latest hf,
+                 LATERAL jsonb_object_keys(hf.facts->'packages'->'installed') pkg
+           WHERE jsonb_typeof(hf.facts->'packages'->'installed') = 'object'
+             AND (hf.facts->'packages'->'installed'->pkg->0->>'version') IS NOT NULL
+        # 3) Windows software from win facts
+        - >-
+          INSERT INTO installed_inventory
+            (hostname, package_name, package_version, package_vendor, cpe,
+             os_family, os_version, architecture, source, first_seen_at, last_seen_at)
+          SELECT hf.hostname, (elem->>'DisplayName'), (elem->>'DisplayVersion'),
+                 lower(COALESCE(NULLIF(elem->>'Publisher',''),'unknown')),
+                 NULL, hf.os_family, hf.os_version, NULL, 'windows',
+                 hf.collected_at, hf.collected_at
+            FROM host_facts_latest hf,
+                 LATERAL jsonb_array_elements(hf.facts->'packages'->'installed_raw') elem
+           WHERE jsonb_typeof(hf.facts->'packages'->'installed_raw') = 'array'
+             AND (elem->>'DisplayName') IS NOT NULL
+             AND COALESCE(elem->>'DisplayVersion','') <> ''
+        # 4) Application-layer dependencies (Java / Python / Node).
+        #    Everything downstream of installed_inventory is source-agnostic —
+        #    the catalog aggregates on (vendor, product, version) regardless of
+        #    origin — so adding these rows makes application dependencies flow
+        #    through the bridge, matcher, patch manifest, worklist, closure
+        #    verification and support-status resolver with NO further change.
+        #
+        #    `package_vendor` carries the NAMESPACE, not a copy of the name:
+        #    maven -> groupId, pypi -> 'pypi', npm -> 'npm'. The OS branches use
+        #    vendor = lower(package_name), a convention that does not survive
+        #    Maven's groupId, which is why the namespace is preserved here.
+        - >-
+          INSERT INTO installed_inventory
+            (hostname, package_name, package_version, package_vendor, purl,
+             os_family, os_version, source, first_seen_at, last_seen_at)
+          SELECT hf.hostname,
+                 (d->>'name'),
+                 (d->>'version'),
+                 'pypi',
+                 'pkg:pypi/' || (d->>'name') || '@' || (d->>'version'),
+                 hf.os_family, hf.os_version, 'pip',
+                 hf.collected_at, hf.collected_at
+            FROM host_facts_latest hf,
+                 LATERAL jsonb_array_elements(hf.facts->'app_deps'->'python') d
+           WHERE jsonb_typeof(hf.facts->'app_deps'->'python') = 'array'
+             AND (d->>'name') IS NOT NULL AND (d->>'version') IS NOT NULL
+        - >-
+          INSERT INTO installed_inventory
+            (hostname, package_name, package_version, package_vendor, purl,
+             os_family, os_version, source, first_seen_at, last_seen_at)
+          SELECT hf.hostname,
+                 (d->>'artifact'),
+                 (d->>'version'),
+                 (d->>'group'),
+                 'pkg:maven/' || (d->>'group') || '/' || (d->>'artifact') || '@' || (d->>'version'),
+                 hf.os_family, hf.os_version, 'maven',
+                 hf.collected_at, hf.collected_at
+            FROM host_facts_latest hf,
+                 LATERAL jsonb_array_elements(hf.facts->'app_deps'->'java') d
+           WHERE jsonb_typeof(hf.facts->'app_deps'->'java') = 'array'
+             AND (d->>'group') IS NOT NULL AND (d->>'artifact') IS NOT NULL
+             AND (d->>'version') IS NOT NULL
+        - >-
+          INSERT INTO installed_inventory
+            (hostname, package_name, package_version, package_vendor, purl,
+             os_family, os_version, source, first_seen_at, last_seen_at)
+          SELECT hf.hostname,
+                 (d->>'name'),
+                 (d->>'version'),
+                 'npm',
+                 -- npm scopes must be percent-encoded: the purl spec writes
+                 -- @angular/core as pkg:npm/%40angular/core, encoding only the
+                 -- leading @ and leaving the / as a structural separator. An
+                 -- unencoded @ produces a purl that fails to match OSV silently.
+                 'pkg:npm/' || regexp_replace(d->>'name', '^@', '%40')
+                   || '@' || (d->>'version'),
+                 hf.os_family, hf.os_version, 'npm',
+                 hf.collected_at, hf.collected_at
+            FROM host_facts_latest hf,
+                 LATERAL jsonb_array_elements(hf.facts->'app_deps'->'node') d
+           WHERE jsonb_typeof(hf.facts->'app_deps'->'node') = 'array'
+             AND (d->>'name') IS NOT NULL AND (d->>'version') IS NOT NULL
+        # 5) refresh the catalog the bridge serves
+        - "REFRESH MATERIALIZED VIEW inventory_catalog"
+      loop_control:
+        label: "{{ item[:60] }}"
+
+    - name: Report catalog stats
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: >-
+          SELECT
+            (SELECT count(*) FROM installed_inventory)              AS inventory_rows,
+            (SELECT count(DISTINCT hostname) FROM installed_inventory) AS hosts,
+            (SELECT count(*) FROM inventory_catalog)                AS catalog_rows,
+            (SELECT count(DISTINCT product) FROM inventory_catalog) AS distinct_products
+      register: stats
+
+    - name: Summary
+      ansible.builtin.debug:
+        msg:
+          - "inventory_rows: {{ stats.query_result[0].inventory_rows }} across {{ stats.query_result[0].hosts }} hosts"
+          - "catalog_rows: {{ stats.query_result[0].catalog_rows }} | distinct_products: {{ stats.query_result[0].distinct_products }}"
+          - "Catalog served at: GET /api/aac/v1/inventory_catalog (AAC Portal Bridge)"

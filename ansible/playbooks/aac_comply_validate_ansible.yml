@@ -1,0 +1,188 @@
+---
+# Sentinel — Ansible Playbook Validation
+#
+# Two entry points:
+#   1. Code check-in: triggered by EDA GitHub webhook when *.yml files are pushed.
+#      Fetches the playbook from the commit, parses it as YAML, evaluates against OPA,
+#      posts GitHub commit status to gate the PR.
+#
+#   2. Runtime pre-flight: called via include_tasks at the top of a job template
+#      to validate the playbook before execution proceeds.
+#
+# AAP Survey variables:
+#   playbook_source:      "file" | "github"             (default: file)
+#   playbook_path:        path to local playbook .yml    (used when playbook_source=file)
+#   github_repo:          "owner/repo"                   (used when playbook_source=github)
+#   github_sha:           commit SHA                     (used when playbook_source=github)
+#   github_file:          path within repo               (used when playbook_source=github)
+#   github_token:         GitHub API token               (default: from vault)
+#   sentinel_environment: "production"|"staging"|"development" (default: production)
+#
+# NOTE: variable is named 'sentinel_environment' (not 'environment') because
+# 'environment' is a reserved Ansible play keyword for shell environment variables.
+
+- name: Sentinel — Validate Ansible Playbook
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - [ "../vars/vault_secrets.yml", "../vars/empty_fallback.yml" ]
+    - ../vars/site_config.yml
+
+  vars:
+    opa_url:              "{{ opa_compliance_url }}"
+    opa_endpoint:         "{{ opa_url }}/v1/data/sentinel/ansible/result"
+    playbook_source:      "file"
+    playbook_path:        "{{ playbook_dir }}/../../examples/sentinel_ansible_example.yml"
+    # github_repo: <set via extra_vars / survey / inventory>
+    # github_sha: <set via extra_vars / survey / inventory>
+    # github_file: <set via extra_vars / survey / inventory>
+    github_token:         "{{ vault_github_pat | default('') }}"
+    sentinel_environment: "production"
+
+  tasks:
+    # -------------------------------------------------------------------------
+    # 1. Acquire the playbook
+    # -------------------------------------------------------------------------
+    - name: Load playbook from local file
+      set_fact:
+        raw_playbook: "{{ lookup('file', playbook_path) | from_yaml }}"
+      when: playbook_source == "file"
+
+    - name: Fetch playbook from GitHub (raw content at SHA)
+      uri:
+        url: "https://api.github.com/repos/{{ (github_repo | default('', true)) }}/contents/{{ (github_file | default('', true)) }}?ref={{ (github_sha | default('', true)) }}"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ github_token }}"
+          Accept: "application/vnd.github.v3.raw"
+        return_content: true
+        status_code: 200
+      register: github_playbook_response
+      when: playbook_source == "github"
+
+    - name: Parse playbook from GitHub response
+      set_fact:
+        raw_playbook: "{{ github_playbook_response.content | from_yaml }}"
+      when: playbook_source == "github"
+
+    # -------------------------------------------------------------------------
+    # 1b. Show the source file being evaluated (from git repository)
+    # -------------------------------------------------------------------------
+    - name: Show Ansible playbook source from git repository
+      ansible.builtin.debug:
+        msg: |
+          ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+          SOURCE FILE  →  {{ playbook_path | regex_replace('.*examples/', 'examples/') }}
+          ORIGIN       →  git repository (ansible-automated-compliance/aac)
+          EVALUATED BY →  OPA (opa-compliance :8182) — Rego policy: sentinel/ansible
+          ENFORCED BY  →  AAP (job fails if OPA returns DENY)
+          ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+          {{ lookup('file', playbook_path) }}
+          ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+      when: playbook_source == "file"
+
+    # -------------------------------------------------------------------------
+    # 2. Build OPA input — wrap plays list with environment context
+    # -------------------------------------------------------------------------
+    - name: Build OPA input
+      set_fact:
+        opa_input:
+          plays:                "{{ raw_playbook }}"
+          sentinel_environment: "{{ sentinel_environment }}"
+
+    # -------------------------------------------------------------------------
+    # 3. Evaluate against OPA
+    # -------------------------------------------------------------------------
+    - name: Show OPA input hosts field (diagnostics)
+      debug:
+        msg: "plays[0].hosts type={{ raw_playbook[0].hosts | type_debug }}, value={{ raw_playbook[0].hosts | to_json }}, sentinel_environment={{ sentinel_environment }}"
+
+    - name: Evaluate playbook against OPA Sentinel policy
+      uri:
+        use_proxy: false
+        url: "{{ opa_endpoint }}"
+        method: POST
+        body_format: json
+        body:
+          input: "{{ opa_input }}"
+        return_content: true
+        status_code: 200
+        validate_certs: false
+      register: opa_response
+
+    - name: Extract Sentinel result
+      set_fact:
+        sentinel_result: "{{ opa_response.json.result }}"
+
+    # -------------------------------------------------------------------------
+    # 4. Report results
+    # -------------------------------------------------------------------------
+    - name: Show OPA policy decision and AAP enforcement
+      debug:
+        msg:
+          - "═══════════════════════════════════════════════════════════════"
+          - "OPA POLICY DECISION  (Policy-as-Code engine)"
+          - "Policy:      {{ sentinel_result.policy }}"
+          - "OPA verdict: {{ 'ALLOW ✅' if sentinel_result.allow else 'DENY ❌' }}"
+          - "Violations:  {{ sentinel_result.violation_count }}"
+          - "Environment: {{ sentinel_environment }}"
+          - "───────────────────────────────────────────────────────────────"
+          - "AAP ENFORCEMENT"
+          - "Result: {{ 'Job continues → playbook executes' if sentinel_result.allow else 'Job fails → playbook execution BLOCKED' }}"
+          - "═══════════════════════════════════════════════════════════════"
+          - "Violations:"
+          - "{{ sentinel_result.violations | to_nice_yaml }}"
+
+    # -------------------------------------------------------------------------
+    # 5. Post GitHub commit status (code check-in entry point)
+    # -------------------------------------------------------------------------
+    - name: Post ALLOW status to GitHub
+      uri:
+        url: "https://api.github.com/repos/{{ (github_repo | default('', true)) }}/statuses/{{ (github_sha | default('', true)) }}"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ github_token }}"
+          Accept: "application/vnd.github.v3+json"
+        body_format: json
+        body:
+          state: "success"
+          context: "aac/sentinel-ansible"
+          description: "Sentinel: Ansible playbook is policy-compliant"
+          target_url: "{{ aap_url }}"
+        status_code: 201
+      when:
+        - playbook_source == "github"
+        - (github_sha | default('', true)) != ""
+        - sentinel_result.allow | bool
+
+    - name: Post DENY status to GitHub
+      uri:
+        url: "https://api.github.com/repos/{{ (github_repo | default('', true)) }}/statuses/{{ (github_sha | default('', true)) }}"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ github_token }}"
+          Accept: "application/vnd.github.v3+json"
+        body_format: json
+        body:
+          state: "failure"
+          context: "aac/sentinel-ansible"
+          description: "Sentinel: {{ sentinel_result.violation_count }} violation(s) — merge blocked"
+          target_url: "{{ aap_url }}"
+        status_code: 201
+      when:
+        - playbook_source == "github"
+        - (github_sha | default('', true)) != ""
+        - not sentinel_result.allow | bool
+
+    # -------------------------------------------------------------------------
+    # 6. Enforce — fail the AAP job if denied (both entry points)
+    # -------------------------------------------------------------------------
+    - name: BLOCK — AAP blocks playbook execution based on OPA verdict
+      fail:
+        msg: |
+          ⛔ PLAYBOOK EXECUTION BLOCKED BY AAP
+          OPA verdict: DENY — {{ sentinel_result.violation_count }} violation(s)
+          Fix all violations in the playbook and re-submit for OPA evaluation.
+      when: not sentinel_result.allow | bool

@@ -1,0 +1,33 @@
+---
+# ansible-lint configuration for AAC
+#
+# WHY THIS EXISTS: every defect found in the August 2026 demo-readiness work was in
+# the Ansible layer, and that layer had NO automated checking of any kind. The Rego
+# library has `opa test`; the playbooks had nothing. A Jinja error that made an entire
+# assurance node untemplatable sat undetected for months because the node never ran.
+#
+# ansible-lint catches that class. `ansible-playbook --syntax-check` does NOT —
+# verified against the real defect: syntax-check passed it, lint exited 2.
+
+profile: min          # fatal correctness only. Raise deliberately, not by accident:
+                      # a gate that reports 400 style findings gets muted, and then
+                      # it catches nothing at all.
+
+exclude_paths:
+  - policies/                 # git submodule, has its own tests (opa test)
+  - collections/              # vendored/in-tree collections
+  - .github/
+  - ansible/execution-environments/   # EE build contexts, not runnable playbooks
+
+# Offline by default: the repo's requirements reference certified collections that
+# need an Automation Hub token, and a validation gate must not depend on one.
+offline: true
+
+# No global skip_list on purpose.
+#
+# The fail-closed target-host pattern in the patch playbooks resolves `hosts` to
+# EMPTY when no target is supplied, which lint reads as fatal. That is the intended
+# behaviour — an empty hosts field makes Ansible refuse outright, so the worst case
+# is a no-op rather than running against the execution environment. It is suppressed
+# per-play with `# noqa: syntax-check[specific]`, so the rule stays live everywhere
+# else. A global skip would disable it for the whole repo to excuse three plays.

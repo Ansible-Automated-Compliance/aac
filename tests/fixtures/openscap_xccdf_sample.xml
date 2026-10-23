@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Benchmark xmlns="http://checklists.nist.gov/xccdf/1.2" id="xccdf_org.ssgproject.content_benchmark_RHEL-9">
+  <Rule id="xccdf_org.ssgproject.content_rule_sshd_disable_root_login" severity="medium">
+    <title>Disable SSH Root Login</title>
+    <ident system="https://nvd.nist.gov/cce/index.cfm">CCE-90775-0</ident>
+    <ident system="http://cyber.mil/cci">CCI-000366</ident>
+  </Rule>
+  <Rule id="xccdf_org.ssgproject.content_rule_package_aide_installed" severity="high">
+    <title>Install AIDE</title>
+  </Rule>
+  <Rule id="xccdf_org.ssgproject.content_rule_partition_for_tmp" severity="low">
+    <title>Ensure /tmp Located On Separate Partition</title>
+  </Rule>
+  <Rule id="xccdf_org.ssgproject.content_rule_audit_rules_login_events" severity="medium">
+    <title>Record Attempts to Alter Logon and Logout Events</title>
+  </Rule>
+  <TestResult id="xccdf_org.open-scap_testresult_default-profile" start-time="2026-09-04T10:00:00">
+    <title>OSCAP Scan Result</title>
+    <profile idref="xccdf_org.ssgproject.content_profile_stig"/>
+    <rule-result idref="xccdf_org.ssgproject.content_rule_sshd_disable_root_login" severity="medium" time="2026-09-04T10:00:01">
+      <result>pass</result>
+      <ident system="https://nvd.nist.gov/cce/index.cfm">CCE-90775-0</ident>
+      <ident system="http://cyber.mil/cci">CCI-000366</ident>
+    </rule-result>
+    <rule-result idref="xccdf_org.ssgproject.content_rule_package_aide_installed" severity="high" time="2026-09-04T10:00:02">
+      <result>fail</result>
+    </rule-result>
+    <rule-result idref="xccdf_org.ssgproject.content_rule_partition_for_tmp" severity="low" time="2026-09-04T10:00:03">
+      <result>notapplicable</result>
+    </rule-result>
+    <rule-result idref="xccdf_org.ssgproject.content_rule_audit_rules_login_events" severity="medium" time="2026-09-04T10:00:04">
+      <result>error</result>
+    </rule-result>
+    <score system="urn:xccdf:scoring:default" maximum="100">50.000000</score>
+  </TestResult>
+</Benchmark>

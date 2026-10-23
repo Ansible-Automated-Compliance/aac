@@ -1,0 +1,271 @@
+---
+# verify_installation.yml — AAC Installation Verification
+#
+# Checks that all AAC components are running correctly using Ansible modules.
+# Safe to run at any time — read-only, no changes made to any system.
+#
+# Checks:
+#   - Three OPA containers (security :8181, compliance :8182, OT :8183)
+#   - PostgreSQL compliance database and schema
+#   - AAP Gateway and Controller API
+#   - Ansible Vault file encryption
+#   - Rego policy count
+#
+# AAP Job Template: "AAC - Verify Installation"
+# Execution Environment: AAC Compliance EE
+# Credentials: Ansible Vault
+
+- name: AAC Installation Verification
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - ../vars/site_config.yml
+
+  vars:
+    pg_port:     5432
+
+    results: []
+
+    # Default fallbacks via shadow vars (avoids Jinja-recursion on
+    # Ansible 2.16+ that bites when a vars-block entry self-references
+    # `key: "{{ key | default(x) }}"`). Use-sites reference
+    # `(var | default(_var_default))`.
+    # _aap_token_default: <set via extra_vars / survey / inventory>
+    _compliance_db_password_default: "compliance"
+
+  tasks:
+
+    - name: Set timestamp
+      set_fact:
+        check_time: "{{ lookup('pipe', 'date +\"%Y-%m-%d %H:%M:%S\"') }}"
+
+    # =========================================================================
+    # OPA CONTAINERS
+    # =========================================================================
+    - name: Check OPA Security container (:8181)
+      uri:
+        use_proxy: false
+        url: "{{ opa_security_url }}/health"
+        method: GET
+        status_code: 200
+        timeout: 5
+      register: opa_security
+      ignore_errors: true
+
+    - name: Get OPA Security policy count
+      uri:
+        use_proxy: false
+        url: "{{ opa_security_url }}/v1/policies"
+        method: GET
+        status_code: 200
+        timeout: 5
+      register: opa_security_policies
+      ignore_errors: true
+      when: opa_security is succeeded
+
+    - name: Check OPA Compliance container (:8182)
+      uri:
+        use_proxy: false
+        url: "{{ opa_compliance_url }}/health"
+        method: GET
+        status_code: 200
+        timeout: 5
+      register: opa_compliance
+      ignore_errors: true
+
+    - name: Get OPA Compliance policy count
+      uri:
+        use_proxy: false
+        url: "{{ opa_compliance_url }}/v1/policies"
+        method: GET
+        status_code: 200
+        timeout: 5
+      register: opa_compliance_policies
+      ignore_errors: true
+      when: opa_compliance is succeeded
+
+    - name: Check OPA OT container (:8183)
+      uri:
+        use_proxy: false
+        url: "{{ opa_ot_url }}/health"
+        method: GET
+        status_code: 200
+        timeout: 5
+      register: opa_ot
+      ignore_errors: true
+
+    - name: Get OPA OT policy count
+      uri:
+        use_proxy: false
+        url: "{{ opa_ot_url }}/v1/policies"
+        method: GET
+        status_code: 200
+        timeout: 5
+      register: opa_ot_policies
+      ignore_errors: true
+      when: opa_ot is succeeded
+
+    # =========================================================================
+    # POSTGRESQL
+    # =========================================================================
+    - name: Check PostgreSQL connection
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port }}"
+        login_user: postgres
+        login_password: "{{ compliance_db_password | default(_compliance_db_password_default) }}"
+        login_db: compliance
+        query: >-
+          SELECT
+            (SELECT COUNT(*) FROM information_schema.tables
+             WHERE table_schema = 'public') AS table_count,
+            (SELECT COUNT(*) FROM compliance_results) AS row_count
+      register: pg_check
+      ignore_errors: true
+      no_log: true
+
+    # =========================================================================
+    # AAP GATEWAY AND CONTROLLER
+    # =========================================================================
+    - name: Check AAP Gateway
+      uri:
+        use_proxy: false
+        url: "{{ aap_url }}/api/gateway/v1/ping/"
+        method: GET
+        status_code: 200
+        validate_certs: false
+        timeout: 10
+      register: aap_gateway
+      ignore_errors: true
+
+    - name: Check AAP Controller API
+      uri:
+        use_proxy: false
+        url: "{{ aap_url }}/api/controller/v2/ping/"
+        method: GET
+        status_code: 200
+        validate_certs: false
+        timeout: 10
+      register: aap_controller
+      ignore_errors: true
+
+    - name: Validate AAP MCP token
+      uri:
+        use_proxy: false
+        url: "{{ aap_url }}/api/controller/v2/me/"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ aap_token | default((_aap_token_default | default('', true))) }}"
+        status_code: 200
+        validate_certs: false
+        timeout: 10
+      register: aap_token_check
+      ignore_errors: true
+      no_log: true
+
+    # =========================================================================
+    # MCP SERVER
+    # =========================================================================
+    - name: Check MCP server (:8004)
+      uri:
+        use_proxy: false
+        url: "{{ mcp_url }}/"
+        method: GET
+        status_code: [200, 404]
+        timeout: 5
+      register: mcp_server
+      ignore_errors: true
+
+    # =========================================================================
+    # VAULT FILE
+    # =========================================================================
+    # The file is only present on hosts where the operator dropped it
+    # (gitignored — not synced via AAP project sync). Topologies that
+    # don't have the file (mac-aap, RHPDS demo hosts) skip this check
+    # entirely rather than failing.
+    - name: Stat vault file
+      stat:
+        path: "{{ playbook_dir }}/../vars/vault_secrets.yml"
+      register: vault_file
+
+    - name: Check vault file header (where present)
+      shell: head -1 {{ playbook_dir }}/../vars/vault_secrets.yml
+      register: vault_header
+      changed_when: false
+      ignore_errors: true
+      when: vault_file.stat.exists
+
+    # =========================================================================
+    # PRINT RESULTS
+    # =========================================================================
+    - name: Print verification report
+      debug:
+        msg:
+          - ""
+          - "╔══════════════════════════════════════════════════════════╗"
+          - "║       Ansible Automated Compliance — Verifier            ║"
+          - "║       {{ check_time }}                       ║"
+          - "╚══════════════════════════════════════════════════════════╝"
+          - ""
+          - "━━━ OPA Containers ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "  {{ '✅' if opa_security is succeeded else '❌' }} OPA Security   (:8181) — CIS, NIST, STIGs\
+              {{ ' — ' + (opa_security_policies.json.result | length | string) + ' policies' if opa_security_policies is defined and opa_security_policies is succeeded else '' }}"
+          - "  {{ '✅' if opa_compliance is succeeded else '❌' }} OPA Compliance (:8182) — ISO 27001, SOC 2, PCI-DSS, FISMA\
+              {{ ' — ' + (opa_compliance_policies.json.result | length | string) + ' policies' if opa_compliance_policies is defined and opa_compliance_policies is succeeded else '' }}"
+          - "  {{ '✅' if opa_ot is succeeded else '❌' }} OPA OT         (:8183) — NERC-CIP, AI Governance\
+              {{ ' — ' + (opa_ot_policies.json.result | length | string) + ' policies' if opa_ot_policies is defined and opa_ot_policies is succeeded else '' }}"
+          - ""
+          - "━━━ PostgreSQL ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "  {{ '✅' if pg_check is succeeded else '❌' }} PostgreSQL (:5432) — compliance database\
+              {{ ' — ' + pg_check.query_result[0].table_count | string + ' tables, ' + pg_check.query_result[0].row_count | string + ' rows' if pg_check is succeeded else '' }}"
+          - ""
+          - "━━━ AAP Platform ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "  {{ '✅' if aap_gateway is succeeded else '❌' }} AAP Gateway"
+          - "  {{ '✅' if aap_controller is succeeded else '❌' }} AAP Controller\
+              {{ ' — v' + aap_controller.json.version if aap_controller is succeeded else '' }}"
+          - "  {{ '✅' if aap_token_check is succeeded else '❌' }} AAP MCP Token\
+              {{ ' — authenticated as ' + aap_token_check.json.results[0].username if aap_token_check is succeeded and aap_token_check.json.results | length > 0 else '' }}"
+          - "  {{ '✅' if mcp_server is succeeded else '❌' }} MCP Server (:8004)"
+          - ""
+          - "━━━ Security ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "  {{ '✅' if '$ANSIBLE_VAULT' in vault_header.stdout else '❌' }} Ansible Vault — encrypted"
+          - ""
+
+    - name: Collect failed checks
+      set_fact:
+        failed_checks: >-
+          {{
+            ([] if opa_security is succeeded else ['OPA Security (:8181)']) +
+            ([] if opa_compliance is succeeded else ['OPA Compliance (:8182)']) +
+            ([] if opa_ot is succeeded else ['OPA OT (:8183)']) +
+            ([] if pg_check is succeeded else ['PostgreSQL (:5432)']) +
+            ([] if aap_gateway is succeeded else ['AAP Gateway']) +
+            ([] if aap_controller is succeeded else ['AAP Controller']) +
+            ([] if aap_token_check is succeeded else ['AAP MCP Token']) +
+            ([] if mcp_server is succeeded else ['MCP Server (:8004)'])
+          }}
+
+    - name: All checks passed
+      debug:
+        msg:
+          - "  🟢 GO — AAC is fully operational"
+          - ""
+          - "  Run the Sentinel demo:"
+          - "    demo runbooks: https://github.com/ynotbhatc/aac-demos (Sentinel: demos/sentinel/run_demo.sh)"
+      when: failed_checks | length == 0
+
+    - name: Report failed checks
+      debug:
+        msg:
+          - "  🔴 {{ failed_checks | length }} check(s) failed:"
+          - "{% for check in failed_checks %}  ❌ {{ check }}{% endfor %}"
+          - ""
+          - "  Fix issues then re-run: AAC - Verify Installation"
+      when: failed_checks | length > 0
+
+    - name: Fail if any checks failed
+      fail:
+        msg: "{{ failed_checks | length }} verification check(s) failed — see report above"
+      when: failed_checks | length > 0

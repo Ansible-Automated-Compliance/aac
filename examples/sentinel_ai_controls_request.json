@@ -1,0 +1,73 @@
+{
+  "_comment": "Sample AI governance requests — shows AAC enforcing controls on AI-driven automation",
+  "scenarios": [
+    {
+      "_scenario": "ALLOW: Read-only audit — permitted without approval",
+      "action": "audit_compliance_report",
+      "ai_system": {
+        "id": "aac-compliance-bot",
+        "role": "ai_operator",
+        "enabled": true
+      },
+      "context": {
+        "environment": "production"
+      },
+      "trace_id": "demo-read-001",
+      "approval": {
+        "obtained": false
+      },
+      "justification": ""
+    },
+    {
+      "_scenario": "PENDING APPROVAL: Remediation in production — requires human sign-off",
+      "action": "remediate_high_severity",
+      "ai_system": {
+        "id": "aac-remediation-bot",
+        "role": "ai_operator",
+        "enabled": true
+      },
+      "context": {
+        "environment": "production"
+      },
+      "trace_id": "demo-remediate-001",
+      "approval": {
+        "obtained": false
+      },
+      "justification": ""
+    },
+    {
+      "_scenario": "ALLOW WITH LOGGING: Remediation with approval obtained",
+      "action": "remediate_high_severity",
+      "ai_system": {
+        "id": "aac-remediation-bot",
+        "role": "ai_operator",
+        "enabled": true
+      },
+      "context": {
+        "environment": "production"
+      },
+      "trace_id": "demo-remediate-002",
+      "approval": {
+        "obtained": true
+      },
+      "justification": "Approved by CISO ticket AAC-2026-0301 — critical SSH exposure on prod-web-01"
+    },
+    {
+      "_scenario": "DENY: Disabled AI system — blocked outright",
+      "action": "deploy_infrastructure",
+      "ai_system": {
+        "id": "unauthorized-bot",
+        "role": "ai_operator",
+        "enabled": false
+      },
+      "context": {
+        "environment": "production"
+      },
+      "trace_id": "demo-deny-001",
+      "approval": {
+        "obtained": false
+      },
+      "justification": ""
+    }
+  ]
+}

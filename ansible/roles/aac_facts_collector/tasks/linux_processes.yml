@@ -1,0 +1,37 @@
+---
+# linux_processes.yml — Collect running process and resource facts
+
+- name: Get running processes
+  shell: |
+    ps axo pid,ppid,user,pcpu,pmem,vsz,rss,stat,start,comm --no-headers 2>/dev/null \
+      | head -100 || echo ""
+  register: processes_raw
+  changed_when: false
+  failed_when: false
+
+- name: Check for known malicious process patterns
+  shell: |
+    for pattern in xmrig xmr-stak minerd cpuminer cgminer bfgminer \
+                   ncrack hydra masscan zmap sqlmap metasploit; do
+      pgrep -la "$pattern" 2>/dev/null && echo "SUSPECT:$pattern" || true
+    done || echo ""
+  register: suspect_processes_raw
+  changed_when: false
+  failed_when: false
+
+- name: Get processes listening on unusual ports
+  shell: |
+    ss -tlnpu 2>/dev/null | awk 'NR>1 {print $5,$6}' \
+      | grep -v "0.0.0.0:22\b\|:::22\b\|0.0.0.0:443\b\|0.0.0.0:80\b" \
+      | head -30 || echo ""
+  register: unusual_listeners_raw
+  changed_when: false
+  failed_when: false
+
+- name: Set process facts
+  set_fact:
+    aac_processes:
+      count:              "{{ processes_raw.stdout_lines | default([]) | length }}"
+      processes_raw:      "{{ processes_raw.stdout | default('') }}"
+      suspect_processes:  "{{ suspect_processes_raw.stdout_lines | default([]) | select | list }}"
+      unusual_listeners:  "{{ unusual_listeners_raw.stdout_lines | default([]) | select | list }}"

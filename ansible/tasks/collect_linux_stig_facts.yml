@@ -1,0 +1,211 @@
+---
+# collect_linux_stig_facts.yml — the DISA STIG supplement to the shared Linux
+# collector.
+#
+# Runs AFTER ../tasks/collect_linux_compliance_facts.yml (which sets
+# combined_facts) and adds the facts the RHEL 8/9 and Oracle Linux 8/9 STIG
+# modules read that the CIS collector does not gather: every sysctl, the
+# blacklist state of the three STIG kernel modules, presence of the STIG's
+# prohibited packages and services, repository gpgcheck, the crypto policy and
+# its overrides, faillock, login.defs, useradd defaults, pwhistory, sssd and
+# smart-card PAM state, dconf, FIPS, module signing, GRUB password, wireless and
+# promiscuous interfaces, ownership/permission sweeps, unsigned packages,
+# certificate anchors, AIDE, cron.allow and the audit log directory.
+#
+# Requires: gather_facts: yes and become: yes in the calling play, and
+#           combined_facts from the shared collector.
+# Sets:     combined_facts.custom_facts.stig_raw  (raw command output per fact)
+#
+# Every task is read-only on the managed host (changed_when: false) and never
+# fails the play (failed_when: false): a command that is absent on a platform
+# leaves its raw value empty, and the mapper (stig_linux_build_opa_input.yml)
+# derives nothing from an empty value — the policy then reports the control as
+# Open, never as a pass.
+#
+# PRIVACY: /etc/shadow is read only to list account NAMES with an empty
+# password field; no hash leaves the host. sssd.conf is grepped for the four
+# certificate/PIV keys, never dumped (it can hold an LDAP bind secret). GRUB
+# user.cfg is counted, not printed. Modes are printed four digits wide (%04a) because
+# stat prints 0000 as "0" and the STIG modules compare "0000"/"000".
+
+- name: STIG — every kernel parameter (sysctl -a)
+  shell: sysctl -a 2>/dev/null || echo ""
+  register: stig_sysctl_raw
+  changed_when: false
+  failed_when: false
+
+- name: STIG — kernel module disable and blacklist state
+  shell: |
+    for mod in bluetooth firewire-core usb-storage; do
+      if modprobe -n -v "$mod" 2>&1 | grep -qE 'install (/usr)?/bin/(true|false)'; then st=disabled; else st=enabled; fi
+      if grep -rqsE "^\s*blacklist\s+$mod(\s|$)" /etc/modprobe.d/; then bl=true; else bl=false; fi
+      echo "$mod|$st|$bl"
+    done
+  register: stig_modules_raw
+  changed_when: false
+  failed_when: false
+
+- name: STIG — presence of the packages the STIG names
+  shell: |
+    for pkg in aide rsyslog gnome-desktop3 bind dhcp-server httpd net-snmp rsh-server rshd rsync-daemon samba squid telnet-server telnetd tftp-server vsftpd xinetd ypserv opensc pcsc-lite sssd fapolicyd firewalld nftables audit; do
+      if rpm -q "$pkg" >/dev/null 2>&1; then echo "$pkg|installed"; else echo "$pkg|absent"; fi
+    done
+  register: stig_packages_raw
+  changed_when: false
+  failed_when: false
+
+- name: STIG — state of the services the STIG names
+  shell: |
+    for svc in auditd rsyslog firewalld nftables bluetooth autofs avahi-daemon cups dhcpd ftpd httpd named nfs-server nfsd rsyncd smb snmpd squid vsftpd fapolicyd chronyd sssd pcscd ctrl-alt-del.target; do
+      a=$(systemctl is-active "$svc" 2>/dev/null || true)
+      e=$(systemctl is-enabled "$svc" 2>/dev/null || true)
+      echo "$svc|${a:-unknown}|${e:-unknown}"
+    done
+  register: stig_services_raw
+  changed_when: false
+  failed_when: false
+
+- name: STIG — repository enabled and gpgcheck flags
+  shell: |
+    awk 'FNR==1{sec=""} /^\[.*\]$/{sec=substr($0,2,length($0)-2); en[sec]=""; gc[sec]=""; next}
+         sec!="" && /^[[:space:]]*enabled[[:space:]]*=/{split($0,a,"="); gsub(/[[:space:]]/,"",a[2]); en[sec]=a[2]}
+         sec!="" && /^[[:space:]]*gpgcheck[[:space:]]*=/{split($0,a,"="); gsub(/[[:space:]]/,"",a[2]); gc[sec]=a[2]}
+         END{for (s in en) print s"|"en[s]"|"gc[s]}' /etc/yum.repos.d/*.repo 2>/dev/null || echo ""
+  register: stig_repos_raw
+  changed_when: false
+  failed_when: false
+
+- name: STIG — dnf global gpgcheck configuration
+  shell: grep -hE '^\s*(gpgcheck|localpkg_gpgcheck)\s*=' /etc/dnf/dnf.conf /etc/yum.conf 2>/dev/null || echo ""
+  register: stig_dnf_conf_raw
+  changed_when: false
+  failed_when: false
+
+- name: STIG — system crypto policy and local overrides
+  shell: |
+    echo "policy:$(update-crypto-policies --show 2>/dev/null || cat /etc/crypto-policies/config 2>/dev/null | grep -v '^#' | head -1)"
+    find /etc/crypto-policies/back-ends -maxdepth 1 -type f 2>/dev/null | sed 's/^/override:/'
+  register: stig_crypto_raw
+  changed_when: false
+  failed_when: false
+
+- name: STIG — faillock, login.defs, useradd defaults and password history
+  shell: |
+    echo "=== faillock ==="; grep -hE '^\s*(deny|unlock_time|fail_interval|even_deny_root|silent)\s*=' /etc/security/faillock.conf 2>/dev/null || true
+    echo "=== login.defs ==="; grep -hE '^(ENCRYPT_METHOD|PASS_MAX_DAYS|PASS_MIN_DAYS|PASS_WARN_AGE|PASS_MIN_LEN|FAIL_DELAY|UMASK)\b' /etc/login.defs 2>/dev/null || true
+    echo "=== useradd ==="; useradd -D 2>/dev/null | grep -E '^INACTIVE=' || true
+    echo "=== pwhistory ==="; grep -hE 'remember\s*=' /etc/security/pwhistory.conf /etc/pam.d/system-auth /etc/pam.d/password-auth 2>/dev/null | grep -vE '^\s*#' || true
+  register: stig_auth_raw
+  changed_when: false
+  failed_when: false
+
+- name: STIG — smart-card PAM stack and sssd certificate settings (keys only)
+  shell: |
+    echo "=== smartcard-auth ==="; grep -vE '^\s*#' /etc/pam.d/smartcard-auth 2>/dev/null || true
+    echo "=== sssd ==="; grep -hE '^\s*(\[.*\]|pam_cert_auth|certificate_verification|ldap_user_certificate|id_provider|auth_provider)\s*' /etc/sssd/sssd.conf /etc/sssd/conf.d/*.conf 2>/dev/null || true
+    echo "=== pkcs11 ==="; grep -hE '^\s*(cert_policy|use_pkcs11_module)\s*=' /etc/pam_pkcs11/pam_pkcs11.conf 2>/dev/null || true
+  register: stig_pam_raw
+  changed_when: false
+  failed_when: false
+
+- name: STIG — dconf system database settings (section/key=value)
+  shell: |
+    awk '/^\[.*\]$/{sec=substr($0,2,length($0)-2); next} sec!="" && /^[^#[:space:]][^=]*=/{split($0,a,"="); k=a[1]; sub(/^[[:space:]]+|[[:space:]]+$/,"",k); v=substr($0,index($0,"=")+1); print sec"/"k"="v}' /etc/dconf/db/local.d/* /etc/dconf/db/distro.d/* /etc/dconf/db/gdm.d/* 2>/dev/null || echo ""
+  register: stig_dconf_raw
+  changed_when: false
+  failed_when: false
+
+- name: STIG — account hygiene (names only, no hashes)
+  shell: |
+    echo "=== empty_password ==="; awk -F: '($2 == "") {print $1}' /etc/shadow 2>/dev/null || true
+    echo "=== duplicate_uid ==="; cut -d: -f3 /etc/passwd | sort | uniq -d || true
+    echo "=== duplicate_gid ==="; cut -d: -f3 /etc/group | sort | uniq -d || true
+    echo "=== invalid_group ==="; awk -F: 'NR==FNR{g[$3]=1; next} !($4 in g){print $1":"$4}' /etc/group /etc/passwd 2>/dev/null || true
+  register: stig_accounts_raw
+  changed_when: false
+  failed_when: false
+
+- name: STIG — FIPS, module signing, GRUB password, firewall, wireless and promiscuous interfaces
+  shell: |
+    echo "fips:$(cat /proc/sys/crypto/fips_enabled 2>/dev/null || echo unknown)"
+    echo "module_sig_enforce:$(cat /sys/module/module/parameters/sig_enforce 2>/dev/null || echo unknown)"
+    echo "grub_password_entries:$(cat /boot/grub2/user.cfg /boot/efi/EFI/redhat/user.cfg 2>/dev/null | grep -c '^GRUB2_PASSWORD=' || true)"
+    echo "firewalld_state:$(firewall-cmd --state 2>/dev/null || echo not_running)"
+    for d in /sys/class/net/*; do [ -d "$d/wireless" ] && echo "wireless:$(basename "$d")"; done
+    nmcli -t -f TYPE,DEVICE device 2>/dev/null | awk -F: '$1=="wifi"{print "wireless:"$2}'
+    ip -o link 2>/dev/null | awk '/PROMISC/{sub(/:$/,"",$2); print "promisc:"$2}'
+  register: stig_system_raw
+  changed_when: false
+  failed_when: false
+
+- name: STIG — permissions and ownership sweeps
+  shell: |
+    echo "=== files ==="; stat -c '%04a|%U|%G|%n' /etc/passwd /etc/shadow /etc/group /etc/gshadow /etc/passwd- /etc/shadow- /etc/group- /etc/gshadow- 2>/dev/null || true
+    logf=$(awk -F'=' '/^\s*log_file\s*=/{gsub(/[[:space:]]/,"",$2); print $2}' /etc/audit/auditd.conf 2>/dev/null)
+    echo "=== audit_log_dir ==="; [ -n "$logf" ] && stat -c '%04a|%U|%G|%n' "$(dirname "$logf")" 2>/dev/null || true
+    echo "=== cron_allow ==="; stat -c '%04a|%U|%G|%n' /etc/cron.allow 2>/dev/null || echo "absent"
+    echo "=== home_dirs ==="; awk -F: '($3 >= 1000 && $7 !~ /(nologin|false)$/) {print $6}' /etc/passwd | while read -r d; do [ -d "$d" ] && stat -c '%04a|%U|%n' "$d"; done 2>/dev/null || true
+    echo "=== unowned ==="; find / -xdev -nouser 2>/dev/null | head -100 || true
+    echo "=== ungrouped ==="; find / -xdev -nogroup 2>/dev/null | head -100 || true
+    echo "=== cmd_group_or_world_writable ==="; find -L /bin /sbin /usr/bin /usr/sbin /usr/local/bin /usr/local/sbin -perm /022 -type f 2>/dev/null | head -50 || true
+    echo "=== lib_group_or_world_writable ==="; find -L /lib /lib64 /usr/lib /usr/lib64 -perm /022 -type f 2>/dev/null | head -50 || true
+    echo "=== lib_dirs_not_root ==="; find -L /lib /lib64 /usr/lib /usr/lib64 ! -user root -type d 2>/dev/null | head -50 || true
+  register: stig_perms_raw
+  changed_when: false
+  failed_when: false
+  timeout: 180
+
+- name: STIG — packages without a GPG signature
+  shell: rpm -qa --qf '%{NAME}|%{SIGPGP:pgpsig}\n' 2>/dev/null | awk -F'|' '$2 == "(none)" {print $1}' || echo ""
+  register: stig_unsigned_raw
+  changed_when: false
+  failed_when: false
+  timeout: 120
+
+- name: STIG — certificate trust anchors and OpenSSL policy
+  shell: |
+    if trust list --filter=ca-anchors 2>/dev/null | grep -qiE 'label: *DoD Root CA'; then echo "dod_root_ca:yes"; else echo "dod_root_ca:no"; fi
+    for f in /etc/pki/ca-trust/source/anchors/*; do
+      [ -f "$f" ] || continue
+      openssl x509 -checkend 0 -noout -in "$f" >/dev/null 2>&1 || echo "expired:$f"
+    done
+    if grep -qE '^\s*\.include\s+/etc/crypto-policies/back-ends/opensslcnf\.config' /etc/pki/tls/openssl.cnf 2>/dev/null; then echo "openssl_system_policy:yes"; else echo "openssl_system_policy:no"; fi
+  register: stig_certs_raw
+  changed_when: false
+  failed_when: false
+
+- name: STIG — AIDE database, hashes, ACLs, cron job and mail
+  shell: |
+    if ls /var/lib/aide/aide.db.gz /var/lib/aide/aide.db >/dev/null 2>&1; then echo "db_exists:yes"; else echo "db_exists:no"; fi
+    echo "=== conf ==="; grep -hE '^\s*(database_in|database_out|@@define\s+DBDIR|[A-Za-z_]+\s*=\s*.*(sha256|sha512|acl))' /etc/aide.conf 2>/dev/null || true
+    echo "=== cron ==="; grep -rhsE 'aide' /etc/crontab /etc/cron.d /etc/cron.daily /etc/cron.weekly /etc/cron.hourly /etc/cron.monthly /var/spool/cron 2>/dev/null | grep -vE '^\s*#' || true
+    systemctl list-timers --all 2>/dev/null | grep -iE 'aide' || true
+  register: stig_aide_raw
+  changed_when: false
+  failed_when: false
+
+- name: Merge the STIG supplement into combined_facts
+  set_fact:
+    combined_facts: >-
+      {{ combined_facts | combine({'custom_facts': {'stig_raw': {
+           'sysctl_raw':    stig_sysctl_raw.stdout | default(''),
+           'modules_raw':   stig_modules_raw.stdout | default(''),
+           'packages_raw':  stig_packages_raw.stdout | default(''),
+           'services_raw':  stig_services_raw.stdout | default(''),
+           'repos_raw':     stig_repos_raw.stdout | default(''),
+           'dnf_conf_raw':  stig_dnf_conf_raw.stdout | default(''),
+           'crypto_raw':    stig_crypto_raw.stdout | default(''),
+           'auth_raw':      stig_auth_raw.stdout | default(''),
+           'pam_raw':       stig_pam_raw.stdout | default(''),
+           'dconf_raw':     stig_dconf_raw.stdout | default(''),
+           'accounts_raw':  stig_accounts_raw.stdout | default(''),
+           'system_raw':    stig_system_raw.stdout | default(''),
+           'perms_raw':     stig_perms_raw.stdout | default(''),
+           'unsigned_raw':  stig_unsigned_raw.stdout | default(''),
+           'certs_raw':     stig_certs_raw.stdout | default(''),
+           'aide_raw':      stig_aide_raw.stdout | default('')
+         }}}, recursive=True) }}
+
+- name: Recompute facts checksum with the STIG supplement
+  set_fact:
+    facts_checksum: "{{ combined_facts | to_json | hash('sha256') }}"

@@ -1,0 +1,26 @@
+---
+- name: Install Terraform on AAP Controller
+  hosts: localhost
+  connection: local
+  become: true
+
+  tasks:
+    - name: Add HashiCorp repo
+      ansible.builtin.get_url:
+        url: https://rpm.releases.hashicorp.com/RHEL/hashicorp.repo
+        dest: /etc/yum.repos.d/hashicorp.repo
+        mode: '0644'
+
+    - name: Install Terraform
+      ansible.builtin.command: microdnf install -y terraform
+      args:
+        creates: /usr/bin/terraform
+
+    - name: Verify Terraform installation
+      ansible.builtin.command: terraform version
+      register: terraform_version
+      changed_when: false
+
+    - name: Show Terraform version
+      ansible.builtin.debug:
+        msg: "{{ terraform_version.stdout }}"

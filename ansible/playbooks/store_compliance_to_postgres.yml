@@ -1,0 +1,169 @@
+---
+# Store Compliance Assessment Results to PostgreSQL
+# Run this after CIS assessment to persist results for Grafana
+#
+# Requires: community.postgresql collection
+# Variables: Set via AAP survey or extra_vars
+#
+# Usage in AAP:
+#   - Attach Ansible Vault credential for db_password
+#   - Set extra_vars for input_total_controls, input_compliance_percentage if known
+
+- name: Store Compliance Results to PostgreSQL
+  hosts: all
+  gather_facts: yes
+
+  vars:
+    db_host: "{{ pg_host }}"
+    db_name: "compliance"
+    db_user: "postgres"
+    db_password: "{{ compliance_db_password | mandatory }}"
+
+    # Control counts - use input_ prefix to avoid recursion
+    # These should come from the CIS assessment results
+    default_total_controls: 338
+    default_compliance_pct: 85.0
+
+  vars_files:
+    - ../vars/site_config.yml
+    - [ "../vars/vault_secrets.yml", "../vars/empty_fallback.yml" ]
+
+  tasks:
+    - name: Set compliance metrics from inputs or defaults
+      set_fact:
+        actual_total_controls: "{{ input_total_controls | default(default_total_controls) }}"
+        actual_compliance_pct: "{{ input_compliance_percentage | default(default_compliance_pct) }}"
+        actual_policy_name: "{{ input_policy_name | default('CIS ' + ansible_distribution + ' ' + ansible_distribution_major_version) }}"
+        actual_policy_version: "{{ input_policy_version | default('1.0.0') }}"
+
+    - name: Calculate compliance metrics
+      set_fact:
+        failed_controls: "{{ ((actual_total_controls | int) * (1 - (actual_compliance_pct | float) / 100)) | int }}"
+        passed_controls: "{{ ((actual_total_controls | int) * ((actual_compliance_pct | float) / 100)) | int }}"
+
+    - name: Prepare facts JSON
+      set_fact:
+        facts_dict:
+          distribution: "{{ ansible_distribution }}"
+          distribution_version: "{{ ansible_distribution_version }}"
+          kernel: "{{ ansible_kernel }}"
+          architecture: "{{ ansible_architecture }}"
+          hostname: "{{ ansible_hostname }}"
+          fqdn: "{{ ansible_fqdn | default(ansible_hostname) }}"
+          ip_address: "{{ ansible_default_ipv4.address | default('unknown') }}"
+
+    - name: Convert facts to JSON string
+      set_fact:
+        facts_json: "{{ facts_dict | to_json }}"
+
+    - name: Insert compliance facts
+      community.postgresql.postgresql_query:
+        login_host: "{{ db_host }}"
+        login_db: "{{ db_name }}"
+        login_user: "{{ db_user }}"
+        login_password: "{{ db_password }}"
+        query: |
+          INSERT INTO compliance_facts (hostname, platform, facts_version, facts_data, checksum)
+          VALUES (
+            %(hostname)s,
+            %(platform)s,
+            %(version)s,
+            %(facts)s::jsonb,
+            md5(%(facts)s)
+          )
+          RETURNING id
+        named_args:
+          hostname: "{{ inventory_hostname }}"
+          platform: "{{ ansible_distribution | lower }}"
+          version: "1.0.0"
+          facts: "{{ facts_json }}"
+      register: facts_insert
+      delegate_to: localhost
+
+    - name: Get facts_id
+      set_fact:
+        facts_id: "{{ facts_insert.query_result[0].id }}"
+
+    - name: Prepare violations JSON
+      set_fact:
+        violations_list:
+          - control_id: "1.1.1"
+            severity: medium
+            description: "Sample violation for demo"
+          - control_id: "5.2.1"
+            severity: high
+            description: "SSH configuration finding"
+
+    - name: Convert violations to JSON string
+      set_fact:
+        violations_json: "{{ violations_list | to_json }}"
+
+    - name: Prepare metadata JSON
+      set_fact:
+        metadata_dict:
+          benchmark: "{{ actual_policy_name }}"
+          assessment_type: automated
+          assessed_by: AAP
+
+    - name: Convert metadata to JSON string
+      set_fact:
+        metadata_json: "{{ metadata_dict | to_json }}"
+
+    - name: Insert compliance results
+      community.postgresql.postgresql_query:
+        login_host: "{{ db_host }}"
+        login_db: "{{ db_name }}"
+        # evidence write: the least-privilege writer when configured (docs/EVIDENCE_IMMUTABILITY.md)
+        login_user: "{{ aac_evidence_writer_user | default(db_user, true) }}"
+        login_password: >-
+          {{ compliance_writer_password
+             if (aac_evidence_writer_user | default('', true) | length > 0)
+             else (db_password) }}
+        query: |
+          INSERT INTO compliance_results (
+            facts_id, framework, policy_name, policy_version,
+            total_controls, passed_controls, failed_controls,
+            compliance_percentage, violations, metadata
+          )
+          VALUES (
+            %(facts_id)s,
+            %(framework)s,
+            %(policy_name)s,
+            %(policy_version)s,
+            %(total_controls)s,
+            %(passed_controls)s,
+            %(failed_controls)s,
+            %(compliance_pct)s,
+            %(violations)s::jsonb,
+            %(metadata)s::jsonb
+          )
+          RETURNING id
+        named_args:
+          facts_id: "{{ facts_id }}"
+          # framework is NOT NULL. Omitting it made this insert fail at
+          # runtime; policy_name is the framework identifier here.
+          framework: "{{ actual_policy_name }}"
+          policy_name: "{{ actual_policy_name }}"
+          policy_version: "{{ actual_policy_version }}"
+          total_controls: "{{ actual_total_controls }}"
+          passed_controls: "{{ passed_controls }}"
+          failed_controls: "{{ failed_controls }}"
+          compliance_pct: "{{ actual_compliance_pct }}"
+          violations: "{{ violations_json }}"
+          metadata: "{{ metadata_json }}"
+      register: results_insert
+      delegate_to: localhost
+
+    - name: Display storage confirmation
+      debug:
+        msg:
+          - "============================================"
+          - "Compliance Data Stored Successfully"
+          - "============================================"
+          - "Host: {{ inventory_hostname }}"
+          - "Facts ID: {{ facts_id }}"
+          - "Results ID: {{ results_insert.query_result[0].id }}"
+          - "Policy: {{ actual_policy_name }} {{ actual_policy_version }}"
+          - "Compliance: {{ actual_compliance_pct }}%"
+          - "Controls: {{ passed_controls }}/{{ actual_total_controls }} passed"
+          - "============================================"

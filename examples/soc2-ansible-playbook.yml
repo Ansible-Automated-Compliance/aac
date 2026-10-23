@@ -1,0 +1,710 @@
+---
+# SOC 2 Trust Service Criteria Data Collection Playbook
+# Collects comprehensive system data for SOC 2 compliance evaluation
+# Designed for Ansible/OpenShift environments
+
+- name: SOC 2 Compliance Data Collection
+  hosts: all
+  gather_facts: yes
+  become: yes
+  vars:
+    soc2_report_dir: "/var/log/soc2-compliance"
+    openshift_namespace: "default"
+    compliance_timestamp: "{{ ansible_date_time.iso8601 }}"
+    
+  tasks:
+    # =================================================================
+    # SECURITY CONTROLS DATA COLLECTION (CC6.0)
+    # =================================================================
+    
+    - name: Create SOC 2 compliance report directory
+      file:
+        path: "{{ soc2_report_dir }}"
+        state: directory
+        mode: '0755'
+      
+    - name: Collect user access control configuration
+      block:
+        - name: Get user account information
+          getent:
+            database: passwd
+          register: user_accounts
+          
+        - name: Check sudo configuration
+          command: cat /etc/sudoers
+          register: sudo_config
+          ignore_errors: yes
+          
+        - name: Get SSH configuration
+          command: cat /etc/ssh/sshd_config
+          register: ssh_config
+          ignore_errors: yes
+          
+        - name: Check for MFA configuration
+          stat:
+            path: /etc/pam.d/sshd
+          register: pam_config
+          
+        - name: Get login logging configuration
+          command: cat /etc/rsyslog.conf
+          register: logging_config
+          ignore_errors: yes
+    
+    - name: Collect network security configuration
+      block:
+        - name: Get firewall status (firewalld)
+          command: firewall-cmd --state
+          register: firewall_status
+          ignore_errors: yes
+          
+        - name: Get iptables rules
+          command: iptables -L -n
+          register: iptables_rules
+          ignore_errors: yes
+          
+        - name: Check network interfaces
+          command: ip addr show
+          register: network_interfaces
+          
+        - name: Get network connections
+          command: ss -tuln
+          register: network_connections
+    
+    - name: Collect database security settings
+      block:
+        - name: Check for database services
+          service_facts:
+          
+        - name: Get PostgreSQL configuration (if present)
+          command: cat /var/lib/pgsql/data/postgresql.conf
+          register: postgres_config
+          ignore_errors: yes
+          when: "'postgresql' in services"
+          
+        - name: Get MySQL configuration (if present)
+          command: cat /etc/mysql/mysql.conf.d/mysqld.cnf
+          register: mysql_config
+          ignore_errors: yes
+          when: "'mysql' in services"
+    
+    # =================================================================
+    # AVAILABILITY CONTROLS DATA COLLECTION (A1.0)
+    # =================================================================
+    
+    - name: Collect system availability metrics
+      block:
+        - name: Get system uptime
+          command: uptime
+          register: system_uptime
+          
+        - name: Check system load
+          command: cat /proc/loadavg
+          register: system_load
+          
+        - name: Get memory usage
+          command: free -m
+          register: memory_usage
+          
+        - name: Get disk usage
+          command: df -h
+          register: disk_usage
+          
+        - name: Check systemd services status
+          command: systemctl list-units --type=service --state=active
+          register: active_services
+    
+    - name: Collect backup and recovery configuration
+      block:
+        - name: Check for backup scripts
+          find:
+            paths: ["/etc/cron.d", "/etc/cron.daily", "/var/spool/cron"]
+            patterns: "*backup*"
+          register: backup_scripts
+          
+        - name: Get crontab entries
+          command: crontab -l
+          register: crontab_entries
+          ignore_errors: yes
+          
+        - name: Check for backup directories
+          stat:
+            path: "{{ item }}"
+          register: backup_dirs
+          loop:
+            - "/backup"
+            - "/var/backup"
+            - "/opt/backup"
+          ignore_errors: yes
+    
+    - name: Collect monitoring configuration
+      block:
+        - name: Check for monitoring agents
+          stat:
+            path: "{{ item }}"
+          register: monitoring_agents
+          loop:
+            - "/opt/prometheus"
+            - "/etc/zabbix"
+            - "/opt/splunk"
+            - "/etc/nagios"
+          ignore_errors: yes
+          
+        - name: Get log rotation configuration
+          command: cat /etc/logrotate.conf
+          register: logrotate_config
+          ignore_errors: yes
+    
+    # =================================================================
+    # OPENSHIFT/KUBERNETES DATA COLLECTION
+    # =================================================================
+    
+    - name: Collect OpenShift/Kubernetes configuration
+      block:
+        - name: Check if running in OpenShift
+          stat:
+            path: /var/run/secrets/kubernetes.io
+          register: k8s_environment
+          
+        - name: Get OpenShift project information
+          k8s_info:
+            api_version: v1
+            kind: Namespace
+          register: openshift_namespaces
+          ignore_errors: yes
+          when: k8s_environment.stat.exists
+          
+        - name: Get RBAC configuration
+          k8s_info:
+            api_version: rbac.authorization.k8s.io/v1
+            kind: ClusterRole
+          register: cluster_roles
+          ignore_errors: yes
+          when: k8s_environment.stat.exists
+          
+        - name: Get Security Context Constraints
+          k8s_info:
+            api_version: security.openshift.io/v1
+            kind: SecurityContextConstraints
+          register: security_context_constraints
+          ignore_errors: yes
+          when: k8s_environment.stat.exists
+          
+        - name: Get Network Policies
+          k8s_info:
+            api_version: networking.k8s.io/v1
+            kind: NetworkPolicy
+            namespace: "{{ openshift_namespace }}"
+          register: network_policies
+          ignore_errors: yes
+          when: k8s_environment.stat.exists
+    
+    # =================================================================
+    # PROCESSING INTEGRITY DATA COLLECTION (PI1.0)
+    # =================================================================
+    
+    - name: Collect data processing configuration
+      block:
+        - name: Get application configuration
+          find:
+            paths: ["/etc", "/opt", "/usr/local/etc"]
+            patterns: "*.conf"
+            recurse: yes
+            depth: 2
+          register: app_configs
+          
+        - name: Check for queue management systems
+          stat:
+            path: "{{ item }}"
+          register: queue_systems
+          loop:
+            - "/etc/rabbitmq"
+            - "/etc/kafka"
+            - "/opt/redis"
+          ignore_errors: yes
+          
+        - name: Get database transaction settings
+          command: "{{ item }}"
+          register: db_transaction_settings
+          loop:
+            - "psql -c 'SHOW transaction_isolation;'"
+            - "mysql -e 'SELECT @@transaction_isolation;'"
+          ignore_errors: yes
+    
+    # =================================================================
+    # CONFIDENTIALITY DATA COLLECTION (C1.0)
+    # =================================================================
+    
+    - name: Collect encryption and confidentiality settings
+      block:
+        - name: Check disk encryption status
+          command: lsblk -f
+          register: disk_encryption_status
+          
+        - name: Get SSL/TLS configuration
+          find:
+            paths: ["/etc/ssl", "/etc/pki"]
+            patterns: "*.conf"
+          register: ssl_configs
+          
+        - name: Check for encryption tools
+          command: which gpg
+          register: gpg_available
+          ignore_errors: yes
+          
+        - name: Get file system mount options
+          command: mount
+          register: mount_options
+    
+    # =================================================================
+    # PRIVACY DATA COLLECTION (P1.0)
+    # =================================================================
+    
+    - name: Collect privacy and data protection settings
+      block:
+        - name: Check for data classification tools
+          stat:
+            path: "{{ item }}"
+          register: data_classification_tools
+          loop:
+            - "/opt/varonis"
+            - "/opt/microsoft/mdatp"
+            - "/etc/aide"
+          ignore_errors: yes
+          
+        - name: Get data retention policies
+          find:
+            paths: ["/etc/logrotate.d"]
+            patterns: "*"
+          register: retention_policies
+    
+    # =================================================================
+    # TRANSFORM DATA FOR OPA INPUT
+    # =================================================================
+    
+    - name: Transform collected data for SOC 2 OPA evaluation
+      set_fact:
+        soc2_data:
+          # Security Controls
+          access_controls:
+            role_based_access: "{{ sudo_config.stdout | length > 0 }}"
+            least_privilege_principle: "{{ 'ALL=(ALL)' not in sudo_config.stdout }}"
+            regular_access_reviews: "{{ user_accounts.ansible_facts.getent_passwd | length < 50 }}"
+            privileged_users:
+              - username: "root"
+                mfa_enabled: "{{ 'google-authenticator' in pam_config.stat.path | default(false) }}"
+            access_logging:
+              enabled: "{{ 'auth' in logging_config.stdout }}"
+              includes_failed_attempts: "{{ 'authpriv' in logging_config.stdout }}"
+              retention_days: 90
+            shared_accounts: []
+            service_accounts:
+              - unique_identifier: true
+                regular_password_change: false
+          
+          network_security:
+            segmentation:
+              enabled: "{{ firewall_status.stdout == 'running' }}"
+              zones: "{{ iptables_rules.stdout_lines | length }}"
+            firewalls:
+              configured: "{{ firewall_status.stdout == 'running' }}"
+          
+          remote_access:
+            vpn_required: "{{ 'PermitRootLogin no' in ssh_config.stdout }}"
+            vpn_encryption:
+              enabled: true
+            session_timeout:
+              configured: "{{ 'ClientAliveInterval' in ssh_config.stdout }}"
+              max_idle_minutes: 30
+          
+          database_security:
+            authentication_required: "{{ postgres_config is defined or mysql_config is defined }}"
+            connection_encryption: "{{ 'ssl = on' in postgres_config.stdout | default('') }}"
+            access_logging: true
+            privileged_accounts:
+              - regular_review: true
+          
+          user_management:
+            automated_provisioning: false
+            automated_deprovisioning: false
+            approval_workflow: false
+          
+          # OpenShift specific
+          openshift:
+            rbac:
+              enabled: "{{ k8s_environment.stat.exists }}"
+              cluster_admin_users_limited: "{{ cluster_roles.resources | default([]) | length < 10 }}"
+              cluster_admin_users: "{{ cluster_roles.resources | default([]) | length }}"
+              service_accounts_restricted: true
+            security:
+              pod_security_standards:
+                enabled: "{{ security_context_constraints.resources | default([]) | length > 0 }}"
+                level: "restricted"
+              security_context_constraints:
+                default_restricted: true
+            network_policies:
+              enabled: "{{ network_policies.resources | default([]) | length > 0 }}"
+              default_deny: true
+              policies: "{{ network_policies.resources | default([]) | length }}"
+            image_security:
+              scanning_enabled: false
+              vulnerability_threshold:
+                critical: 0
+                high: 5
+              trusted_registries_only: false
+          
+          # Availability
+          availability:
+            sla:
+              target_uptime: 99.9
+            current_uptime: "{{ (system_uptime.stdout.split()[2] | replace(',', '') | int / 86400) | round(2) }}"
+            downtime_tracking:
+              enabled: false
+          
+          monitoring:
+            infrastructure:
+              enabled: "{{ monitoring_agents.results | selectattr('stat.exists') | list | length > 0 }}"
+            application:
+              enabled: false
+            alerts:
+              configured: false
+              response_time_sla: 15
+          
+          capacity_management:
+            monitoring:
+              enabled: true
+            thresholds:
+              cpu_warning: 80
+              memory_warning: 85
+              storage_warning: 90
+            forecasting:
+              enabled: false
+          
+          maintenance:
+            scheduled_windows:
+              defined: "{{ backup_scripts.files | length > 0 }}"
+            change_management:
+              process_documented: false
+            rollback_procedures:
+              documented: false
+            testing:
+              required_before_production: false
+          
+          backup:
+            automated_backups:
+              enabled: "{{ backup_scripts.files | length > 0 }}"
+            frequency:
+              daily: true
+            retention:
+              days: 30
+            recovery_testing:
+              frequency_days: 90
+            offsite_storage:
+              enabled: false
+          
+          incident_response:
+            procedures_documented: false
+            team_defined: false
+            escalation_matrix:
+              defined: false
+            communication_plan:
+              defined: false
+          
+          # Processing Integrity
+          data_processing:
+            input_validation:
+              enabled: false
+              data_type_checking: false
+              range_checking: false
+              format_validation: false
+            integrity_checks:
+              checksums:
+                enabled: false
+              digital_signatures:
+                enabled: false
+              hash_verification: false
+            error_handling:
+              logging:
+                enabled: true
+                detailed: false
+              alerts:
+                configured: false
+              recovery_procedures:
+                documented: false
+            authorization:
+              required: false
+              approval_workflow: false
+              audit_trail: false
+            access_controls:
+              role_based: true
+              least_privilege: true
+              regular_reviews: false
+            monitoring:
+              real_time: false
+              anomaly_detection: false
+              threshold_alerts: false
+            transactions:
+              sequence_checking: false
+              batch_totals: false
+              reconciliation:
+                enabled: false
+                frequency_hours: 24
+            transmission:
+              encryption_in_transit: true
+              message_authentication: false
+              delivery_confirmation: false
+            queues:
+              monitoring:
+                enabled: "{{ queue_systems.results | selectattr('stat.exists') | list | length > 0 }}"
+              dead_letter_handling: false
+              retention_policies:
+                defined: false
+          
+          # Confidentiality
+          data_classification:
+            system_defined: false
+            categories:
+              public:
+                defined: false
+              internal:
+                defined: false
+              confidential:
+                defined: false
+              restricted:
+                defined: false
+            access_controls:
+              role_based: true
+              need_to_know: false
+              regular_reviews: false
+          
+          data_handling:
+            procedures:
+              documented: false
+              training_provided: false
+              compliance_monitoring: false
+          
+          encryption:
+            in_transit:
+              enabled: true
+              protocols:
+                tls_version: 1.2
+              cipher_suites:
+                strong_only: true
+              certificate_management:
+                automated: false
+            at_rest:
+              enabled: "{{ 'crypt' in mount_options.stdout }}"
+              algorithm:
+                strength: 256
+              key_management:
+                centralized: false
+              database_encryption: false
+          
+          storage:
+            filesystem:
+              encryption:
+                enabled: "{{ 'crypt' in mount_options.stdout }}"
+                full_disk: false
+            removable_media:
+              encryption:
+                required: false
+          
+          databases:
+            encryption:
+              transparent_data_encryption: false
+            access_controls:
+              column_level_encryption: false
+              view_based_access: false
+            auditing:
+              access_logging: false
+          
+          # Privacy (if applicable)
+          privacy:
+            collection:
+              policy_documented: false
+              legal_basis_identified: false
+              purpose_limitation: false
+              data_minimization: false
+            consent:
+              explicit_consent_required: false
+              consent_tracking:
+                enabled: false
+              withdrawal_mechanism:
+                available: false
+              granular_consent:
+                supported: false
+            data_subject_rights:
+              access_request:
+                supported: false
+              rectification:
+                supported: false
+              erasure:
+                supported: false
+              portability:
+                supported: false
+            use:
+              purpose_limitation: false
+              compatible_use_only: false
+              access_controls:
+                role_based: false
+              processing_logging: false
+            retention:
+              policies_documented: false
+              automated_deletion: false
+              legal_hold_management: false
+              retention_schedules:
+                defined: false
+            data_quality:
+              accuracy_verification: false
+              regular_updates: false
+              correction_procedures: false
+            third_party_sharing:
+              documented_agreements: false
+              due_diligence_performed: false
+              data_processing_agreements: false
+              regular_assessments: false
+            cross_border_transfers:
+              adequacy_decisions:
+                verified: false
+              safeguards:
+                implemented: false
+              transfer_logging: false
+            breach_notification:
+              procedures_documented: false
+              timeline_compliance:
+                authorities: 72
+                individuals: 72
+              assessment_criteria:
+                defined: false
+          
+          # SOC 2 Operational Controls
+          soc2:
+            service_commitments:
+              security:
+                defined: false
+              suitability_of_design: false
+              operating_effectiveness: false
+            system_boundaries:
+              infrastructure:
+                documented: false
+              software:
+                documented: false
+              people:
+                documented: false
+              procedures:
+                documented: false
+              data:
+                documented: false
+            risk_management:
+              risk_assessment:
+                periodic: false
+                methodology:
+                  defined: false
+              risk_identification:
+                comprehensive: false
+              risk_response:
+                documented: false
+              monitoring:
+                continuous: false
+              reporting:
+                regular: false
+              escalation:
+                procedures:
+                  defined: false
+            control_environment:
+              governance:
+                board_oversight: false
+                management_philosophy: false
+              integrity:
+                code_of_conduct: false
+              competence:
+                defined_roles: false
+            human_resources:
+              background_checks: false
+              training_programs: false
+              performance_evaluations: false
+              disciplinary_procedures: false
+            vendor_management:
+              due_diligence:
+                performed: false
+              contracts:
+                security_requirements: false
+              monitoring:
+                ongoing: false
+              termination:
+                procedures:
+                  defined: false
+            subservice_organizations: []
+            change_management:
+              process:
+                documented: false
+              approval:
+                required: false
+              testing:
+                required: false
+              rollback:
+                procedures:
+                  defined: false
+            configuration_management:
+              baseline:
+                established: false
+              version_control: false
+              unauthorized_changes:
+                detection: false
+            incident_response:
+              program:
+                established: false
+              team:
+                defined: false
+              procedures:
+                documented: false
+              testing:
+                regular: false
+            business_continuity:
+              plan:
+                documented: false
+              testing:
+                annual: false
+              recovery_objectives:
+                defined: false
+              communication:
+                plan:
+                  defined: false
+            monitoring:
+              infrastructure:
+                comprehensive: false
+              applications:
+                comprehensive: false
+              security_events:
+                real_time: false
+              performance:
+                continuous: false
+            logging:
+              centralized: false
+              integrity_protection: false
+              retention:
+                adequate: false
+              review:
+                regular: false
+            operating_effectiveness:
+              testing_period_months: 0
+              continuous_monitoring: false
+              exception_reporting: false
+              management_response:
+                documented: false
+    
+    - name: Write SOC 2 compliance data to file
+      copy:
+        content: "{{ soc2_data | to_nice_json }}"
+        dest: "{{ soc2_report_dir }}/soc2_compliance_data_{{ ansible_hostname }}_{{ compliance_timestamp }}.json"
+        mode: '0644'
+      
+    - name: Display SOC 2 data collection summary
+      debug:
+        msg:
+          - "SOC 2 compliance data collection completed"
+          - "Hostname: {{ ansible_hostname }}"
+          - "Timestamp: {{ compliance_timestamp }}"
+          - "Data file: {{ soc2_report_dir }}/soc2_compliance_data_{{ ansible_hostname }}_{{ compliance_timestamp }}.json"
+          - "OpenShift environment detected: {{ k8s_environment.stat.exists | default(false) }}"
+          - "Active services count: {{ active_services.stdout_lines | length }}"
+          - "Network interfaces: {{ network_interfaces.stdout_lines | length }}"

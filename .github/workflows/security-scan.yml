@@ -1,0 +1,95 @@
+name: Weekly Security & Hygiene Scan
+
+# Pre-emptive secret + hygiene scan.
+#  - FAIL CLOSED: if the scanner can't run, the job fails (a broken scan must
+#    never look like a clean scan).
+#  - SUPPLY CHAIN: gitleaks pinned by version AND sha256; action pinned by commit SHA.
+#  - OBSERVABILITY: reports COUNTS ONLY — never finding locations (this repo is
+#    readable by third parties). Details are obtained privately via a local run.
+#  - SENSITIVE NEEDLES: customer patterns come from the CUSTOMER_DENYLIST secret,
+#    never from tracked source.
+
+on:
+  schedule:
+    - cron: "0 13 * * 1" # Mondays 13:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  GITLEAKS_VERSION: "8.30.1"
+  GITLEAKS_SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
+
+jobs:
+  scan:
+    # DELIBERATELY GitHub-hosted: injects CUSTOMER_DENYLIST — same
+    # secret-isolation rule as traffic-snapshot (no secrets on the
+    # shared PR runner pool. Scheduled weekly; cost negligible.
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (full history)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Install gitleaks (pinned + checksum-verified)
+        run: |
+          set -euo pipefail
+          url="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -fsSL "$url" -o gl.tgz
+          echo "${GITLEAKS_SHA256}  gl.tgz" | sha256sum -c -
+          tar -xzf gl.tgz gitleaks
+          mkdir -p "$RUNNER_TEMP/bin" && mv gitleaks "$RUNNER_TEMP/bin/"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+          # GITHUB_PATH only applies to LATER steps — same-step check needs the full path
+          "$RUNNER_TEMP/bin/gitleaks" version
+
+      - name: Secret scan (fails closed on tool error)
+        run: |
+          set -euo pipefail
+          if ! gitleaks git . --redact --config .gitleaks.toml \
+                --report-format json --report-path gitleaks-report.json --exit-code 0; then
+            echo "::error::gitleaks failed to run — failing closed."; exit 1
+          fi
+          test -f gitleaks-report.json || { echo "::error::no gitleaks report — failing closed."; exit 1; }
+          echo "SECRET_COUNT=$(jq 'length' gitleaks-report.json)" >> "$GITHUB_ENV"
+
+      - name: Denylist scan (lab IPs + runtime customer patterns — counts only)
+        env:
+          CUSTOMER_DENYLIST: ${{ secrets.CUSTOMER_DENYLIST }}
+          LAB_ADDRESSES: ${{ secrets.LAB_ADDRESSES }}
+        run: |
+          set -euo pipefail
+          # committed (non-sensitive) patterns + any injected at runtime (not in the tree)
+          { cat .github/security-denylist.txt; [ -n "${CUSTOMER_DENYLIST:-}" ] && printf '%s\n' "$CUSTOMER_DENYLIST"; [ -n "${LAB_ADDRESSES:-}" ] && printf '%s\n' "$LAB_ADDRESSES" | tr ',' '\n' | sed 's/\./\\./g'; } > "$RUNNER_TEMP/patterns.txt"
+          COUNT=0
+          EXCLUDES=":(exclude).github/security-denylist.txt :(exclude).github/workflows/security-scan.yml :(exclude).github/workflows/install-config-hygiene.yml :(exclude).gitignore"
+          while IFS= read -r pat; do
+            [ -z "$pat" ] && continue
+            case "$pat" in \#*) continue ;; esac
+            # git grep exit codes: 0=match, 1=no match, >1=error. Fail closed on real errors.
+            set +e
+            hits=$(git grep -IniE "$pat" -- . $EXCLUDES)
+            rc=$?
+            set -e
+            if [ "$rc" -gt 1 ]; then echo "::error::git grep failed (rc=$rc) on a denylist pattern — failing closed."; exit 1; fi
+            if [ "$rc" -eq 0 ]; then
+              n=$(printf '%s\n' "$hits" | grep -c . || true)
+              COUNT=$((COUNT + n))
+            fi
+          done < "$RUNNER_TEMP/patterns.txt"
+          echo "BLEED_COUNT=$COUNT" >> "$GITHUB_ENV"
+
+      - name: Report (counts only — no locations)
+        run: |
+          {
+            echo "# 🔒 Weekly Security & Hygiene Scan"
+            echo ""
+            echo "| Check | Count |"
+            echo "|---|---|"
+            echo "| Secrets (gitleaks) | ${SECRET_COUNT:-?} |"
+            echo "| Lab-IP / customer-data (denylist) | ${BLEED_COUNT:-?} |"
+            echo ""
+            echo "_Counts only. Finding locations are intentionally not published here — this repo is externally readable. A maintainer sees details privately via \`gitleaks git . --config .gitleaks.toml\` and \`git grep -iE\` against the denylist (plus the CUSTOMER_DENYLIST secret) locally._"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,69 @@
+---
+# AAC -> MITRE HDF export — emit an AAC finding set as Heimdall Data Format.
+#
+# The counterpart to hdf_ingest.yml: take an AAC finding set (JSON in the shape
+# aac_hdf_export.py documents — hostname, framework, controls[]) and write a
+# valid HDF/OHDF file, so an AAC assessment can be opened in Heimdall and
+# consumed by the MITRE SAF tooling next to every other scanner.
+#
+# HONEST LIMITATION: AAC's stored compliance_results are violation-centric (OPA
+# emits the violations, not a row per passing control). Exporting straight from
+# the DB therefore represents FAILURES faithfully but cannot reconstruct every
+# passed control unless the assessment captured per-control results. Feed this a
+# finding set that carries the full control list when you need a complete HDF;
+# from bare stored results the export is faithful about what failed, not a full
+# pass/fail census.
+#
+# ── Variables ────────────────────────────────────────────────────────
+#   aac_result_path  (required) path to the AAC finding-set JSON on the controller.
+#   hdf_out_path     (required) where to write the HDF JSON on the controller.
+#
+# ── AAP Job Template ─────────────────────────────────────────────────
+#   "AAC - Export to MITRE HDF"
+
+- name: AAC -> MITRE HDF export
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    # aac_result_path: <set via extra_vars / survey / inventory>
+    # hdf_out_path: <set via extra_vars / survey / inventory>
+    _exporter: "{{ playbook_dir }}/../../scripts/aac_hdf_export.py"
+
+  tasks:
+    - name: Require aac_result_path and hdf_out_path
+      ansible.builtin.assert:
+        that:
+          - (aac_result_path | default('', true)) | length > 0
+          - (hdf_out_path | default('', true)) | length > 0
+        fail_msg: "aac_result_path and hdf_out_path are both required."
+
+    - name: Confirm the AAC result file exists
+      ansible.builtin.stat:
+        path: "{{ (aac_result_path | default('', true)) }}"
+      register: _src_stat
+
+    - name: Fail with a clear message if the AAC result is missing
+      ansible.builtin.fail:
+        msg: "AAC result file not found on the controller: {{ (aac_result_path | default('', true)) }}"
+      when: not _src_stat.stat.exists
+
+    - name: Convert the AAC finding set to HDF (deterministic)
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ _exporter }}"
+          - "{{ (aac_result_path | default('', true)) }}"
+      register: _hdf_out
+      changed_when: false
+
+    - name: Write the HDF document
+      ansible.builtin.copy:
+        content: "{{ _hdf_out.stdout }}"
+        dest: "{{ (hdf_out_path | default('', true)) }}"
+        mode: "0644"
+
+    - name: Summary
+      ansible.builtin.debug:
+        msg: "Wrote HDF to {{ (hdf_out_path | default('', true)) }} — open in Heimdall or run `saf validate` against it."

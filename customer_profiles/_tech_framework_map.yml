@@ -1,0 +1,147 @@
+# Technology / compliance-goal → framework key mapping.
+#
+# This file is the canonical translation layer between a customer's
+# stated environment ("we run RHEL 9 on AWS, and we care about
+# CIS + PCI-DSS") and the framework keys the OPA loader understands
+# (load_opa_policies.yml: e.g. `cis_rhel9`, `pci_dss`, ...).
+#
+# A customer profile (customer_profiles/examples/<name>.yml) lists
+# their tech_stack and compliance_goals. derive_customer_frameworks.py
+# walks both lists, unions the framework keys, and emits the set the
+# loader should pass via `frameworks_to_load`.
+
+# ── Technology → framework keys ───────────────────────────────────────
+#
+# "Owning this technology" implies "you need the policies that govern
+# it." Each OS/platform tech maps to its own per-platform CIS key (cis_rhel9,
+# Ubuntu, Windows, AWS, ...); the union is the right answer.
+
+tech_to_frameworks:
+
+  # Operating systems — now per-platform CIS loader_keys (only the discovered
+  # platform's CIS bundle loads, not the whole CIS tree).
+  rhel_9:           [cis_rhel9, stigs]
+  rhel_8:           [cis_rhel8, stigs]
+  rhel_10:          [cis_rhel10]
+  ubuntu_2204:      [cis_ubuntu_2204]
+  ubuntu_2004:      [cis_ubuntu_2004]
+  ubuntu_2404:      [cis_ubuntu_2404]
+  debian_11:        [cis_debian_11]
+  rocky_8:          [cis_rocky_linux_8]
+  rocky_9:          [cis_rocky_linux_9]
+  amazon_linux_2023: [cis_amazon_linux_2023]
+  windows_2022:     [cis_windows_2022, stigs]
+  windows_2019:     [cis_windows_2019, stigs]
+
+  # Cloud
+  aws:              [cis_aws]
+  azure:            [cis_azure]
+  gcp:              [cis_gcp]
+  oracle_cloud:     [cis_cloud]
+
+  # Containers + orchestration
+  kubernetes:       [cis_kubernetes, sentinel_kubernetes]
+  openshift:        [cis_openshift, stigs, sentinel_kubernetes]
+  aks:              [cis_aks, sentinel_kubernetes]
+  eks:              [cis_eks, sentinel_kubernetes]
+  gke:              [cis_gke, sentinel_kubernetes]
+  docker:           [cis_docker, sentinel_dockerfile]
+  podman:           [cis_docker]
+  vmware:           [cis_vmware]
+
+  # Network devices
+  vyos:             [cis_vyos]
+  pfsense:          [cis_pfsense]
+
+  # IaC + automation
+  ansible:          [sentinel_ansible]
+  terraform:        [sentinel_terraform]
+  git:              [git_security]
+
+  # AI surface (LLMs, MCP servers, AI agents)
+  llm:              [ai_governance, nist_ai_rmf, eu_ai_act]
+  mcp_server:       [mcp_governance, ai_governance]
+
+  # OT / critical infrastructure
+  smart_meter:      [ami_nist_ir7628, ami_device, ami_headend, nist_800_82]
+  scada:            [nerc_cip, iec_62443, nist_800_82]
+  ot_network:       [nerc_cip, iec_62443, nist_800_82]
+  bes_asset:        [nerc_cip]      # bulk electric system
+
+  # Threat-detection surfaces (always-on)
+  crypto_workload:  [crypto_miner_detection]
+
+# ── Compliance goal → framework keys ──────────────────────────────────
+#
+# When a customer says "we have to comply with SOC 2" they don't
+# always realize the implied dependencies — SOC 2 trust services
+# criteria reference NIST 800-53 control families, and so on. We
+# pull the obvious ones; the customer can override by editing
+# their profile directly.
+
+compliance_to_frameworks:
+
+  # Security baselines
+  # CIS is now per-platform and driven by discovered/declared TECH (see
+  # tech_to_frameworks), not a blanket goal — a "cis" goal with no platform is
+  # meaningless. The platform's CIS bundle is selected by its tech entry.
+  cis:              []
+  stig:             [stigs]
+
+  # NIST family
+  nist_800_53:      [nist_800_53]
+  nist_csf:         [nist_csf]
+  nist_rmf:         [nist_rmf]
+  nist_800_171:     [nist_800_171]
+  nist_800_82:      [nist_800_82]
+  nist_ai_rmf:      [nist_ai_rmf]
+
+  # ISO family
+  iso27001:         [iso27001]
+  iso27701:         [iso27701]
+
+  # SOC / management
+  soc2:             [soc2, iso27001]      # soc2 commonly leans on iso27001 mappings
+  hitrust:          [hitrust]
+  csa_ccm:          [csa_ccm]
+  corporate:        [corporate]
+
+  # Financial / regulatory
+  pci_dss:          [pci_dss]
+  sox:              [sox]
+  dora:             [dora]
+  ny_dfs:           [ny_dfs]
+  sec_cyber:        [sec_cyber]
+  swift_csp:        [swift_csp]
+
+  # Federal / contracting
+  fisma:            [fisma, nist_800_53]
+  fedramp:          [fedramp, nist_800_53]
+  cmmc:             [cmmc, nist_800_171]
+  cfr_part_11:      [cfr_part_11]
+  tisax:            [tisax]
+
+  # Privacy
+  gdpr:             [gdpr]
+  hipaa:            [hipaa]
+  ccpa:             [ccpa]
+
+  # Critical-infrastructure / OT
+  nerc_cip:         [nerc_cip]
+  iec_62443:        [iec_62443]
+
+  # Sovereign / regional
+  ncsc_caf:         [ncsc_caf]
+  nis2:             [nis2]
+  digital_sovereignty: [digital_sovereignty]
+
+  # AI / governance
+  eu_ai_act:        [eu_ai_act, ai_governance]
+
+# ── Always-on (loaded for every customer) ─────────────────────────────
+#
+# A small set of policies that don't fit "tech" or "compliance" but
+# every customer should have available. Keep this list minimal —
+# the whole point of customer profiles is to ship LESS, not more.
+
+always_on: []

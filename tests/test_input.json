@@ -1,0 +1,66 @@
+{
+  "access_control": {
+    "policy": {
+      "documented": true,
+      "approved": true,
+      "communicated": true
+    },
+    "access_rules": {
+      "defined": true,
+      "enforced": true
+    }
+  },
+  "user_management": {
+    "registration": {
+      "formal_process": true,
+      "authorization_required": true,
+      "documented": true
+    },
+    "unauthorized_users": [],
+    "provisioning": {
+      "least_privilege": true,
+      "role_based": true,
+      "approval_required": true,
+      "automated_tools": true
+    }
+  },
+  "privileged_access": {
+    "allocation_restricted": true,
+    "regular_review": true,
+    "monitoring_enabled": true,
+    "multi_factor_auth": true,
+    "shared_accounts": []
+  },
+  "authentication": {
+    "password_policy": {
+      "min_length": 12,
+      "complexity_required": true,
+      "expiry_enabled": true,
+      "history_count": 15,
+      "lockout_enabled": true
+    },
+    "mfa": {
+      "enabled": true,
+      "required_for_admin": true,
+      "required_for_remote": true
+    },
+    "secrets": {
+      "encrypted_storage": true,
+      "access_controlled": true,
+      "regular_rotation": true,
+      "secure_transmission": true
+    }
+  },
+  "cryptography": {
+    "policy": {
+      "documented": true,
+      "approved": true,
+      "communicated": true,
+      "regularly_reviewed": true,
+      "approved_algorithms": ["AES", "RSA", "ECC"],
+      "key_management_addressed": true,
+      "encryption_requirements": true
+    },
+    "algorithms_in_use": ["AES", "RSA", "ECC", "SHA256", "TLS1.3"]
+  }
+}

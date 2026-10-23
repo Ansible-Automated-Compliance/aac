@@ -1,0 +1,325 @@
+---
+# Crypto Miner Detection and Remediation Playbook
+# Scans systems for unauthorized cryptocurrency mining software and remediates
+# Part of Ansible Automated Compliance (AAC) security controls
+
+- name: Crypto Miner Detection and Remediation
+  hosts: all
+  gather_facts: yes
+  become: yes
+
+  vars_files:
+    - ../vars/site_config.yml
+
+  vars:
+    opa_url: "{{ opa_server_url | default(opa_security_url) }}"
+    report_dir: "{{ playbook_dir }}/../../reports"
+    remediate: "{{ auto_remediate | default(false) | bool }}"
+
+    # Known crypto miner process patterns
+    miner_process_patterns:
+      - xmrig
+      - xmr-stak
+      - minerd
+      - cgminer
+      - bfgminer
+      - cpuminer
+      - ethminer
+      - claymore
+      - phoenixminer
+      - t-rex
+      - nbminer
+      - gminer
+      - lolminer
+      - cryptonight
+      - stratum
+      - nicehash
+      - minergate
+      - coinhive
+      - kryptex
+
+    # Known miner package patterns
+    miner_package_patterns:
+      - xmrig
+      - cpuminer
+      - cgminer
+      - bfgminer
+      - minerd
+
+    # Suspicious ports for mining
+    mining_ports:
+      - 3333
+      - 4444
+      - 5555
+      - 7777
+      - 8888
+      - 9999
+      - 14444
+      - 45700
+
+  tasks:
+    # =========================================================================
+    # DETECTION PHASE
+    # =========================================================================
+
+    - name: "DETECTION: Scan for miner processes"
+      shell: |
+        ps aux | grep -iE '{{ miner_process_patterns | join("|") }}' | grep -v grep || true
+      register: miner_processes
+      changed_when: false
+
+    - name: "DETECTION: Check for high CPU processes (>80%)"
+      shell: |
+        ps aux --sort=-%cpu | awk 'NR>1 && $3>80 {print $0}'
+      register: high_cpu_processes
+      changed_when: false
+
+    - name: "DETECTION: Scan for miner packages (RPM)"
+      shell: |
+        rpm -qa 2>/dev/null | grep -iE '{{ miner_package_patterns | join("|") }}' || true
+      register: miner_packages_rpm
+      changed_when: false
+      when: ansible_os_family == "RedHat"
+
+    - name: "DETECTION: Scan for miner packages (DEB)"
+      shell: |
+        dpkg -l 2>/dev/null | grep -iE '{{ miner_package_patterns | join("|") }}' || true
+      register: miner_packages_deb
+      changed_when: false
+      when: ansible_os_family == "Debian"
+
+    - name: "DETECTION: Check for connections to mining ports"
+      shell: |
+        ss -tupn 2>/dev/null | grep -E ':{{ mining_ports | join("|:") }}' || true
+      register: mining_connections
+      changed_when: false
+
+    - name: "DETECTION: Check for connections to known mining pools"
+      shell: |
+        ss -tupn 2>/dev/null | grep -iE 'pool|mining|nicehash|ethermine|nanopool|2miners|f2pool' || true
+      register: pool_connections
+      changed_when: false
+
+    - name: "DETECTION: Scan for miner systemd services"
+      shell: |
+        systemctl list-unit-files --type=service 2>/dev/null | grep -iE '{{ miner_process_patterns | join("|") }}' || true
+      register: miner_services
+      changed_when: false
+
+    - name: "DETECTION: Check running services for miners"
+      shell: |
+        systemctl list-units --type=service --state=running 2>/dev/null | grep -iE '{{ miner_process_patterns | join("|") }}' || true
+      register: running_miner_services
+      changed_when: false
+
+    - name: "DETECTION: Scan crontabs for miner entries"
+      shell: |
+        for user in $(cut -f1 -d: /etc/passwd); do
+          crontab -l -u $user 2>/dev/null | grep -iE '{{ miner_process_patterns | join("|") }}' && echo "User: $user"
+        done || true
+        cat /etc/crontab 2>/dev/null | grep -iE '{{ miner_process_patterns | join("|") }}' || true
+        cat /etc/cron.d/* 2>/dev/null | grep -iE '{{ miner_process_patterns | join("|") }}' || true
+      register: miner_crontabs
+      changed_when: false
+
+    - name: "DETECTION: Search for miner binaries in common locations"
+      shell: |
+        find /usr/local/bin /opt /tmp /var/tmp /home -type f \( -name '*xmrig*' -o -name '*miner*' -o -name '*cgminer*' \) 2>/dev/null \
+          | grep -v '\.rego$' \
+          | grep -v '\.yml$' \
+          | grep -v '\.yaml$' \
+          | grep -v '\.py$' \
+          | grep -v '\.md$' \
+          | grep -v 'compliance' \
+          | grep -v 'detection' \
+          || true
+      register: miner_binaries
+      changed_when: false
+
+    - name: "DETECTION: Check for miner config files"
+      shell: |
+        find /etc /opt /home /root -type f -name 'config.json' -exec grep -l -iE 'pool|wallet|mining' {} \; 2>/dev/null || true
+      register: miner_configs
+      changed_when: false
+
+    # =========================================================================
+    # BUILD DETECTION SUMMARY
+    # =========================================================================
+
+    - name: Build detection facts
+      set_fact:
+        detection_results:
+          hostname: "{{ ansible_hostname }}"
+          timestamp: "{{ ansible_date_time.iso8601 }}"
+          miner_processes_found: "{{ miner_processes.stdout_lines | length > 0 }}"
+          miner_processes: "{{ miner_processes.stdout_lines }}"
+          high_cpu_processes: "{{ high_cpu_processes.stdout_lines }}"
+          miner_packages_found: "{{ (miner_packages_rpm.stdout_lines | default([]) | length > 0) or (miner_packages_deb.stdout_lines | default([]) | length > 0) }}"
+          mining_connections_found: "{{ mining_connections.stdout_lines | length > 0 }}"
+          mining_connections: "{{ mining_connections.stdout_lines }}"
+          pool_connections_found: "{{ pool_connections.stdout_lines | length > 0 }}"
+          pool_connections: "{{ pool_connections.stdout_lines }}"
+          miner_services_found: "{{ miner_services.stdout_lines | length > 0 or running_miner_services.stdout_lines | length > 0 }}"
+          miner_services: "{{ miner_services.stdout_lines + running_miner_services.stdout_lines }}"
+          miner_crontabs_found: "{{ miner_crontabs.stdout_lines | length > 0 }}"
+          miner_crontabs: "{{ miner_crontabs.stdout_lines }}"
+          miner_binaries_found: "{{ miner_binaries.stdout_lines | length > 0 }}"
+          miner_binaries: "{{ miner_binaries.stdout_lines }}"
+          miner_configs_found: "{{ miner_configs.stdout_lines | length > 0 }}"
+          miner_configs: "{{ miner_configs.stdout_lines }}"
+
+    - name: Determine if mining detected
+      set_fact:
+        mining_detected: "{{ detection_results.miner_processes_found or detection_results.miner_packages_found or detection_results.mining_connections_found or detection_results.pool_connections_found or detection_results.miner_services_found or detection_results.miner_crontabs_found or detection_results.miner_binaries_found }}"
+
+    - name: Calculate risk level
+      set_fact:
+        risk_level: >-
+          {% if detection_results.miner_processes_found or detection_results.pool_connections_found or detection_results.miner_services_found %}critical
+          {% elif detection_results.miner_packages_found or detection_results.miner_crontabs_found %}high
+          {% elif detection_results.mining_connections_found or detection_results.miner_binaries_found %}medium
+          {% else %}low{% endif %}
+
+    # =========================================================================
+    # DISPLAY DETECTION RESULTS
+    # =========================================================================
+
+    - name: Display detection summary
+      debug:
+        msg:
+          - "============================================"
+          - "CRYPTO MINER DETECTION RESULTS"
+          - "============================================"
+          - "Hostname: {{ ansible_hostname }}"
+          - "Timestamp: {{ ansible_date_time.iso8601 }}"
+          - "Mining Detected: {{ mining_detected | upper }}"
+          - "Risk Level: {{ risk_level | upper }}"
+          - "--------------------------------------------"
+          - "Miner Processes: {{ detection_results.miner_processes_found }}"
+          - "Miner Packages: {{ detection_results.miner_packages_found }}"
+          - "Mining Connections: {{ detection_results.mining_connections_found }}"
+          - "Pool Connections: {{ detection_results.pool_connections_found }}"
+          - "Miner Services: {{ detection_results.miner_services_found }}"
+          - "Miner Cron Jobs: {{ detection_results.miner_crontabs_found }}"
+          - "Miner Binaries: {{ detection_results.miner_binaries_found }}"
+          - "============================================"
+
+    - name: Display detailed findings (if detected)
+      debug:
+        msg:
+          - "DETAILED FINDINGS:"
+          - "Processes: {{ detection_results.miner_processes }}"
+          - "Connections: {{ detection_results.mining_connections + detection_results.pool_connections }}"
+          - "Services: {{ detection_results.miner_services }}"
+          - "Binaries: {{ detection_results.miner_binaries }}"
+          - "Cron Jobs: {{ detection_results.miner_crontabs }}"
+      when: mining_detected
+
+    # =========================================================================
+    # REMEDIATION PHASE (if enabled)
+    # =========================================================================
+
+    - name: "REMEDIATION: Kill miner processes"
+      shell: |
+        pkill -9 -f '{{ item }}' || true
+      loop: "{{ miner_process_patterns }}"
+      when: remediate and mining_detected
+      ignore_errors: yes
+
+    - name: "REMEDIATION: Stop and disable miner services"
+      systemd:
+        name: "{{ item.split()[0] }}"
+        state: stopped
+        enabled: no
+      loop: "{{ detection_results.miner_services }}"
+      when: remediate and detection_results.miner_services_found
+      ignore_errors: yes
+
+    - name: "REMEDIATION: Remove miner packages (RPM)"
+      yum:
+        name: "{{ item }}"
+        state: absent
+      loop: "{{ miner_packages_rpm.stdout_lines | default([]) }}"
+      when: remediate and ansible_os_family == "RedHat" and miner_packages_rpm.stdout_lines | default([]) | length > 0
+      ignore_errors: yes
+
+    - name: "REMEDIATION: Remove miner packages (DEB)"
+      apt:
+        name: "{{ item.split()[1] }}"
+        state: absent
+        purge: yes
+      loop: "{{ miner_packages_deb.stdout_lines | default([]) }}"
+      when: remediate and ansible_os_family == "Debian" and miner_packages_deb.stdout_lines | default([]) | length > 0
+      ignore_errors: yes
+
+    - name: "REMEDIATION: Remove miner binaries"
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop: "{{ detection_results.miner_binaries }}"
+      when: remediate and detection_results.miner_binaries_found
+
+    - name: "REMEDIATION: Remove miner config files"
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop: "{{ detection_results.miner_configs }}"
+      when: remediate and detection_results.miner_configs_found
+
+    - name: Display remediation status
+      debug:
+        msg:
+          - "============================================"
+          - "REMEDIATION {{ 'COMPLETED' if remediate else 'SKIPPED (set auto_remediate=true to enable)' }}"
+          - "============================================"
+      when: mining_detected
+
+    # =========================================================================
+    # SAVE REPORT
+    # =========================================================================
+
+    - name: Ensure report directory exists
+      file:
+        path: "{{ report_dir }}"
+        state: directory
+        mode: '0755'
+      delegate_to: localhost
+      become: no
+
+    - name: Save detection report
+      copy:
+        content: |
+          {
+            "report_type": "crypto_miner_detection",
+            "hostname": "{{ ansible_hostname }}",
+            "timestamp": "{{ ansible_date_time.iso8601 }}",
+            "mining_detected": {{ mining_detected | lower }},
+            "risk_level": "{{ risk_level }}",
+            "remediation_performed": {{ remediate | lower }},
+            "findings": {{ detection_results | to_nice_json }}
+          }
+        dest: "{{ report_dir }}/{{ ansible_hostname }}_crypto_miner_scan_{{ ansible_date_time.iso8601_basic_short }}.json"
+      delegate_to: localhost
+      become: no
+
+    # =========================================================================
+    # FINAL STATUS
+    # =========================================================================
+
+    - name: Set compliance status
+      set_fact:
+        compliance_status: "{{ 'NON_COMPLIANT' if mining_detected else 'COMPLIANT' }}"
+
+    - name: Final compliance status
+      debug:
+        msg:
+          - "============================================"
+          - "COMPLIANCE STATUS: {{ compliance_status }}"
+          - "============================================"
+          - "{{ 'ACTION REQUIRED: Crypto mining software detected!' if mining_detected else 'System is clean - no crypto mining indicators found.' }}"
+          - "Report saved to: {{ report_dir }}/{{ ansible_hostname }}_crypto_miner_scan_{{ ansible_date_time.iso8601_basic_short }}.json"
+
+    - name: Fail if mining detected and not remediated
+      fail:
+        msg: "CRITICAL: Crypto mining software detected on {{ ansible_hostname }}. Run with auto_remediate=true to remove."
+      when: mining_detected and not remediate

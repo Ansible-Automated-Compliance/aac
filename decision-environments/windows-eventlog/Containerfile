@@ -1,0 +1,36 @@
+# Decision Environment for the Windows Golden Image Drift Watcher
+#
+# Bakes pywinrm + the lab.eda collection (containing the winrm_eventlog
+# event source plugin) onto the supported AAP 2.7 decision environment image.
+#
+# THIS IMAGE IS NOT OPTIONAL AND IS NOT PREBUILT. The windows_golden_enforcement
+# rulebook cannot run on the default decision environment — it needs pywinrm and
+# the lab.eda collection, and the default DE has neither. As of 2026-08-24 the
+# image existed in no registry: build it before any Windows golden-image demo.
+#
+# Build:
+#   ./build.sh
+# Or manually:
+#   podman build -t <hub-route>/de-windows-eventlog:latest \
+#       -f Containerfile ../..
+#   podman push --tls-verify=false \
+#       <hub-route>/de-windows-eventlog:latest
+
+FROM registry.redhat.io/ansible-automation-platform-27/de-supported-rhel9:latest
+
+USER root
+
+# Windows event polling needs pywinrm; ntlm transport (corporate Windows
+# common) needs requests-ntlm.
+RUN pip3.12 install pywinrm requests-ntlm
+
+# Bake the lab.eda collection in so ansible-rulebook can resolve
+# lab.eda.winrm_eventlog by FQCN without having to install collections at
+# activation runtime (which doesn't reliably work with project-bundled
+# collections in EDA 2.6).
+COPY collections/ansible_collections/lab \
+     /usr/share/ansible/collections/ansible_collections/lab
+RUN chown -R 1000:0 /usr/share/ansible/collections/ansible_collections/lab && \
+    chmod -R u+rwX,g+rX /usr/share/ansible/collections/ansible_collections/lab
+
+USER 1000

@@ -1,0 +1,126 @@
+---
+# PostgreSQL for Automation Orchestrator. The operator brings no database: it
+# expects one you provide, with two databases (backend and Temporal). This is a
+# single-pod PostgreSQL 15 for an evaluation on one node.
+#
+# BEFORE APPLYING: replace <ao-db-password> in the Secret with a generated
+# password (for example: openssl rand -base64 24). Nothing else needs editing.
+#   oc apply -f install/openshift-local/manifests/40-ao-postgres.yaml
+# After the pod is Running, create the second database (section 7.1 of the guide).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: automation-orchestrator
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ao-db
+  namespace: automation-orchestrator
+type: Opaque
+stringData:
+  POSTGRESQL_USER: ao
+  POSTGRESQL_PASSWORD: <ao-db-password>
+  POSTGRESQL_DATABASE: ao_backend
+---
+# The two Secrets the AutomationOrchestrator resource references. Required keys:
+# database, username, password. Same password as above.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ao-backend-db
+  namespace: automation-orchestrator
+type: Opaque
+stringData:
+  database: ao_backend
+  username: ao
+  password: <ao-db-password>
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ao-temporal-db
+  namespace: automation-orchestrator
+type: Opaque
+stringData:
+  database: ao_temporal
+  username: ao
+  password: <ao-db-password>
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ao-postgres-data
+  namespace: automation-orchestrator
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ao-postgres
+  namespace: automation-orchestrator
+  labels:
+    app: ao-postgres
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: ao-postgres
+  template:
+    metadata:
+      labels:
+        app: ao-postgres
+    spec:
+      containers:
+        - name: postgres
+          image: registry.redhat.io/rhel9/postgresql-15:latest
+          ports:
+            - containerPort: 5432
+              name: postgres
+          envFrom:
+            - secretRef:
+                name: ao-db
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/pgsql/data
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          readinessProbe:
+            exec:
+              command: ["/bin/sh", "-c", "pg_isready -U ao -d ao_backend -h 127.0.0.1"]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: ["/bin/sh", "-c", "pg_isready -U ao -d ao_backend -h 127.0.0.1"]
+            initialDelaySeconds: 30
+            periodSeconds: 30
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: ao-postgres-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ao-postgres
+  namespace: automation-orchestrator
+spec:
+  selector:
+    app: ao-postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432

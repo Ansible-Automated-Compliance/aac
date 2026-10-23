@@ -1,0 +1,10 @@
+---
+galaxy_info:
+  role_name: m365_assessment
+  description: >-
+    Run a complete CIS Microsoft 365 Foundations Benchmark v7.0.0
+    assessment: collect tenant state from every source, evaluate it
+    against OPA, and persist per-section results.
+  license: Apache-2.0
+  min_ansible_version: "2.15"
+dependencies: []

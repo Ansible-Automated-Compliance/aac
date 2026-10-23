@@ -1,0 +1,58 @@
+---
+# AAC Fresh Install — Phase 0: Teardown
+#
+# Terminates the EC2 instance created in Phase 1 and removes the security group.
+# Run AFTER Phase 6 validation is confirmed successful.
+#
+# Survey variables (required):
+#   instance_id — EC2 instance ID from Phase 1 output (e.g., i-0abc123def456789)
+#   aws_region  — AWS region (default: us-east-1)
+#
+# AAP Job Template: "AAC - Fresh Install: 00 Teardown"
+# Credentials: Ansible Vault
+# EE: AAC Compliance EE
+
+- name: Teardown AAC Fresh Install EC2 Instance
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - [ "../vars/vault_secrets.yml", "../vars/empty_fallback.yml" ]
+    - ../vars/site_config.yml
+
+  vars:
+    instance_id: "{{ instance_id }}"
+    # aws_region: <set via extra_vars / survey / inventory>   # default 'us-east-1'
+
+  tasks:
+
+    - name: Confirm teardown target
+      ansible.builtin.debug:
+        msg:
+          - "About to terminate: {{ instance_id }} in {{ (aws_region | default('us-east-1', true)) }}"
+          - "Tagged: DestroyAfterValidation=true"
+
+    - name: Terminate EC2 instance
+      amazon.aws.ec2_instance:
+        instance_ids:
+          - "{{ instance_id }}"
+        region: "{{ (aws_region | default('us-east-1', true)) }}"
+        state: terminated
+        wait: true
+        wait_timeout: 120
+
+    - name: Remove AAC fresh install security group
+      amazon.aws.ec2_security_group:
+        name: "aac-fresh-install-sg"
+        region: "{{ (aws_region | default('us-east-1', true)) }}"
+        state: absent
+      ignore_errors: true
+
+    - name: Teardown complete
+      ansible.builtin.debug:
+        msg:
+          - "✅ Instance {{ instance_id }} terminated"
+          - "✅ Security group removed (if not shared)"
+          - ""
+          - "All AWS resources for the fresh install test have been cleaned up."

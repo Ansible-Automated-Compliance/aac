@@ -1,0 +1,39 @@
+---
+# deploy_mcp_server.yml — Deploy the AAP MCP server container
+#
+# Deploys the aap-mcp container on aac_host, writes mcp.env (token placeholder),
+# and installs the user-level systemd unit for aapuser1.
+#
+# After this runs, generate a real token:
+#   Template 40 — AAC - Rotate MCP Token
+#
+# AAP Job Template: "AAC - Deploy MCP Server"
+# Credentials: Ansible Vault + SSH (aapuser1 machine credential)
+# EE: AAC Compliance EE
+# Inventory: localhost
+
+- name: Deploy AAP MCP Server
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - ../vars/site_config.yml
+    - [ "../vars/vault_secrets.yml", "../vars/empty_fallback.yml" ]
+
+  pre_tasks:
+    # The endpoint defaults (external_aap_url, external_opa_compliance_url)
+    # live in the environment profile, not site_config. Load it when one is
+    # selected; a site_config-only deployment must set them itself (or -e).
+    - name: Load the environment profile (when env_profile is set)
+      # tags: always on the include AND its tasks (apply), or a run limited
+      # with --tags aac_mcp would skip the profile and fail on its URLs.
+      ansible.builtin.include_tasks:
+        file: ../tasks/load_install_profile.yml
+        apply:
+          tags: [always]
+      tags: [always]
+      when: env_profile | default('', true) | length > 0
+
+  roles:
+    - role: aac_mcp_server

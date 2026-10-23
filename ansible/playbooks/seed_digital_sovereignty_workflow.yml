@@ -1,0 +1,644 @@
+---
+# Seed Digital Sovereignty Workflow in AAP
+#
+# Creates:
+#   - Job template: "AAC - Digital Sovereignty Assessment" (with domain-select survey)
+#   - Workflow template: "AAC - Digital Sovereignty Workflow"
+#     Nodes: Load OPA Policies → Domain Assessment → (always) Store Results
+#
+# Run once after initial deployment or to re-create the workflow.
+# AAP Job Template: "AAC - Seed Digital Sovereignty Workflow"
+
+- name: Seed Digital Sovereignty Workflow
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - ../vars/site_config.yml
+
+  vars:
+    aap_token: "{{ aap_token }}"
+    # CAA signing key — the Digital Sovereignty store step signs each
+    # certification with cosign. The key lives in a dedicated AAP credential
+    # (encrypted at rest), NOT in template extra_vars, so it survives re-seeds.
+    # On a FRESH cluster, pass caa_signing_private_key (cosign PEM) once; on a
+    # re-seed the credential already exists and is only (re)attached.
+    # caa_signing_private_key: <set via extra_vars / survey / inventory>
+    # caa_signing_password: <set via extra_vars / survey / inventory>
+    aac_caa_credential_name: "AAC - CAA Signing Key (cosign-key-v1)"
+    aac_caa_credential_type_name: "AAC - CAA Signing Key (extra_vars)"
+
+  tasks:
+
+    # =========================================================================
+    # RESOLVE AAP OBJECT IDs BY NAME
+    # =========================================================================
+    - name: Look up project ID by name
+      uri:
+        use_proxy: false
+        url: "{{ aap_url }}/api/controller/v2/projects/?name={{ aap_project_name | urlencode }}"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ aap_token }}"
+        validate_certs: false
+        status_code: 200
+      register: project_lookup
+
+    - name: Look up inventory ID by name
+      uri:
+        use_proxy: false
+        url: "{{ aap_url }}/api/controller/v2/inventories/?name={{ aap_inventory_name | urlencode }}"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ aap_token }}"
+        validate_certs: false
+        status_code: 200
+      register: inventory_lookup
+
+    - name: Look up execution environment ID by name
+      uri:
+        use_proxy: false
+        url: "{{ aap_url }}/api/controller/v2/execution_environments/?name={{ aap_ee_name | urlencode }}"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ aap_token }}"
+        validate_certs: false
+        status_code: 200
+      register: ee_lookup
+
+    - name: Look up vault credential ID by name
+      uri:
+        use_proxy: false
+        url: "{{ aap_url }}/api/controller/v2/credentials/?name={{ aap_vault_credential_name | urlencode }}"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ aap_token }}"
+        validate_certs: false
+        status_code: 200
+      register: vault_cred_lookup
+
+    - name: Set resolved AAP object IDs
+      set_fact:
+        project_id:   "{{ project_lookup.json.results[0].id }}"
+        inventory_id: "{{ inventory_lookup.json.results[0].id }}"
+        ee_id:        "{{ ee_lookup.json.results[0].id }}"
+        vault_cred_id: "{{ vault_cred_lookup.json.results[0].id }}"
+
+    # =========================================================================
+    # CAA SIGNING CREDENTIAL (durable — key in a credential, not extra_vars)
+    # =========================================================================
+    - name: Look up CAA signing credential by name
+      uri:
+        use_proxy: false
+        url: "{{ aap_url }}/api/controller/v2/credentials/?name={{ aac_caa_credential_name | urlencode }}"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ aap_token }}"
+        validate_certs: false
+        status_code: 200
+      register: caa_cred_lookup
+
+    - name: Ensure CAA signing credential type + credential exist (fresh cluster; key provided)
+      when:
+        - caa_cred_lookup.json.count | int == 0
+        - (caa_signing_private_key | default('', true)) | length > 0
+      block:
+        - name: Look up existing CAA credential type
+          uri:
+            use_proxy: false
+            url: "{{ aap_url }}/api/controller/v2/credential_types/?name={{ aac_caa_credential_type_name | urlencode }}"
+            method: GET
+            headers:
+              Authorization: "Bearer {{ aap_token }}"
+            validate_certs: false
+            status_code: 200
+          register: caa_ct_lookup
+
+        - name: Create CAA signing credential type (injects the key as extra_vars)
+          when: caa_ct_lookup.json.count | int == 0
+          uri:
+            use_proxy: false
+            url: "{{ aap_url }}/api/controller/v2/credential_types/"
+            method: POST
+            headers:
+              Authorization: "Bearer {{ aap_token }}"
+              Content-Type: "application/json"
+            validate_certs: false
+            body_format: json
+            body:
+              name: "{{ aac_caa_credential_type_name }}"
+              kind: cloud
+              inputs:
+                fields:
+                  - { id: caa_signing_private_key, type: string, label: "CAA Cosign Private Key (PEM)", secret: true, multiline: true }
+                  - { id: caa_signing_password, type: string, label: "CAA Cosign Password", secret: true }
+                required: ["caa_signing_private_key"]
+              injectors:
+                extra_vars:
+                  # literal Jinja for AAP to evaluate at run time (escaped so this
+                  # seeder does not template it): {{ caa_signing_private_key }}
+                  caa_signing_private_key: "{{ '{{' }} (caa_signing_private_key | default('', true)) {{ '}}' }}"
+                  caa_signing_password: "{{ '{{' }} (caa_signing_password | default('', true)) {{ '}}' }}"
+            status_code: [200, 201]
+          register: caa_ct_created
+
+        - name: Resolve CAA credential type ID
+          set_fact:
+            caa_ct_id: "{{ (caa_ct_lookup.json.results[0].id) if (caa_ct_lookup.json.count | int > 0) else (caa_ct_created.json.id) }}"
+
+        - name: Create CAA signing credential
+          uri:
+            use_proxy: false
+            url: "{{ aap_url }}/api/controller/v2/credentials/"
+            method: POST
+            headers:
+              Authorization: "Bearer {{ aap_token }}"
+              Content-Type: "application/json"
+            validate_certs: false
+            body_format: json
+            body:
+              name: "{{ aac_caa_credential_name }}"
+              credential_type: "{{ caa_ct_id | int }}"
+              organization: 1
+              inputs:
+                caa_signing_private_key: "{{ (caa_signing_private_key | default('', true)) }}"
+                caa_signing_password: "{{ caa_signing_password | default('', true) }}"
+            status_code: [200, 201]
+          register: caa_cred_created
+
+    - name: Resolve CAA credential ID (existing or just-created; empty if unavailable)
+      set_fact:
+        caa_cred_id: "{{ (caa_cred_lookup.json.results[0].id) if (caa_cred_lookup.json.count | int > 0) else (caa_cred_created.json.id | default('')) }}"
+
+    - name: Warn if no CAA signing credential is available
+      debug:
+        msg: >-
+          No CAA signing credential found and no caa_signing_private_key provided —
+          the Digital Sovereignty store step will fail its cosign-signing gate.
+          Re-run this seeder with caa_signing_private_key set (cosign PEM) to create it.
+      when: (caa_cred_id | default('')) | length == 0
+
+    # =========================================================================
+    # JOB TEMPLATE — Assessment
+    # =========================================================================
+    - name: Get existing job templates
+      uri:
+        use_proxy: false
+        url: "{{ aap_url }}/api/controller/v2/job_templates/?page_size=200"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ aap_token }}"
+        validate_certs: false
+        status_code: 200
+      register: existing_jt
+
+    - name: Build existing template name→ID map
+      set_fact:
+        jt_map: >-
+          {{ dict(existing_jt.json.results | map(attribute='name') | list |
+             zip(existing_jt.json.results | map(attribute='id') | list)) }}
+
+    - name: Create or update Assessment job template
+      uri:
+        use_proxy: false
+        url: >-
+          {{ aap_url }}/api/controller/v2/job_templates/{{
+            jt_map['AAC - Digital Sovereignty Assessment'] ~ '/'
+            if 'AAC - Digital Sovereignty Assessment' in jt_map else '' }}
+        method: "{{ 'PATCH' if 'AAC - Digital Sovereignty Assessment' in jt_map else 'POST' }}"
+        headers:
+          Authorization: "Bearer {{ aap_token }}"
+          Content-Type: "application/json"
+        validate_certs: false
+        body_format: json
+        body:
+          name: "AAC - Digital Sovereignty Assessment"
+          description: >-
+            Evaluates organizational digital sovereignty posture across up to 7 domains:
+            Data Residency, Cryptographic Sovereignty, Infrastructure Sovereignty,
+            Software Sovereignty, Operational Sovereignty, Network Sovereignty, AI/ML Sovereignty.
+            Select specific domains via the survey or leave blank to assess all.
+            Queries opa-compliance (:8182). Results saved to /tmp/ and printed to job output.
+          job_type: run
+          inventory: "{{ inventory_id | int }}"
+          project: "{{ project_id | int }}"
+          playbook: "ansible/playbooks/digital_sovereignty_assessment.yml"
+          execution_environment: "{{ ee_id | int }}"
+          ask_variables_on_launch: false
+          survey_enabled: true
+        status_code: [200, 201]
+      register: jt_result
+
+    - name: Store assessment job template ID
+      set_fact:
+        assessment_jt_id: "{{ jt_result.json.id }}"
+
+    - name: Attach Vault credential to assessment job template
+      uri:
+        use_proxy: false
+        url: "{{ aap_url }}/api/controller/v2/job_templates/{{ assessment_jt_id }}/credentials/"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ aap_token }}"
+          Content-Type: "application/json"
+        validate_certs: false
+        body_format: json
+        body: "{{ {'id': vault_cred_id | int} }}"
+        status_code: [200, 204, 400]  # 400 = already attached
+
+    - name: Attach CAA signing credential to assessment job template
+      uri:
+        use_proxy: false
+        url: "{{ aap_url }}/api/controller/v2/job_templates/{{ assessment_jt_id }}/credentials/"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ aap_token }}"
+          Content-Type: "application/json"
+        validate_certs: false
+        body_format: json
+        body: "{{ {'id': caa_cred_id | int} }}"
+        status_code: [200, 204, 400]  # 400 = already attached
+      when: (caa_cred_id | default('')) | length > 0
+
+    # =========================================================================
+    # SURVEY — domain multiselect + options
+    # =========================================================================
+    - name: Create assessment survey
+      uri:
+        use_proxy: false
+        url: "{{ aap_url }}/api/controller/v2/job_templates/{{ assessment_jt_id }}/survey_spec/"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ aap_token }}"
+          Content-Type: "application/json"
+        validate_certs: false
+        body_format: json
+        body:
+          name: "Digital Sovereignty Assessment Survey"
+          description: "Configure the sovereignty assessment scope and options"
+          spec:
+            - question_name: "Organization Name"
+              question_description: "Name of the organization being assessed (appears in report)"
+              variable: organization_name
+              type: text
+              default: "My Organization"
+              required: true
+              min: 1
+              max: 100
+
+            - question_name: "Domains to Assess"
+              question_description: >-
+                Select one or more domains to assess. Leave blank to assess ALL domains.
+              variable: domains_to_assess
+              type: multiselect
+              choices: |
+                data_residency
+                cryptographic_sovereignty
+                infrastructure_sovereignty
+                software_sovereignty
+                operational_sovereignty
+                network_sovereignty
+                ai_sovereignty
+              default: ""
+              required: false
+
+            - question_name: "Assessment Input File"
+              question_description: >-
+                Path to the JSON input file containing system facts (relative to project root).
+                Use examples/digital_sovereignty/compliant.json for testing.
+              variable: assessment_input_file
+              type: text
+              default: "examples/digital_sovereignty/compliant.json"
+              required: true
+
+            - question_name: "Fail Job if NON_SOVEREIGN?"
+              question_description: >-
+                Set to 'true' to fail the AAP job when sovereignty level is NON_SOVEREIGN.
+                Use 'false' for reporting-only runs that should always succeed.
+              variable: fail_on_non_sovereign
+              type: multiplechoice
+              choices: "true\nfalse"
+              default: "true"
+              required: true
+        status_code: 200
+
+    # =========================================================================
+    # WORKFLOW TEMPLATE
+    # =========================================================================
+    - name: Get existing workflow templates
+      uri:
+        use_proxy: false
+        url: "{{ aap_url }}/api/controller/v2/workflow_job_templates/?page_size=100"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ aap_token }}"
+        validate_certs: false
+        status_code: 200
+      register: existing_wf
+
+    - name: Build existing workflow name→ID map
+      set_fact:
+        wf_map: >-
+          {{ dict(existing_wf.json.results | map(attribute='name') | list |
+             zip(existing_wf.json.results | map(attribute='id') | list)) }}
+
+    - name: Create or update workflow template
+      uri:
+        use_proxy: false
+        url: >-
+          {{ aap_url }}/api/controller/v2/workflow_job_templates/{{
+            wf_map['AAC - Digital Sovereignty Workflow'] ~ '/'
+            if 'AAC - Digital Sovereignty Workflow' in wf_map else '' }}
+        method: "{{ 'PATCH' if 'AAC - Digital Sovereignty Workflow' in wf_map else 'POST' }}"
+        headers:
+          Authorization: "Bearer {{ aap_token }}"
+          Content-Type: "application/json"
+        validate_certs: false
+        body_format: json
+        body:
+          name: "AAC - Digital Sovereignty Workflow"
+          description: >-
+            End-to-end digital sovereignty assessment workflow.
+            Step 1: Reload OPA policies from git.
+            Step 2: Run domain assessment (survey-driven domain selection).
+            Step 3 (always): Store results to PostgreSQL compliance database.
+            Select specific sovereignty domains via the survey, or assess all 7 domains.
+          organization: 1
+          survey_enabled: true
+          ask_variables_on_launch: true
+        status_code: [200, 201]
+      register: wf_result
+
+    - name: Store workflow ID
+      set_fact:
+        wf_id: "{{ wf_result.json.id }}"
+
+    # =========================================================================
+    # WORKFLOW SURVEY
+    # =========================================================================
+    - name: Create workflow survey
+      uri:
+        use_proxy: false
+        url: "{{ aap_url }}/api/controller/v2/workflow_job_templates/{{ wf_id }}/survey_spec/"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ aap_token }}"
+          Content-Type: "application/json"
+        validate_certs: false
+        body_format: json
+        body:
+          name: "Digital Sovereignty Workflow Survey"
+          description: "Configure the sovereignty assessment"
+          spec:
+            - question_name: "Organization Name"
+              question_description: "Name of the organization being assessed"
+              variable: organization_name
+              type: text
+              default: "My Organization"
+              required: true
+              min: 1
+              max: 100
+
+            - question_name: "Domains to Assess"
+              question_description: >-
+                Select domains to assess. Leave blank for all 7 domains.
+              variable: domains_to_assess
+              type: multiselect
+              choices: |
+                data_residency
+                cryptographic_sovereignty
+                infrastructure_sovereignty
+                software_sovereignty
+                operational_sovereignty
+                network_sovereignty
+                ai_sovereignty
+              default: ""
+              required: false
+
+            - question_name: "Assessment Input File"
+              question_description: "Path to JSON input file (relative to project root)"
+              variable: assessment_input_file
+              type: text
+              default: "examples/digital_sovereignty/compliant.json"
+              required: true
+
+            - question_name: "Fail Job if NON_SOVEREIGN?"
+              question_description: "Fail the workflow if sovereignty level is NON_SOVEREIGN"
+              variable: fail_on_non_sovereign
+              type: multiplechoice
+              choices: "true\nfalse"
+              default: "true"
+              required: true
+        status_code: 200
+
+    # =========================================================================
+    # LOOK UP the Load OPA Policies job template ID
+    # =========================================================================
+    - name: Find Load OPA Policies template ID
+      set_fact:
+        load_opa_jt_id: "{{ jt_map['AAC - Load OPA Policies'] | default('') }}"
+
+    - name: Warn if Load OPA Policies template not found
+      debug:
+        msg: "WARNING: 'AAC - Load OPA Policies' job template not found — workflow will skip that node"
+      when: load_opa_jt_id == '
+
+    # A workflow node may only pass variables to a template that prompts for
+    # them (AAP answers 400 otherwise). Ask the template, then attach the scoped,
+    # additive load of the sovereignty framework only when it is accepted.
+    - name: Read whether the Load OPA Policies template accepts launch variables
+      uri:
+        use_proxy: false
+        url: "{{ aap_url }}/api/controller/v2/job_templates/{{ load_opa_jt_id | int }}/"
+        headers:
+          Authorization: "Bearer {{ aap_token }}"
+        validate_certs: false
+        status_code: 200
+      register: _load_opa_jt
+      when: load_opa_jt_id != ''
+
+    - name: Say how the sovereignty framework will be loaded
+      debug:
+        msg: >-
+          {{ "Node 1 loads digital_sovereignty additively on top of the tenant's selection."
+             if (_load_opa_jt.json.ask_variables_on_launch | default(false))
+             else "WARNING: 'AAC - Load OPA Policies' does not prompt for variables, so node 1 runs the template's default load. Add digital_sovereignty to the tenant's selection, or enable Prompt on launch for Variables, so the assessment finds its policies." }}
+      when: load_opa_jt_id != '''
+
+    # =========================================================================
+    # CLEAR EXISTING NODES (prevent duplicates on re-run)
+    # =========================================================================
+    - name: Get existing workflow nodes
+      uri:
+        use_proxy: false
+        url: "{{ aap_url }}/api/controller/v2/workflow_job_templates/{{ wf_id }}/workflow_nodes/?page_size=50"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ aap_token }}"
+        validate_certs: false
+        status_code: 200
+      register: existing_wf_nodes
+
+    - name: Delete existing workflow nodes
+      uri:
+        use_proxy: false
+        url: "{{ aap_url }}/api/controller/v2/workflow_job_template_nodes/{{ item.id }}/"
+        method: DELETE
+        headers:
+          Authorization: "Bearer {{ aap_token }}"
+        validate_certs: false
+        status_code: [200, 204]
+      loop: "{{ existing_wf_nodes.json.results }}"
+      when: existing_wf_nodes.json.count > 0
+
+    # =========================================================================
+    # WORKFLOW NODES
+    # =========================================================================
+    - name: Create node 1 — Load OPA Policies
+      uri:
+        use_proxy: false
+        url: "{{ aap_url }}/api/controller/v2/workflow_job_templates/{{ wf_id }}/workflow_nodes/"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ aap_token }}"
+          Content-Type: "application/json"
+        validate_certs: false
+        body_format: json
+        body:
+          unified_job_template: "{{ load_opa_jt_id | int }}"
+          all_parents_must_converge: false
+          # Load the sovereignty framework additively on top of the tenant's
+          # selection; never a full load, never a prune — only when the template
+          # accepts launch variables (see the check above).
+          extra_data: >-
+            {{ {'source': 'extra_vars', 'frameworks_to_load': 'digital_sovereignty', 'reconcile': false}
+               if (_load_opa_jt.json.ask_variables_on_launch | default(false)) else {} }}
+        status_code: [200, 201]
+      register: node1_result
+      when: load_opa_jt_id != ''
+
+    - name: Create node 2 — Domain Assessment
+      uri:
+        use_proxy: false
+        url: "{{ aap_url }}/api/controller/v2/workflow_job_templates/{{ wf_id }}/workflow_nodes/"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ aap_token }}"
+          Content-Type: "application/json"
+        validate_certs: false
+        body_format: json
+        body:
+          unified_job_template: "{{ assessment_jt_id | int }}"
+          all_parents_must_converge: false
+        status_code: [200, 201]
+      register: node2_result
+
+    - name: Store node IDs
+      set_fact:
+        node1_id: "{{ node1_result.json.id | default('') }}"
+        node2_id: "{{ node2_result.json.id }}"
+
+    # =========================================================================
+    # CONNECT NODES
+    # Node 1 (Load OPA) --success--> Node 2 (Assessment)
+    # =========================================================================
+    - name: Connect node 1 → node 2 (success)
+      uri:
+        use_proxy: false
+        url: "{{ aap_url }}/api/controller/v2/workflow_job_template_nodes/{{ node1_id }}/success_nodes/"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ aap_token }}"
+          Content-Type: "application/json"
+        validate_certs: false
+        body_format: json
+        body: "{{ {'id': node2_id | int} }}"
+        status_code: [200, 204]
+      when: node1_id != ''
+
+    # =========================================================================
+    # JOB TEMPLATE — PDF Report
+    # =========================================================================
+    - name: Create or update PDF Report job template
+      uri:
+        use_proxy: false
+        url: >-
+          {{ aap_url }}/api/controller/v2/job_templates/{{
+            jt_map['DS - Generate Audit PDF'] ~ '/'
+            if 'DS - Generate Audit PDF' in jt_map else '' }}
+        method: "{{ 'PATCH' if 'DS - Generate Audit PDF' in jt_map else 'POST' }}"
+        headers:
+          Authorization: "Bearer {{ aap_token }}"
+          Content-Type: "application/json"
+        validate_certs: false
+        body_format: json
+        body:
+          name: "DS - Generate Audit PDF"
+          description: >-
+            Queries the latest Digital Sovereignty assessment result from PostgreSQL and
+            generates a submission-ready PDF audit report using ReportLab.
+            The report includes: cover page with sovereignty level badge, executive summary,
+            domain scorecard (9 domains), framework applicability matrix (ENISA/GAIA-X/
+            FedRAMP High/BSI C5/NCSC/IRAP), violation detail with remediation guidance,
+            and certification statement.
+            Output: /tmp/digital_sovereignty_report_<YYYY-MM-DD>.pdf on the AAP controller.
+            Retrieve via: scp aapuser1@<controller>:/tmp/digital_sovereignty_report_*.pdf ~/Downloads/
+            Run 'DS - Digital Sovereignty Assessment' first to populate the data.
+          job_type: run
+          inventory: "{{ inventory_id | int }}"
+          project: "{{ project_id | int }}"
+          playbook: "ansible/playbooks/ds_pdf_report.yml"
+          execution_environment: "{{ ee_id | int }}"
+          ask_variables_on_launch: false
+        status_code: [200, 201]
+      register: pdf_jt_result
+
+    - name: Store PDF job template ID
+      set_fact:
+        pdf_jt_id: "{{ pdf_jt_result.json.id }}"
+
+    - name: Attach Vault credential to PDF job template
+      uri:
+        use_proxy: false
+        url: "{{ aap_url }}/api/controller/v2/job_templates/{{ pdf_jt_id }}/credentials/"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ aap_token }}"
+          Content-Type: "application/json"
+        validate_certs: false
+        body_format: json
+        body: "{{ {'id': vault_cred_id | int} }}"
+        status_code: [200, 204, 400]
+
+    # =========================================================================
+    # DONE
+    # =========================================================================
+    - name: "=== Digital Sovereignty Workflow Ready ==="
+      debug:
+        msg:
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "  AAC - Digital Sovereignty Workflow created"
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "  Workflow ID:      {{ wf_id }}"
+          - "  Assessment JT ID: {{ assessment_jt_id }}"
+          - "  PDF Report JT ID: {{ pdf_jt_id }}"
+          - ""
+          - "  Workflow nodes:"
+          - "  1. AAC - Load OPA Policies  (ensures policies are current)"
+          - "  2. AAC - Digital Sovereignty Assessment  (survey-driven)"
+          - ""
+          - "  Survey domains available:"
+          - "    • data_residency"
+          - "    • cryptographic_sovereignty"
+          - "    • infrastructure_sovereignty"
+          - "    • software_sovereignty"
+          - "    • operational_sovereignty"
+          - "    • network_sovereignty"
+          - "    • ai_sovereignty"
+          - ""
+          - "  After running the assessment, generate the PDF report:"
+          - "    Resources → Templates → DS - Generate Audit PDF"
+          - ""
+          - "  Launch: Resources → Templates → AAC - Digital Sovereignty Workflow"
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

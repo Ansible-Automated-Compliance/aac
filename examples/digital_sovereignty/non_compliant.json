@@ -1,0 +1,530 @@
+{
+  "input": {
+    "approved_jurisdictions": ["AU", "NZ"],
+    "approved_cloud_regions": ["ap-southeast-2"],
+
+    "cloud_resources": [
+      {
+        "resource_id": "s3-hr-data-001",
+        "resource_type": "object_storage",
+        "provider": "aws",
+        "region": "us-east-1",
+        "country": "US",
+        "infrastructure_type": "public_cloud",
+        "data_classification": "sensitive",
+        "stores_regulated_data": true,
+        "key_management": "provider_managed",
+        "key_location_country": "US",
+        "byok_enabled": false,
+        "hyok_enabled": false,
+        "algorithm": "AES-256"
+      },
+      {
+        "resource_id": "classified-db-001",
+        "resource_type": "database",
+        "provider": "azure",
+        "region": "eastus",
+        "country": "US",
+        "infrastructure_type": "public_cloud",
+        "data_classification": "sovereign",
+        "stores_regulated_data": true,
+        "key_management": "provider_managed",
+        "key_location_country": "US",
+        "byok_enabled": false,
+        "hyok_enabled": false,
+        "algorithm": "3DES"
+      }
+    ],
+
+    "backup_configurations": [
+      {
+        "resource_id": "s3-hr-data-001",
+        "backup_region": "us-west-2",
+        "backup_country": "US",
+        "offsite_country": "US"
+      }
+    ],
+
+    "dr_configurations": [
+      {
+        "resource_id": "classified-db-001",
+        "dr_region": "eastasia",
+        "dr_country": "SG"
+      }
+    ],
+
+    "metadata_storage": {
+      "location_country": "US",
+      "in_approved_jurisdiction": false
+    },
+
+    "telemetry_and_logs": {
+      "location_country": "US",
+      "in_approved_jurisdiction": false,
+      "vendor_access_to_logs": true
+    },
+
+    "data_flows": [
+      {
+        "flow_id": "flow-001",
+        "source_country": "AU",
+        "destination_country": "US",
+        "data_classification": "sensitive",
+        "transfer_mechanism_documented": false
+      },
+      {
+        "flow_id": "flow-002",
+        "source_country": "AU",
+        "destination_country": "CN",
+        "data_classification": "restricted",
+        "transfer_mechanism_documented": false
+      }
+    ],
+
+    "data_flow_inventory": {
+      "maintained": false,
+      "last_review_date": "2024-01-01T00:00:00Z"
+    },
+
+    "hsm_configuration": {
+      "deployed": false,
+      "type": "cloud_hsm",
+      "location_country": "US",
+      "vendor_access_possible": true,
+      "key_material_leaves_hsm": true
+    },
+
+    "key_management_policies": {
+      "rotation_policy_documented": false,
+      "rotation_frequency_days": 730,
+      "key_ceremony_documented": false,
+      "dual_control_enforced": false,
+      "split_knowledge_enforced": false,
+      "escrow": {
+        "exists": true,
+        "foreign_entity_holds_keys": true
+      }
+    },
+
+    "encryption_standards": {
+      "algorithms_approved": ["AES-256", "AES-128"],
+      "tls_minimum_version": "1.2",
+      "prohibited_algorithms": ["DES", "RC4", "MD5", "SHA-1", "3DES"]
+    },
+
+    "encrypted_resources_in_transit": [
+      {
+        "connection_id": "conn-legacy-001",
+        "protocol": "HTTP",
+        "tls_version": "1.0",
+        "cipher_suite": "TLS_RSA_WITH_RC4_128_MD5",
+        "involves_regulated_data": true
+      }
+    ],
+
+    "code_signing": {
+      "implemented": false,
+      "key_location_country": "US",
+      "private_key_in_approved_jurisdiction": false
+    },
+
+    "infrastructure_components": [
+      {
+        "component_id": "azure-eastus",
+        "component_type": "cloud_service",
+        "deployment_type": "public_cloud",
+        "provider": "Microsoft Azure",
+        "provider_hq_country": "US",
+        "physical_location_country": "US",
+        "data_classification": "sovereign",
+        "subject_to_foreign_surveillance_law": true,
+        "foreign_government_access_risk": "high",
+        "mitigation": {
+          "encryption_before_upload": false,
+          "sovereign_cloud_used": false
+        }
+      }
+    ],
+
+    "cloud_providers": [
+      {
+        "provider_id": "aws",
+        "provider_name": "Amazon Web Services",
+        "hq_country": "US",
+        "subject_to_cloud_act": true,
+        "data_processed_pct": 80
+      },
+      {
+        "provider_id": "azure",
+        "provider_name": "Microsoft Azure",
+        "hq_country": "US",
+        "subject_to_cloud_act": true,
+        "data_processed_pct": 15
+      }
+    ],
+
+    "hardware_components": [
+      {
+        "component_id": "network-switch-01",
+        "component_type": "network_device",
+        "manufacturer_country": "CN",
+        "firmware_origin_country": "CN",
+        "supply_chain_audited": false,
+        "known_vulnerabilities": {
+          "hardware_backdoor": true
+        }
+      }
+    ],
+
+    "network_infrastructure": {
+      "dns_provider": {
+        "location_country": "US",
+        "under_foreign_jurisdiction": true
+      },
+      "cdn": {
+        "provider_hq_country": "US",
+        "content_cached_in_approved_regions": false
+      }
+    },
+
+    "concentration_limits": {
+      "max_single_provider_pct": 70,
+      "max_foreign_provider_pct": 50
+    },
+
+    "exit_strategy": {
+      "documented": false,
+      "portability_tested": false,
+      "estimated_migration_days": 365,
+      "data_portability_format_open": false
+    },
+
+    "sbom": {
+      "maintained": false,
+      "format": "none",
+      "last_updated": "2024-06-01T00:00:00Z",
+      "coverage_pct": 30,
+      "includes_transitive_dependencies": false
+    },
+
+    "software_components": [
+      {
+        "component_id": "vendor-middleware-001",
+        "name": "ClosedSource Analytics Platform",
+        "version": "4.2",
+        "component_type": "middleware",
+        "vendor_country": "CN",
+        "source_available": false,
+        "audited": false,
+        "forced_update_mechanism": true,
+        "forced_update_mitigation_documented": false,
+        "telemetry_to_vendor": true,
+        "telemetry_can_be_disabled": false,
+        "license_type": "proprietary",
+        "sbom_available": false
+      }
+    ],
+
+    "update_mechanisms": [
+      {
+        "software_id": "vendor-middleware-001",
+        "update_type": "vendor_pushed",
+        "requires_approval_before_update": false,
+        "update_source_in_jurisdiction": false
+      }
+    ],
+
+    "software_provenance": {
+      "signing": {
+        "all_artifacts_signed": false,
+        "key_in_approved_jurisdiction": false
+      },
+      "verification": {
+        "integrity_checked_on_deploy": false,
+        "hash_validation": false
+      }
+    },
+
+    "dependency_management": {
+      "private_registry_used": false,
+      "registry_in_approved_jurisdiction": false,
+      "dependency_pinning_enforced": false,
+      "vulnerability_scanning": {
+        "enabled": false,
+        "last_scan_date": "2024-01-01T00:00:00Z"
+      }
+    },
+
+    "code_repositories": [
+      {
+        "repo_id": "repo-main",
+        "location_country": "US",
+        "hosting_provider_jurisdiction": "US",
+        "access_controls_adequate": false
+      }
+    ],
+
+    "personnel": [
+      {
+        "person_id": "P001",
+        "role": "Platform Administrator",
+        "location_country": "CN",
+        "nationality_screened": false,
+        "security_clearance_level": "none",
+        "access_level": "admin",
+        "vetting_current": false,
+        "foreign_government_connection": true
+      }
+    ],
+
+    "vendor_access": [
+      {
+        "vendor_id": "V001",
+        "vendor_name": "Foreign Support Vendor",
+        "vendor_hq_country": "US",
+        "access_type": "remote",
+        "sessions_monitored": false,
+        "sessions_logged": false,
+        "sessions_recorded": false,
+        "access_requires_approval": false,
+        "just_in_time_access": false,
+        "data_classification_accessed": "sensitive"
+      }
+    ],
+
+    "support_contracts": [
+      {
+        "vendor_id": "V001",
+        "vendor_name": "Foreign Support Vendor",
+        "support_personnel_location": "US",
+        "right_to_refuse_foreign_access": false,
+        "data_handling_agreement": false,
+        "foreign_government_disclosure_clause": false
+      }
+    ],
+
+    "privileged_access_management": {
+      "pam_solution_deployed": false,
+      "session_recording_enabled": false,
+      "credential_vaulting_enabled": false,
+      "just_in_time_provisioning": false,
+      "privileged_access_review_current": false,
+      "review_frequency_days": 365
+    },
+
+    "foreign_access_requests": {
+      "policy_documented": false,
+      "legal_review_required": false,
+      "notification_to_data_owner": false,
+      "right_to_challenge": false
+    },
+
+    "remote_operations": {
+      "vpn_in_jurisdiction": false,
+      "jump_host_in_jurisdiction": false,
+      "remote_from_approved_countries_only": false
+    },
+
+    "bgp_configuration": {
+      "autonomous_system_number_owned": false,
+      "route_filtering_enabled": false,
+      "rpki_deployed": false,
+      "route_origin_validation": false,
+      "peer_list_reviewed_date": "2023-01-01T00:00:00Z",
+      "routes_documented": false
+    },
+
+    "dns_configuration": {
+      "resolver_location_country": "US",
+      "resolver_under_org_control": false,
+      "dnssec_enabled": false,
+      "dns_over_https_or_tls": false,
+      "public_dns_providers_blocked": false,
+      "zone_transfers_controlled": false,
+      "dns_logs_retained_days": 7
+    },
+
+    "internet_egress": {
+      "single_controlled_egress_point": false,
+      "egress_country": "US",
+      "traffic_inspected_at_egress": false,
+      "allowed_destinations_documented": false,
+      "blocked_destinations_documented": false
+    },
+
+    "traffic_routing": {
+      "sensitive_traffic_transits_foreign_country": true,
+      "foreign_countries_transited": ["US", "SG"],
+      "traffic_routed_over_approved_paths": false,
+      "encrypted_if_transits_foreign": false
+    },
+
+    "network_monitoring": {
+      "netflow_collection_enabled": false,
+      "deep_packet_inspection": { "enabled": false },
+      "anomaly_detection_enabled": false,
+      "foreign_destination_alerting": false,
+      "retention_days": 7
+    },
+
+    "private_connectivity": {
+      "dedicated_links_for_sensitive": { "used": false },
+      "vpn_used_for_sensitive": false,
+      "vpn_termination_country": "US"
+    },
+
+    "network_segments": [
+      {
+        "segment_id": "seg-prod",
+        "segment_name": "Production",
+        "location_country": "US",
+        "handles_regulated_data": true,
+        "traffic_inspected": false,
+        "encrypted_in_transit": false,
+        "routing_policy_documented": false
+      }
+    ],
+
+    "ai_services": [
+      {
+        "service_id": "chatgpt-api",
+        "service_name": "OpenAI ChatGPT API",
+        "service_type": "llm",
+        "provider": "OpenAI",
+        "provider_hq_country": "US",
+        "deployment_type": "saas",
+        "inference_location_country": "US",
+        "data_sent_for_inference": true,
+        "data_used_for_training": true,
+        "data_classification_processed": "sensitive",
+        "opt_out_of_training": { "available": true, "enabled": false },
+        "data_retention_by_provider_days": 30
+      }
+    ],
+
+    "ml_training": {
+      "training_data_location_country": "US",
+      "training_infrastructure_country": "US",
+      "training_data_classification": "sensitive",
+      "data_leaves_jurisdiction_for_training": true,
+      "federated_learning_used": false
+    },
+
+    "ml_models": [
+      {
+        "model_id": "model-foreign-001",
+        "model_name": "Foreign Analytics Model",
+        "origin": "foreign_govt",
+        "origin_country": "CN",
+        "audited_for_backdoors": false,
+        "model_weights_location_country": "CN",
+        "inference_in_jurisdiction": false
+      }
+    ],
+
+    "ai_governance": {
+      "policy_documented": false,
+      "approved_ai_services_list": false,
+      "shadow_ai_controls": false,
+      "data_handling_procedures": false,
+      "human_oversight_for_decisions": false
+    },
+
+    "ai_output_controls": {
+      "outputs_reviewed_before_action": false,
+      "output_logging_enabled": false,
+      "output_jurisdiction": "US"
+    },
+
+    "dora": {
+      "ict_risk_management_framework_documented": false,
+      "ict_risk_framework_reviewed_date": "2024-01-01T00:00:00Z",
+      "ict_risk_framework_review_frequency_days": 365,
+      "ict_asset_register_maintained": false,
+      "ict_asset_register_reviewed_date": "2023-06-01T00:00:00Z",
+      "ict_asset_register_review_frequency_days": 180,
+      "rto_defined": false,
+      "rto_hours": 48,
+      "rpo_defined": false,
+      "rpo_hours": 24,
+      "business_continuity_plan_documented": false,
+      "business_continuity_tested_date": "2023-01-01T00:00:00Z",
+      "business_continuity_test_frequency_days": 365,
+      "major_incident_classification_defined": false,
+      "initial_notification_timeline_hours": 24,
+      "intermediate_report_timeline_hours": 168,
+      "digital_resilience_testing_conducted": false,
+      "digital_resilience_test_date": "2023-01-01T00:00:00Z",
+      "digital_resilience_test_frequency_days": 365,
+      "tlpt_required": true,
+      "tlpt_conducted": false,
+      "tlpt_date": "2022-01-01T00:00:00Z",
+      "tlpt_frequency_years": 3,
+      "critical_ict_providers_register_maintained": false,
+      "critical_ict_providers": [
+        {
+          "provider_id": "aws-us",
+          "provider_name": "AWS US East",
+          "pct_critical_functions": 85,
+          "exit_strategy_documented": false,
+          "contractual_requirements_met": false
+        }
+      ],
+      "concentration_risk_threshold_pct": 60
+    },
+
+    "cyber_resilience": {
+      "redundancy": {
+        "critical_systems_have_active_redundancy": false,
+        "failover_tested_date": "2023-01-01T00:00:00Z",
+        "failover_test_frequency_days": 180
+      },
+      "backup_and_recovery": {
+        "backups_taken_frequency_hours": 24,
+        "recovery_tested_date": "2023-06-01T00:00:00Z",
+        "recovery_test_frequency_days": 180,
+        "recovery_test_met_rto": false,
+        "recovery_test_met_rpo": false,
+        "backup_immutability_enforced": false,
+        "backup_location_sovereign": false
+      },
+      "adversarial_testing": {
+        "red_team_conducted": false,
+        "red_team_date": "2022-01-01T00:00:00Z",
+        "red_team_frequency_days": 365,
+        "purple_team_or_chaos_engineering": false
+      },
+      "incident_response": {
+        "ir_plan_documented": false,
+        "ir_plan_tested_date": "2022-01-01T00:00:00Z",
+        "ir_plan_test_frequency_days": 365,
+        "roles_formally_assigned": false,
+        "nation_state_scenario_included": false
+      },
+      "threat_intelligence": {
+        "feeds_active": false,
+        "feeds_integrated_into_soc": false,
+        "sovereign_feed_available": false
+      },
+      "supply_chain_resilience": {
+        "assessment_conducted": false,
+        "assessment_date": "2022-01-01T00:00:00Z",
+        "assessment_frequency_days": 365,
+        "critical_suppliers_have_alternatives": false,
+        "software_bill_of_materials_for_resilience": false
+      },
+      "metrics": {
+        "mttr_tracked": false,
+        "mttr_hours": 72,
+        "mttr_threshold_hours": 8,
+        "mttd_tracked": false
+      },
+      "governance": {
+        "board_cyber_resilience_review_frequency_days": 365,
+        "board_review_date": "2022-06-01T00:00:00Z",
+        "cyber_resilience_training_date": "2022-01-01T00:00:00Z",
+        "cyber_resilience_training_frequency_days": 365
+      }
+    }
+  }
+}

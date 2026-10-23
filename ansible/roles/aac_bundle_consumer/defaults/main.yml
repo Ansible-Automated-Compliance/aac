@@ -1,0 +1,87 @@
+---
+# aac_bundle_consumer role defaults
+#
+# Per role-config discipline: this role ships NO environment-specific
+# values. Everything below is either a safe structural default or an
+# empty value the caller MUST supply (see README.md for how to supply
+# each var — credential / inventory / survey / extra_vars).
+#
+# Two naming schemes are supported deliberately: the canonical
+# aac_bundle_* names (site_config.yml / inventory) AND short portal_*
+# names (AAP survey / extra_vars). The defaults below fall back to the
+# portal_* form lazily, so either scheme works and neither silently
+# discards the other. aac_bundle_* wins when both are set.
+
+# ── REQUIRED (no usable default — role asserts on these) ─────────────────────
+
+# Portal base URL, e.g. https://<portal-host>
+aac_bundle_portal_url: "{{ portal_url | default('') }}"
+
+# Tenant UUID whose bundle this AAC instance consumes.
+aac_bundle_tenant_id: "{{ portal_tenant_id | default('') }}"
+
+# Bearer token with scope=policy_bundle_pull (issued by the portal
+# operator). SUPPLY FROM VAULT OR AN AAP CREDENTIAL — never plaintext.
+aac_bundle_token: "{{ portal_bundle_pull_token | default('') }}"
+
+# ── STRONGLY RECOMMENDED ──────────────────────────────────────────────────────
+
+# The portal's ed25519 signing public key (base64), pinned at tenant
+# onboarding. Empty + aac_bundle_allow_tofu=false (the default) FAILS
+# CLOSED. With aac_bundle_allow_tofu=true the first fetched key is
+# persisted on the runtime host and enforced on every later run.
+aac_bundle_signing_pubkey_b64: "{{ portal_signing_pubkey_b64 | default('') }}"
+
+# Expected signing key id; verified against the envelope when set.
+aac_bundle_signing_key_id: "{{ portal_signing_key_id | default('') }}"
+
+# Optional X-Token-Id header value (catches stale token rotations early).
+aac_bundle_token_id: "{{ portal_bundle_token_id | default('') }}"
+
+# ── Structural defaults ───────────────────────────────────────────────────────
+
+# The host that runs podman and stores the bundle. Defaults to aac_host
+# from site_config.yml; override when the podman runtime is not the
+# host aac_host names (e.g. post-CRC topologies where aac_host is a
+# route/VIP rather than the SSH-reachable RHEL box).
+aac_bundle_runtime_host: "{{ portal_runtime_host | default(aac_host | default('')) }}"
+
+# TLS verification for portal calls. Defaults SECURE (true). Lab CRC
+# routes use self-signed certs — set false explicitly there, never in
+# a customer profile. An EMPTY value (blank survey field) also resolves
+# to true — only an explicit false disables verification.
+aac_bundle_validate_certs: >-
+  {{ true if (portal_validate_certs is not defined or portal_validate_certs == '')
+     else (portal_validate_certs | bool) }}
+
+# Allow persisted trust-on-first-use when no key is pinned. Default
+# false = fail closed. Lab bring-up sets true; the fetched key is
+# persisted at {{ aac_bundle_dir }}/pinned_signing_key.b64 and later
+# runs must match it.
+aac_bundle_allow_tofu: "{{ portal_allow_tofu | default(false) }}"
+
+# TOFU over UNVERIFIED TLS is additionally refused (an active MITM
+# could supply its own key AND its own bundle). This lab-only escape
+# hatch re-enables that combination, loudly.
+aac_bundle_allow_insecure_tofu: "{{ portal_allow_insecure_tofu | default(false) }}"
+
+# Where the verified bundle lands on the runtime host.
+aac_bundle_dir: "/etc/opa/customer"
+
+# Dedicated customer-policy OPA container. Port 8184 continues the
+# 8181/8182/8183 sequence owned by aac_opa_containers; a SEPARATE
+# container (not a reload of the shared three) because the portal
+# bundle is built without a scoped roots manifest — loading it into a
+# shared OPA would take ownership of the whole data namespace and
+# clobber the REST-loaded framework policies.
+aac_bundle_container_name: "opa-customer"
+aac_bundle_port: 8184
+
+# DIGEST-pinned OPA image (supply-chain: a version tag is still mutable
+# at the registry; the digest is not). This digest is opa 1.20.2,
+# verified 2026-09-23. Bump deliberately: pull the new tag, verify,
+# paste its digest here.
+aac_bundle_opa_image: "docker.io/openpolicyagent/opa@sha256:1b9ca9be95e6867ac658bfd3aa36804064c06017c7977759de68e9dd00de37fb"
+
+# Generate a podman systemd unit (same pattern as aac_opa_containers).
+aac_bundle_generate_systemd: true

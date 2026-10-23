@@ -1,0 +1,104 @@
+---
+# Layered install-config loader.
+#
+# Include from any install / preflight / verify playbook:
+#     - ansible.builtin.include_tasks: ../tasks/load_install_profile.yml
+#
+# PRECEDENCE (later wins):
+#
+#     profiles/<env>.yml  <  site_config.yml  <  inventory [all:vars] / -e
+#
+# The operator's inventory wins. That direction matters and it used to be
+# backwards: `include_vars` outranks inventory variables in Ansible's
+# precedence table, so a value loaded from a profile silently overrode the
+# value the operator had set in their own inventory file. Every var is
+# therefore re-applied below with `set_fact`, taking the inventory's value when
+# one exists and the profile's only as a fallback.
+#
+# WHERE VALUES COME FROM
+#   install/aac-install-inventory   operator's file, gitignored, passed with -i
+#   ansible/vars/site_config.yml    optional, gitignored, per-machine overrides
+#   ansible/vars/profiles/<env>.yml tracked, placeholders, topology defaults
+#
+# `site_config.yml` is NOT tracked in git. It used to be both tracked and
+# listed in .gitignore, which does nothing — git ignores .gitignore for files
+# it already tracks. The tracked copy carried lab addresses, so every clone
+# started life pointed at the Red Hat lab and every local edit was a staged
+# lab value waiting to be committed. That is how lab addresses kept coming
+# back. Do not re-add it.
+
+- name: Pre-read install_config.yml to discover env_profile (optional, legacy)
+  ansible.builtin.include_vars: "{{ item }}"
+  with_first_found:
+    - files:
+        - "{{ install_config_file | default(playbook_dir ~ '/../../install_config.yml') }}"
+        - "{{ playbook_dir }}/../vars/install_config.yml"
+      skip: true
+
+# Fail closed. There is deliberately no default.
+#
+# This used to default to `lab`. A playbook run without `-e env_profile=` then
+# loaded the lab profile and quietly pointed a customer's install at the Red
+# Hat lab's addresses. Refusing to guess is the whole point: an install that
+# stops and asks is recoverable, one that silently picks the wrong environment
+# is what puts another site's IP addresses in front of a customer.
+- name: Require an environment profile
+  ansible.builtin.assert:
+    that:
+      - env_profile is defined
+      - env_profile | length > 0
+      - env_profile in _aac_valid_profiles
+    fail_msg: >-
+      env_profile is not set to a valid profile
+      (got: {{ env_profile | default('<unset>') }}).
+      Valid profiles: {{ _aac_valid_profiles | join(', ') }}.
+
+      Set it in your inventory under [all:vars]:
+          env_profile=customer
+      and run with -i install/aac-install-inventory, or pass it directly:
+          -e env_profile=customer
+
+      There is no default. Guessing wrong points your install at another
+      site's infrastructure, so this fails instead.
+    # Defaulted even though this only prints on success: Ansible templates
+    # success_msg and fail_msg together, before the assertion runs. An
+    # undefaulted reference here turns the unset-variable case — the exact case
+    # this assert exists to explain — into an undefined-variable stack trace.
+    success_msg: "Environment profile: {{ env_profile | default('<unset>') }}"
+  vars:
+    _aac_valid_profiles: [customer, lab, macaap, rhpds]
+
+- name: Load environment profile defaults ({{ env_profile }})
+  ansible.builtin.include_vars:
+    file: "{{ playbook_dir }}/../vars/profiles/{{ env_profile }}.yml"
+    name: _aac_profile_defaults
+
+# Optional per-machine overrides. Absent on a fresh clone by design — the
+# operator copies site_config.yml.example only if they want machine-local
+# overrides on top of their inventory.
+- name: Load site_config.yml if the operator has one (optional)
+  ansible.builtin.include_vars:
+    file: "{{ playbook_dir }}/../vars/site_config.yml"
+    name: _aac_site_config
+  failed_when: false
+
+- name: Merge profile defaults under any site_config overrides
+  ansible.builtin.set_fact:
+    _aac_defaults: >-
+      {{ _aac_profile_defaults | combine(_aac_site_config | default({}, true)) }}
+
+# The inventory wins. For each key the profile or site_config supplies, keep
+# the operator's value if they set one and fall back to ours if they did not.
+- name: Apply resolved config, letting the inventory override every default
+  ansible.builtin.set_fact:
+    "{{ item.key }}": "{{ hostvars[inventory_hostname][item.key] | default(item.value, true) }}"
+  loop: "{{ _aac_defaults | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+
+- name: Show the resolved profile
+  ansible.builtin.debug:
+    msg: >-
+      Install profile: {{ env_profile_name | default(env_profile) }}
+      (topology: {{ topology | default('?') }})
+      — inventory values override profile defaults.

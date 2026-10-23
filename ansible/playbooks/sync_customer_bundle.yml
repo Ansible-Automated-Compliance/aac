@@ -1,0 +1,57 @@
+---
+# Sync Customer Policy Bundle (portal → OPA)
+#
+# Pulls the tenant's signed policy bundle from the AAC Customer Portal,
+# verifies the ed25519 envelope offline, swaps it into the dedicated
+# opa-customer container (port 8184), and acks loaded / load_failed back
+# to the portal's delivery timeline. Closes AAC task #45 (portal gap G8).
+#
+# Usage: create an AAP job template for this playbook (suggested name
+# "AAC - Sync Customer Policy Bundle"; keep allow_simultaneous OFF — the
+# template's serialization is the role's concurrency control).
+#
+#   Required (extra_vars / survey, or aac_bundle_* in site_config.yml):
+#     portal_url         e.g. https://<portal-host>
+#     portal_tenant_id   tenant UUID in the portal
+#   Required secret (vault_secrets.yml or an AAP credential injector):
+#     portal_bundle_pull_token   bearer token, scope=policy_bundle_pull
+#   Recommended (site_config.yml, pinned at tenant onboarding):
+#     portal_signing_pubkey_b64, portal_signing_key_id
+#   Lab bring-up only:
+#     portal_allow_tofu=true (persisted TOFU), portal_validate_certs=false,
+#     portal_allow_insecure_tofu=true (only with both of the above)
+#
+# The role reads canonical aac_bundle_* vars with lazy portal_* fallbacks
+# (see roles/aac_bundle_consumer/defaults/main.yml) — either naming scheme
+# works; aac_bundle_* wins when both are set.
+#
+# site_config.yml / vault_secrets.yml are OPTIONAL at parse time (they are
+# gitignored and absent from fresh AAP project checkouts) — loaded here
+# via first_found, skipped when missing, so extra_vars-only invocation
+# works on a freshly bootstrapped AAP.
+
+- name: Sync Customer Policy Bundle into OPA
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  pre_tasks:
+    - name: Load optional site configuration
+      include_vars: "{{ item }}"
+      with_first_found:
+        - files:
+            - ../vars/site_config.yml
+          skip: true
+      tags: [aac_bundle]
+
+    - name: Load optional vault secrets
+      include_vars: "{{ item }}"
+      with_first_found:
+        - files:
+            - ../vars/vault_secrets.yml
+          skip: true
+      no_log: true
+      tags: [aac_bundle]
+
+  roles:
+    - role: aac_bundle_consumer

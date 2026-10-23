@@ -1,0 +1,172 @@
+---
+# EDA Rulebook: Authorized Keys Injection Detection
+#
+# Monitors all authorized_keys files across the system for modifications.
+# This is the primary EDA trigger for the authorized_keys_validation.rego
+# extended hardening module (CIS 5.2, STIG RHEL-09-255xxx, NIST IA-3).
+#
+# Why a dedicated rulebook:
+#   Unauthorized SSH key injection is one of the fastest persistence techniques
+#   available to an attacker. A key added to /root/.ssh/authorized_keys gives
+#   immediate root SSH access. Detection must be near-real-time — the general
+#   compliance_drift_detection.yml 5-minute throttle is too slow for this signal.
+#   This rulebook fires within seconds and uses a 1-minute throttle per file.
+#
+# authorized_keys_validation.rego detects:
+#   - Freshly-injected keys (created within configurable window, default 60 min)
+#   - Group/world-writable authorized_keys files
+#   - Wrong ownership (not owned by the account user)
+#   - .ssh directory not mode 700
+#   - Deprecated key types (ssh-dss, ECDSA P-192)
+#   - RSA keys shorter than 2048 bits
+#   - Root authorized_keys entries
+#   - Keys not in the approved fingerprint list
+#
+# AAP Job Template: "CIS RHEL 9 Assessment" (ID 10)
+#   Evaluates authorized_keys_validation.rego as part of extended hardening.
+#
+# SCOPE: all hosts
+
+- name: Authorized Keys Injection Detection
+  hosts: all
+  sources:
+    - name: authorized_keys_watch
+      ansible.eda.file_watch:
+        paths:
+          # Root account — highest risk
+          - /root/.ssh/authorized_keys
+          - /root/.ssh/
+          # All home directories
+          - /home/
+        recursive: true
+        ignore_regexes:
+          - ".*\\.swp$"
+          - ".*~$"
+          - ".*\\.bak$"
+          - ".*known_hosts.*"
+          - ".*id_rsa.*"
+          - ".*id_ed25519.*"
+          - ".*id_ecdsa.*"
+          - ".*config$"
+
+  rules:
+
+    # ── Root authorized_keys modified — highest priority ─────────────────
+    # Any change to root's authorized_keys file is an immediate critical
+    # event. Root SSH key injection gives instant privileged access.
+    - name: Root Authorized Keys Modified
+      condition: event.path is search("/root/\\.ssh/authorized_keys")
+      throttle:
+        once_within: 1 minutes
+        group_by_attributes:
+          - event.meta.host
+      action:
+        run_job_template:
+          name: "CIS RHEL 9 Assessment"
+          organization: Default
+          job_args:
+            limit: "{{ event.meta.host }}"
+            extra_vars:
+              drift_trigger: authorized_keys_injection
+              changed_file: "{{ event.path }}"
+              change_type: "{{ event.change_type }}"
+              account: root
+              priority: critical
+
+    # ── Root .ssh directory modified ──────────────────────────────────────
+    # Changes to the root .ssh directory itself (permissions, new files)
+    # may indicate preparation for key injection or permission weakening.
+    - name: Root SSH Directory Modified
+      condition: >
+        event.path is search("/root/\\.ssh/") and
+        not (event.path is search("/root/\\.ssh/authorized_keys"))
+      throttle:
+        once_within: 2 minutes
+        group_by_attributes:
+          - event.meta.host
+      action:
+        run_job_template:
+          name: "CIS RHEL 9 Assessment"
+          organization: Default
+          job_args:
+            limit: "{{ event.meta.host }}"
+            extra_vars:
+              drift_trigger: authorized_keys_injection
+              changed_file: "{{ event.path }}"
+              change_type: "{{ event.change_type }}"
+              account: root
+              priority: critical
+
+    # ── User authorized_keys modified ─────────────────────────────────────
+    # Changes to any user's authorized_keys file under /home. The assessment
+    # will check the file's age, ownership, permissions, and key types against
+    # the authorized_keys_validation.rego policy.
+    - name: User Authorized Keys Modified
+      condition: >
+        event.path is search("/home/.*/\\.ssh/authorized_keys")
+      throttle:
+        once_within: 1 minutes
+        group_by_attributes:
+          - event.meta.host
+          - event.path
+      action:
+        run_job_template:
+          name: "CIS RHEL 9 Assessment"
+          organization: Default
+          job_args:
+            limit: "{{ event.meta.host }}"
+            extra_vars:
+              drift_trigger: authorized_keys_injection
+              changed_file: "{{ event.path }}"
+              change_type: "{{ event.change_type }}"
+              priority: critical
+
+    # ── User .ssh directory modified ──────────────────────────────────────
+    # New files in a user's .ssh directory (other than authorized_keys)
+    # or permission changes on the directory itself.
+    - name: User SSH Directory Modified
+      condition: >
+        event.path is search("/home/.*/\\.ssh/") and
+        not (event.path is search("/home/.*/\\.ssh/authorized_keys"))
+      throttle:
+        once_within: 5 minutes
+        group_by_attributes:
+          - event.meta.host
+          - event.path
+      action:
+        run_job_template:
+          name: "CIS RHEL 9 Assessment"
+          organization: Default
+          job_args:
+            limit: "{{ event.meta.host }}"
+            extra_vars:
+              drift_trigger: authorized_keys_ssh_dir_change
+              changed_file: "{{ event.path }}"
+              change_type: "{{ event.change_type }}"
+              priority: high
+
+    # ── New .ssh directory created under /home ────────────────────────────
+    # A new .ssh directory may mean a new user account is being set up for
+    # SSH access. Trigger assessment to verify it meets CIS 5.2 standards
+    # before any keys can be added.
+    - name: New SSH Directory Created
+      condition: >
+        event.path is search("/home/") and
+        event.change_type == "created" and
+        event.path is search("\\.ssh$")
+      throttle:
+        once_within: 5 minutes
+        group_by_attributes:
+          - event.meta.host
+          - event.path
+      action:
+        run_job_template:
+          name: "CIS RHEL 9 Assessment"
+          organization: Default
+          job_args:
+            limit: "{{ event.meta.host }}"
+            extra_vars:
+              drift_trigger: authorized_keys_new_ssh_dir
+              changed_file: "{{ event.path }}"
+              change_type: created
+              priority: high

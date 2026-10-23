@@ -1,0 +1,21 @@
+---
+galaxy_info:
+  role_name: aac_store_certification
+  author: AAC
+  description: >
+    Single authoritative INSERT into compliance_certifications. Produces a
+    Certifiable Audit Artifact (CAA) row with provenance pinning and an
+    integrity hash. See docs/strategy/AAC_CERTIFIABLE_AUDIT_ARTIFACT_SPEC.md.
+  license: Apache-2.0
+  min_ansible_version: "2.14"
+  platforms:
+    - name: EL
+      versions: ["8", "9"]
+  galaxy_tags:
+    - compliance
+    - postgresql
+    - aac
+    - caa
+    - audit
+
+dependencies: []

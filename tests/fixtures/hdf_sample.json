@@ -1,0 +1,95 @@
+{
+  "platform": { "name": "redhat", "release": "9.2" },
+  "version": "5.22.3",
+  "statistics": { "duration": 12.34 },
+  "profiles": [
+    {
+      "name": "aac-test-profile",
+      "version": "1.0.0",
+      "title": "AAC Test Profile",
+      "sha256": "aaaa1111",
+      "controls": [
+        {
+          "id": "V-1",
+          "title": "Ensure passing control",
+          "impact": 0.5,
+          "tags": { "nist": ["AC-2"], "severity": "medium" },
+          "results": [{ "status": "passed", "code_desc": "is expected to be installed" }]
+        },
+        {
+          "id": "V-2",
+          "title": "Ensure failing control",
+          "impact": 0.7,
+          "tags": { "nist": ["AC-3", "CM-6"], "cci": ["CCI-000213"], "severity": "high" },
+          "results": [{ "status": "failed", "code_desc": "mode is expected to eq 0600", "message": "expected 0644 to eq 0600" }]
+        },
+        {
+          "id": "V-3",
+          "title": "Not applicable control",
+          "impact": 0,
+          "tags": { "nist": ["CM-7"], "severity": "none" },
+          "results": []
+        },
+        {
+          "id": "V-4",
+          "title": "Skipped, not reviewed",
+          "impact": 0.5,
+          "tags": { "nist": ["AU-2"], "severity": "medium" },
+          "results": [{ "status": "skipped", "skip_message": "Skipped control due to only_if condition" }]
+        },
+        {
+          "id": "V-5",
+          "title": "Errored control",
+          "impact": 0.5,
+          "tags": { "nist": ["SC-7"], "severity": "high" },
+          "results": [{ "status": "error", "code_desc": "check raised", "message": "Errno::ENOENT" }]
+        },
+        {
+          "id": "V-6",
+          "title": "Mixed pass and fail rolls up to Failed",
+          "impact": 0.5,
+          "tags": { "nist": ["IA-5"], "severity": "high" },
+          "results": [
+            { "status": "passed", "code_desc": "first check passes" },
+            { "status": "failed", "code_desc": "second check fails", "message": "value not compliant" }
+          ]
+        },
+        {
+          "id": "V-7",
+          "title": "Missing impact is evaluated, not excluded",
+          "tags": { "nist": ["CM-6"], "severity": "medium" },
+          "results": [{ "status": "passed", "code_desc": "passes even though impact is absent" }]
+        },
+        {
+          "id": "V-8",
+          "title": "Waived control",
+          "impact": 0.5,
+          "tags": { "nist": ["AC-6"], "severity": "high" },
+          "results": [{ "status": "skipped", "skip_message": "Skipped control due to waiver" }],
+          "waiver_data": {
+            "skipped_due_to_waiver": true,
+            "justification": "Accepted risk pending Q4 remediation; ticket AAC-1234",
+            "expiration_date": "2026-12-31",
+            "run": false
+          }
+        }
+      ]
+    },
+    {
+      "name": "inherited-baseline",
+      "version": "1.0.0",
+      "title": "Inherited baseline (definitions only)",
+      "sha256": "bbbb2222",
+      "parent_profile": "aac-test-profile",
+      "controls": [
+        {
+          "id": "V-1",
+          "title": "Ensure passing control",
+          "impact": 0.5,
+          "tags": { "nist": ["AC-2"], "severity": "medium" },
+          "results": []
+        }
+      ]
+    }
+  ]
+}

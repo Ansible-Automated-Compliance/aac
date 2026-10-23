@@ -1,0 +1,172 @@
+---
+# One row per section, matching how the rest of AAC stores results.
+# `framework` is NOT NULL in compliance_results, so it is always supplied.
+#
+# Findings are per-entity (one message per admin account, user, CA policy,
+# etc.). Score columns are control counts derived from distinct CIS IDs in
+# the violation messages — subtracting finding count from controls_evaluated
+# produces a deeply negative compliance_percentage that overflows
+# DECIMAL(5,2) and fails the INSERT (seen on sections 1 and 5).
+
+# ── Security exception waivers ────────────────────────────────────────
+# Same choke point as aac_store_results: ask OPA's exceptions module (entries
+# from ansible/vars/waivers.yml, loaded by "AAC - Load OPA Policies") which
+# violations carry an active, documented waiver. Waived findings move out of
+# the violations column into metadata.waivers_applied — stored and reported,
+# never deleted; violation_count and compliant are recomputed from the
+# active (unwaived) violations so the stored row is self-consistent. Any
+# failure here (OPA down, module not loaded) waives nothing: the failure
+# direction is always "report more". Accepted deviations
+# in ansible/vars/decisions/<framework>.yml can be exported into waivers.yml
+# with scripts/findings_workbook.py --emit-waivers.
+- name: Query waiver decision from OPA, one section at a time
+  ansible.builtin.uri:
+    use_proxy: false
+    url: "{{ m365_opa_url }}/v1/data/exceptions/decision"
+    method: POST
+    body_format: json
+    body:
+      input:
+        host: "{{ m365_organization | default('m365-tenant', true) }}"
+        framework: "{{ m365_framework_name }}"
+        violations: "{{ item.violations | default([]) }}"
+    return_content: true
+    timeout: 30
+  loop: "{{ m365_report.sections_evaluated | default([]) }}"
+  loop_control:
+    label: "section {{ item.section }}"
+  register: _m365_waiver_resps
+  failed_when: false
+  when:
+    - m365_waivers_enabled | bool
+    - item.violations | default([]) | length > 0
+
+- name: Apply waiver decisions to the sections (waived, never hidden)
+  ansible.builtin.set_fact:
+    _m365_sections_final: >-
+      {%- set ns = namespace(out=[]) -%}
+      {%- for sec in m365_report.sections_evaluated | default([]) -%}
+        {%- set resp = (_m365_waiver_resps.results | default([]))[loop.index0] | default({}) -%}
+        {%- set wd = (resp.json | default({})).get('result', {}) if resp is mapping else {} -%}
+        {%- if (wd.get('waived_count', 0) | int) > 0 -%}
+          {%- set ns.out = ns.out + [sec | combine({'violations': wd.active_violations,
+                                                   'violation_count': wd.active_violations | length,
+                                                   'compliant': (wd.active_violations | length) == 0,
+                                                   'waivers_applied': wd.waived,
+                                                   'waived_count': wd.waived_count,
+                                                   'waiver_expired_matches': wd.get('expired_matches', [])})] -%}
+        {%- else -%}
+          {%- set ns.out = ns.out + [sec] -%}
+        {%- endif -%}
+      {%- endfor -%}
+      {{ ns.out | to_json }}
+
+- name: Bind the final sections list
+  ansible.builtin.set_fact:
+    _m365_sections_final: "{{ _m365_sections_final | from_json }}"
+
+- name: Persist one row per section
+  vars:
+    _failed_control_ids: >-
+      {{ item.violations | default([])
+         | map('regex_search', 'CIS ([0-9]+(?:\.[0-9]+)*)', '\1')
+         | select()
+         | map('first')
+         | unique
+         | list }}
+    _failed: "{{ _failed_control_ids | length }}"
+    _passed: "{{ [(item.controls_evaluated | int) - (_failed | int), 0] | max }}"
+    # Percentage of the section's controls EVALUATED that passed -- not
+    # of the section total. Dividing by the section total would let
+    # thin coverage read as a low score rather than as thin coverage,
+    # which is a different and more misleading claim.
+    _pct: >-
+      {{ ((_passed | int) / (item.controls_evaluated | int) * 100) | round(1)
+         if (item.controls_evaluated | int) > 0 else 0 }}
+  community.postgresql.postgresql_query:
+    login_host: "{{ m365_db_host }}"
+    login_user: "{{ m365_db_user }}"
+    login_password: "{{ m365_db_password }}"
+    login_db: "{{ m365_db_name }}"
+    query: >-
+      INSERT INTO compliance_results
+        (hostname, framework, policy_name, policy_version,
+         total_controls, passed_controls, failed_controls,
+         compliance_percentage, compliant, violations, metadata,
+         evaluation_timestamp)
+      VALUES
+        (%(hostname)s, %(framework)s, %(policy_name)s, %(policy_version)s,
+         %(total)s, %(passed)s, %(failed)s, %(pct)s, %(compliant)s,
+         %(violations)s::jsonb, %(metadata)s::jsonb, NOW())
+    named_args:
+      hostname: "{{ m365_organization | default('m365-tenant', true) }}"
+      framework: "{{ m365_framework_name }}"
+      policy_name: "cis_m365_v7.{{ item.section }}"
+      policy_version: "7.0.0"
+      total: "{{ item.section_total_controls }}"
+      passed: "{{ _passed }}"
+      failed: "{{ _failed }}"
+      pct: "{{ _pct }}"
+      compliant: "{{ item.compliant }}"
+      violations: "{{ item.violations | to_json }}"
+      metadata: "{{ {'section': item.section,
+                     'section_name': item.name,
+                     'controls_evaluated': item.controls_evaluated,
+                     'evaluated_control_ids': item.controls | default([]),
+                     'section_total_controls': item.section_total_controls,
+                     'finding_count': item.violation_count,
+                     'failed_control_ids': _failed_control_ids,
+                     'evidence_strength': item.evidence_strength | default({}),
+                     'unavailable_facts': item.unavailable_facts | default({}),
+                     'waivers_applied': item.waivers_applied | default([]),
+                     'waived_count': item.waived_count | default(0),
+                     'waiver_expired_matches': item.waiver_expired_matches | default([]),
+                     'benchmark_version': '7.0.0'} | to_json }}"
+  loop: "{{ _m365_sections_final | default(m365_report.sections_evaluated | default([])) }}"
+  loop_control:
+    label: "section {{ item.section }} — {{ item.name }}"
+
+- name: Persist the controls that have no collector path
+  vars:
+    _attestation_violations: "{{ m365_report.no_collector_path.violations | default([]) }}"
+    _failed_control_ids: >-
+      {{ _attestation_violations
+         | map('regex_search', 'CIS ([0-9]+(?:\.[0-9]+)*)', '\1')
+         | select()
+         | map('first')
+         | unique
+         | list }}
+    _failed: "{{ _failed_control_ids | length }}"
+    _total: "{{ (m365_report.no_collector_path.requires_attestation_count | int)
+                + (m365_report.no_collector_path.unresolved_count | int) }}"
+  community.postgresql.postgresql_query:
+    login_host: "{{ m365_db_host }}"
+    login_user: "{{ m365_db_user }}"
+    login_password: "{{ m365_db_password }}"
+    login_db: "{{ m365_db_name }}"
+    query: >-
+      INSERT INTO compliance_results
+        (hostname, framework, policy_name, policy_version,
+         total_controls, passed_controls, failed_controls,
+         compliance_percentage, compliant, violations, metadata,
+         evaluation_timestamp)
+      VALUES
+        (%(hostname)s, %(framework)s, 'cis_m365_v7.attestation', '7.0.0',
+         %(total)s, 0, %(failed)s, 0, false,
+         %(violations)s::jsonb, %(metadata)s::jsonb, NOW())
+    named_args:
+      hostname: "{{ m365_organization | default('m365-tenant', true) }}"
+      framework: "{{ m365_framework_name }}"
+      total: "{{ _total }}"
+      failed: "{{ _failed }}"
+      violations: "{{ _attestation_violations | to_json }}"
+      # evidence_source distinguishes a measured result from a human
+      # assertion. Storing them without that marker would let an auditor
+      # read an attestation as a measurement.
+      metadata: "{{ {'evidence_source': 'attested',
+                     'finding_count': m365_report.no_collector_path.violation_count | default(0),
+                     'failed_control_ids': _failed_control_ids,
+                     'requires_attestation': m365_report.no_collector_path.requires_attestation | default({}),
+                     'unresolved': m365_report.no_collector_path.unresolved | default({}),
+                     'benchmark_version': '7.0.0'} | to_json }}"
+  when: m365_report.no_collector_path is defined

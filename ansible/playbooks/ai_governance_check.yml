@@ -1,0 +1,201 @@
+---
+# AI Governance Pre-Execution Check
+# Evaluates AI actions against governance policies before execution
+#
+# Usage:
+#   ansible-playbook ansible/playbooks/ai_governance_check.yml \
+#     -e "ai_action=remediate_low_severity" \
+#     -e "ai_system_id=claude-code-v1" \
+#     -e "ai_system_role=ai_operator" \
+#     -e "target_environment=staging"
+#
+# Returns governance_decision as a fact:
+#   - allow: Execute immediately
+#   - allow_with_logging: Execute and log
+#   - pending_approval: Create approval request
+#   - deny: Block execution
+
+- name: AI Governance Pre-Execution Check
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - ../vars/site_config.yml
+
+  vars:
+    opa_server_url: "{{ opa_ot_url }}"
+    db_host: "{{ pg_host }}"
+    db_name: "compliance"
+    db_user: "postgres"
+
+    # Default values (override via extra_vars)
+    # ai_action: <set via extra_vars / survey / inventory>   # default 'view_compliance_report'
+    # ai_system_id: <set via extra_vars / survey / inventory>   # default 'claude-code-v1'
+    # ai_system_role: <set via extra_vars / survey / inventory>   # default 'ai_reader'
+    # target_environment: <set via extra_vars / survey / inventory>   # default 'development'
+    # ai_system_enabled: <set via extra_vars / survey / inventory>   # default true
+    # production_access: <set via extra_vars / survey / inventory>   # default false
+    # approval_obtained: <set via extra_vars / survey / inventory>   # default false
+    # justification: <set via extra_vars / survey / inventory>   # default ''
+
+  tasks:
+    - name: Generate trace ID
+      ansible.builtin.set_fact:
+        trace_id: "{{ lookup('pipe', 'uuidgen') | lower }}"
+
+    - name: Evaluate AI action governance
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "{{ opa_server_url }}/v1/data/ai_governance/governance_response"
+        method: POST
+        body_format: json
+        body:
+          input:
+            action: "{{ (ai_action | default('view_compliance_report', true)) }}"
+            ai_system:
+              id: "{{ (ai_system_id | default('claude-code-v1', true)) }}"
+              role: "{{ (ai_system_role | default('ai_reader', true)) }}"
+              enabled: "{{ (ai_system_enabled | default(true)) | bool }}"
+              production_access: "{{ (production_access | default(false)) | bool }}"
+            context:
+              environment: "{{ (target_environment | default('development', true)) }}"
+            trace_id: "{{ trace_id }}"
+            approval:
+              obtained: "{{ (approval_obtained | default(false)) | bool }}"
+            justification: "{{ (justification | default('', true)) }}"
+        return_content: true
+        status_code: 200
+      register: governance_result
+
+    - name: Parse governance response
+      ansible.builtin.set_fact:
+        governance_decision: "{{ governance_result.json.result.decision }}"
+        risk_level: "{{ governance_result.json.result.risk_level }}"
+        approval_requirements: "{{ governance_result.json.result.approval_requirements }}"
+        deny_reasons: "{{ governance_result.json.result.deny_reasons | default([]) }}"
+
+    - name: Ensure the AI governance decision-log schema exists
+      community.postgresql.postgresql_script:
+        login_host: "{{ db_host }}"
+        login_db: "{{ db_name }}"
+        login_user: "{{ db_user }}"
+        path: "{{ playbook_dir }}/../files/ai_action_log_schema.sql"
+
+    - name: Log AI action to database
+      community.postgresql.postgresql_query:
+        login_host: "{{ db_host }}"
+        login_db: "{{ db_name }}"
+        login_user: "{{ db_user }}"
+        # Parameterized (%(name)s) — extra_vars are attacker-influencable text;
+        # Jinja interpolation into SQL is an injection (Copilot High on #616).
+        query: |
+          INSERT INTO ai_action_log (
+            trace_id, channel, ai_system_id, agent_identity, action,
+            risk_level, decision, environment, reasoning
+          )
+          SELECT
+            %(trace_id)s::uuid,
+            'action_layer',
+            id,
+            %(system_id)s,
+            %(action)s,
+            %(risk)s,
+            %(decision)s,
+            %(environment)s,
+            %(justification)s
+          FROM ai_systems WHERE system_id = %(system_id)s
+          RETURNING id
+        named_args:
+          trace_id: "{{ trace_id }}"
+          system_id: "{{ (ai_system_id | default('claude-code-v1', true)) }}"
+          action: "{{ (ai_action | default('view_compliance_report', true)) }}"
+          risk: "{{ risk_level }}"
+          decision: "{{ governance_decision }}"
+          environment: "{{ (target_environment | default('development', true)) }}"
+          justification: "{{ (justification | default('', true)) }}"
+      register: action_log_result
+      when: governance_decision != 'deny'
+
+    - name: Fail loudly when the AI system is not registered
+      ansible.builtin.fail:
+        msg: >-
+          AI system '{{ (ai_system_id | default('claude-code-v1', true)) }}' has no row in ai_systems — the decision
+          was NOT logged. Register the system (INSERT INTO ai_systems) before it
+          may act. An unlogged action is not permitted.
+      when:
+        - governance_decision != 'deny'
+        - (action_log_result.query_result | default([]) | length) == 0
+
+    - name: Create approval request if needed
+      community.postgresql.postgresql_query:
+        login_host: "{{ db_host }}"
+        login_db: "{{ db_name }}"
+        login_user: "{{ db_user }}"
+        query: |
+          INSERT INTO ai_approval_requests (
+            trace_id, ai_action_log_id, action, risk_level, justification,
+            required_approvers, expires_at
+          )
+          VALUES (
+            %(trace_id)s::uuid,
+            %(log_id)s,
+            %(action)s,
+            %(risk)s,
+            %(justification)s,
+            %(approvers)s,
+            NOW() + make_interval(hours => %(timeout_hours)s)
+          )
+          RETURNING id
+        named_args:
+          trace_id: "{{ trace_id }}"
+          log_id: "{{ action_log_result.query_result[0].id }}"
+          action: "{{ (ai_action | default('view_compliance_report', true)) }}"
+          risk: "{{ risk_level }}"
+          justification: "{{ (justification | default('', true)) }}"
+          approvers: "{{ approval_requirements.approvers | default(1) }}"
+          timeout_hours: "{{ approval_requirements.timeout_hours | default(24) }}"
+      register: approval_request_result
+      when:
+        - governance_decision == 'pending_approval'
+        - (action_log_result.query_result | default([]) | length) > 0
+
+    - name: Set governance stats for workflow
+      ansible.builtin.set_stats:
+        data:
+          governance_decision: "{{ governance_decision }}"
+          risk_level: "{{ risk_level }}"
+          trace_id: "{{ trace_id }}"
+          approval_required: "{{ approval_requirements.required | default(false) }}"
+          approval_request_id: "{{ approval_request_result.query_result[0].id | default('') }}"
+
+    - name: Display governance decision
+      ansible.builtin.debug:
+        msg:
+          - "=========================================="
+          - "AI GOVERNANCE DECISION"
+          - "=========================================="
+          - "Trace ID: {{ trace_id }}"
+          - "Action: {{ (ai_action | default('view_compliance_report', true)) }}"
+          - "AI System: {{ (ai_system_id | default('claude-code-v1', true)) }} ({{ (ai_system_role | default('ai_reader', true)) }})"
+          - "Environment: {{ (target_environment | default('development', true)) }}"
+          - ""
+          - "Risk Level: {{ risk_level }}"
+          - "Decision: {{ governance_decision | upper }}"
+          - ""
+          - "{% if governance_decision == 'deny' %}Deny Reasons:{% for reason in deny_reasons %}"
+          - "  - {{ reason }}{% endfor %}{% endif %}"
+          - "{% if governance_decision == 'pending_approval' %}Approval Requirements:"
+          - "  - Approvers needed: {{ approval_requirements.approvers }}"
+          - "  - Timeout: {{ approval_requirements.timeout_hours }} hours{% endif %}"
+          - "=========================================="
+
+    - name: Fail if action denied
+      ansible.builtin.fail:
+        msg: "AI action denied: {{ deny_reasons | join(', ') }}"
+      when: governance_decision == 'deny'
+
+    - name: Warn if pending approval
+      ansible.builtin.debug:
+        msg: "Action requires approval. Approval request ID: {{ approval_request_result.query_result[0].id | default('N/A') }}"
+      when: governance_decision == 'pending_approval'

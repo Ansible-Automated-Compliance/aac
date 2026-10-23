@@ -1,0 +1,203 @@
+---
+# Rebuild the "Friday CIS Compliance - Full Assessment" workflow
+#
+# Flow:
+#   [Start AWS Instances]
+#        ↓ success (parallel fan-out)            ↓ failure
+#   [RHEL 9] [Ubuntu 22.04] [Windows 2022]    [Stop AWS Instances]
+#   [Amazon Linux 2023] [VyOS] [pfSense]       (start failed)
+#        ↓ ALWAYS, all six must converge
+#   [Stop AWS Instances]
+#
+# Each assessment stores its own evidence row (aac_store_results). There is no
+# separate "store" node: the old "Store Compliance Results" node re-stored
+# nothing useful, wrote placeholder rows with no hostname into the evidence
+# store, and — because the stop node hung off its success path — left the AWS
+# lab RUNNING whenever any assessment failed (2026-10-16). The stop node is now
+# reached on an ALWAYS edge from every assessment, so the lab stops whatever
+# the outcome. It is converge-ALL, so it waits for the last assessment: with
+# the default (ANY) the first assessment to finish, even a quick failure, would
+# stop the hosts under the other five. ALWAYS edges satisfy convergence for
+# success and failure alike.
+#
+# The start job can start the instances and then fail (waiting for them, or
+# reading their state back). The assessments are then never run, none of their
+# ALWAYS edges fires, and the converge node never runs either, so a SEPARATE
+# stop node hangs off the start node's failure edge (the pattern in
+# seed_nightly_lab_pipeline.yml).
+#
+# Everything is resolved BY NAME (the previous version carried ids that had
+# since been reused for other objects). Idempotent: existing nodes of THIS
+# workflow are removed and the graph is rebuilt.
+#
+# Inputs: aap_url, aap_token (AAP Token (extra_vars) credential inside AAP).
+
+- name: Rebuild CIS Compliance Workflow
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    wf_name: "Friday CIS Compliance - Full Assessment"
+    jt_names:
+      manage: "AWS Lab - Manage Instances"
+      rhel9: "CIS RHEL 9 Compliance Assessment"
+      ubuntu: "CIS Ubuntu 22.04 Assessment"
+      windows: "CIS Windows Server 2022 Assessment"
+      amazon: "CIS Amazon Linux 2023 Assessment"
+      vyos: "CIS VyOS Assessment"
+      pfsense: "CIS pfSense Assessment"
+    assessment_keys: [rhel9, ubuntu, windows, amazon, vyos, pfsense]
+    _api: >-
+      {{ ((lookup('env', 'CONTROLLER_HOST') | default(lookup('env', 'AWX_HOST'), true))
+          if (lookup('env', 'JOB_ID') | length > 0) else (aap_url | default('')))
+         | regex_replace('/+$', '') }}/api/controller/v2
+    _headers:
+      Authorization: "Bearer {{ aap_token }}"
+      Content-Type: application/json
+
+  tasks:
+    - name: Require a controller URL and a token
+      ansible.builtin.assert:
+        that:
+          - _api is match('^https?://[A-Za-z0-9.-]+(:[0-9]+)?/api/controller/v2$')
+          - aap_token | default('', true) | length > 0
+        fail_msg: "controller URL (job environment or aap_url) and aap_token are required"
+
+    - name: Resolve the workflow by name
+      ansible.builtin.uri:
+        url: "{{ _api }}/workflow_job_templates/?name={{ wf_name | urlencode }}"
+        headers: "{{ _headers }}"
+        validate_certs: false
+      register: _wf
+
+    - name: Require exactly one workflow
+      ansible.builtin.assert:
+        that: _wf.json.count | int == 1
+        fail_msg: "workflow '{{ wf_name }}' must resolve to exactly one object"
+
+    - name: Resolve the job templates by name
+      ansible.builtin.uri:
+        url: "{{ _api }}/job_templates/?name={{ item.value | urlencode }}"
+        headers: "{{ _headers }}"
+        validate_certs: false
+      loop: "{{ jt_names | dict2items }}"
+      loop_control:
+        label: "{{ item.value }}"
+      register: _jts
+
+    - name: Require exactly one of each template
+      ansible.builtin.assert:
+        that: item.json.count | int == 1
+        fail_msg: "job template '{{ item.item.value }}' must resolve to exactly one object"
+      loop: "{{ _jts.results }}"
+      loop_control:
+        label: "{{ item.item.value }}"
+
+    - name: Index the ids
+      ansible.builtin.set_fact:
+        wf_id: "{{ _wf.json.results[0].id | int }}"
+        jt: "{{ dict(_jts.results | map(attribute='item.key') | zip(_jts.results | map(attribute='json.results.0.id'))) }}"
+
+    - name: Get this workflow's existing nodes
+      ansible.builtin.uri:
+        url: "{{ _api }}/workflow_job_templates/{{ wf_id }}/workflow_nodes/?page_size=100"
+        headers: "{{ _headers }}"
+        validate_certs: false
+      register: _existing
+
+    - name: Delete them
+      ansible.builtin.uri:
+        url: "{{ _api }}/workflow_job_template_nodes/{{ item.id | int }}/"
+        method: DELETE
+        headers: "{{ _headers }}"
+        validate_certs: false
+        status_code: [204]
+      loop: "{{ _existing.json.results }}"
+      loop_control:
+        label: "{{ item.id }}"
+
+    - name: Node — start the AWS lab
+      ansible.builtin.uri:
+        url: "{{ _api }}/workflow_job_templates/{{ wf_id }}/workflow_nodes/"
+        method: POST
+        headers: "{{ _headers }}"
+        validate_certs: false
+        body_format: json
+        body: "{{ {'unified_job_template': (jt.manage | int), 'extra_data': {'instance_state': 'running'}} }}"
+        status_code: [201]
+      register: _start
+
+    - name: Node — stop the AWS lab
+      ansible.builtin.uri:
+        url: "{{ _api }}/workflow_job_templates/{{ wf_id }}/workflow_nodes/"
+        method: POST
+        headers: "{{ _headers }}"
+        validate_certs: false
+        body_format: json
+        body: "{{ {'unified_job_template': (jt.manage | int), 'extra_data': {'instance_state': 'stopped'}, 'all_parents_must_converge': true} }}"
+        status_code: [201]
+      register: _stop
+
+    - name: Node — stop the AWS lab when the start job fails
+      ansible.builtin.uri:
+        url: "{{ _api }}/workflow_job_templates/{{ wf_id }}/workflow_nodes/"
+        method: POST
+        headers: "{{ _headers }}"
+        validate_certs: false
+        body_format: json
+        body: "{{ {'unified_job_template': (jt.manage | int), 'extra_data': {'instance_state': 'stopped'}} }}"
+        status_code: [201]
+      register: _stop_on_start_fail
+
+    - name: Nodes — one per assessment
+      ansible.builtin.uri:
+        url: "{{ _api }}/workflow_job_templates/{{ wf_id }}/workflow_nodes/"
+        method: POST
+        headers: "{{ _headers }}"
+        validate_certs: false
+        body_format: json
+        body: "{{ {'unified_job_template': (jt[item] | int)} }}"
+        status_code: [201]
+      loop: "{{ assessment_keys }}"
+      register: _assess
+
+    - name: Edges — start → each assessment (success)
+      ansible.builtin.uri:
+        url: "{{ _api }}/workflow_job_template_nodes/{{ _start.json.id | int }}/success_nodes/"
+        method: POST
+        headers: "{{ _headers }}"
+        validate_certs: false
+        body_format: json
+        body: "{{ {'id': (item.json.id | int)} }}"
+        status_code: [204]
+      loop: "{{ _assess.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    - name: Edge — start → its own stop node (failure)
+      ansible.builtin.uri:
+        url: "{{ _api }}/workflow_job_template_nodes/{{ _start.json.id | int }}/failure_nodes/"
+        method: POST
+        headers: "{{ _headers }}"
+        validate_certs: false
+        body_format: json
+        body: "{{ {'id': (_stop_on_start_fail.json.id | int)} }}"
+        status_code: [204]
+
+    - name: Edges — each assessment → stop (ALWAYS, so the lab stops whatever the outcome)
+      ansible.builtin.uri:
+        url: "{{ _api }}/workflow_job_template_nodes/{{ item.json.id | int }}/always_nodes/"
+        method: POST
+        headers: "{{ _headers }}"
+        validate_certs: false
+        body_format: json
+        body: "{{ {'id': (_stop.json.id | int)} }}"
+        status_code: [204]
+      loop: "{{ _assess.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    - name: Rebuilt
+      ansible.builtin.debug:
+        msg: "Workflow '{{ wf_name }}' ({{ wf_id }}): start → {{ assessment_keys | join(', ') }} → (always, all converge) stop; start → (failure) stop"

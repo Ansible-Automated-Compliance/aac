@@ -1,0 +1,52 @@
+---
+# Deploy the AAC post-boot recovery hook to the lab host.
+#
+# Everything AAC serves lives inside the CRC VM, and CRC does not auto-start.
+# After a reboot the platform is down and the dashboards go stale until someone
+# notices — this makes a reboot self-healing.
+#
+#   ansible-playbook ansible/playbooks/deploy_post_boot_recovery.yml \
+#     -i ansible/inventory/hosts.yml -l lab_aap -e env_profile=lab
+#
+# Without env_profile, external_aap_url must come from site_config.yml or -e.
+#
+# Verify without rebooting:
+#   ssh aapuser1@<host> 'systemctl --user start aac-post-boot.service'
+#   ssh aapuser1@<host> 'tail -f ~/.local/state/aac-post-boot.log'
+
+- name: Install AAC post-boot recovery
+  hosts: "{{ target_hosts | default('lab_aap') }}"
+  gather_facts: true
+  become: true
+
+  vars_files:
+    - ../vars/site_config.yml
+
+  pre_tasks:
+    # external_aap_url comes from the environment profile; a site_config-only
+    # deployment must set it itself (or pass -e external_aap_url=...).
+    - name: Load the environment profile (when env_profile is set)
+      # tags: always on the include AND its tasks (apply), or a run limited
+      # with --tags aac_mcp would skip the profile and fail on its URLs.
+      ansible.builtin.include_tasks:
+        file: ../tasks/load_install_profile.yml
+        apply:
+          tags: [always]
+      tags: [always]
+      when: env_profile | default('', true) | length > 0
+
+    - name: Load vault secrets when present
+      ansible.builtin.include_vars: ../vars/vault_secrets.yml
+      failed_when: false
+      no_log: true
+
+    - name: Fail early if no AAP password is available
+      ansible.builtin.assert:
+        that: aac_post_boot_aap_pass | default('') | length > 0
+        fail_msg: >-
+          No AAP password resolved. The hook cannot launch the refresh templates
+          without one. Set vault_aap_admin_ui_password in vault_secrets.yml, or
+          pass -e aac_post_boot_aap_pass=<password>.
+
+  roles:
+    - aac_post_boot

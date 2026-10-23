@@ -1,0 +1,317 @@
+---
+# github_traffic_report.yml
+#
+# Fetches GitHub traffic stats for AAC repos and stores them in PostgreSQL.
+# Runs daily via AAP schedule — builds history beyond GitHub's 14-day window.
+#
+# Repos tracked:
+#   - ynotbhatc/rego_policy_libraries  (public policy library)
+#   - ansible-automated-compliance/aac             (main AAC repo)
+#
+# Tables created/used:
+#   github_traffic   — daily views + clones per repo (upserted, no duplicates)
+#   github_referrers — top referrers snapshot per capture run
+#
+# Requires:
+#   vault_github_pat — GitHub PAT with repo scope (set in vault_secrets.yml)
+#
+# AAP Job Template: "AAC - GitHub Traffic Report"
+# Schedule: daily at 06:00 UTC
+
+- name: GitHub Traffic Report — Fetch and Store
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - [ "../vars/vault_secrets.yml", "../vars/empty_fallback.yml" ]
+    - ../vars/site_config.yml
+
+  vars:
+    gh_api: "https://api.github.com"
+    gh_headers:
+      Authorization: "Bearer {{ vault_github_pat }}"
+      Accept:        "application/vnd.github.v3+json"
+      User-Agent:    "AAC-Traffic-Report/1.0"
+
+    tracked_repos:
+      - ynotbhatc/rego_policy_libraries
+      - ansible-automated-compliance/aac
+
+    db_login_host:     "{{ pg_host }}"
+    db_login_port:     "{{ pg_port }}"
+    db_login_user:     "{{ pg_user }}"
+    db_login_password: "{{ compliance_db_password }}"
+    db_name:           "{{ pg_db }}"
+
+  tasks:
+
+    # ── Schema bootstrap ─────────────────────────────────────────────────
+
+    - name: Create github_traffic table if not exists
+      community.postgresql.postgresql_query:
+        login_host:     "{{ db_login_host }}"
+        login_port:     "{{ db_login_port }}"
+        login_user:     "{{ db_login_user }}"
+        login_password: "{{ db_login_password }}"
+        login_db:             "{{ db_name }}"
+        query: |
+          CREATE TABLE IF NOT EXISTS github_traffic (
+            id            SERIAL PRIMARY KEY,
+            repo          VARCHAR(200)  NOT NULL,
+            metric_date   DATE          NOT NULL,
+            views         INTEGER       NOT NULL DEFAULT 0,
+            unique_visitors INTEGER     NOT NULL DEFAULT 0,
+            clones        INTEGER       NOT NULL DEFAULT 0,
+            unique_cloners  INTEGER     NOT NULL DEFAULT 0,
+            captured_at   TIMESTAMP     NOT NULL DEFAULT NOW(),
+            UNIQUE (repo, metric_date)
+          );
+          CREATE INDEX IF NOT EXISTS idx_github_traffic_repo_date
+            ON github_traffic (repo, metric_date DESC);
+
+    - name: Create github_referrers table if not exists
+      community.postgresql.postgresql_query:
+        login_host:     "{{ db_login_host }}"
+        login_port:     "{{ db_login_port }}"
+        login_user:     "{{ db_login_user }}"
+        login_password: "{{ db_login_password }}"
+        login_db:             "{{ db_name }}"
+        query: |
+          CREATE TABLE IF NOT EXISTS github_referrers (
+            id          SERIAL PRIMARY KEY,
+            repo        VARCHAR(200)  NOT NULL,
+            referrer    VARCHAR(500)  NOT NULL,
+            count       INTEGER       NOT NULL DEFAULT 0,
+            uniques     INTEGER       NOT NULL DEFAULT 0,
+            captured_at TIMESTAMP     NOT NULL DEFAULT NOW()
+          );
+          CREATE INDEX IF NOT EXISTS idx_github_referrers_repo
+            ON github_referrers (repo, captured_at DESC);
+
+    # ── Fetch traffic per repo ────────────────────────────────────────────
+
+    - name: Fetch views (last 14 days)
+      uri:
+        use_proxy: false
+        url:            "{{ gh_api }}/repos/{{ item }}/traffic/views"
+        headers:        "{{ gh_headers }}"
+        return_content: true
+        status_code:    200
+      register: views_results
+      loop:     "{{ tracked_repos }}"
+
+    - name: Fetch clones (last 14 days)
+      uri:
+        use_proxy: false
+        url:            "{{ gh_api }}/repos/{{ item }}/traffic/clones"
+        headers:        "{{ gh_headers }}"
+        return_content: true
+        status_code:    200
+      register: clones_results
+      loop:     "{{ tracked_repos }}"
+
+    - name: Fetch top referrers
+      uri:
+        use_proxy: false
+        url:            "{{ gh_api }}/repos/{{ item }}/traffic/popular/referrers"
+        headers:        "{{ gh_headers }}"
+        return_content: true
+        status_code:    200
+      register: referrer_results
+      loop:     "{{ tracked_repos }}"
+
+    # ── Build combined dataset in Python ─────────────────────────────────
+
+    - name: Merge views and clones by date per repo
+      set_fact:
+        traffic_rows: "{{ traffic_rows | default([]) + [item] }}"
+      vars:
+        _repo:   "{{ views_results.results[idx].item }}"
+        _views:  "{{ views_results.results[idx].json.views   | default([]) }}"
+        _clones: "{{ clones_results.results[idx].json.clones | default([]) }}"
+        item: >-
+          {{
+            (_views | map(attribute='timestamp') | list) |
+            zip_longest(_clones | map(attribute='timestamp') | list) |
+            map('first') | unique | list |
+            map('regex_replace', 'T.*', '') |
+            map('community.general.dict', 'date', _) |
+            list
+          }}
+      loop: "{{ range(tracked_repos | length) | list }}"
+      loop_control:
+        index_var: idx
+      when: false   # placeholder — merged via Python task below
+
+    - name: Upsert daily traffic rows into PostgreSQL
+      community.postgresql.postgresql_query:
+        login_host:     "{{ db_login_host }}"
+        login_port:     "{{ db_login_port }}"
+        login_user:     "{{ db_login_user }}"
+        login_password: "{{ db_login_password }}"
+        login_db:             "{{ db_name }}"
+        query: |
+          INSERT INTO github_traffic
+            (repo, metric_date, views, unique_visitors, clones, unique_cloners, captured_at)
+          VALUES
+            (%(repo)s, %(date)s::DATE, %(views)s, %(unique_visitors)s,
+             %(clones)s, %(unique_cloners)s, NOW())
+          ON CONFLICT (repo, metric_date) DO UPDATE SET
+            views           = EXCLUDED.views,
+            unique_visitors = EXCLUDED.unique_visitors,
+            clones          = EXCLUDED.clones,
+            unique_cloners  = EXCLUDED.unique_cloners,
+            captured_at     = NOW();
+        named_args:
+          repo:             "{{ item.0 }}"
+          date:             "{{ item.1 }}"
+          views:            "{{ item.2 }}"
+          unique_visitors:  "{{ item.3 }}"
+          clones:           "{{ item.4 }}"
+          unique_cloners:   "{{ item.5 }}"
+      loop: "{{ _merged }}"
+      vars:
+        _merged: >-
+          {%- set rows = [] -%}
+          {%- for idx in range(tracked_repos | length) -%}
+            {%- set repo = tracked_repos[idx] -%}
+            {%- set view_map = {} -%}
+            {%- for v in views_results.results[idx].json.views | default([]) -%}
+              {%- set _ = view_map.update({v.timestamp[:10]: {'views': v.count, 'uniques': v.uniques}}) -%}
+            {%- endfor -%}
+            {%- set clone_map = {} -%}
+            {%- for c in clones_results.results[idx].json.clones | default([]) -%}
+              {%- set _ = clone_map.update({c.timestamp[:10]: {'clones': c.count, 'uniques': c.uniques}}) -%}
+            {%- endfor -%}
+            {%- set all_dates = (view_map.keys() | list + clone_map.keys() | list) | unique | list -%}
+            {%- for d in all_dates -%}
+              {%- set _ = rows.append([
+                repo, d,
+                view_map[d].views   | default(0),
+                view_map[d].uniques | default(0),
+                clone_map[d].clones   | default(0),
+                clone_map[d].uniques  | default(0)
+              ]) -%}
+            {%- endfor -%}
+          {%- endfor -%}
+          {{ rows }}
+
+    - name: Store referrer snapshots
+      community.postgresql.postgresql_query:
+        login_host:     "{{ db_login_host }}"
+        login_port:     "{{ db_login_port }}"
+        login_user:     "{{ db_login_user }}"
+        login_password: "{{ db_login_password }}"
+        login_db:             "{{ db_name }}"
+        query: |
+          INSERT INTO github_referrers (repo, referrer, count, uniques, captured_at)
+          VALUES (%(repo)s, %(referrer)s, %(count)s, %(uniques)s, NOW());
+        named_args:
+          repo:     "{{ item.0 }}"
+          referrer: "{{ item.1 }}"
+          count:    "{{ item.2 }}"
+          uniques:  "{{ item.3 }}"
+      loop: "{{ _referrer_rows }}"
+      vars:
+        _referrer_rows: >-
+          {%- set rows = [] -%}
+          {%- for idx in range(tracked_repos | length) -%}
+            {%- set repo = tracked_repos[idx] -%}
+            {%- for r in referrer_results.results[idx].json | default([]) -%}
+              {%- set _ = rows.append([repo, r.referrer, r.count, r.uniques]) -%}
+            {%- endfor -%}
+          {%- endfor -%}
+          {{ rows }}
+
+    # ── Query totals from PostgreSQL and print report ─────────────────────
+
+    - name: Query all-time totals per repo
+      community.postgresql.postgresql_query:
+        login_host:     "{{ db_login_host }}"
+        login_port:     "{{ db_login_port }}"
+        login_user:     "{{ db_login_user }}"
+        login_password: "{{ db_login_password }}"
+        login_db:             "{{ db_name }}"
+        query: |
+          SELECT
+            repo,
+            SUM(views)           AS total_views,
+            SUM(unique_visitors) AS total_unique_visitors,
+            SUM(clones)          AS total_clones,
+            SUM(unique_cloners)  AS total_unique_cloners,
+            MIN(metric_date)     AS first_seen,
+            MAX(metric_date)     AS last_seen,
+            COUNT(*)             AS days_tracked
+          FROM github_traffic
+          GROUP BY repo
+          ORDER BY total_views DESC;
+      register: totals
+
+    - name: Query last 14 days per repo
+      community.postgresql.postgresql_query:
+        login_host:     "{{ db_login_host }}"
+        login_port:     "{{ db_login_port }}"
+        login_user:     "{{ db_login_user }}"
+        login_password: "{{ db_login_password }}"
+        login_db:             "{{ db_name }}"
+        query: |
+          SELECT
+            repo,
+            SUM(views)           AS views_14d,
+            SUM(unique_visitors) AS uniques_14d,
+            SUM(clones)          AS clones_14d,
+            SUM(unique_cloners)  AS cloners_14d
+          FROM github_traffic
+          WHERE metric_date >= CURRENT_DATE - INTERVAL '14 days'
+          GROUP BY repo
+          ORDER BY views_14d DESC;
+      register: recent
+
+    - name: Query top referrers (last 30 days)
+      community.postgresql.postgresql_query:
+        login_host:     "{{ db_login_host }}"
+        login_port:     "{{ db_login_port }}"
+        login_user:     "{{ db_login_user }}"
+        login_password: "{{ db_login_password }}"
+        login_db:             "{{ db_name }}"
+        query: |
+          SELECT repo, referrer, SUM(count) AS hits, SUM(uniques) AS unique_hits
+          FROM github_referrers
+          WHERE captured_at >= NOW() - INTERVAL '30 days'
+          GROUP BY repo, referrer
+          ORDER BY hits DESC
+          LIMIT 20;
+      register: top_referrers
+
+    - name: Print traffic report
+      debug:
+        msg: "{{ _report }}"
+      vars:
+        _report: |
+
+          ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+          AAC GitHub Traffic Report — {{ ansible_date_time.date | default('today') }}
+          ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+          ALL-TIME TOTALS (since tracking began)
+          {% for row in totals.query_result %}
+          {{ '%-45s' | format(row.repo) }}
+            Views:   {{ '%6d' | format(row.total_views | int) }}  ({{ '%4d' | format(row.total_unique_visitors | int) }} unique)
+            Clones:  {{ '%6d' | format(row.total_clones | int) }}  ({{ '%4d' | format(row.total_unique_cloners | int) }} unique)
+            Period:  {{ row.first_seen }} → {{ row.last_seen }}  ({{ row.days_tracked }} days tracked)
+          {% endfor %}
+
+          LAST 14 DAYS
+          {% for row in recent.query_result %}
+          {{ '%-45s' | format(row.repo) }}
+            Views:   {{ '%6d' | format(row.views_14d | int) }}  ({{ '%4d' | format(row.uniques_14d | int) }} unique)
+            Clones:  {{ '%6d' | format(row.clones_14d | int) }}  ({{ '%4d' | format(row.cloners_14d | int) }} unique)
+          {% endfor %}
+
+          TOP REFERRERS (last 30 days)
+          {% for row in top_referrers.query_result %}
+          {{ '%-40s' | format(row.referrer) }}  {{ '%5d' | format(row.hits | int) }} hits  ({{ row.unique_hits }} unique)  [{{ row.repo.split('/')[1] }}]
+          {% endfor %}
+
+          ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

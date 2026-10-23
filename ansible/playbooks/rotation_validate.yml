@@ -1,0 +1,123 @@
+---
+# rotation_validate.yml — Step 6 of AAC Credential Rotation Workflow
+#
+# Validates all rotated credentials by re-loading the updated vault and
+# testing each service with the new values. Fails the workflow if any
+# credential does not work after rotation.
+#
+# Part of workflow: "AAC - Rotate Credentials"
+
+- name: Validate Rotated Credentials
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - ../vars/site_config.yml
+
+  vars:
+    # aap_host: <set via extra_vars / survey / inventory>   # default aac_host
+    pg_port:      5432
+    rotation_dir: "/tmp/aac_cred_rotation"
+
+    # Survey defaults — match workflow survey
+    rotate_mcp_token: false
+    rotate_postgres:  false
+    rotate_grafana:   false
+
+  tasks:
+
+    - name: Check which credentials were rotated
+      stat:
+        path: "{{ item }}"
+      register: rotation_files
+      loop:
+        - "{{ rotation_dir }}/mcp_token.env"
+        - "{{ rotation_dir }}/pg_password.env"
+        - "{{ rotation_dir }}/grafana_password.env"
+      delegate_to: "{{ (aap_host | default(aac_host)) }}"
+
+    - name: Set rotation flags
+      set_fact:
+        validate_mcp:     "{{ rotation_files.results[0].stat.exists }}"
+        validate_postgres: "{{ rotation_files.results[1].stat.exists }}"
+        validate_grafana: "{{ rotation_files.results[2].stat.exists }}"
+
+    # ── MCP Token validation ──────────────────────────────────────────────────
+    - name: Validate MCP token — test AAP API access
+      uri:
+        use_proxy: false
+        url: "{{ aap_url }}/api/controller/v2/me/"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ aap_token }}"
+        status_code: 200
+        validate_certs: false
+      register: mcp_validate
+      when: validate_mcp | bool
+      no_log: true
+
+    - name: MCP token — confirm valid
+      debug:
+        msg: "✅ MCP token valid — authenticated as {{ mcp_validate.json.username }}"
+      when: validate_mcp | bool
+
+    - name: Validate MCP server responds on port 8004
+      uri:
+        use_proxy: false
+        url: "http://{{ (aap_host | default(aac_host)) }}:8004/"
+        method: GET
+        status_code: [200, 404]
+        validate_certs: false
+      when: validate_mcp | bool
+
+    # ── PostgreSQL validation ─────────────────────────────────────────────────
+    - name: Validate PostgreSQL — test connection with new password
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port }}"
+        login_user: postgres
+        login_password: "{{ compliance_db_password }}"
+        login_db: compliance
+        query: "SELECT COUNT(*) AS row_count FROM compliance_results"
+      register: pg_validate
+      when: validate_postgres | bool
+      no_log: true
+
+    - name: PostgreSQL — confirm valid
+      debug:
+        msg: "✅ PostgreSQL password valid — {{ pg_validate.query_result[0].row_count }} rows in compliance_results"
+      when: validate_postgres | bool
+
+    # ── Grafana validation ────────────────────────────────────────────────────
+    - name: Validate Grafana — test login with new password
+      uri:
+        use_proxy: false
+        url: "{{ grafana_url }}/api/org"
+        method: GET
+        url_username: admin
+        url_password: "{{ grafana_admin_password }}"
+        force_basic_auth: true
+        status_code: 200
+        validate_certs: false
+      register: grafana_validate
+      when: validate_grafana | bool
+      no_log: true
+
+    - name: Grafana — confirm valid
+      debug:
+        msg: "✅ Grafana password valid — org: {{ grafana_validate.json.name }}"
+      when: validate_grafana | bool
+
+    # ── Summary ───────────────────────────────────────────────────────────────
+    - name: Validation complete
+      debug:
+        msg:
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "  Credential Validation Results"
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "  MCP Token:   {{ '✅ Validated' if validate_mcp | bool else '⏭  Not rotated' }}"
+          - "  PostgreSQL:  {{ '✅ Validated' if validate_postgres | bool else '⏭  Not rotated' }}"
+          - "  Grafana:     {{ '✅ Validated' if validate_grafana | bool else '⏭  Not rotated' }}"
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "  All rotated credentials are working correctly"

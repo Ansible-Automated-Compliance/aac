@@ -1,0 +1,37 @@
+---
+# install.yml — standard AAC install orchestrator (profile-driven).
+#
+# ONE entry point for installing AAC into any environment. Selects an
+# environment profile (ansible/vars/profiles/<env>.yml via install_config.yml)
+# and runs the standard stages in order:
+#
+#     preflight  ->  infra  ->  config-as-code  ->  seed  ->  verify
+#
+# Runnable via CLI and as an AAP job template:
+#     ansible-playbook ansible/playbooks/install.yml -e env_profile=lab
+#
+# STATUS (foundational slice): the preflight and verify GATES are implemented
+# and wired here. The infra / config-as-code / seed stages currently reuse the
+# EXISTING assets (shared roles for infra; infra.aap_configuration for AAP
+# objects) and are being converged onto this single path — see
+# docs/architecture and the standardize-install plan. Until that convergence
+# lands, run the environment's existing infra/bootstrap between the two gates,
+# or set stage flags to skip.
+
+- name: AAC standard install — preflight gate
+  ansible.builtin.import_playbook: install_preflight.yml
+  when: (run_preflight | default(true)) | bool
+
+# ── infra stage (reuse shared roles; convergence in progress) ───────────────
+# Deliberately not duplicated here yet. The canonical infra deploy is the set of
+# shared roles (aac_opa_containers, aac_compliance_db, aac_mcp_server) invoked by
+# install/existing-aap/*.yml. The convergence work folds those into this file.
+
+# ── config-as-code stage (infra.aap_configuration; convergence in progress) ─
+# The canonical AAP-object definition is ansible/config_as_code/ (dispatch role).
+# The convergence work generalizes config_as_code/rhpds -> profile-driven and
+# calls it from here.
+
+- name: AAC standard install — verify gate
+  ansible.builtin.import_playbook: verify_install.yml
+  when: (run_verify | default(true)) | bool

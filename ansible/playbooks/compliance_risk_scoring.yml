@@ -1,0 +1,164 @@
+---
+# AAC - Compliance Risk Scoring (F1)
+#
+# The decisioning layer's risk function: ranks OPEN findings so nothing ever
+# reads "Risk: UNKNOWN". Framework-agnostic — the scoring logic is generic
+# (scripts/risk_score.py); the only framework-specific knowledge is a small
+# data config under ansible/vars/risk/<framework>.yml.
+#
+# Reads the FINDINGS layer (compliance_findings) — the canonical foundation
+# for the decisioning layer — joined with the findings_blast_radius view, so
+# risk reflects identity, state, and how many systems fail each control. It
+# reads only; it writes nothing to the database, and it evaluates no policy.
+# Runs wherever the evidence store is; data never leaves that environment.
+#
+# ── Variables ────────────────────────────────────────────────────────
+#   risk_framework    framework key (default: cis_m365_v7). Loads
+#                     ansible/vars/risk/<framework>.yml, falling back to
+#                     ansible/vars/risk/_default.yml.
+#   risk_output_dir   EE-local output directory (default: /tmp)
+#   report_publish_host / report_publish_user / report_publish_dir
+#                     optional scp publication of the outputs
+#
+# ── AAP Job Template ─────────────────────────────────────────────────
+#   "AAC - Compliance Risk Scoring" — EE: AAC Compliance EE, hosts: localhost
+#   (reads PostgreSQL only).
+
+- name: Score open compliance findings by risk (F1)
+  hosts: localhost
+  connection: local
+  gather_facts: true
+  become: false
+
+  vars:
+    risk_framework: "cis_m365_v7"
+    risk_output_dir: "/tmp"
+    risk_tag: "{{ risk_framework }}-{{ ansible_date_time.date }}"
+    risk_json: "{{ risk_output_dir }}/risk_scored_findings-{{ risk_tag }}.json"
+    risk_csv: "{{ risk_output_dir }}/risk_scored_findings-{{ risk_tag }}.csv"
+
+  tasks:
+    - name: Load site configuration when present
+      ansible.builtin.include_vars: "{{ item }}"
+      with_first_found:
+        - files: ["../vars/site_config.yml"]
+          skip: true
+
+    - name: Load vault secrets when present
+      ansible.builtin.include_vars: "{{ item }}"
+      with_first_found:
+        - files: ["../vars/vault_secrets.yml"]
+          skip: true
+
+    - name: Validate inputs
+      ansible.builtin.assert:
+        that:
+          - risk_framework is match('^[A-Za-z0-9][A-Za-z0-9_-]*$')
+          - risk_output_dir is match('^/[A-Za-z0-9/_.-]+$')
+          - "'..' not in risk_output_dir"
+        fail_msg: "risk_framework must be a safe key and risk_output_dir an absolute path without '..'."
+
+    - name: Load the framework risk config (fall back to the generic default)
+      ansible.builtin.include_vars:
+        file: "{{ item }}"
+        name: risk_config
+      with_first_found:
+        - files:
+            - "../vars/risk/{{ risk_framework }}.yml"
+            - "../vars/risk/_default.yml"
+
+    - name: Query open findings joined with blast radius
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host | mandatory }}"
+        login_port: "{{ pg_port | default(5432) }}"
+        login_user: "{{ pg_user | default('postgres') }}"
+        login_password: "{{ compliance_db_password }}"
+        login_db: "{{ pg_database | default('compliance') }}"
+        ssl_mode: "{{ pg_ssl_mode | default('prefer') }}"
+        query: |
+          SELECT f.framework, f.control_id, f.subject, f.finding_type,
+                 f.severity, f.title,
+                 COALESCE(br.affected_count, 1) AS blast_radius
+          FROM compliance_findings f
+          LEFT JOIN findings_blast_radius br
+            ON br.framework = f.framework
+           AND br.control_id = f.control_id
+           AND br.finding_type = f.finding_type
+          WHERE f.framework = %(fw)s AND f.status = 'open'
+        named_args:
+          fw: "{{ risk_framework }}"
+      register: findings_query
+
+    - name: Refuse to score an empty set
+      ansible.builtin.assert:
+        that: findings_query.query_result | length > 0
+        fail_msg: >-
+          No open findings for framework {{ risk_framework }} in
+          compliance_findings. Run the assessment and findings sync first —
+          this playbook scores stored findings, it does not evaluate anything.
+
+    - name: Run the risk scorer (JSON)
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/../../scripts/risk_score.py"
+          - --format
+          - json
+        stdin: "{{ {'findings': findings_query.query_result, 'config': risk_config} | to_json }}"
+      register: risk_json_out
+      changed_when: true
+
+    - name: Run the risk scorer (CSV)
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/../../scripts/risk_score.py"
+          - --format
+          - csv
+        stdin: "{{ {'findings': findings_query.query_result, 'config': risk_config} | to_json }}"
+      register: risk_csv_out
+      changed_when: true
+
+    - name: Write the scored findings (JSON)
+      ansible.builtin.copy:
+        dest: "{{ risk_json }}"
+        content: "{{ risk_json_out.stdout }}"
+        mode: "0644"
+
+    - name: Write the scored findings (CSV)
+      ansible.builtin.copy:
+        dest: "{{ risk_csv }}"
+        content: "{{ risk_csv_out.stdout }}"
+        mode: "0644"
+
+    - name: Publish outputs to persistent storage
+      when: report_publish_host | default('') | length > 0
+      ansible.builtin.command:
+        argv:
+          - scp
+          - -o
+          - StrictHostKeyChecking=accept-new
+          - -o
+          - BatchMode=yes
+          - "{{ risk_json }}"
+          - "{{ risk_csv }}"
+          - "{{ report_publish_user | default('aapuser1') }}@{{ report_publish_host }}:{{ report_publish_dir | default('/var/tmp') }}/"
+      changed_when: true
+
+    - name: Warn when no persistent publication is configured
+      when: report_publish_host | default('') | length == 0
+      ansible.builtin.debug:
+        msg: >-
+          WARNING: outputs written only to the execution environment
+          ({{ risk_output_dir }}) and will vanish when this job ends. Set
+          report_publish_host to copy them to persistent storage.
+
+    - name: Risk scoring summary
+      vars:
+        result: "{{ risk_json_out.stdout | from_json }}"
+      ansible.builtin.debug:
+        msg:
+          - "Risk scoring — framework {{ risk_framework }}"
+          - "  By band: {{ result.by_band }} (evidence gaps: {{ result.evidence_gaps }})"
+          - "  JSON: {{ risk_json }}"
+          - "  CSV:  {{ risk_csv }}"

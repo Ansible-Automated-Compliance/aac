@@ -1,0 +1,178 @@
+---
+# Per-utility AMI compliance tasks (included by ami_compliance_audit_and_store.yml)
+# Loop variable: utility_id (e.g. electric), utility_idx (0-based port offset)
+#
+# Uses community.postgresql.postgresql_query — no podman required in the EE.
+# OPA response shapes:
+#   NIST IR 7628:  result.{ compliance_score, compliance_level, all_violations, ... }
+#   Device:        result.compliance_report.{ compliant_devices, non_compliant_devices,
+#                    total_devices, total_violations, critical_violations, compliant }
+#   Head-end:      result.violations  (list of violation strings)
+
+# ---------------------------------------------------------------------------
+# 1. NIST IR 7628 Assessment
+# ---------------------------------------------------------------------------
+- name: "[{{ utility_id }}] Run NIST IR 7628 assessment"
+  uri:
+    use_proxy: false
+    url: "{{ opa_server_url }}/v1/data/ami/nist_ir7628/complete"
+    method: POST
+    body_format: json
+    body:
+      input: "{{ nist_base | combine({'organization': 'Utility Simulator (' + utility_id + ')',
+                                      'assessment_date': lookup('pipe', 'date +%Y-%m-%d')}) }}"
+    return_content: true
+    status_code: 200
+    validate_certs: false
+  register: nist_opa_result
+
+- name: "[{{ utility_id }}] Extract NIST results"
+  set_fact:
+    nist_result: "{{ nist_opa_result.json.result }}"
+
+- name: "[{{ utility_id }}] Store NIST IR 7628 result in PostgreSQL"
+  include_role:
+    name: aac_store_results
+  vars:
+    aac_result_policy_name:    "AMI NIST IR 7628 Rev 1"
+    aac_result_framework:      "ami"
+    aac_result_policy_version: "1.0"
+    aac_result_total_controls: 6
+    aac_result_failed_controls: "{{ nist_result.all_violations | default([]) | length }}"
+    aac_result_passed_controls: "{{ [6 - (nist_result.all_violations | default([]) | length), 0] | max }}"
+    aac_result_compliance_pct:  "{{ nist_result.compliance_score | default(0) | float }}"
+    aac_result_violations: "{{ nist_result.all_violations | default([]) }}"
+    aac_result_metadata: "{{ {'utility': utility_id, 'framework': 'NIST IR 7628', 'compliance_level': nist_result.compliance_level | default('unknown')} }}"
+    aac_result_opa_server: "{{ opa_server_url }}"
+
+- name: "[{{ utility_id }}] Set NIST DB ID"
+  set_fact:
+    nist_db_id: "{{ aac_result_id }}"
+
+# ---------------------------------------------------------------------------
+# 2. AMI Device Compliance — live simulator
+# ---------------------------------------------------------------------------
+- name: "[{{ utility_id }}] Resolve simulator URL (topology-agnostic)"
+  ansible.builtin.set_fact:
+    sim_url: >-
+      {{
+        vars.get('smart_meter_' + utility_id + '_url')
+        | default(simulator_base_url + ':' + (base_port | int + utility_idx) | string)
+      }}
+
+- name: "[{{ utility_id }}] Query live simulator /api/ami-assessment"
+  uri:
+    use_proxy: false
+    url: "{{ sim_url }}/api/ami-assessment"
+    method: GET
+    return_content: true
+    status_code: 200
+  register: sim_response
+
+- name: "[{{ utility_id }}] Run device compliance against OPA"
+  uri:
+    use_proxy: false
+    url: "{{ opa_server_url }}/v1/data/ami/device/compliance"
+    method: POST
+    body_format: json
+    body:
+      input: "{{ sim_response.json }}"
+    return_content: true
+    status_code: 200
+    validate_certs: false
+  register: device_opa_result
+
+- name: "[{{ utility_id }}] Extract device compliance results"
+  set_fact:
+    device_report: "{{ device_opa_result.json.result.compliance_report }}"
+
+- name: "[{{ utility_id }}] Store device compliance result in PostgreSQL"
+  include_role:
+    name: aac_store_results
+  vars:
+    aac_result_policy_name:    "AMI Device Compliance"
+    aac_result_framework:      "ami"
+    aac_result_policy_version: "1.0"
+    aac_result_total_controls: "{{ device_report.total_devices | int }}"
+    aac_result_failed_controls: "{{ device_report.non_compliant_devices | int }}"
+    aac_result_passed_controls: "{{ device_report.compliant_devices | int }}"
+    aac_result_compliance_pct:  "{{ ((device_report.compliant_devices | int) / ([device_report.total_devices | int, 1] | max) * 100) | round(1) | float }}"
+    aac_result_violations: "{{ device_opa_result.json.result.compliance_report.violations | default([]) }}"
+    aac_result_metadata: "{{ {'utility': utility_id, 'framework': 'AMI Device Compliance', 'critical_violations': device_report.critical_violations | int, 'total_violations': device_report.total_violations | int} }}"
+    aac_result_opa_server: "{{ opa_server_url }}"
+
+- name: "[{{ utility_id }}] Set device DB ID"
+  set_fact:
+    device_db_id: "{{ aac_result_id }}"
+
+# ---------------------------------------------------------------------------
+# 3. Head-End Security Assessment
+# ---------------------------------------------------------------------------
+- name: "[{{ utility_id }}] Run head-end security assessment"
+  uri:
+    use_proxy: false
+    url: "{{ opa_server_url }}/v1/data/ami/headend/security"
+    method: POST
+    body_format: json
+    body:
+      input: "{{ headend_base | combine({'organization': 'Utility Simulator (' + utility_id + ')',
+                                         'assessment_date': lookup('pipe', 'date +%Y-%m-%d')}) }}"
+    return_content: true
+    status_code: 200
+    validate_certs: false
+  register: headend_opa_result
+
+- name: "[{{ utility_id }}] Extract head-end results"
+  set_fact:
+    headend_violations: "{{ headend_opa_result.json.result.violations | default([]) }}"
+
+- name: "[{{ utility_id }}] Store head-end security result in PostgreSQL"
+  include_role:
+    name: aac_store_results
+  vars:
+    aac_result_policy_name:    "AMI Head-End Security"
+    aac_result_framework:      "ami"
+    aac_result_policy_version: "1.0"
+    aac_result_total_controls: 20
+    aac_result_failed_controls: "{{ headend_violations | length }}"
+    aac_result_passed_controls: "{{ [20 - (headend_violations | length), 0] | max }}"
+    aac_result_compliance_pct:  "{{ ([100.0 - (headend_violations | length * 5), 0.0] | max) | float }}"
+    aac_result_violations: "{{ headend_violations }}"
+    aac_result_metadata: "{{ {'utility': utility_id, 'framework': 'AMI Head-End Security', 'compliant': (headend_violations | length == 0), 'violation_count': headend_violations | length} }}"
+    aac_result_opa_server: "{{ opa_server_url }}"
+
+- name: "[{{ utility_id }}] Set head-end DB ID"
+  set_fact:
+    headend_db_id: "{{ aac_result_id }}"
+
+# ---------------------------------------------------------------------------
+# Console output
+# ---------------------------------------------------------------------------
+- name: "[{{ utility_id }}] Utility audit summary"
+  debug:
+    msg:
+      - "=== {{ utility_id | upper }} ==="
+      - "NIST IR 7628:    {{ nist_result.compliance_level | default('unknown') | upper }}  score={{ nist_result.compliance_score | default(0) }}%  violations={{ nist_result.all_violations | default([]) | length }}  DB#{{ nist_db_id }}"
+      - "Device Compliance: {{ device_report.compliant_devices }}/{{ device_report.total_devices }} compliant  critical={{ device_report.critical_violations }}  DB#{{ device_db_id }}"
+      - "Head-End Security: {{ 'PASS' if headend_violations | length == 0 else 'FAIL' }}  violations={{ headend_violations | length }}  DB#{{ headend_db_id }}"
+
+# ---------------------------------------------------------------------------
+# Accumulate summary
+# ---------------------------------------------------------------------------
+- name: "[{{ utility_id }}] Append to audit summary"
+  set_fact:
+    audit_summary: "{{ audit_summary + [entry] }}"
+  vars:
+    entry:
+      utility:                    "{{ utility_id }}"
+      nist_score:                 "{{ nist_result.compliance_score | default(0) }}"
+      nist_level:                 "{{ nist_result.compliance_level | default('unknown') }}"
+      device_compliant:           "{{ device_report.compliant_devices }}"
+      device_total:               "{{ device_report.total_devices }}"
+      device_critical_violations: "{{ device_report.critical_violations | int }}"
+      headend_compliant:          "{{ headend_violations | length == 0 }}"
+      headend_violation_count:    "{{ headend_violations | length }}"
+      pg_ids:
+        nist:    "{{ nist_db_id }}"
+        device:  "{{ device_db_id }}"
+        headend: "{{ headend_db_id }}"

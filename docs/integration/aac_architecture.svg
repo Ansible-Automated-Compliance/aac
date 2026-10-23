@@ -1,0 +1,125 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900" font-family="Helvetica Neue, Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#151515"/>
+    </marker>
+  </defs>
+
+  <rect width="1600" height="900" fill="#ffffff"/>
+
+  <!-- Title -->
+  <text x="40" y="56" font-size="30" font-weight="700" fill="#151515">AAC — Ansible Automated Compliance</text>
+  <text x="40" y="86" font-size="17" fill="#6A6E73">The Policy-as-Code architecture, extended: AAP + OPA ×3 + PostgreSQL + the policy library</text>
+
+  <!-- ══ Managed estate ══ -->
+  <rect x="40" y="150" width="210" height="520" rx="8" fill="none" stroke="#8A8D90" stroke-width="1.5" stroke-dasharray="6 4"/>
+  <text x="145" y="180" font-size="15" font-weight="700" fill="#6A6E73" text-anchor="middle">MANAGED ESTATE</text>
+
+  <g font-size="14" fill="#151515" text-anchor="middle">
+    <rect x="60" y="200" width="170" height="60" rx="6" fill="#F5F5F5" stroke="#8A8D90"/>
+    <text x="145" y="235">RHEL 8 / 9 / 10</text>
+    <rect x="60" y="280" width="170" height="60" rx="6" fill="#F5F5F5" stroke="#8A8D90"/>
+    <text x="145" y="315">Windows Server</text>
+    <rect x="60" y="360" width="170" height="60" rx="6" fill="#F5F5F5" stroke="#8A8D90"/>
+    <text x="145" y="395">Cloud — AWS · Azure</text>
+    <rect x="60" y="440" width="170" height="60" rx="6" fill="#F5F5F5" stroke="#8A8D90"/>
+    <text x="145" y="475">OT / AMI devices</text>
+    <rect x="60" y="520" width="170" height="60" rx="6" fill="#F5F5F5" stroke="#8A8D90"/>
+    <text x="145" y="555">OpenShift</text>
+  </g>
+
+  <!-- ══ AAP ══ -->
+  <rect x="330" y="200" width="250" height="330" rx="8" fill="#FDECEA" stroke="#C9190B" stroke-width="2"/>
+  <text x="455" y="236" font-size="17" font-weight="700" fill="#151515" text-anchor="middle">Ansible Automation</text>
+  <text x="455" y="257" font-size="17" font-weight="700" fill="#151515" text-anchor="middle">Platform</text>
+  <g font-size="13" fill="#151515" text-anchor="middle">
+    <text x="455" y="290">Fact collection — job templates</text>
+    <text x="455" y="312">Orchestration · workflows · EDA</text>
+    <text x="455" y="334">Execution environments</text>
+  </g>
+  <rect x="350" y="360" width="210" height="70" rx="6" fill="#ffffff" stroke="#C9190B" stroke-width="1.5"/>
+  <text x="455" y="388" font-size="13" font-weight="700" fill="#151515" text-anchor="middle">PaC enforcement gate</text>
+  <text x="455" y="408" font-size="12" fill="#6A6E73" text-anchor="middle">UI-configured · pre-launch</text>
+  <rect x="352" y="486" width="206" height="26" rx="13" fill="#C9190B"/>
+  <text x="455" y="504" font-size="12" font-weight="700" fill="#ffffff" text-anchor="middle">Supported Red Hat product</text>
+
+  <!-- ══ OPA group ══ -->
+  <rect x="660" y="170" width="300" height="430" rx="8" fill="none" stroke="#0066CC" stroke-width="1.5" stroke-dasharray="6 4"/>
+  <text x="810" y="198" font-size="15" font-weight="700" fill="#0066CC" text-anchor="middle">POLICY DECISION — OPA ×3</text>
+
+  <g text-anchor="middle">
+    <rect x="680" y="215" width="260" height="100" rx="6" fill="#E7F1FA" stroke="#0066CC" stroke-width="1.5"/>
+    <text x="810" y="252" font-size="15" font-weight="700" fill="#151515">opa-security</text>
+    <text x="810" y="285" font-size="13" fill="#151515">CIS · NIST · STIG</text>
+
+    <rect x="680" y="335" width="260" height="100" rx="6" fill="#E7F1FA" stroke="#0066CC" stroke-width="1.5"/>
+    <text x="810" y="372" font-size="15" font-weight="700" fill="#151515">opa-compliance</text>
+    <text x="810" y="398" font-size="13" fill="#151515">ISO 27001 · SOC 2 · PCI-DSS</text>
+    <text x="810" y="417" font-size="13" fill="#151515">SOX · FISMA · sovereignty</text>
+
+    <rect x="680" y="455" width="260" height="100" rx="6" fill="#E7F1FA" stroke="#0066CC" stroke-width="1.5"/>
+    <text x="810" y="492" font-size="15" font-weight="700" fill="#151515">opa-ot</text>
+    <text x="810" y="525" font-size="13" fill="#151515">NERC-CIP · AMI · IEC 62443</text>
+  </g>
+
+  <!-- Policy library -->
+  <rect x="660" y="660" width="300" height="90" rx="8" fill="#E7F1FA" stroke="#0066CC" stroke-width="2"/>
+  <text x="810" y="695" font-size="15" font-weight="700" fill="#151515" text-anchor="middle">Rego policy library (git)</text>
+  <text x="810" y="720" font-size="13" fill="#151515" text-anchor="middle">550+ policies · ~24 framework families</text>
+  <line x1="810" y1="660" x2="810" y2="606" stroke="#151515" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <!-- ══ PostgreSQL ══ -->
+  <rect x="1040" y="250" width="240" height="228" rx="8" fill="#FDECEA" stroke="#C9190B" stroke-width="2"/>
+  <text x="1160" y="284" font-size="17" font-weight="700" fill="#151515" text-anchor="middle">PostgreSQL</text>
+  <g font-size="13" fill="#151515" text-anchor="middle">
+    <text x="1160" y="314">compliance_facts · host_facts</text>
+    <text x="1160" y="332" fill="#6A6E73">collected evidence (JSONB)</text>
+    <text x="1160" y="360">compliance_results</text>
+    <text x="1160" y="378" fill="#6A6E73">scored, timestamped history</text>
+    <text x="1160" y="406">compliance_certifications</text>
+    <text x="1160" y="424" fill="#6A6E73">cosign-signed, offline-verifiable</text>
+  </g>
+  <rect x="1057" y="440" width="206" height="24" rx="12" fill="#C9190B"/>
+  <text x="1160" y="457" font-size="11.5" font-weight="700" fill="#ffffff" text-anchor="middle">Supported engine (AAP dependency)</text>
+
+  <!-- ══ Outputs ══ -->
+  <rect x="1360" y="250" width="200" height="95" rx="8" fill="#E7F1FA" stroke="#0066CC" stroke-width="1.5"/>
+  <text x="1460" y="285" font-size="15" font-weight="700" fill="#151515" text-anchor="middle">Grafana</text>
+  <text x="1460" y="310" font-size="12.5" fill="#151515" text-anchor="middle">posture · trends · drift</text>
+  <text x="1460" y="328" font-size="12" fill="#6A6E73" text-anchor="middle">(optional — any SQL tool)</text>
+
+  <rect x="1360" y="405" width="200" height="95" rx="8" fill="#E7F1FA" stroke="#0066CC" stroke-width="1.5"/>
+  <text x="1460" y="440" font-size="15" font-weight="700" fill="#151515" text-anchor="middle">Auditor reports</text>
+  <text x="1460" y="465" font-size="12.5" fill="#151515" text-anchor="middle">PDF · DOCX evidence</text>
+  <text x="1460" y="483" font-size="12" fill="#6A6E73" text-anchor="middle">verifiable offline</text>
+
+  <!-- ══ Flow arrows ══ -->
+  <g stroke="#151515" stroke-width="2" fill="none">
+    <!-- 1. estate → AAP -->
+    <line x1="250" y1="390" x2="324" y2="390" marker-end="url(#arrow)"/>
+    <!-- 2. AAP → OPA (facts out) and OPA → AAP (decision back) -->
+    <line x1="580" y1="330" x2="654" y2="330" marker-end="url(#arrow)"/>
+    <line x1="660" y1="450" x2="586" y2="450" marker-end="url(#arrow)"/>
+    <!-- 3. AAP → PostgreSQL (AAP stores facts + scored results) -->
+    <path d="M 455 530 L 455 800 L 1160 800 L 1160 486" marker-end="url(#arrow)"/>
+    <!-- 4. PostgreSQL → outputs -->
+    <line x1="1280" y1="340" x2="1354" y2="305" marker-end="url(#arrow)"/>
+    <line x1="1280" y1="420" x2="1354" y2="448" marker-end="url(#arrow)"/>
+  </g>
+  <g font-size="12" fill="#6A6E73" text-anchor="middle">
+    <text x="287" y="373">① facts</text>
+    <text x="617" y="315">② facts</text>
+    <text x="623" y="470">③ score</text>
+    <text x="807" y="788">④ AAP stores the collected facts + the scored results</text>
+  </g>
+
+  <!-- ══ Legend ══ -->
+  <g font-size="14" fill="#151515">
+    <rect x="40" y="820" width="26" height="18" rx="4" fill="#FDECEA" stroke="#C9190B" stroke-width="1.5"/>
+    <text x="76" y="834">Supported Red Hat product surface</text>
+    <rect x="360" y="820" width="26" height="18" rx="4" fill="#E7F1FA" stroke="#0066CC" stroke-width="1.5"/>
+    <text x="396" y="834">AAC content — Galaxy-model tiering (community today)</text>
+    <rect x="810" y="820" width="26" height="18" rx="4" fill="#F5F5F5" stroke="#8A8D90"/>
+    <text x="846" y="834">Customer infrastructure</text>
+  </g>
+</svg>

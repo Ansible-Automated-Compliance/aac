@@ -1,0 +1,411 @@
+---
+# Seed AAP Job Templates — AAC Fresh Install Pipeline
+#
+# Creates 8 job templates on the LOCAL AAP (<aac-host>) that execute
+# the fresh install pipeline against a new EC2 instance:
+#
+#   00 Teardown        — terminate EC2 when validated
+#   01 Provision EC2   — launch RHEL 9 t3.2xlarge
+#   02 Prepare OS      — subscription, packages, firewall, SELinux
+#   03 Verify Bundle   — confirm bundle + manifest are on the target
+#   04 Install AAP     — extract bundle, write inventory, run installer
+#   05 Install AAC     — clone repo, vault, install.sh, configure_aap.sh
+#   06 Validate        — GO/NO-GO check of all components
+#
+# Run once on the existing AAP (<aac-host>) to register the templates.
+# AAP Job Template: "AAC - Seed Fresh Install Templates"
+# Credentials: Ansible Vault
+
+- name: Seed AAC Fresh Install Job Templates
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - ../vars/site_config.yml
+
+  vars:
+    aap_api:   "{{ aap_url }}/api/controller/v2"
+    aap_token: "{{ aap_token }}"
+    headers:
+      Authorization: "Bearer {{ aap_token }}"
+      Content-Type: "application/json"
+
+    fresh_install_templates:
+
+      - name: "AAC - Fresh Install: 00 Teardown"
+        description: >
+          Terminates the EC2 instance after validation is complete.
+          Run this LAST. Required survey: instance_id (from Phase 01 output).
+        playbook: "ansible/playbooks/fresh_install_00_teardown.yml"
+        survey:
+          spec:
+            - variable: instance_id
+              question_name: "EC2 Instance ID"
+              question_description: "Instance ID from Phase 01 output (e.g., i-0abc123)"
+              type: text
+              required: true
+              default: ""
+            - variable: aws_region
+              question_name: "AWS Region"
+              question_description: "Region where instance was launched"
+              type: text
+              required: true
+              default: "us-east-1"
+
+      - name: "AAC - Fresh Install: 01 Provision EC2"
+        description: >
+          Phase 1: Launches RHEL 9 t3.2xlarge (8 vCPU, 32GB RAM, 150GB gp3) in AWS.
+          Creates security group with all AAC service ports open.
+          OUTPUT: public IP address — record it for phases 02-06.
+          AFTER THIS JOB: scp the AAP bundle and manifest to the new instance.
+          See job output for exact scp commands.
+        playbook: "ansible/playbooks/fresh_install_01_provision_ec2.yml"
+        survey:
+          spec:
+            - variable: ec2_key_name
+              question_name: "AWS EC2 Key Pair Name"
+              question_description: "Name of existing AWS key pair for ec2-user SSH access"
+              type: text
+              required: true
+              default: "compliance-lab-key"
+            - variable: aws_region
+              question_name: "AWS Region"
+              question_description: "AWS region to deploy into"
+              type: text
+              required: true
+              default: "us-east-1"
+
+      - name: "AAC - Fresh Install: 02 Prepare OS"
+        description: >
+          Phase 2: Registers Red Hat subscription, enables AAP 2.6 repos,
+          runs dnf update, installs podman/git/ansible-core/firewalld,
+          configures firewall ports, creates OPA directories with SELinux context.
+          Runtime: ~10-15 minutes.
+        playbook: "ansible/playbooks/fresh_install_02_prepare_os.yml"
+        survey:
+          spec:
+            - variable: target_host
+              question_name: "Target Host IP"
+              question_description: "Public IP of EC2 instance from Phase 01"
+              type: text
+              required: true
+              default: ""
+            - variable: rhsm_password
+              question_name: "Red Hat Account Password"
+              question_description: "Password for vault_redhat_username Red Hat account (for subscription-manager register)"
+              type: password
+              required: true
+              default: ""
+
+      - name: "AAC - Fresh Install: 03 Verify Bundle"
+        description: >
+          Phase 3: Confirms that the AAP installer bundle and manifest are present
+          on the target instance before the installer runs. Fails with exact scp
+          commands if files are missing.
+          Run AFTER manually copying files from Mac to target.
+        playbook: "ansible/playbooks/fresh_install_03_verify_bundle.yml"
+        survey:
+          spec:
+            - variable: target_host
+              question_name: "Target Host IP"
+              question_description: "Public IP of EC2 instance from Phase 01"
+              type: text
+              required: true
+              default: ""
+
+      - name: "AAC - Fresh Install: 04 Install AAP"
+        description: >
+          Phase 4: Extracts the AAP 2.6 bundle, writes the installer inventory
+          with credentials from vault + survey inputs, and runs the containerized
+          installer on the target host.
+          WARNING: Takes 30-60 minutes. Do NOT cancel.
+          After this job: AAP is available at https://target_host
+        playbook: "ansible/playbooks/fresh_install_04_install_aap.yml"
+        survey:
+          spec:
+            - variable: target_host
+              question_name: "Target Host IP"
+              question_description: "Public IP of EC2 instance from Phase 01"
+              type: text
+              required: true
+              default: ""
+            - variable: new_aap_admin_password
+              question_name: "AAP Admin Password (new install)"
+              question_description: "Password for the admin user on the fresh AAP install"
+              type: password
+              required: true
+              default: ""
+            - variable: new_pg_password
+              question_name: "PostgreSQL Password (new install)"
+              question_description: "Internal AAP PostgreSQL password (separate from compliance DB)"
+              type: password
+              required: true
+              default: ""
+
+      - name: "AAC - Fresh Install: 05 Install AAC"
+        description: >
+          Phase 5: Clones the compliance repo, deploys vault_secrets.yml and
+          vault_pass, runs scripts/install.sh (OPA + PostgreSQL + schema) and
+          scripts/configure_aap.sh (creates project, job templates, runs bootstrap).
+          vault_password is the vault decryption key — entered in the survey each time.
+          Runtime: ~15-20 minutes.
+        playbook: "ansible/playbooks/fresh_install_05_install_aac.yml"
+        survey:
+          spec:
+            - variable: target_host
+              question_name: "Target Host IP"
+              question_description: "Public IP of EC2 instance from Phase 01"
+              type: text
+              required: true
+              default: ""
+            - variable: new_aap_admin_password
+              question_name: "AAP Admin Password"
+              question_description: "AAP admin password from Phase 04"
+              type: password
+              required: true
+              default: ""
+            - variable: vault_password
+              question_name: "Vault Decryption Password"
+              question_description: "Password to decrypt ansible/vars/vault_secrets.yml (not stored in vault)"
+              type: password
+              required: true
+              default: ""
+
+      - name: "AAC - Fresh Install: 06 Validate"
+        description: >
+          Phase 6: GO/NO-GO validation of all AAC components.
+          Checks: OPA x3 (health + policy count), PostgreSQL (connectivity + tables),
+          AAP gateway + controller, all required job templates by name.
+          Fails if any check does not pass. Prints remediation hints.
+          Safe to run repeatedly. Run last before teardown.
+        playbook: "ansible/playbooks/fresh_install_06_validate.yml"
+        survey:
+          spec:
+            - variable: target_host
+              question_name: "Target Host IP"
+              question_description: "Public IP of EC2 instance from Phase 01"
+              type: text
+              required: true
+              default: ""
+            - variable: new_aap_admin_password
+              question_name: "AAP Admin Password"
+              question_description: "AAP admin password set in Phase 04"
+              type: password
+              required: true
+              default: ""
+
+  tasks:
+
+    # ── Look up object IDs by name ─────────────────────────────────────────────
+    - name: Look up project ID
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "{{ aap_api }}/projects/?name={{ aap_project_name | urlencode }}"
+        headers: "{{ headers }}"
+        validate_certs: false
+        status_code: 200
+      register: project_lookup
+
+    - name: Look up inventory ID
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "{{ aap_api }}/inventories/?name={{ aap_inventory_name | urlencode }}"
+        headers: "{{ headers }}"
+        validate_certs: false
+        status_code: 200
+      register: inventory_lookup
+
+    - name: Look up EE ID
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "{{ aap_api }}/execution_environments/?name={{ aap_ee_name | urlencode }}"
+        headers: "{{ headers }}"
+        validate_certs: false
+        status_code: 200
+      register: ee_lookup
+
+    - name: Look up vault credential ID
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "{{ aap_api }}/credentials/?name={{ aap_vault_credential_name | urlencode }}&credential_type__kind=vault"
+        headers: "{{ headers }}"
+        validate_certs: false
+        status_code: 200
+      register: vault_cred_lookup
+
+    - name: Look up SSH credential ID
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "{{ aap_api }}/credentials/?name={{ aap_ssh_credential_name | urlencode }}"
+        headers: "{{ headers }}"
+        validate_certs: false
+        status_code: 200
+      register: ssh_cred_lookup
+
+    - name: Look up AWS credential ID
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "{{ aap_api }}/credentials/?name={{ aap_aws_credential_name | urlencode }}"
+        headers: "{{ headers }}"
+        validate_certs: false
+        status_code: 200
+      register: aws_cred_lookup
+
+    - name: Set resolved IDs
+      ansible.builtin.set_fact:
+        project_id:    "{{ project_lookup.json.results[0].id }}"
+        inventory_id:  "{{ inventory_lookup.json.results[0].id }}"
+        ee_id:         "{{ ee_lookup.json.results[0].id }}"
+        vault_cred_id: "{{ vault_cred_lookup.json.results[0].id }}"
+        ssh_cred_id:   "{{ ssh_cred_lookup.json.results[0].id | default(omit) }}"
+        aws_cred_id:   "{{ aws_cred_lookup.json.results[0].id | default(omit) }}"
+
+    # ── Get existing templates for upsert ─────────────────────────────────────
+    - name: Get existing job templates
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "{{ aap_api }}/job_templates/?page_size=200"
+        headers: "{{ headers }}"
+        validate_certs: false
+        status_code: 200
+      register: existing_templates
+
+    - name: Build existing template name→ID map
+      ansible.builtin.set_fact:
+        existing_map: >-
+          {{ dict(existing_templates.json.results | map(attribute='name') | list |
+             zip(existing_templates.json.results | map(attribute='id') | list)) }}
+
+    # ── Create or update templates ─────────────────────────────────────────────
+    - name: Create or update fresh install job templates
+      ansible.builtin.uri:
+        use_proxy: false
+        url: >-
+          {{ aap_api }}/job_templates/{{
+            existing_map[item.name] ~ '/'
+            if item.name in existing_map else '' }}
+        method: "{{ 'PATCH' if item.name in existing_map else 'POST' }}"
+        headers: "{{ headers }}"
+        validate_certs: false
+        body_format: json
+        body:
+          name:                    "{{ item.name }}"
+          description:             "{{ item.description }}"
+          job_type:                "run"
+          inventory:               "{{ inventory_id }}"
+          project:                 "{{ project_id }}"
+          playbook:                "{{ item.playbook }}"
+          execution_environment:   "{{ ee_id }}"
+          ask_variables_on_launch: false
+          survey_enabled:          true
+          extra_vars:              "{}"
+        status_code: [200, 201]
+      loop: "{{ fresh_install_templates }}"
+      loop_control:
+        label: "{{ item.name }}"
+      register: template_results
+
+    # ── Attach surveys ─────────────────────────────────────────────────────────
+    - name: Attach survey to each template
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "{{ aap_api }}/job_templates/{{ item.json.id }}/survey_spec/"
+        method: POST
+        headers: "{{ headers }}"
+        validate_certs: false
+        body_format: json
+        body:
+          name: "{{ fresh_install_templates[idx].name }} Survey"
+          description: ""
+          spec: "{{ fresh_install_templates[idx].survey.spec }}"
+        status_code: [200, 204]
+      loop: "{{ template_results.results }}"
+      loop_control:
+        index_var: idx
+        label: "{{ item.json.name | default('unknown') }}"
+      when: item.json.id is defined
+
+    # ── Attach credentials ─────────────────────────────────────────────────────
+    - name: Attach Vault credential to all templates
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "{{ aap_api }}/job_templates/{{ item.json.id }}/credentials/"
+        method: POST
+        headers: "{{ headers }}"
+        validate_certs: false
+        body_format: json
+        body:
+          id: "{{ vault_cred_id }}"
+        status_code: [204, 400]
+      loop: "{{ template_results.results }}"
+      loop_control:
+        label: "{{ item.json.name | default('') }}"
+      when: item.json.id is defined
+
+    - name: Attach SSH credential to phases 02-06 (need remote access)
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "{{ aap_api }}/job_templates/{{ item.json.id }}/credentials/"
+        method: POST
+        headers: "{{ headers }}"
+        validate_certs: false
+        body_format: json
+        body:
+          id: "{{ ssh_cred_id }}"
+        status_code: [204, 400]
+      loop: "{{ template_results.results[1:] }}"
+      loop_control:
+        label: "{{ item.json.name | default('') }}"
+      when:
+        - item.json.id is defined
+        - ssh_cred_id is defined
+
+    - name: Attach AWS credential to Phase 01 (Provision) and Phase 00 (Teardown)
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "{{ aap_api }}/job_templates/{{ item.json.id }}/credentials/"
+        method: POST
+        headers: "{{ headers }}"
+        validate_certs: false
+        body_format: json
+        body:
+          id: "{{ aws_cred_id }}"
+        status_code: [204, 400]
+      loop:
+        - "{{ template_results.results[0] }}"
+        - "{{ template_results.results[1] }}"
+      loop_control:
+        label: "{{ item.json.name | default('') }}"
+      when:
+        - item.json.id is defined
+        - aws_cred_id is defined
+
+    # ── Summary ────────────────────────────────────────────────────────────────
+    - name: "=== Fresh Install Templates Ready ==="
+      ansible.builtin.debug:
+        msg:
+          - ""
+          - "╔══════════════════════════════════════════════════════════╗"
+          - "║        AAC Fresh Install Pipeline — Templates Ready      ║"
+          - "╚══════════════════════════════════════════════════════════╝"
+          - ""
+          - "  Templates created/updated:"
+          - "  1. AAC - Fresh Install: 01 Provision EC2"
+          - "  2. AAC - Fresh Install: 02 Prepare OS"
+          - "  3. AAC - Fresh Install: 03 Verify Bundle"
+          - "  4. AAC - Fresh Install: 04 Install AAP"
+          - "  5. AAC - Fresh Install: 05 Install AAC"
+          - "  6. AAC - Fresh Install: 06 Validate"
+          - "  7. AAC - Fresh Install: 00 Teardown"
+          - ""
+          - "  ── HOW TO RUN ─────────────────────────────────────────────"
+          - "  1. Run: AAC - Fresh Install: 01 Provision EC2"
+          - "     → Note TARGET IP from job output"
+          - "  2. SCP bundle to target:"
+          - "     scp ~/Downloads/ansible-automation-platform-containerized-setup-bundle-2.6-1-x86_64.tar.gz \\"
+          - "         ec2-user@<IP>:/home/ec2-user/aap-bundle.tar.gz"
+          - "     scp ~/Downloads/0ec418ab-59ed-4654-8ca9-de11cc57c0ce.zip \\"
+          - "         ec2-user@<IP>:/home/ec2-user/aap-manifest.zip"
+          - "  3. Run phases 02 → 06 with target_host=<IP>"
+          - "  4. Validate passes → Run: 00 Teardown with instance_id"

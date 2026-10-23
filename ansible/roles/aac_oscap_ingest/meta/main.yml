@@ -1,0 +1,13 @@
+---
+galaxy_info:
+  role_name: aac_oscap_ingest
+  author: AAC
+  description: >
+    Parse an ARF (oscap or any ARF 1.1 emitter) and store the normalized result via aac_store_results.
+  license: Apache-2.0
+  min_ansible_version: "2.14"
+  platforms:
+    - name: EL
+      versions: ["8", "9"]
+  galaxy_tags: [compliance, openscap, scap, security]
+dependencies: []

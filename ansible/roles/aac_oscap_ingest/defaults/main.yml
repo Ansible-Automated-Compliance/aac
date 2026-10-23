@@ -1,0 +1,38 @@
+---
+# aac_oscap_ingest/defaults/main.yml
+# Parses an EE-local XCCDF result / ARF file with the tested parser
+# (scripts/openscap_xccdf_parse.py) and records the result through
+# aac_store_results — waiver-aware, evidence-provenanced, historical.
+# Extracted from the proven openscap_assess.yml (#536) pipeline.
+#
+# Results are ingested faithfully under their OWN framework key
+# (default `openscap_<profile-suffix>`), never silently merged into a Rego
+# framework key — the CCE/CCI idents captured per rule are the hook for an
+# explicit crosswalk later. Runs in the EE (delegate_to: localhost).
+
+# ── Required (CRITICAL) ───────────────────────────────────────────────────────
+# oscap_results_file — EE-local path to the XCCDF results XML (or an ARF that
+# embeds one). Set automatically by aac_oscap_scan; supply explicitly to
+# ingest an externally produced file — the parser is namespace-agnostic, so
+# oscap, oscap-podman, and other XCCDF/ARF emitters (e.g. CIS-CAT Pro) all
+# parse identically. This is the transition on-ramp for external assessors.
+
+# ── Framework label (HIGH) ────────────────────────────────────────────────────
+# compliance_results.framework key. Empty → derived as
+# openscap_<profile-suffix> from the parsed profile (column-safe, ≤90 chars).
+# Override to taste — but never point it at a Rego framework key unless you
+# have deliberately decided the two evidence sources should merge.
+framework_label: ""
+
+# ── Provenance metadata (MEDIUM) ──────────────────────────────────────────────
+# Tool tag stored in metadata.tool. Override (e.g. "cis-cat-pro") when
+# ingesting a non-oscap file so reporting can distinguish assessors.
+oscap_tool: openscap
+# Passed through to metadata when known (aac_oscap_scan sets facts for these).
+# profile_id / datastream_path / tailoring_path / oscap_version may be "".
+
+# ── Behavior (LOW) ────────────────────────────────────────────────────────────
+record_to_db: true
+# Remove the EE-local results file after ingest (parse failures keep it for
+# debugging; the EE filesystem is ephemeral anyway).
+oscap_cleanup_fetched: true

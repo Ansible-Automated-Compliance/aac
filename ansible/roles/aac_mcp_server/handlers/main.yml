@@ -1,0 +1,21 @@
+---
+# Reload the user systemd daemon and enable the MCP unit.
+# Triggered when the unit file is written or updated.
+
+- name: reload_and_enable_mcp_unit
+  shell: |
+    systemctl --user daemon-reload
+    systemctl --user enable container-{{ aac_mcp_container_name }}.service
+  delegate_to: "{{ aac_host }}"
+  become: true
+  become_user: "{{ aac_mcp_run_user }}"
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/{{ lookup('pipe', 'id -u ' + aac_mcp_run_user) }}"
+    DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/{{ lookup('pipe', 'id -u ' + aac_mcp_run_user) }}/bus"
+
+- name: restart_mcp_server
+  shell: |
+    podman stop {{ aac_mcp_container_name }} 2>/dev/null || true
+    podman rm   {{ aac_mcp_container_name }} 2>/dev/null || true
+  delegate_to: "{{ aac_host }}"
+  changed_when: false

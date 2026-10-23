@@ -1,0 +1,188 @@
+---
+# harden_audit_policy.yml — CIS Windows Server 2022 Hardening: Audit Policy
+#
+# Configures Advanced Audit Policy subcategories (Section 17) and Event Log
+# sizes/retention (Section 18.9.26) to meet CIS benchmark requirements.
+#
+# Domain ownership: SecOps / Security Operations
+# Controls addressed: 36 (audit policy) + 9 (event log) = 45 controls
+# AAP Job Template: "CIS Windows 2022 Harden - Audit Policy" (SecOps team)
+# Credentials: Windows Compliance Lab (ID 7) + Ansible Vault (ID 8)
+# EE: AAC Compliance EE
+
+- name: CIS Windows Server 2022 — Audit Policy Hardening
+  hosts: "{{ target_hosts | default('all') }}"
+  gather_facts: false
+
+  vars_files:
+    - [ "../../vars/vault_secrets.yml", "../../vars/empty_fallback.yml" ]
+
+  tasks:
+
+    # ── Section 17: Advanced Audit Policy (auditpol) ──────────────────────────
+
+    - name: Configure advanced audit policy — Account Logon
+      win_shell: |
+        # CIS 17.1.1: Credential Validation — Success and Failure
+        auditpol /set /subcategory:"Credential Validation" /success:enable /failure:enable
+      changed_when: true
+      failed_when: false
+
+    - name: Configure advanced audit policy — Account Management
+      win_shell: |
+        # CIS 17.2.1: Computer Account Management — Success
+        auditpol /set /subcategory:"Computer Account Management" /success:enable /failure:disable
+        # CIS 17.2.2: Other Account Management Events — Success
+        auditpol /set /subcategory:"Other Account Management Events" /success:enable /failure:disable
+        # CIS 17.2.3: Security Group Management — Success
+        auditpol /set /subcategory:"Security Group Management" /success:enable /failure:disable
+        # CIS 17.2.5: User Account Management — Success and Failure
+        auditpol /set /subcategory:"User Account Management" /success:enable /failure:enable
+      changed_when: true
+      failed_when: false
+
+    - name: Configure advanced audit policy — Detailed Tracking
+      win_shell: |
+        # CIS 17.3.1: Process Creation — Success
+        auditpol /set /subcategory:"Process Creation" /success:enable /failure:disable
+      changed_when: true
+      failed_when: false
+
+    - name: Configure advanced audit policy — Logon/Logoff
+      win_shell: |
+        # CIS 17.5.1: Account Lockout — Failure
+        auditpol /set /subcategory:"Account Lockout" /success:disable /failure:enable
+        # CIS 17.5.2: Group Membership — Success
+        auditpol /set /subcategory:"Group Membership" /success:enable /failure:disable
+        # CIS 17.5.3: Logoff — Success
+        auditpol /set /subcategory:"Logoff" /success:enable /failure:disable
+        # CIS 17.5.4: Logon — Success and Failure
+        auditpol /set /subcategory:"Logon" /success:enable /failure:enable
+        # CIS 17.5.5: Other Logon/Logoff Events — Success and Failure
+        auditpol /set /subcategory:"Other Logon/Logoff Events" /success:enable /failure:enable
+        # CIS 17.5.6: Special Logon — Success
+        auditpol /set /subcategory:"Special Logon" /success:enable /failure:disable
+      changed_when: true
+      failed_when: false
+
+    - name: Configure advanced audit policy — Object Access
+      win_shell: |
+        # CIS 17.6.1: Detailed File Share — Failure
+        auditpol /set /subcategory:"Detailed File Share" /success:disable /failure:enable
+        # CIS 17.6.3: Other Object Access Events — Success and Failure
+        auditpol /set /subcategory:"Other Object Access Events" /success:enable /failure:enable
+        # CIS 17.6.4: Removable Storage — Success and Failure
+        auditpol /set /subcategory:"Removable Storage" /success:enable /failure:enable
+      changed_when: true
+      failed_when: false
+
+    - name: Configure advanced audit policy — Policy Change
+      win_shell: |
+        # CIS 17.7.1: Audit Policy Change — Success and Failure
+        auditpol /set /subcategory:"Audit Policy Change" /success:enable /failure:enable
+        # CIS 17.7.2: Authentication Policy Change — Success
+        auditpol /set /subcategory:"Authentication Policy Change" /success:enable /failure:disable
+        # CIS 17.7.4: MPSSVC Rule-Level Policy Change — Success and Failure
+        auditpol /set /subcategory:"MPSSVC Rule-Level Policy Change" /success:enable /failure:enable
+        # CIS 17.7.5: Other Policy Change Events — Success
+        auditpol /set /subcategory:"Other Policy Change Events" /success:enable /failure:disable
+      changed_when: true
+      failed_when: false
+
+    - name: Configure advanced audit policy — Privilege Use
+      win_shell: |
+        # CIS 17.8.1: Sensitive Privilege Use — Success and Failure
+        auditpol /set /subcategory:"Sensitive Privilege Use" /success:enable /failure:enable
+      changed_when: true
+      failed_when: false
+
+    - name: Configure advanced audit policy — System
+      win_shell: |
+        # CIS 17.9.1: IPsec Driver — Success
+        auditpol /set /subcategory:"IPsec Driver" /success:enable /failure:disable
+        # CIS 17.9.2: Other System Events — Success
+        auditpol /set /subcategory:"Other System Events" /success:enable /failure:disable
+        # CIS 17.9.3: Security State Change — Success
+        auditpol /set /subcategory:"Security State Change" /success:enable /failure:disable
+        # CIS 17.9.4: Security System Extension — Success
+        auditpol /set /subcategory:"Security System Extension" /success:enable /failure:disable
+        # CIS 17.9.5: System Integrity — Success and Failure
+        auditpol /set /subcategory:"System Integrity" /success:enable /failure:enable
+      changed_when: true
+      failed_when: false
+
+    # ── Section 2.3.2: Audit Settings (LSA registry) ──────────────────────────
+
+    - name: Force audit subcategory settings (CIS 2.3.2.1)
+      win_regedit:
+        path: HKLM:\SYSTEM\CurrentControlSet\Control\Lsa
+        name: SCENoApplyLegacyAuditPolicy
+        data: 1
+        type: dword
+
+    - name: Shutdown if unable to log security audits (CIS 2.3.2.2)
+      win_regedit:
+        path: HKLM:\SYSTEM\CurrentControlSet\Control\Lsa
+        name: CrashOnAuditFail
+        data: 1
+        type: dword
+
+    # ── Section 18.9.26: Event Log Sizes and Retention ────────────────────────
+
+    - name: Configure Application event log
+      win_shell: |
+        # CIS 18.9.26.1.1: Application log >= 32768 KB (32 MB)
+        wevtutil sl Application /ms:33554432
+        # CIS 18.9.26.1.2: Retention = Overwrite as needed
+        Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\EventLog\Application' `
+          -Name Retention -Value 0 -Type DWord -Force
+      changed_when: true
+      failed_when: false
+
+    - name: Configure Security event log
+      win_shell: |
+        # CIS 18.9.26.2.1: Security log >= 196608 KB (192 MB)
+        wevtutil sl Security /ms:201326592
+        # CIS 18.9.26.2.2: Retention = Overwrite as needed
+        Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\EventLog\Security' `
+          -Name Retention -Value 0 -Type DWord -Force
+      changed_when: true
+      failed_when: false
+
+    - name: Configure Setup event log
+      win_shell: |
+        # CIS 18.9.26.3.1: Setup log >= 32768 KB (32 MB)
+        wevtutil sl Setup /ms:33554432
+        # CIS 18.9.26.3.2: Retention = Overwrite as needed
+        Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\EventLog\Setup' `
+          -Name Retention -Value 0 -Type DWord -Force
+      changed_when: true
+      failed_when: false
+
+    - name: Configure System event log
+      win_shell: |
+        # CIS 18.9.26.4.1: System log >= 32768 KB (32 MB)
+        wevtutil sl System /ms:33554432
+        # CIS 18.9.26.4.2: Retention = Overwrite as needed
+        Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\EventLog\System' `
+          -Name Retention -Value 0 -Type DWord -Force
+      changed_when: true
+      failed_when: false
+
+    - name: Ensure EventLog service is running (CIS 18.10.25)
+      win_service:
+        name: EventLog
+        state: started
+        start_mode: auto
+
+    # ── Verification ──────────────────────────────────────────────────────────
+
+    - name: Verify audit policy applied
+      win_shell: auditpol /get /category:* 2>&1 | Select-String "Success|Failure"
+      register: audit_verify
+      changed_when: false
+      failed_when: false
+
+    - name: Show audit policy summary
+      debug:
+        msg: "Audit policy hardening complete. Run assessment to verify CIS compliance score."

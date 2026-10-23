@@ -1,0 +1,380 @@
+---
+# compare_to_baseline.yml — Diff current facts vs approved baseline
+#
+# Shows exactly what has changed on a host since its baseline was set.
+# The baseline is the "known good" snapshot tagged by 'AAC - Set Baseline'.
+# This is different from detect_fact_drift.yml which compares consecutive
+# snapshots — this compares CURRENT state vs APPROVED baseline.
+#
+# Output shows:
+#   - What changed from baseline (added / removed / modified)
+#   - Security severity of each change
+#   - Whether the change is already authorized in fact_changes
+#   - Compliance impact (remediation_status)
+#
+# AAP Job Template: "AAC - Compare to Baseline"
+# Credentials: Ansible Vault
+# EE: AAC Compliance EE
+# Survey:
+#   target_hostname  — hostname to compare (required)
+#   snapshot_date    — compare this snapshot vs baseline; "latest" = most recent (default: latest)
+
+- name: Compare host facts to approved baseline
+  hosts: localhost
+  connection: local
+  gather_facts: true   # needed for ansible_date_time
+
+  vars_files:
+    - [ "../vars/vault_secrets.yml", "../vars/empty_fallback.yml" ]
+    - ../vars/site_config.yml
+
+  vars:
+    pg_password:   "{{ compliance_db_password }}"
+    # snapshot_date: <set via extra_vars / survey / inventory>   # default 'latest'
+
+  tasks:
+
+    - name: Validate required inputs
+      fail:
+        msg: "target_hostname is required."
+      when: target_hostname is not defined or target_hostname == ''
+
+    # ── Fetch baseline snapshot ───────────────────────────────────────────────
+
+    - name: Fetch baseline snapshot for host
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port | default(5433) }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: |
+          SELECT id, hostname, platform, collection_timestamp,
+                 baseline_label, checksum, facts_data
+          FROM compliance_facts
+          WHERE hostname    = %s
+            AND is_baseline = true
+          ORDER BY collection_timestamp DESC
+          LIMIT 1
+        positional_args:
+          - "{{ target_hostname }}"
+      register: baseline_result
+
+    - name: Fail if no baseline set
+      fail:
+        msg: >
+          No baseline found for hostname='{{ target_hostname }}'.
+          Run 'AAC - Set Baseline' first to tag a known-good snapshot.
+      when: baseline_result.query_result | length == 0
+
+    # ── Fetch current (or requested) snapshot ─────────────────────────────────
+
+    - name: Fetch current snapshot for host
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port | default(5433) }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: |
+          SELECT id, hostname, platform, collection_timestamp, checksum, facts_data
+          FROM compliance_facts
+          WHERE hostname = %s
+            AND is_baseline = false
+            {% if (snapshot_date | default('latest', true)) != 'latest' %}
+            AND collection_timestamp::date = %s::date
+            {% endif %}
+          ORDER BY collection_timestamp DESC
+          LIMIT 1
+        positional_args: >-
+          {%- set args = [target_hostname] -%}
+          {%- if (snapshot_date | default('latest', true)) != 'latest' -%}{{ args.append((snapshot_date | default('latest', true))) or '' }}{%- endif -%}
+          {{ args }}
+      register: current_result
+
+    - name: Fail if no current snapshot found
+      fail:
+        msg: >
+          No current snapshot found for hostname='{{ target_hostname }}'
+          {% if (snapshot_date | default('latest', true)) != 'latest' %}on date {{ (snapshot_date | default('latest', true)) }}{% endif %}.
+          Run 'AAC - Collect Facts' first.
+      when: current_result.query_result | length == 0
+
+    - name: Check if current IS the baseline (same snapshot)
+      fail:
+        msg: >
+          The most recent snapshot (ID {{ current_result.query_result[0].id }})
+          IS the baseline itself — no newer snapshots exist.
+          Collect facts again first, then compare.
+      when: current_result.query_result[0].id == baseline_result.query_result[0].id
+
+    # ── Write Python diff engine ──────────────────────────────────────────────
+
+    - name: Write baseline diff engine
+      copy:
+        dest: /tmp/aac_baseline_compare.py
+        mode: '0700'
+        content: |
+          #!/usr/bin/env python3
+          """
+          aac_baseline_compare.py — Diff baseline vs current compliance facts.
+          Usage: python3 aac_baseline_compare.py <baseline.json> <current.json>
+          Output: JSON to stdout
+          """
+          import json, sys, hashlib
+
+          SECURITY_PATHS = {
+              # (dot-path-prefix, severity, label)
+              "sshd_config":                 ("critical", "SSH daemon configuration"),
+              "pam_config":                  ("critical", "PAM authentication"),
+              "sudoers":                     ("critical", "sudo privilege grants"),
+              "auditd_config":               ("high",     "Audit daemon configuration"),
+              "audit_rules":                 ("high",     "Audit rules"),
+              "selinux_status":              ("high",     "SELinux/MAC status"),
+              "apparmor_status":             ("high",     "AppArmor/MAC status"),
+              "firewall_rules":              ("high",     "Firewall rules"),
+              "kernel_modules_blacklist":    ("high",     "Kernel module blacklist"),
+              "grub_config":                 ("high",     "GRUB boot configuration"),
+              "world_writable_files":        ("medium",   "World-writable files"),
+              "suid_sgid_files":             ("medium",   "SUID/SGID executables"),
+              "cron_config":                 ("medium",   "Cron job configuration"),
+              "login_defs":                  ("medium",   "Login defaults (password aging)"),
+              "passwd_entries":              ("medium",   "User account list"),
+              "shadow_entries":              ("medium",   "Password shadow file"),
+              "group_entries":               ("medium",   "Group membership"),
+          }
+
+          VOLATILE_KEYS = {
+              "collection_timestamp", "schema_version",
+              "ansible_uptime_seconds", "ansible_date_time",
+              "ansible_memfree_mb", "ansible_swapfree_mb",
+          }
+
+          SEVERITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+
+          def severity_for(key):
+              for prefix, (sev, label) in SECURITY_PATHS.items():
+                  if key.startswith(prefix):
+                      return sev, label
+              return "low", "General configuration"
+
+          def flatten(obj, prefix=""):
+              """Flatten nested dict to dot-notation keys."""
+              out = {}
+              if isinstance(obj, dict):
+                  for k, v in obj.items():
+                      new_key = f"{prefix}.{k}" if prefix else k
+                      out.update(flatten(v, new_key))
+              elif isinstance(obj, list):
+                  out[prefix] = json.dumps(obj, sort_keys=True)
+              else:
+                  out[prefix] = obj
+              return out
+
+          def truncate(val, max_len=120):
+              s = str(val)
+              return s[:max_len] + "..." if len(s) > max_len else s
+
+          def compare(baseline, current):
+              b_flat = flatten(baseline)
+              c_flat = flatten(current)
+
+              all_keys = set(b_flat) | set(c_flat)
+              changes = []
+
+              for key in sorted(all_keys):
+                  # Skip the wrapper and volatile fields
+                  top = key.split(".")[0]
+                  if top in VOLATILE_KEYS or key.split(".")[-1] in VOLATILE_KEYS:
+                      continue
+                  if top == "schema_version":
+                      continue
+
+                  b_val = b_flat.get(key)
+                  c_val = c_flat.get(key)
+
+                  if b_val == c_val:
+                      continue
+
+                  sev, label = severity_for(top)
+                  change_type = (
+                      "added"   if b_val is None else
+                      "removed" if c_val is None else
+                      "modified"
+                  )
+
+                  changes.append({
+                      "path":        key,
+                      "type":        change_type,
+                      "severity":    sev,
+                      "category":    label,
+                      "was":         truncate(b_val) if b_val is not None else None,
+                      "now":         truncate(c_val) if c_val is not None else None,
+                  })
+
+              # Sort: severity first, then path
+              changes.sort(key=lambda x: (SEVERITY_ORDER.get(x["severity"], 99), x["path"]))
+
+              sev_counts = {"critical": 0, "high": 0, "medium": 0, "low": 0}
+              for c in changes:
+                  sev_counts[c["severity"]] = sev_counts.get(c["severity"], 0) + 1
+
+              security_changes = sum(
+                  cnt for sev, cnt in sev_counts.items() if sev != "low"
+              )
+              highest = next(
+                  (s for s in ["critical", "high", "medium", "low"] if sev_counts.get(s, 0) > 0),
+                  None
+              )
+
+              return {
+                  "total_changes":         len(changes),
+                  "security_changes":      security_changes,
+                  "highest_severity":      highest,
+                  "severity_counts":       sev_counts,
+                  "changes":               changes[:200],  # cap at 200 for display
+                  "truncated":             len(changes) > 200,
+              }
+
+          if __name__ == "__main__":
+              with open(sys.argv[1]) as f:
+                  baseline = json.load(f)
+              with open(sys.argv[2]) as f:
+                  current = json.load(f)
+              print(json.dumps(compare(baseline, current)))
+
+    # ── Write facts to temp files and run diff ────────────────────────────────
+
+    - name: Write baseline facts to temp file
+      copy:
+        dest: /tmp/aac_baseline_facts.json
+        content: "{{ baseline_result.query_result[0].facts_data | to_json }}"
+
+    - name: Write current facts to temp file
+      copy:
+        dest: /tmp/aac_current_facts.json
+        content: "{{ current_result.query_result[0].facts_data | to_json }}"
+
+    - name: Run baseline diff engine
+      command: >
+        python3 /tmp/aac_baseline_compare.py
+        /tmp/aac_baseline_facts.json
+        /tmp/aac_current_facts.json
+      register: diff_output
+      changed_when: false
+
+    - name: Parse diff results
+      set_fact:
+        diff_result: "{{ diff_output.stdout | from_json }}"
+
+    # ── Check existing fact_changes authorizations ────────────────────────────
+
+    - name: Check which changes are already authorized
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port | default(5433) }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: |
+          SELECT
+            fc.id          AS change_id,
+            fc.is_authorized,
+            fc.authorized_by,
+            fc.change_ticket,
+            fc.detected_at,
+            fc.change_summary
+          FROM fact_changes fc
+          WHERE fc.hostname           = %s
+            AND fc.current_facts_id   = %s
+            AND fc.previous_facts_id  = %s
+          ORDER BY fc.detected_at DESC
+          LIMIT 1
+        positional_args:
+          - "{{ target_hostname }}"
+          - "{{ current_result.query_result[0].id }}"
+          - "{{ baseline_result.query_result[0].id }}"
+      register: change_record
+
+    # ── Print report ──────────────────────────────────────────────────────────
+
+    - name: Print baseline comparison report
+      debug:
+        msg: |
+          ══════════════════════════════════════════════════════════════════
+          AAC BASELINE COMPARISON REPORT
+          Generated:   {{ ansible_date_time.iso8601 }}
+          ══════════════════════════════════════════════════════════════════
+
+          Host:          {{ target_hostname }}
+          Baseline:      {{ baseline_result.query_result[0].baseline_label }}
+                         (snapshot {{ baseline_result.query_result[0].id }},
+                          collected {{ baseline_result.query_result[0].collection_timestamp }})
+          Current:       snapshot {{ current_result.query_result[0].id }},
+                          collected {{ current_result.query_result[0].collection_timestamp }}
+          ──────────────────────────────────────────────────────────────────
+
+          ── SUMMARY ──────────────────────────────────────────────────────
+          Total changes from baseline:  {{ diff_result.total_changes }}
+          Security-relevant changes:    {{ diff_result.security_changes }}
+          Highest severity:             {{ diff_result.highest_severity | upper if diff_result.highest_severity else 'NONE' }}
+            Critical: {{ diff_result.severity_counts.critical }}
+            High:     {{ diff_result.severity_counts.high }}
+            Medium:   {{ diff_result.severity_counts.medium }}
+            Low:      {{ diff_result.severity_counts.low }}
+          {% if change_record.query_result | length > 0 %}
+          Drift record:  Change ID {{ change_record.query_result[0].change_id }}
+            Authorized: {{ change_record.query_result[0].is_authorized }}
+            {% if change_record.query_result[0].is_authorized %}
+            Authorized by: {{ change_record.query_result[0].authorized_by }}{% if change_record.query_result[0].change_ticket %}  ticket={{ change_record.query_result[0].change_ticket }}{% endif %}
+            {% endif %}
+          {% endif %}
+
+          {% if diff_result.total_changes == 0 %}
+          ✅ Host is IDENTICAL to baseline — no configuration drift detected.
+          {% else %}
+          ── CHANGES FROM BASELINE ─────────────────────────────────────────
+          {% for chg in diff_result.changes %}
+          [{{ chg.severity | upper }}] {{ chg.category }}
+            Path:    {{ chg.path }}
+            Type:    {{ chg.type | upper }}
+            {% if chg.was is not none %}
+            Was:     {{ chg.was }}
+            {% endif %}
+            {% if chg.now is not none %}
+            Now:     {{ chg.now }}
+            {% endif %}
+
+          {% endfor %}
+          {% if diff_result.truncated %}
+          ⚠ Output truncated — more than 200 changes detected.
+          {% endif %}
+          {% endif %}
+
+          ── NEXT STEPS ───────────────────────────────────────────────────
+          {% if diff_result.total_changes == 0 %}
+          Host matches baseline. No action required.
+          {% elif diff_result.security_changes > 0 %}
+          ⚠ Security-relevant changes detected.
+          1. Review changes above with security team
+          2. Authorize expected changes: Run 'AAC - Authorize Change'
+          3. Remediate unauthorized changes: Run 'AAC - Generate Remediation Playbook'
+          4. After remediation: Run 'AAC - Collect Facts' then re-compare
+          {% else %}
+          Non-security changes detected.
+          1. Review changes above
+          2. If all expected: Run 'AAC - Authorize Change' for each change ID
+          3. Consider updating baseline: Run 'AAC - Set Baseline' with new label
+          {% endif %}
+          ══════════════════════════════════════════════════════════════════
+
+    # ── Cleanup ───────────────────────────────────────────────────────────────
+
+    - name: Clean up temp files
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /tmp/aac_baseline_compare.py
+        - /tmp/aac_baseline_facts.json
+        - /tmp/aac_current_facts.json

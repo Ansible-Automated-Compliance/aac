@@ -1,0 +1,584 @@
+---
+# aac_daily_health_check.yml — AAC Daily State & Configuration Health Check
+#
+# Comprehensive daily check covering services, configuration, and data state.
+# Stores results to PostgreSQL for trending. Flags deviations from prior day.
+#
+# Checks:
+#   - OPA containers (3) — health + policy counts
+#   - Grafana — health + dashboard reachability
+#   - MCP server
+#   - Smart meter simulator containers (3)
+#   - PostgreSQL — row counts per framework, last assessment timestamps
+#   - AAP — gateway, controller, template count, credential count
+#   - EDA — activation count and status
+#   - EC2 lab — instance state and IPs (if lab inventory source configured)
+#
+# AAP Job Template: "AAC - Daily Health Check"
+# Schedule: Daily at 06:00 UTC
+# Execution Environment: AAC Compliance EE
+#
+# Topology-agnostic: this playbook consumes the canonical URL vars from
+# site_config.yml (opa_security_url, opa_compliance_url, opa_ot_url,
+# mcp_url, grafana_url, aap_url, pg_host) — NOT constructed from
+# {{ aac_host }}:port. Seeders / templates may override per-component
+# URLs via extra_vars when running on mac-aap / rhpds-aap.
+#
+# vault_secrets.yml dropped (gitignored, not present in synced project
+# on mac-aap). The two vault values this playbook needs (the AAP MCP
+# bearer token + the PG password) come in via extra_vars from the
+# seeder, which has access to the appropriate vault at seed time.
+
+- name: AAC Daily Health Check
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - ../vars/site_config.yml
+
+  vars:
+    pg_port: 5432
+    check_time: "{{ lookup('pipe', 'date +\"%Y-%m-%d %H:%M:%S UTC\"') }}"
+    check_date: "{{ lookup('pipe', 'date +\"%Y-%m-%d\"') }}"
+    # Defaults via shadow vars — naming them differently from the
+    # consumer-facing name avoids the Jinja recursion that bit us on
+    # Ansible 2.16+ when a vars-block entry self-referenced
+    # `key: "{{ key | default(x) }}"`. The consumer-facing names are
+    # whatever extra_vars/site_config provides; otherwise the shadow
+    # value below kicks in. Each use-site picks up the live value via
+    # `(var | default(shadow))`.
+    # _aap_token_default: <set via extra_vars / survey / inventory>
+    _compliance_db_password_default: "compliance"
+    # No default password. An unset grafana_admin_password must fail the
+    # check, not silently authenticate with a value baked into the repo.
+    # _grafana_admin_password_default: <set via extra_vars / survey / inventory>
+
+    # Baseline thresholds — flag if counts drop below these. These are floors for
+    # the DEFAULT (enabled_by_default) core set, not the full library: with
+    # load-on-demand, an environment only loads the frameworks its discovered
+    # technologies/goals enable. security = cis_rhel9 (~21); compliance = the
+    # enforcement/governance plumbing (~7). NO OT compliance framework is enabled
+    # by default, so OPA OT holds at most the crypto threat-detection module until
+    # OT tech (NERC-CIP, AMI, IEC 62443) is discovered — floor 0 covers an OT-free
+    # environment. Raise these per-environment if a fixed set is expected.
+    min_opa_security_policies: 10
+    min_opa_compliance_policies: 5
+    min_opa_ot_policies: 0
+    min_aap_templates: 20
+    min_pg_rows: 5
+
+  tasks:
+
+    # =========================================================================
+    # OPA CONTAINERS
+    # =========================================================================
+    - name: Check OPA Security (:8181)
+      uri:
+        use_proxy: false
+        url: "{{ opa_security_url }}/health"
+        method: GET
+        status_code: 200
+        timeout: 5
+      register: opa_security
+      ignore_errors: true
+
+    - name: Get OPA Security policy count
+      uri:
+        use_proxy: false
+        url: "{{ opa_security_url }}/v1/policies"
+        method: GET
+        status_code: 200
+        timeout: 5
+      register: opa_security_policies
+      ignore_errors: true
+      when: opa_security is succeeded
+
+    - name: Check OPA Compliance (:8182)
+      uri:
+        use_proxy: false
+        url: "{{ opa_compliance_url }}/health"
+        method: GET
+        status_code: 200
+        timeout: 5
+      register: opa_compliance
+      ignore_errors: true
+
+    - name: Get OPA Compliance policy count
+      uri:
+        use_proxy: false
+        url: "{{ opa_compliance_url }}/v1/policies"
+        method: GET
+        status_code: 200
+        timeout: 5
+      register: opa_compliance_policies
+      ignore_errors: true
+      when: opa_compliance is succeeded
+
+    - name: Check OPA OT (:8183)
+      uri:
+        use_proxy: false
+        url: "{{ opa_ot_url }}/health"
+        method: GET
+        status_code: 200
+        timeout: 5
+      register: opa_ot
+      ignore_errors: true
+
+    - name: Get OPA OT policy count
+      uri:
+        use_proxy: false
+        url: "{{ opa_ot_url }}/v1/policies"
+        method: GET
+        status_code: 200
+        timeout: 5
+      register: opa_ot_policies
+      ignore_errors: true
+      when: opa_ot is succeeded
+
+    # =========================================================================
+    # GRAFANA
+    # =========================================================================
+    - name: Check Grafana health (:3000)
+      uri:
+        use_proxy: false
+        url: "{{ grafana_url }}/api/health"
+        method: GET
+        status_code: 200
+        timeout: 5
+      register: grafana_health
+      ignore_errors: true
+
+    # The datasource is named `aac-compliance-db` (lowercase, hyphenated). This
+    # check previously queried "AAC Compliance DB" — a name that has not
+    # existed for some time — so it reported MISSING on every run while the
+    # datasource was present and working. A health check that cries wolf gets
+    # ignored, which is worse than not having it. Query by uid, which is
+    # stable across renames.
+    - name: Check Grafana datasource (aac-compliance-db)
+      uri:
+        use_proxy: false
+        url: "{{ grafana_url }}/api/datasources/uid/aac-compliance-db"
+        method: GET
+        headers:
+          Authorization: "Basic {{ ('admin:' + (grafana_admin_password | default((_grafana_admin_password_default | default('', true)), true))) | b64encode }}"
+        status_code: [200, 404]
+        timeout: 5
+      register: grafana_ds
+      ignore_errors: true
+
+    # =========================================================================
+    # MCP SERVER
+    # =========================================================================
+    - name: Check MCP server (:8004)
+      uri:
+        use_proxy: false
+        url: "{{ mcp_url }}/sse"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ aap_token | default((_aap_token_default | default('', true))) }}"
+        status_code: 200
+        timeout: 5
+        return_content: false
+      register: mcp_server
+      ignore_errors: true
+      no_log: true
+
+    # =========================================================================
+    # SMART METER SIMULATOR
+    # =========================================================================
+    - name: Check smart meter sim (:8085)
+      uri:
+        use_proxy: false
+        url: "{{ smart_meter_electric_url }}/api/health"
+        method: GET
+        status_code: 200
+        timeout: 5
+      register: smart_meter_1
+      ignore_errors: true
+
+    - name: Check smart meter sim (:8086)
+      uri:
+        use_proxy: false
+        url: "{{ smart_meter_gas_url }}/api/health"
+        method: GET
+        status_code: 200
+        timeout: 5
+      register: smart_meter_2
+      ignore_errors: true
+
+    - name: Check smart meter sim (:8087)
+      uri:
+        use_proxy: false
+        url: "{{ smart_meter_water_url }}/api/health"
+        method: GET
+        status_code: 200
+        timeout: 5
+      register: smart_meter_3
+      ignore_errors: true
+
+    # =========================================================================
+    # POSTGRESQL — connection, row counts, last assessments
+    # =========================================================================
+    - name: Query PostgreSQL compliance state
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port }}"
+        login_user: postgres
+        login_password: "{{ compliance_db_password | default(_compliance_db_password_default) }}"
+        login_db: compliance
+        query: >-
+          SELECT
+            COUNT(*) AS total_rows,
+            COUNT(DISTINCT hostname) AS distinct_hosts,
+            COUNT(DISTINCT framework) AS distinct_frameworks,
+            MAX(evaluation_timestamp) AS last_assessment,
+            SUM(CASE WHEN evaluation_timestamp > NOW() - INTERVAL '24 hours' THEN 1 ELSE 0 END) AS rows_last_24h
+          FROM compliance_results
+      register: pg_summary
+      ignore_errors: true
+      no_log: true
+
+    # A health check that hides WHY it failed is not a health check.
+    #
+    # `no_log: true` above is right -- the task carries the database password --
+    # but it censors the RESULT as well, so a connection or auth failure printed
+    # nothing actionable and the run just asserted "PostgreSQL DOWN" against a
+    # database that was verifiably up. Diagnosing it meant editing this
+    # playbook, which is exactly what a health check should spare you.
+    #
+    # `no_log` censors the callback DISPLAY, not the registered variable, so the
+    # real message is still available here. Print only `.msg`, and redact the
+    # password in case the driver echoed the connection string back.
+    - name: Surface why the PostgreSQL query failed
+      vars:
+        _pg_pw: "{{ compliance_db_password | default(_compliance_db_password_default) }}"
+      ansible.builtin.debug:
+        msg: >-
+          PostgreSQL check FAILED — host={{ pg_host }} port={{ pg_port }}
+          user=postgres db=compliance —
+          {{ (pg_summary.msg | default('no message returned'))
+             | replace(_pg_pw, '<redacted>') }}
+      when: pg_summary is failed
+
+    - name: Query per-framework row counts
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port }}"
+        login_user: postgres
+        login_password: "{{ compliance_db_password | default(_compliance_db_password_default) }}"
+        login_db: compliance
+        query: >-
+          SELECT framework,
+                 COUNT(*) AS rows,
+                 ROUND(AVG(compliance_percentage)::numeric, 1) AS avg_pct,
+                 MAX(evaluation_timestamp) AS last_run
+          FROM compliance_results
+          GROUP BY framework
+          ORDER BY last_run DESC
+          LIMIT 20
+      register: pg_frameworks
+      ignore_errors: true
+      no_log: true
+
+    # =========================================================================
+    # AAP — gateway, controller, template/credential counts
+    # =========================================================================
+    - name: Check AAP Gateway
+      uri:
+        use_proxy: false
+        url: "{{ aap_url }}/api/gateway/v1/ping/"
+        method: GET
+        status_code: 200
+        validate_certs: false
+        timeout: 10
+      register: aap_gateway
+      ignore_errors: true
+
+    - name: Check AAP Controller
+      uri:
+        use_proxy: false
+        url: "{{ aap_url }}/api/controller/v2/ping/"
+        method: GET
+        status_code: 200
+        validate_certs: false
+        timeout: 10
+      register: aap_controller
+      ignore_errors: true
+
+    - name: Count AAP job templates
+      uri:
+        use_proxy: false
+        url: "{{ aap_url }}/api/controller/v2/job_templates/?page_size=1"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ aap_token | default((_aap_token_default | default('', true))) }}"
+        status_code: 200
+        validate_certs: false
+        timeout: 10
+      register: aap_templates
+      ignore_errors: true
+      no_log: true
+
+    - name: Count AAP credentials
+      uri:
+        use_proxy: false
+        url: "{{ aap_url }}/api/controller/v2/credentials/?page_size=1"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ aap_token | default((_aap_token_default | default('', true))) }}"
+        status_code: 200
+        validate_certs: false
+        timeout: 10
+      register: aap_credentials
+      ignore_errors: true
+      no_log: true
+
+    - name: Count AAP inventories and hosts
+      uri:
+        use_proxy: false
+        url: "{{ aap_url }}/api/controller/v2/hosts/?page_size=1"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ aap_token | default((_aap_token_default | default('', true))) }}"
+        status_code: 200
+        validate_certs: false
+        timeout: 10
+      register: aap_hosts
+      ignore_errors: true
+      no_log: true
+
+    # =========================================================================
+    # EDA — activation count
+    # =========================================================================
+    - name: Count running EDA activations
+      uri:
+        use_proxy: false
+        url: "{{ aap_url }}/api/eda/v1/activations/?status=running&page_size=1"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ aap_token | default((_aap_token_default | default('', true))) }}"
+        status_code: [200, 404]
+        validate_certs: false
+        timeout: 10
+      register: eda_activations
+      ignore_errors: true
+      no_log: true
+
+    # =========================================================================
+    # EC2 LAB — instance state via AAP inventory
+    # =========================================================================
+    - name: Get EC2 lab host state from AAP inventory
+      uri:
+        use_proxy: false
+        url: "{{ aap_url }}/api/controller/v2/hosts/?inventory=2&page_size=50"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ aap_token | default((_aap_token_default | default('', true))) }}"
+        status_code: 200
+        validate_certs: false
+        timeout: 10
+      register: ec2_hosts
+      ignore_errors: true
+      no_log: true
+
+    # =========================================================================
+    # DERIVE COMPUTED STATE
+    # =========================================================================
+    - name: Set derived state facts
+      set_fact:
+        opa_sec_count: >-
+          {{ opa_security_policies.json.result | length
+             if (opa_security_policies is defined and opa_security_policies is succeeded)
+             else 0 }}
+        opa_comp_count: >-
+          {{ opa_compliance_policies.json.result | length
+             if (opa_compliance_policies is defined and opa_compliance_policies is succeeded)
+             else 0 }}
+        opa_ot_count: >-
+          {{ opa_ot_policies.json.result | length
+             if (opa_ot_policies is defined and opa_ot_policies is succeeded)
+             else 0 }}
+        pg_total_rows: >-
+          {{ pg_summary.query_result[0].total_rows | int
+             if pg_summary is succeeded else 0 }}
+        pg_distinct_hosts: >-
+          {{ pg_summary.query_result[0].distinct_hosts | int
+             if pg_summary is succeeded else 0 }}
+        pg_distinct_frameworks: >-
+          {{ pg_summary.query_result[0].distinct_frameworks | int
+             if pg_summary is succeeded else 0 }}
+        pg_last_assessment: >-
+          {{ pg_summary.query_result[0].last_assessment | default('never')
+             if pg_summary is succeeded else 'unknown' }}
+        pg_rows_24h: >-
+          {{ pg_summary.query_result[0].rows_last_24h | int
+             if pg_summary is succeeded else 0 }}
+        aap_template_count: >-
+          {{ aap_templates.json.count | int
+             if (aap_templates is succeeded) else 0 }}
+        aap_credential_count: >-
+          {{ aap_credentials.json.count | int
+             if (aap_credentials is succeeded) else 0 }}
+        aap_host_count: >-
+          {{ aap_hosts.json.count | int
+             if (aap_hosts is succeeded) else 0 }}
+        eda_running_count: >-
+          {{ eda_activations.json.count | int
+             if (eda_activations is succeeded and eda_activations.status == 200) else 0 }}
+        grafana_db_ok: >-
+          {{ grafana_ds is succeeded and grafana_ds.status == 200 }}
+        ec2_host_list: >-
+          {{ ec2_hosts.json.results | selectattr('name', 'match', 'compliance-lab-.*')
+             | list if (ec2_hosts is succeeded) else [] }}
+
+    # =========================================================================
+    # COLLECT WARNINGS (deviations from expected state)
+    # =========================================================================
+    - name: Collect health warnings
+      set_fact:
+        health_warnings: >-
+          {{
+            (['OPA Security (:8181) DOWN'] if opa_security is failed else []) +
+            (['OPA Compliance (:8182) DOWN'] if opa_compliance is failed else []) +
+            (['OPA OT (:8183) DOWN'] if opa_ot is failed else []) +
+            (['OPA Security policies LOW (' + opa_sec_count | string + ' < ' + min_opa_security_policies | string + ')']
+               if (opa_security is succeeded and opa_sec_count | int < min_opa_security_policies | int) else []) +
+            (['OPA Compliance policies LOW (' + opa_comp_count | string + ' < ' + min_opa_compliance_policies | string + ')']
+               if (opa_compliance is succeeded and opa_comp_count | int < min_opa_compliance_policies | int) else []) +
+            (['OPA OT policies LOW (' + opa_ot_count | string + ' < ' + min_opa_ot_policies | string + ')']
+               if (opa_ot is succeeded and opa_ot_count | int < min_opa_ot_policies | int) else []) +
+            (['Grafana (:3000) DOWN'] if grafana_health is failed else []) +
+            (['Grafana datasource aac-compliance-db MISSING'] if not (grafana_db_ok | bool) else []) +
+            (['MCP Server (:8004) DOWN'] if mcp_server is failed else []) +
+            (['PostgreSQL DOWN'] if pg_summary is failed else []) +
+            (['PostgreSQL row count LOW (' + pg_total_rows | string + ')']
+               if (pg_summary is succeeded and pg_total_rows | int < min_pg_rows | int) else []) +
+            (['NO compliance assessments in last 24h'] if (pg_summary is succeeded and pg_rows_24h | int == 0) else []) +
+            (['AAP Gateway DOWN'] if aap_gateway is failed else []) +
+            (['AAP Controller DOWN'] if aap_controller is failed else []) +
+            (['AAP template count LOW (' + aap_template_count | string + ' < ' + min_aap_templates | string + ')']
+               if (aap_templates is succeeded and aap_template_count | int < min_aap_templates | int) else []) +
+            (['EDA: no activations running'] if (eda_activations is succeeded and eda_running_count | int == 0) else [])
+          }}
+
+    # =========================================================================
+    # PRINT REPORT
+    # =========================================================================
+    - name: Print daily health report
+      debug:
+        msg:
+          - ""
+          - "╔══════════════════════════════════════════════════════════════╗"
+          - "║        AAC Daily Health Check — {{ check_date }}            ║"
+          - "║        {{ check_time }}                        ║"
+          - "╚══════════════════════════════════════════════════════════════╝"
+          - ""
+          - "━━━ OPA Policy Engine ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "  {{ '✅' if opa_security is succeeded else '❌' }} OPA Security   (:8181) — {{ opa_sec_count }} policies loaded"
+          - "  {{ '✅' if opa_compliance is succeeded else '❌' }} OPA Compliance (:8182) — {{ opa_comp_count }} policies loaded"
+          - "  {{ '✅' if opa_ot is succeeded else '❌' }} OPA OT         (:8183) — {{ opa_ot_count }} policies loaded"
+          - ""
+          - "━━━ Grafana & Dashboards ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "  {{ '✅' if grafana_health is succeeded else '❌' }} Grafana (:3000) — {{ grafana_health.json.database | default('?') if grafana_health is succeeded else 'unreachable' }}"
+          - "  {{ '✅' if grafana_db_ok | bool else '❌' }} Datasource aac-compliance-db"
+          - ""
+          - "━━━ Infrastructure Services ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "  {{ '✅' if mcp_server is succeeded else '❌' }} MCP Server (:8004)"
+          - "  {{ '✅' if smart_meter_1 is succeeded else '⚠️' }} Smart Meter Sim (:8085)"
+          - "  {{ '✅' if smart_meter_2 is succeeded else '⚠️' }} Smart Meter Sim (:8086)"
+          - "  {{ '✅' if smart_meter_3 is succeeded else '⚠️' }} Smart Meter Sim (:8087)"
+          - ""
+          - "━━━ PostgreSQL Compliance Database ━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "  {{ '✅' if pg_summary is succeeded else '❌' }} PostgreSQL (:5432)"
+          - "  {% if pg_summary is succeeded %}Total rows: {{ pg_total_rows }} | Hosts: {{ pg_distinct_hosts }} | Frameworks: {{ pg_distinct_frameworks }}{% endif %}"
+          - "  {% if pg_summary is succeeded %}Last assessment: {{ pg_last_assessment }} | Last 24h: {{ pg_rows_24h }} new rows{% endif %}"
+          - ""
+          - "━━━ Per-Framework Coverage ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "{% if pg_frameworks is succeeded %}{% for row in pg_frameworks.query_result %}  {{ '%-30s' | format(row.framework) }} {{ '%4s' | format(row.rows | string) }} rows  avg {{ row.avg_pct }}%  last: {{ row.last_run | regex_replace('\\.[0-9]+', '') }}
+{% endfor %}{% else %}  ❌ Unable to query framework coverage{% endif %}"
+          - ""
+          - "━━━ AAP Platform ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "  {{ '✅' if aap_gateway is succeeded else '❌' }} Gateway"
+          - "  {{ '✅' if aap_controller is succeeded else '❌' }} Controller{% if aap_controller is succeeded %} — v{{ aap_controller.json.version }}{% endif %}"
+          - "  {% if aap_templates is succeeded %}Templates: {{ aap_template_count }} | Credentials: {{ aap_credential_count }} | Hosts: {{ aap_host_count }}{% endif %}"
+          - "  EDA activations running: {{ eda_running_count }}"
+          - ""
+          - "━━━ EC2 Lab Instances ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "{% if ec2_host_list | length > 0 %}{% for h in ec2_host_list %}  {{ '%-35s' | format(h.name) }} {{ (h.variables | from_json).get('ansible_host', 'no IP') }}
+{% endfor %}{% else %}  (no compliance-lab EC2 hosts in inventory — lab may be stopped){% endif %}"
+          - ""
+          - "━━━ Warnings ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "{% if health_warnings | length == 0 %}  🟢 All checks passed — AAC is healthy{% else %}{% for w in health_warnings %}  ⚠️  {{ w }}
+{% endfor %}{% endif %}"
+          - ""
+
+    # =========================================================================
+    # STORE DAILY SNAPSHOT TO POSTGRESQL
+    # =========================================================================
+    - name: Store daily health snapshot to PostgreSQL
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port }}"
+        # evidence write: the least-privilege writer when configured (docs/EVIDENCE_IMMUTABILITY.md)
+        login_user: "{{ aac_evidence_writer_user | default('postgres', true) }}"
+        login_password: >-
+          {{ compliance_writer_password
+             if (aac_evidence_writer_user | default('', true) | length > 0)
+             else (compliance_db_password | default(_compliance_db_password_default)) }}
+        login_db: compliance
+        query: >-
+          INSERT INTO compliance_results
+            (hostname, framework, policy_name, policy_version,
+             total_controls, passed_controls, failed_controls,
+             compliance_percentage, compliant, violations, metadata)
+          VALUES
+            ('aac-controller', 'aac_health', 'AAC Daily Health Check', '1.0',
+             %s, %s, %s, %s, %s,
+             %s::jsonb, %s::jsonb)
+        positional_args:
+          - "{{ health_warnings | length + 10 }}"
+          - "{{ 10 }}"
+          - "{{ health_warnings | length }}"
+          - "{{ ((10 - health_warnings | length) / 10 * 100) | round(1) }}"
+          - "{{ health_warnings | length == 0 }}"
+          - "{{ health_warnings | map('regex_replace', '^(.*)$', '{\"message\": \"\\1\", \"severity\": \"high\"}') | list | to_json }}"
+          - >-
+            {{ {
+              'check_date': check_date,
+              'opa_security_policies': opa_sec_count | int,
+              'opa_compliance_policies': opa_comp_count | int,
+              'opa_ot_policies': opa_ot_count | int,
+              'pg_total_rows': pg_total_rows | int,
+              'pg_distinct_hosts': pg_distinct_hosts | int,
+              'pg_distinct_frameworks': pg_distinct_frameworks | int,
+              'pg_rows_24h': pg_rows_24h | int,
+              'aap_templates': aap_template_count | int,
+              'aap_credentials': aap_credential_count | int,
+              'eda_running': eda_running_count | int,
+              'grafana_ok': grafana_health is succeeded,
+              'mcp_ok': mcp_server is succeeded,
+              'warnings': health_warnings
+            } | to_json }}
+      ignore_errors: true
+      no_log: true
+
+    # =========================================================================
+    # FAIL JOB IF CRITICAL SERVICES DOWN
+    # =========================================================================
+    - name: Identify critical failures (non-smart-meter)
+      set_fact:
+        critical_failures: >-
+          {{
+            (['OPA Security DOWN'] if opa_security is failed else []) +
+            (['OPA Compliance DOWN'] if opa_compliance is failed else []) +
+            (['OPA OT DOWN'] if opa_ot is failed else []) +
+            (['PostgreSQL DOWN'] if pg_summary is failed else []) +
+            (['AAP Gateway DOWN'] if aap_gateway is failed else []) +
+            (['AAP Controller DOWN'] if aap_controller is failed else [])
+          }}
+
+    - name: Fail job on critical service outage
+      fail:
+        msg: "CRITICAL: {{ critical_failures | length }} service(s) down — {{ critical_failures | join(', ') }}"
+      when: critical_failures | length > 0

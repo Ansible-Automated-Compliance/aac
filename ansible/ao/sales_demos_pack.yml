@@ -1,0 +1,140 @@
+---
+# ============================================================================
+# sales_demos_pack.yml — what AAC publishes to ynotbhatc/aac-pack, weekly.
+# ============================================================================
+# The sales demos platform (a separate team's) fetches public content at a
+# pinned tag and carries no token for anything else. The bridge
+# is the public, generated repository ynotbhatc/aac-pack (his choice,
+# 2026-10-08, sales.demos#841): scripts/export_sales_demos_pack.py assembles
+# the files listed here into a self-contained tree, and
+# ansible/playbooks/sync_sales_demos_pack.yml pushes that tree to aac-pack's
+# main and tags it vYYYY.MM.DD. sales.demos pins a tag (aac_pack_version)
+# and moves it when its maintainer wants to. The tree is GENERATED — nobody edits it
+# there; the source is here.
+#
+# WHAT GOES IN: only what the Compliance as Code phases on sales.demos#841
+# need, starting with the six Automation Orchestrator workflows (#867). Add
+# a file here when a job template on that platform needs it; never add
+# anything environment-specific. The exporter FAILS on lab identifiers,
+# customer names and secret-shaped strings, so a slip cannot ship.
+#
+# PATHS ARE PRESERVED RELATIVE TO THE PLAYBOOK. AAC playbooks read
+# ../vars/*.yml and ../files/*.sql relative to playbook_dir; the pack keeps
+# playbooks/, vars/ and files/ as siblings so those references resolve
+# unchanged. site_config.yml and vault_secrets.yml are deliberately absent:
+# every shipped playbook loads them OPTIONALLY (include_vars + first_found,
+# skip: true) and otherwise takes its values from the platform's extra vars
+# and credentials, failing with a clear message when a required one is
+# missing. A playbook that lists either file under vars_files cannot load
+# from the pack and must be converted before it is added here.
+# ============================================================================
+
+pack_version: 1
+# Informational: where the sync playbook publishes (its pack_repo default).
+destination_repo: ynotbhatc/aac-pack
+
+# Tranche 1: every AAP job and workflow template the six AO workflows name,
+# plus the Golden Image rollback-pause toggle the demo narrates.
+playbooks:
+  - ansible/playbooks/record_ai_decision.yml
+  - ansible/playbooks/identify_affected_components.yml
+  - ansible/playbooks/simulate_patch_lifecycle.yml
+  - ansible/playbooks/cip_008_incident_response.yml
+  - ansible/playbooks/golden_image_set_rollback_pause.yml
+  # The ONLY thing that seeds the synthetic demo CVE fixture. Exporting
+  # files/demo_cve_fixture.sql puts the file in the pack; it does not load it —
+  # the platform's installer replays schema.yml, and schema.yml never seeds
+  # data. Run this playbook (confirm_demo_seed=true) as an explicit demo-seed
+  # step before Identify Affected Components on a pack-only install.
+  - ansible/playbooks/seed_demo_cve_fixture.yml
+  # The Golden Image family, SSH shape (sales.demos#883 part 3 / Phase 5 on
+  # #841): the play runs ON the target with the inventory's machine
+  # credential and reads/writes the monitored file there; the database work
+  # stays on the controller. This is what a platform whose hardened RHEL 9
+  # targets are VMs needs. Capture Baseline seeds golden_image_baselines per
+  # hostname; Introduce Drift is the demo helper.
+  - ansible/playbooks/golden_image_check.yml
+  - ansible/playbooks/golden_image_rollback.yml
+  - ansible/playbooks/golden_image_notify_helpdesk.yml
+  - ansible/playbooks/golden_image_store_evidence.yml
+  - ansible/playbooks/current_state_query.yml
+  - ansible/playbooks/golden_image_capture_baseline.yml
+  - ansible/playbooks/golden_image_introduce_drift.yml
+  # All five golden-image / current-state jobs the AO workflows call now have
+  # product playbooks: AAC_GoldenImage_Check, _Rollback, _NotifyHelpDesk,
+  # _StoreEvidence and AAC_CurrentState_Query. NotifyHelpDesk, StoreEvidence and
+  # CurrentState_Query are database-only (they never SSH to the target).
+  # The lab's container-shape variants (*_macaap.yml) are not product content;
+  # they live in aac-demos (demos/lab-crc/mac-aap/playbooks/) since 2026-10-17.
+
+# site_config.yml is gitignored by design (the lab's values). Every playbook
+# above loads it optionally and falls back to extra_vars when it is absent,
+# which is how a project checkout runs them. Only the neutral fallback ships.
+vars:
+  - ansible/vars/empty_fallback.yml
+
+# Files whose suffix is not a text type the exporter can scrub are refused
+# unless their DESTINATION path is listed here; listed files are still
+# scanned byte-wise for the forbidden patterns. LICENSE has no suffix.
+allowed_binary:
+  - LICENSE
+
+# Referenced by the playbooks above (the exporter also follows ../files and
+# ../vars references it finds and reports anything it could not).
+files:
+  # Every file the role's schema.yml applies (sales.demos fetches them by
+  # basename from files/ when it renders the schema), plus the labelled demo
+  # CVE fixture (synthetic CVE-2026-9xxxx ids, source='demo_seed'; never real
+  # data) that seed_demo_cve_fixture.yml above applies on request.
+  - ansible/files/ai_action_log_schema.sql
+  # Append-only guard, hash chain and maintenance log for the two evidence
+  # tables (docs/EVIDENCE_IMMUTABILITY.md); schema.yml applies it, so the
+  # platform replay needs it in the pack.
+  - ansible/files/evidence_append_only.sql
+  - ansible/files/inventory_catalog_schema.sql
+  - ansible/files/cve_cache_schema.sql
+  - ansible/files/patch_worklist_schema.sql
+  - ansible/files/patch_closure_schema.sql
+  - ansible/files/support_status_schema.sql
+  - ansible/files/patch_risk_schema.sql
+  - ansible/files/golden_image_schema.sql
+  - ansible/files/patch_change_schema.sql
+  - ansible/files/demo_cve_fixture.sql
+
+trees:
+  - {src: ansible/opa-routing/policies, dest: opa-routing/policies}
+  # The evidence schema, as the product applies it: the role's schema task
+  # (the core tables inline plus the files/*.sql it applies — 30+ tables and
+  # views, all IF NOT EXISTS) and its defaults. The platform's
+  # install_aac_db.yml includes it with tasks_from: schema.yml against the
+  # `aac` database in policy-db; container.yml and systemd.yml ride along but
+  # are never included there (Phase 2 on sales.demos#841, #869).
+  - {src: ansible/roles/aac_compliance_db, dest: roles/aac_compliance_db}
+  - {src: ansible/ao/workflows, dest: ao/workflows}
+  - {src: grafana/dashboards, dest: grafana}
+
+extra_files:
+  - {src: ansible/ao/components.yml, dest: ao/components.yml}
+  - {src: ansible/opa-routing/README.md, dest: opa-routing/README.md}
+  # The public repository is the pack and nothing else, so its licence
+  # ships from here too (same Apache-2.0 text as this repository).
+  - {src: LICENSE, dest: LICENSE}
+
+# Applied to every text file, in order. Empty on purpose: nothing shipped
+# should need rewriting, and the forbidden sweep below proves it.
+rewrites: []
+
+# Any match anywhere in the pack fails the export (exit 2) — copied files and
+# the generated MANIFEST.yml / README.md alike. Lab identifiers, secret
+# shapes, and names that never belong in a public repository.
+forbidden_patterns:
+  - '192\.168\.'
+  - 'apps-crc\.testing'
+  - 'redhat123'
+  - 'ghp_[A-Za-z0-9]{20,}'
+  - 'AKIA[0-9A-Z]{16}'
+  - 'sha256~[A-Za-z0-9_-]{20,}'
+  - 'BEGIN [A-Z ]*PRIVATE[ ]KEY-----'
+  - '(?i)\bboeing\b'
+  - '(?i)southern california edison'
+  - '(?i)\bnetflix\b'

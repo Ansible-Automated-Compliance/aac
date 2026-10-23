@@ -1,0 +1,157 @@
+---
+# Store Compliance Facts in PostgreSQL
+# This playbook stores collected system facts in the compliance database
+# for historical tracking and trending analysis
+
+- name: Store Compliance Facts in PostgreSQL
+  hosts: localhost
+  gather_facts: no
+  connection: local
+
+  vars_files:
+    - ../vars/site_config.yml
+    - [ "../vars/vault_secrets.yml", "../vars/empty_fallback.yml" ]
+
+  vars:
+    # Input variables (passed from previous job or environment)
+    facts_file: "{{ report_dir | default('/home/' + aap_ssh_user + '/compliance/reports') }}/{{ inventory_hostname }}_facts_{{ timestamp }}.json"
+    report_dir: "/home/{{ aap_ssh_user }}/compliance/reports"
+
+  tasks:
+    - name: Verify facts file exists
+      stat:
+        path: "{{ facts_file }}"
+      register: facts_stat
+      failed_when: not facts_stat.stat.exists
+
+    - name: Load facts from JSON file
+      slurp:
+        src: "{{ facts_file }}"
+      register: facts_content
+
+    - name: Parse facts JSON
+      set_fact:
+        facts_data: "{{ facts_content.content | b64decode | from_json }}"
+
+    - name: Extract system metadata
+      set_fact:
+        hostname: "{{ facts_data.ansible_facts.ansible_hostname | default('unknown') }}"
+        platform: "{{ facts_data.ansible_facts.ansible_distribution | default('unknown') }}-{{ facts_data.ansible_facts.ansible_distribution_major_version | default('0') }}"
+        facts_version: "1.0"
+
+    - name: Generate facts checksum
+      set_fact:
+        facts_checksum: "{{ facts_data | to_json | hash('sha256') }}"
+
+    - name: Prepare facts JSON for PostgreSQL (escape quotes)
+      set_fact:
+        facts_json_escaped: "{{ facts_data | to_json | regex_replace(\"'\", \"''\") }}"
+
+    - name: Insert or update system record in PostgreSQL
+      shell: |
+        podman exec postgresql psql -U postgres -d compliance_automation -c "
+        INSERT INTO systems (
+          hostname,
+          ip_address,
+          os_family,
+          os_distribution,
+          os_version,
+          os_architecture,
+          environment,
+          last_seen
+        ) VALUES (
+          '{{ facts_data.ansible_facts.ansible_hostname | default('unknown') }}',
+          '{{ facts_data.ansible_facts.ansible_default_ipv4.address | default(null) }}'::inet,
+          '{{ facts_data.ansible_facts.ansible_os_family | default('unknown') }}',
+          '{{ facts_data.ansible_facts.ansible_distribution | default('unknown') }}',
+          '{{ facts_data.ansible_facts.ansible_distribution_version | default('unknown') }}',
+          '{{ facts_data.ansible_facts.ansible_architecture | default('unknown') }}',
+          'production',
+          NOW()
+        )
+        ON CONFLICT (hostname)
+        DO UPDATE SET
+          last_seen = NOW(),
+          updated_at = NOW(),
+          ip_address = EXCLUDED.ip_address,
+          os_version = EXCLUDED.os_version
+        RETURNING id;
+        "
+      register: system_insert_result
+      changed_when: true
+
+    - name: Extract system_id from SQL output
+      set_fact:
+        system_id: "{{ system_insert_result.stdout_lines[-2] | trim }}"
+
+    - name: Insert compliance facts into system_facts table
+      shell: |
+        podman exec postgresql psql -U postgres -d compliance_automation -c "
+        INSERT INTO system_facts (
+          system_id,
+          collection_date,
+          fact_set_type,
+          ansible_facts
+        ) VALUES (
+          {{ system_id }},
+          NOW(),
+          'enhanced',
+          '{{ facts_json_escaped }}'::jsonb
+        )
+        RETURNING id;
+        "
+      register: insert_result
+      changed_when: true
+
+    - name: Extract facts_id from SQL output
+      set_fact:
+        facts_id: "{{ insert_result.stdout_lines[-2] | trim }}"
+
+    - name: Display facts_id for next workflow step
+      debug:
+        msg: "Compliance facts stored with ID: {{ facts_id }}"
+
+    - name: Save facts_id and system_id to artifact for next workflow step
+      set_stats:
+        data:
+          facts_id: "{{ facts_id }}"
+          system_id: "{{ system_id }}"
+          hostname: "{{ hostname }}"
+          platform: "{{ platform }}"
+          facts_checksum: "{{ facts_checksum }}"
+        per_host: no
+
+    - name: Record audit trail
+      shell: |
+        podman exec postgresql psql -U postgres -d compliance_automation -c "
+        INSERT INTO audit_log (
+          event_timestamp,
+          event_type,
+          system_id,
+          event_description,
+          event_metadata,
+          triggered_by,
+          trigger_source,
+          status
+        ) VALUES (
+          NOW(),
+          'fact_collection_completed',
+          {{ system_id }},
+          'System facts collected and stored',
+          '{\"hostname\": \"{{ hostname }}\", \"platform\": \"{{ platform }}\", \"facts_id\": {{ facts_id }}, \"checksum\": \"{{ facts_checksum }}\"}'::jsonb,
+          '{{ lookup("env", "TOWER_USER_NAME") | default("ansible", true) }}',
+          'aap_workflow',
+          'success'
+        );
+        "
+      changed_when: true
+
+    - name: Summary
+      debug:
+        msg:
+          - "✓ Compliance facts stored successfully"
+          - "  System ID: {{ system_id }}"
+          - "  Facts ID: {{ facts_id }}"
+          - "  Hostname: {{ hostname }}"
+          - "  Platform: {{ platform }}"
+          - "  Checksum: {{ facts_checksum }}"

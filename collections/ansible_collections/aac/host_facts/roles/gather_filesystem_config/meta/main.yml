@@ -1,0 +1,21 @@
+---
+galaxy_info:
+  author: Tim Coulter & Claude
+  description: Gather filesystem configuration for CIS RHEL 9 compliance validation
+  company: Ansible Automated Compliance
+  license: Apache-2.0
+  min_ansible_version: "2.15"
+  platforms:
+    - name: EL
+      versions:
+        - 9
+  galaxy_tags:
+    - cis
+    - compliance
+    - filesystem
+    - partitions
+    - mount
+    - security
+    - rhel9
+
+dependencies: []

@@ -1,0 +1,133 @@
+---
+# aac_facts_collector/tasks/main.yml
+# Orchestrates all fact domain collection and assembles aac_core_facts
+
+- name: Detect OS family
+  set_fact:
+    aac_is_linux:   "{{ (ansible_os_family | default('unknown')) in ['RedHat', 'Debian', 'Suse', 'Archlinux'] }}"
+    aac_is_windows: "{{ (ansible_os_family | default('unknown')) == 'Windows' }}"
+    aac_is_rhel:    "{{ (ansible_os_family | default('unknown')) == 'RedHat' }}"
+    aac_is_debian:  "{{ (ansible_os_family | default('unknown')) == 'Debian' }}"
+
+# ── Detect if running on AWS ──────────────────────────────────────────────────
+- name: Check for AWS instance metadata
+  uri:
+    use_proxy: false
+    url: "http://169.254.169.254/latest/meta-data/instance-id"
+    timeout: 2
+    status_code: [200, -1]
+  register: aws_meta_check
+  failed_when: false
+  changed_when: false
+  when: aac_collect_aws_meta | bool
+
+- name: Set AWS detection flag
+  set_fact:
+    aac_on_aws: "{{ aws_meta_check.status | default(-1) == 200 }}"
+
+# ── Domain task includes ──────────────────────────────────────────────────────
+- include_tasks: linux_packages.yml
+  when: aac_is_linux | bool and aac_collect_packages | bool
+
+- include_tasks: linux_app_deps.yml
+  when: aac_is_linux | bool and aac_collect_app_deps | bool
+
+- include_tasks: linux_services.yml
+  when: aac_is_linux | bool and aac_collect_services | bool
+
+- include_tasks: linux_users.yml
+  when: aac_is_linux | bool and aac_collect_users | bool
+
+- include_tasks: linux_network.yml
+  when: aac_is_linux | bool and aac_collect_network | bool
+
+- include_tasks: linux_ssh.yml
+  when: aac_is_linux | bool and aac_collect_ssh | bool
+
+- include_tasks: linux_audit.yml
+  when: aac_is_linux | bool and aac_collect_audit | bool
+
+- include_tasks: linux_filesystem.yml
+  when: aac_is_linux | bool and aac_collect_filesystem | bool
+
+- include_tasks: linux_kernel.yml
+  when: aac_is_linux | bool and aac_collect_kernel | bool
+
+- include_tasks: linux_selinux.yml
+  when: aac_is_linux | bool and aac_collect_selinux | bool
+
+- include_tasks: linux_pam.yml
+  when: aac_is_linux | bool and aac_collect_pam | bool
+
+- include_tasks: linux_cron.yml
+  when: aac_is_linux | bool and aac_collect_cron | bool
+
+- include_tasks: linux_processes.yml
+  when: aac_is_linux | bool and aac_collect_processes | bool
+
+- include_tasks: linux_certificates.yml
+  when: aac_is_linux | bool and aac_collect_certificates | bool
+
+- include_tasks: aws_metadata.yml
+  when: aac_on_aws | default(false) | bool
+
+- include_tasks: windows_facts.yml
+  when: aac_is_windows | bool
+
+# ── Assemble the canonical aac_core_facts dict ────────────────────────────────
+- name: Assemble aac_core_facts
+  set_fact:
+    aac_core_facts:
+      schema_version: "{{ aac_facts_schema_version }}"
+      collected_at: "{{ ansible_date_time.iso8601 }}"
+      host:
+        hostname:       "{{ ansible_hostname }}"
+        fqdn:           "{{ ansible_fqdn }}"
+        ip_address:     "{{ ansible_default_ipv4.address | default('') }}"
+        os_family:      "{{ ansible_os_family }}"
+        distribution:   "{{ ansible_distribution }}"
+        version:        "{{ ansible_distribution_version }}"
+        major_version:  "{{ ansible_distribution_major_version }}"
+        kernel:         "{{ ansible_kernel }}"
+        architecture:   "{{ ansible_architecture }}"
+        uptime_seconds: "{{ ansible_uptime_seconds | default(0) }}"
+        virtualization: "{{ ansible_virtualization_type | default('unknown') }}"
+        memtotal_mb:    "{{ ansible_memtotal_mb | default(0) }}"
+        processor_cores: "{{ ansible_processor_cores | default(0) }}"
+      cloud:
+        provider:         "{{ 'aws' if aac_on_aws | default(false) else 'on_prem' }}"
+        instance_id:      "{{ aac_aws_instance_id | default('') }}"
+        instance_type:    "{{ aac_aws_instance_type | default('') }}"
+        region:           "{{ aac_aws_region | default('') }}"
+        availability_zone: "{{ aac_aws_az | default('') }}"
+        account_id:       "{{ aac_aws_account_id | default('') }}"
+        ami_id:           "{{ aac_aws_ami_id | default('') }}"
+        tags:             "{{ aac_aws_tags | default({}) }}"
+        vpc_id:           "{{ aac_aws_vpc_id | default('') }}"
+        subnet_id:        "{{ aac_aws_subnet_id | default('') }}"
+        security_groups:  "{{ aac_aws_security_groups | default([]) }}"
+        iam_role:         "{{ aac_aws_iam_role | default('') }}"
+      packages:       "{{ aac_packages | default({}) }}"
+      app_deps:       "{{ aac_app_deps | default({}) }}"
+      services:       "{{ aac_services | default({}) }}"
+      users:          "{{ aac_users | default({}) }}"
+      network:        "{{ aac_network | default({}) }}"
+      ssh:            "{{ aac_ssh | default({}) }}"
+      audit:          "{{ aac_audit | default({}) }}"
+      filesystem:     "{{ aac_filesystem | default({}) }}"
+      kernel:         "{{ aac_kernel | default({}) }}"
+      selinux:        "{{ aac_selinux | default({}) }}"
+      pam:            "{{ aac_pam | default({}) }}"
+      cron:           "{{ aac_cron | default({}) }}"
+      processes:      "{{ aac_processes | default({}) }}"
+      certificates:   "{{ aac_certificates | default({}) }}"
+      # Raw strings for OPA policies that parse config text directly
+      raw:
+        sshd_config:      "{{ aac_ssh.raw_config | default('') }}"
+        auditd_rules:     "{{ aac_audit.rules_raw | default('') }}"
+        pam_config:       "{{ aac_pam.raw_config | default('') }}"
+        sudoers:          "{{ aac_users.sudoers_raw | default('') }}"
+
+- name: Compute facts checksum
+  set_fact:
+    aac_facts_checksum: "{{ aac_core_facts | to_json | hash('sha256') }}"

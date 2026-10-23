@@ -1,0 +1,104 @@
+---
+# CAA smoke test: exercise the aac_store_certification role against the live
+# compliance DB and verify a row lands with the expected columns populated.
+#
+# Usage (AAP or CLI):
+#   ansible-playbook ansible/playbooks/caa_smoke_test.yml -e @ansible/vars/vault_secrets.yml
+#
+# Expected output: one new compliance_certifications row, cosign ECDSA-P256
+# signature present (signature_algorithm cosign-ecdsa-p256, signed_by
+# cosign-key-v1), input_hash present, policy_library_sha resolved, status
+# "non_compliant" (synthetic). Requires caa_signing_private_key in the vault.
+
+- name: CAA smoke test
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - ../vars/site_config.yml
+    - [ "../vars/vault_secrets.yml", "../vars/empty_fallback.yml" ]
+
+  tasks:
+    - name: Build synthetic OPA decision + input
+      set_fact:
+        _smoke_result:
+          compliant: false
+          total_controls: 10
+          passed: 7
+          violations:
+            - { control: "CIS_RHEL9_5_2_1", severity: "high",   message: "SSH PermitRootLogin enabled" }
+            - { control: "CIS_RHEL9_4_1_1", severity: "medium", message: "auditd not enabled" }
+            - { control: "CIS_RHEL9_1_1_2", severity: "low",    message: "/tmp not on separate partition" }
+        _smoke_input:
+          hostname: "smoke-test-host"
+          os: { distribution: "RedHat", version: "9.4" }
+          ssh: { PermitRootLogin: "yes" }
+
+    - name: Invoke aac_store_certification (cosign-signed CAA row)
+      include_role:
+        name: aac_store_certification
+      vars:
+        aac_caa_framework:          "cis_rhel9"
+        aac_caa_framework_version:  "v2.0.0"
+        aac_caa_scope:              "host"
+        aac_caa_scope_value:        "smoke-test-host"
+        aac_caa_result:             "{{ _smoke_result }}"
+        aac_caa_input:              "{{ _smoke_input }}"
+        aac_caa_violations:         "{{ _smoke_result.violations }}"
+        aac_caa_compliance_status:  "non_compliant"
+
+    - name: Show the inserted CAA row
+      community.postgresql.postgresql_query:
+        login_host:     "{{ pg_host }}"
+        login_port:     "{{ pg_port | default(5433) }}"
+        login_user:     "{{ pg_user | default('postgres') }}"
+        login_password: "{{ pg_password | default(compliance_db_password) }}"
+        login_db:             "{{ pg_db | default('compliance') }}"
+        query: |
+          SELECT certification_id,
+                 framework,
+                 framework_version,
+                 scope,
+                 scope_value,
+                 compliance_status,
+                 policy_library_sha,
+                 input_hash,
+                 encode(signature, 'hex') AS signature_hex,
+                 signature_algorithm,
+                 signed_by,
+                 severity_summary
+          FROM compliance_certifications
+          WHERE certification_id = %s::uuid
+        positional_args:
+          - "{{ aac_certification_id }}"
+      register: _caa_row
+
+    - name: Assert the row exists and has all required fields
+      assert:
+        that:
+          - _caa_row.query_result | length == 1
+          - _caa_row.query_result[0].framework == 'cis_rhel9'
+          - _caa_row.query_result[0].scope == 'host'
+          - _caa_row.query_result[0].scope_value == 'smoke-test-host'
+          - _caa_row.query_result[0].compliance_status == 'non_compliant'
+          - _caa_row.query_result[0].signature_algorithm == 'cosign-ecdsa-p256'
+          - _caa_row.query_result[0].signed_by == 'cosign-key-v1'
+          - _caa_row.query_result[0].input_hash | length == 64
+          # Cosign ECDSA-P256 signatures are ~70-72 bytes DER, so the hex is
+          # 140-144 chars. Assert a reasonable minimum non-empty length.
+          - _caa_row.query_result[0].signature_hex | length >= 128
+        fail_msg: "CAA row missing or malformed — see previous task output"
+        success_msg: "✅ CAA row written and verified"
+
+    - name: Print summary
+      debug:
+        msg:
+          - "certification_id:    {{ aac_certification_id }}"
+          - "framework:           {{ _caa_row.query_result[0].framework }} {{ _caa_row.query_result[0].framework_version }}"
+          - "scope:               {{ _caa_row.query_result[0].scope }} / {{ _caa_row.query_result[0].scope_value }}"
+          - "policy_library_sha:  {{ _caa_row.query_result[0].policy_library_sha }}"
+          - "input_hash:          {{ _caa_row.query_result[0].input_hash }}"
+          - "signature_algorithm: {{ _caa_row.query_result[0].signature_algorithm }}"
+          - "signature (sha256):  {{ _caa_row.query_result[0].signature_hex }}"
+          - "signed_by:           {{ _caa_row.query_result[0].signed_by }}"
+          - "severity_summary:    {{ _caa_row.query_result[0].severity_summary }}"

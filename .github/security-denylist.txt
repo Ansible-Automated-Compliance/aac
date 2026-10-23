@@ -1,0 +1,11 @@
+# Non-sensitive hygiene patterns — safe to commit. Extended-regex (ERE) syntax;
+# the scan runs `git grep -iE`, so case-insensitivity comes from the -i flag
+# (do NOT use inline (?i) — that's PCRE and errors under ERE).
+#
+# Customer-specific / engagement patterns are injected at scan time from the
+# CUSTOMER_DENYLIST Actions secret and are NEVER committed here: this file ships
+# to anyone who can read the repo, so a customer name in it would be the very
+# disclosure the scan exists to prevent.
+
+# Lab network identifiers are injected at scan time from the LAB_ADDRESSES
+# Actions secret (comma-separated), never committed here.

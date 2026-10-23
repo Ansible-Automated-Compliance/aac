@@ -1,0 +1,236 @@
+---
+# =============================================================================
+# AAC - Notify ServiceNow Compliance Violations
+#
+# Creates ServiceNow incidents or change requests from AAC compliance violations.
+# Designed to run after any compliance assessment to automatically open tickets
+# for critical violations that require remediation.
+#
+# Incident creation rules:
+#   - compliance_percentage < critical_pct  → P2 incident (Severity 2)
+#   - compliance_percentage < warning_pct   → P3 incident (Severity 3)
+#   - compliant = false, violations exist   → P4 incident per framework
+#
+# Idempotent: checks for existing open incidents before creating new ones.
+# Uses ServiceNow Table API (no additional plugins required).
+#
+# Survey variables:
+#   snow_instance      — ServiceNow instance (e.g. dev123456.service-now.com)
+#   snow_username      — ServiceNow API username
+#   snow_password      — ServiceNow API password
+#   framework          — Only create tickets for this framework (blank = all)
+#   critical_pct       — Critical threshold (default: 75)
+#   warning_pct        — Warning threshold (default: 90)
+#   assignment_group   — ServiceNow assignment group (default: IT Security)
+#   category           — ITSM category (default: Security)
+#
+# AAP Job Template: "AAC - Notify ServiceNow Violations"
+# Credentials: Ansible Vault (ID 8)
+# Inventory: Compliance Infrastructure (ID 4), limit: localhost
+# =============================================================================
+
+- name: Create ServiceNow Incidents from AAC Compliance Violations
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    # snow_instance: <set via extra_vars / survey / inventory>   # default ''
+    # snow_username: <set via extra_vars / survey / inventory>   # default ''
+    # snow_password: <set via extra_vars / survey / inventory>   # default ''
+    # framework: <set via extra_vars / survey>   # self-reference here recursed when unset; consumers default to ''
+    # critical_pct: <set via extra_vars / survey / inventory>   # default 75 | int
+    # warning_pct: <set via extra_vars / survey / inventory>   # default 90 | int
+    # assignment_group: <set via extra_vars / survey / inventory>   # default 'IT Security'
+    # category: <set via extra_vars / survey / inventory>   # default 'Security'
+    snow_api_base:    "https://{{ (snow_instance | default('', true)) }}/api/now"
+
+  vars_files:
+    - ../vars/site_config.yml
+
+  tasks:
+
+    - name: Fail if ServiceNow credentials not provided
+      fail:
+        msg: "snow_instance, snow_username, and snow_password are all required"
+      when: (snow_instance | default('', true)) | trim == '' or (snow_username | default('', true)) | trim == '' or (snow_password | default('', true)) | trim == ''
+
+    - name: Validate framework variable (alphanumeric + underscore only)
+      fail:
+        msg: >-
+          Invalid framework value '{{ framework }}' — must match ^[A-Za-z0-9_]*$
+          to prevent SQL injection. Leave blank to query all frameworks.
+      when:
+        - (framework | default('', true)) | trim != ''
+        - framework is not match('^[A-Za-z0-9_]+$')
+
+    # ── Fetch non-compliant results from PostgreSQL ───────────────────────────
+    - name: Get non-compliant results (all frameworks)
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_user: "postgres"
+        login_password: "{{ compliance_db_password }}"
+        login_db: compliance
+        query: |
+          SELECT DISTINCT ON (hostname, framework)
+              hostname, framework, compliance_percentage,
+              passed_controls, failed_controls, total_controls,
+              violations, policy_name, evaluation_timestamp
+          FROM compliance_results
+          WHERE compliant = false
+            AND hostname IS NOT NULL
+            AND framework IS NOT NULL
+          ORDER BY hostname, framework, evaluation_timestamp DESC
+      register: violation_rows_all
+      when: (framework | default('', true)) | trim == ''
+
+    - name: Get non-compliant results (single framework)
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_user: "postgres"
+        login_password: "{{ compliance_db_password }}"
+        login_db: compliance
+        query: |
+          SELECT DISTINCT ON (hostname, framework)
+              hostname, framework, compliance_percentage,
+              passed_controls, failed_controls, total_controls,
+              violations, policy_name, evaluation_timestamp
+          FROM compliance_results
+          WHERE compliant = false
+            AND hostname IS NOT NULL
+            AND framework = %(fw)s
+          ORDER BY hostname, framework, evaluation_timestamp DESC
+        named_args:
+          fw: "{{ framework }}"
+      register: violation_rows_filtered
+      when: (framework | default('', true)) | trim != ''
+
+    - name: Merge query results
+      set_fact:
+        violation_rows: >-
+          {{ violation_rows_all if (framework | default('', true)) | trim == ''
+             else violation_rows_filtered }}
+
+    - name: Show violation count
+      debug:
+        msg: >-
+          Found {{ violation_rows.rowcount }} non-compliant host/framework combinations
+          {{ '(framework: ' ~ framework ~ ')' if (framework | default('', true)) != '' else '' }}
+
+    - name: Skip if no violations
+      meta: end_play
+      when: violation_rows.rowcount == 0
+
+    # ── For each violation, check for existing open incident then create ──────
+    - name: Check for existing open incident in ServiceNow
+      uri:
+        use_proxy: false
+        # Query by cmdb_ci + framework custom field to stay per-host-per-framework idempotent.
+        # Using u_compliance_framework field (set on creation) rather than parsing short_description.
+        url: >-
+          {{ snow_api_base }}/table/incident?sysparm_query=
+          cmdb_ci={{ item.hostname | urlencode }}^
+          u_compliance_framework={{ item.framework | urlencode }}^
+          state!=6^state!=7
+          &sysparm_limit=1
+          &sysparm_fields=sys_id,number,state
+        method: GET
+        user: "{{ (snow_username | default('', true)) }}"
+        password: "{{ (snow_password | default('', true)) }}"
+        force_basic_auth: true
+        headers:
+          Accept: application/json
+        validate_certs: true
+        status_code: 200
+      loop: "{{ violation_rows.query_result }}"
+      loop_control:
+        label: "{{ item.hostname }}/{{ item.framework }}"
+      register: snow_existing
+      no_log: true
+
+    - name: Build violation details and create incidents
+      uri:
+        use_proxy: false
+        url: "{{ snow_api_base }}/table/incident"
+        method: POST
+        user: "{{ (snow_username | default('', true)) }}"
+        password: "{{ (snow_password | default('', true)) }}"
+        force_basic_auth: true
+        headers:
+          Accept: application/json
+          Content-Type: application/json
+        validate_certs: true
+        body_format: json
+        body:
+          short_description: >-
+            AAC Compliance Violation: {{ item.item.framework }} on {{ item.item.hostname }}
+            ({{ item.item.compliance_percentage }}%)
+          description: |
+            Ansible Automated Compliance (AAC) detected a compliance violation.
+
+            Host:       {{ item.item.hostname }}
+            Framework:  {{ item.item.framework }}
+            Score:      {{ item.item.compliance_percentage }}%
+            Controls:   {{ item.item.passed_controls }}/{{ item.item.total_controls }} passing
+            Violations: {{ item.item.failed_controls }} controls failing
+            Assessed:   {{ item.item.evaluation_timestamp }}
+            Policy:     {{ item.item.policy_name }}
+
+            Remediation: Launch AAP job template for {{ item.item.framework }} remediation.
+            Evidence:    Available in AAC compliance database.
+            Dashboard:   {{ grafana_url }} (Grafana)
+          urgency: >-
+            {{ '1' if item.item.compliance_percentage | float < (critical_pct | default(75, true)) | float
+               else ('2' if item.item.compliance_percentage | float < (warning_pct | default(90, true)) | float
+               else '3') }}
+          impact: >-
+            {{ '2' if item.item.compliance_percentage | float < (critical_pct | default(75, true)) | float else '3' }}
+          category: "{{ (category | default('Security', true)) }}"
+          assignment_group: "{{ (assignment_group | default('IT Security', true)) }}"
+          cmdb_ci: "{{ item.item.hostname }}"
+          u_compliance_framework: "{{ item.item.framework }}"
+          u_compliance_score: "{{ item.item.compliance_percentage }}"
+          u_aac_assessment_timestamp: "{{ item.item.evaluation_timestamp }}"
+        status_code: 201
+      loop: "{{ snow_existing.results }}"
+      loop_control:
+        label: "{{ item.item.hostname }}/{{ item.item.framework }}"
+      when:
+        - item.json.result | length == 0   # No existing open incident
+      register: snow_created
+      no_log: true
+
+    # ── Summary ───────────────────────────────────────────────────────────────
+    - name: Show created incidents
+      debug:
+        msg: >-
+          Created ServiceNow incident {{ item.json.result.number }}
+          for {{ item.item.item.hostname }}/{{ item.item.item.framework }}
+          ({{ item.item.item.compliance_percentage }}%)
+      loop: "{{ snow_created.results | default([]) }}"
+      loop_control:
+        label: "{{ item.item.item.hostname }}"
+      when:
+        - item.json is defined
+        - item.json.result is defined
+        - item.json.result.number is defined
+
+    - name: Show skipped (existing incidents)
+      debug:
+        msg: >-
+          Skipped {{ item.item.hostname }}/{{ item.item.framework }}
+          — existing incident already open
+      loop: "{{ snow_existing.results }}"
+      loop_control:
+        label: "{{ item.item.hostname }}"
+      when:
+        - item.json.result | length > 0
+
+    - name: Final summary
+      debug:
+        msg:
+          - "ServiceNow incident creation complete"
+          - "  Non-compliant systems: {{ violation_rows.rowcount }}"
+          - "  New incidents created: {{ snow_created.results | default([]) | selectattr('json.result.number', 'defined') | list | length }}"
+          - "  Skipped (existing):    {{ snow_existing.results | selectattr('json.result', 'truthy') | list | length }}"
+          - "  ServiceNow:            https://{{ (snow_instance | default('', true)) }}"

@@ -1,0 +1,116 @@
+---
+# aac_oscap_scan/tasks/main.yml
+# Faithful extraction of the scan half of openscap_assess.yml (#536):
+# require profile → verify scanner + content → oscap xccdf eval → fetch →
+# clean up the target. Read-only: exit code 2 (rules failed) is a normal
+# assessment outcome; only rc 1 (scanner error) fails the run.
+
+- name: Require a profile_id
+  ansible.builtin.assert:
+    that:
+      - profile_id is defined
+      - (profile_id | default('', true)) | length > 0
+    fail_msg: >-
+      profile_id is required, e.g.
+      profile_id=xccdf_org.ssgproject.content_profile_stig
+
+- name: Ensure the oscap scanner is present (captures its version too)
+  ansible.builtin.command: oscap --version
+  register: _oscap_ver
+  changed_when: false
+  # rc != 0 (incl. "command not found") fails here with a clear task name.
+  # If this fails: install openscap-scanner (+ scap-security-guide for SSG
+  # content) on the target. This role deliberately does not install it.
+
+# SSG datastream names follow the upstream product ids, which do NOT match
+# Ansible's distribution facts 1:1 — RHEL reports distribution "RedHat"
+# (→ ssg-rhel9), CentOS Stream ships as ssg-cs9, Oracle as ssg-ol9, and
+# Ubuntu keys on the full version with the dot stripped (ssg-ubuntu2204).
+# Discovered live: the previous regex only rewrote the long-form
+# "red hat enterprise linux", so RHEL 9 derived ssg-redhat9-ds.xml.
+# scap-security-guide ships no Amazon Linux content before AL2023 (and the
+# repo's Amazon assessment likewise rejects < 2023) — running al2023 content
+# against AL2 would record misleading findings, so refuse up front.
+- name: Reject Amazon Linux releases without SSG content
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['distribution_major_version'] is version('2023', '>=')
+    fail_msg: >-
+      Amazon Linux {{ ansible_facts['distribution_major_version'] }} has no
+      scap-security-guide datastream — only Amazon Linux 2023 and later are
+      supported for auto-detection. Pass datastream_path=<content> explicitly
+      if you have your own content for this release.
+  when:
+    - (datastream_path | default('', true)) | length == 0
+    - ansible_facts['distribution'] == 'Amazon'
+
+- name: Auto-detect the SSG datastream when none supplied
+  ansible.builtin.set_fact:
+    datastream_path: >-
+      /usr/share/xml/scap/ssg/content/ssg-{{
+        {'RedHat': 'rhel' ~ _major,
+         'CentOS': 'cs' ~ _major,
+         'OracleLinux': 'ol' ~ _major,
+         'Ubuntu': 'ubuntu' ~ (ansible_facts['distribution_version'] | replace('.', '')),
+         'Debian': 'debian' ~ _major,
+         'Amazon': 'al' ~ _major,
+         'Fedora': 'fedora'}[ansible_facts['distribution']]
+        | default('rhel' ~ _major) }}-ds.xml
+  vars:
+    _major: "{{ ansible_facts['distribution_major_version'] }}"
+  when: (datastream_path | default('', true)) | length == 0
+
+- name: Confirm the datastream exists on the target
+  ansible.builtin.stat:
+    path: "{{ (datastream_path | default('', true)) }}"
+  register: _ds_stat
+
+- name: Fail with a clear message if the datastream is missing
+  ansible.builtin.fail:
+    msg: >-
+      Datastream not found on {{ inventory_hostname }}: {{ (datastream_path | default('', true)) }}.
+      Install scap-security-guide, or pass datastream_path=<your DISA/tailored ds>.
+  when: not _ds_stat.stat.exists
+
+- name: Resolve result file paths for this run
+  ansible.builtin.set_fact:
+    _oscap_ts: "{{ lookup('pipe', 'date +%s') }}"
+
+- name: Bind target and fetched paths
+  ansible.builtin.set_fact:
+    _target_results: "{{ oscap_target_tmpdir }}/openscap-results-{{ inventory_hostname }}-{{ _oscap_ts }}.xml"
+    _fetched_results: "{{ oscap_fetch_dir }}/openscap-fetched-{{ inventory_hostname }}-{{ _oscap_ts }}.xml"
+
+- name: Run oscap xccdf eval
+  ansible.builtin.command:
+    argv: >-
+      {{
+        ['oscap', 'xccdf', 'eval', '--profile', profile_id]
+        + (['--tailoring-file', tailoring_path] if (tailoring_path | default('', true)) | length > 0 else [])
+        + ['--results', _target_results, datastream_path]
+      }}
+  register: _oscap_run
+  changed_when: false
+  # oscap exit codes: 0 = all rules passed, 2 = at least one rule failed
+  # (a normal finding, NOT an error), 1 = error. Only 1 (or other) is fatal —
+  # otherwise a missing datastream would masquerade as "0 findings".
+  failed_when: _oscap_run.rc not in [0, 2]
+
+- name: Fetch the XCCDF result XML to the execution environment
+  ansible.builtin.fetch:
+    src: "{{ _target_results }}"
+    dest: "{{ _fetched_results }}"
+    flat: true
+
+- name: Remove the result file from the target
+  ansible.builtin.file:
+    path: "{{ _target_results }}"
+    state: absent
+
+- name: Expose outputs for aac_oscap_ingest
+  ansible.builtin.set_fact:
+    oscap_results_file: "{{ _fetched_results }}"
+    oscap_version: >-
+      {{ _oscap_ver.stdout | regex_search('oscap\) ([0-9.]+)', '\1')
+         | default(['?'], true) | first }}
+    oscap_scan_rc: "{{ _oscap_run.rc }}"

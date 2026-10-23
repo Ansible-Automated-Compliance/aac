@@ -1,0 +1,62 @@
+---
+# linux_kernel.yml — Collect kernel parameter and module facts
+
+- name: Get security-relevant sysctl parameters
+  shell: |
+    for param in \
+      kernel.randomize_va_space \
+      kernel.dmesg_restrict \
+      kernel.kptr_restrict \
+      kernel.yama.ptrace_scope \
+      net.ipv4.ip_forward \
+      net.ipv4.conf.all.send_redirects \
+      net.ipv4.conf.default.send_redirects \
+      net.ipv4.conf.all.accept_redirects \
+      net.ipv4.conf.all.log_martians \
+      net.ipv4.tcp_syncookies \
+      net.ipv4.conf.all.rp_filter \
+      net.ipv6.conf.all.forwarding \
+      net.ipv6.conf.all.accept_redirects \
+      fs.protected_hardlinks \
+      fs.protected_symlinks \
+      fs.suid_dumpable; do
+      val=$(sysctl -n "$param" 2>/dev/null)
+      [ -n "$val" ] && echo "$param=$val"
+    done
+  register: sysctl_raw
+  changed_when: false
+  failed_when: false
+
+- name: Get loaded kernel modules
+  shell: lsmod 2>/dev/null | awk 'NR>1 {print $1}' | sort || echo ""
+  register: kernel_modules_raw
+  changed_when: false
+  failed_when: false
+
+- name: Check for unnecessary kernel modules
+  shell: |
+    for mod in cramfs freevxfs jffs2 hfs hfsplus squashfs udf vfat \
+               dccp sctp rds tipc usb-storage; do
+      if lsmod 2>/dev/null | grep -q "^${mod}\b"; then
+        echo "LOADED:$mod"
+      fi
+    done || echo ""
+  register: unnecessary_modules_raw
+  changed_when: false
+  failed_when: false
+
+- name: Set kernel facts
+  set_fact:
+    aac_kernel:
+      version:             "{{ ansible_kernel }}"
+      architecture:        "{{ ansible_architecture }}"
+      sysctl_raw:          "{{ sysctl_raw.stdout | default('') }}"
+      loaded_modules:      "{{ kernel_modules_raw.stdout_lines | default([]) }}"
+      unnecessary_modules: "{{ unnecessary_modules_raw.stdout_lines | default([]) | select | list }}"
+      # Parse key sysctl values for quick OPA access
+      aslr_enabled: >-
+        {{ sysctl_raw.stdout | regex_search('kernel.randomize_va_space=(\d)', '\1') | default([], true) | first | default('0') }}
+      ip_forwarding: >-
+        {{ sysctl_raw.stdout | regex_search('net.ipv4.ip_forward=(\d)', '\1') | default([], true) | first | default('0') }}
+      syncookies: >-
+        {{ sysctl_raw.stdout | regex_search('net.ipv4.tcp_syncookies=(\d)', '\1') | default([], true) | first | default('0') }}

@@ -1,0 +1,181 @@
+---
+# seed_github_traffic_schedule.yml
+#
+# Creates the "AAC - GitHub Traffic Report" job template in AAP with a
+# daily schedule at 06:00 UTC.
+#
+# Run once after initial deployment. Safe to re-run (idempotent).
+# AAP Job Template: "AAC - Seed GitHub Traffic Schedule"
+
+- name: Seed GitHub Traffic Report template and daily schedule
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - ../vars/site_config.yml
+
+  vars:
+    aap_api:   "{{ aap_url }}/api/controller/v2"
+    aap_token: "{{ aap_token }}"
+    aap_headers:
+      Authorization: "Bearer {{ aap_token }}"
+      Content-Type:  "application/json"
+
+    template_name: "AAC - GitHub Traffic Report"
+    schedule_name: "AAC - GitHub Traffic Report (Daily)"
+
+  tasks:
+
+    # ── Resolve AAP object IDs ────────────────────────────────────────────
+
+    - name: Look up project ID
+      uri:
+        use_proxy: false
+        url:     "{{ aap_api }}/projects/?name={{ aap_project_name | urlencode }}"
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+      register: project_lookup
+
+    - name: Look up inventory ID
+      uri:
+        use_proxy: false
+        url:     "{{ aap_api }}/inventories/?name={{ aap_inventory_name | urlencode }}"
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+      register: inventory_lookup
+
+    - name: Look up execution environment ID
+      uri:
+        use_proxy: false
+        url:     "{{ aap_api }}/execution_environments/?name={{ aap_ee_name | urlencode }}"
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+      register: ee_lookup
+
+    - name: Look up vault credential ID
+      uri:
+        use_proxy: false
+        url:     "{{ aap_api }}/credentials/?name={{ aap_vault_credential_name | urlencode }}"
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+      register: vault_cred_lookup
+
+    - name: Set resolved IDs
+      set_fact:
+        project_id:   "{{ project_lookup.json.results[0].id }}"
+        inventory_id: "{{ inventory_lookup.json.results[0].id }}"
+        ee_id:        "{{ ee_lookup.json.results[0].id }}"
+        vault_cred_id: "{{ vault_cred_lookup.json.results[0].id }}"
+
+    # ── Create or update job template ────────────────────────────────────
+
+    - name: Check if template already exists
+      uri:
+        use_proxy: false
+        url:     "{{ aap_api }}/job_templates/?name={{ template_name | urlencode }}"
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+      register: template_check
+
+    - name: Create or update job template
+      uri:
+        use_proxy: false
+        url: >-
+          {{ aap_api }}/job_templates/{{
+            template_check.json.results[0].id ~ '/'
+            if template_check.json.count > 0 else '' }}
+        method: "{{ 'PATCH' if template_check.json.count > 0 else 'POST' }}"
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+        body_format: json
+        body:
+          name:                    "{{ template_name }}"
+          description: >-
+            Fetches daily traffic stats (views, clones, referrers) from GitHub
+            for ynotbhatc/rego_policy_libraries and ansible-automated-compliance/aac.
+            Upserts into github_traffic and github_referrers tables in PostgreSQL
+            to build history beyond GitHub's 14-day window.
+            Prints a summary report showing all-time totals, last 14 days,
+            and top referrers. Requires vault_github_pat with repo scope.
+          job_type:                "run"
+          inventory:               "{{ inventory_id | int }}"
+          project:                 "{{ project_id | int }}"
+          playbook:                "ansible/playbooks/github_traffic_report.yml"
+          execution_environment:   "{{ ee_id | int }}"
+          ask_variables_on_launch: false
+          extra_vars:              "{}"
+        status_code: [200, 201]
+      register: template_result
+
+    - name: Set template ID
+      set_fact:
+        template_id: "{{ template_result.json.id }}"
+
+    - name: Attach vault credential to template
+      uri:
+        use_proxy: false
+        url:     "{{ aap_api }}/job_templates/{{ template_id }}/credentials/"
+        method:  POST
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+        body_format: json
+        body:
+          id: "{{ vault_cred_id | int }}"
+        status_code: [204, 400]   # 400 = already attached
+
+    # ── Create daily schedule ─────────────────────────────────────────────
+
+    - name: Check if schedule already exists
+      uri:
+        use_proxy: false
+        url:     "{{ aap_api }}/job_templates/{{ template_id }}/schedules/?name={{ schedule_name | urlencode }}"
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+      register: schedule_check
+
+    - name: Create daily schedule (06:00 UTC)
+      uri:
+        use_proxy: false
+        url:     "{{ aap_api }}/job_templates/{{ template_id }}/schedules/"
+        method:  POST
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+        body_format: json
+        body:
+          name:        "{{ schedule_name }}"
+          description: "Daily GitHub traffic capture — runs at 06:00 UTC"
+          enabled:     true
+          rrule:       "DTSTART:20260101T060000Z RRULE:FREQ=DAILY;INTERVAL=1"
+          extra_data:  {}
+        status_code: [200, 201]
+      register: schedule_result
+      when: schedule_check.json.count == 0
+
+    - name: Schedule already exists
+      debug:
+        msg: "Schedule '{{ schedule_name }}' already configured — no changes needed"
+      when: schedule_check.json.count > 0
+
+    # ── Summary ───────────────────────────────────────────────────────────
+
+    - name: "=== GitHub Traffic Schedule Ready ==="
+      debug:
+        msg:
+          - "GitHub traffic reporting is configured:"
+          - ""
+          - "  Template: {{ template_name }} (ID {{ template_id }})"
+          - "  Schedule: daily at 06:00 UTC"
+          - "  Repos:    ynotbhatc/rego_policy_libraries"
+          - "            ansible-automated-compliance/aac"
+          - ""
+          - "  PostgreSQL tables:"
+          - "    github_traffic   — daily views + clones (upserted)"
+          - "    github_referrers — top referrer snapshots"
+          - ""
+          - "  IMPORTANT: set vault_github_pat in vault_secrets.yml first:"
+          - "    ansible-vault edit ansible/vars/vault_secrets.yml --vault-password-file ~/.vault_pass"
+          - "    vault_github_pat: <your-pat-with-repo-scope>"
+          - ""
+          - "  Run it now to backfill the last 14 days:"
+          - "    AAP → Templates → AAC - GitHub Traffic Report → Launch"

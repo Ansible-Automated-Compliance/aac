@@ -1,0 +1,8 @@
+---
+# F1 risk config — generic fallback for any framework without its own config.
+# Scoring still works: findings with a severity are scored by severity +
+# blast radius; findings without severity get the neutral default criticality.
+framework: _default
+criticality:
+  "_default": 2
+elevators: []

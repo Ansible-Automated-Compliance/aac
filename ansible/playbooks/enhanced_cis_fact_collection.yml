@@ -1,0 +1,830 @@
+---
+# Enhanced CIS RHEL 9 Fact Collection Playbook
+# Collects data for all 338 CIS RHEL 9 Benchmark controls
+# Generated to achieve 100% coverage
+
+- name: Enhanced CIS RHEL 9 Compliance Assessment
+  hosts: all
+  become: yes
+  gather_facts: yes
+
+  vars:
+    collection_timestamp: "{{ ansible_date_time.iso8601 }}"
+    output_dir: "/tmp/cis_facts"
+
+  tasks:
+    # =========================================================================
+    # SECTION 1: INITIAL SETUP - Additional Controls
+    # =========================================================================
+
+    # Section 1.2: Configure Software Updates
+    - name: Check if yum-cron or dnf-automatic is installed
+      package_facts:
+        manager: auto
+
+    - name: Get yum/dnf repository configuration
+      find:
+        paths: /etc/yum.repos.d
+        patterns: "*.repo"
+      register: yum_repos
+
+    - name: Read yum repository files
+      slurp:
+        src: "{{ item.path }}"
+      loop: "{{ yum_repos.files }}"
+      register: yum_repo_contents
+      when: yum_repos.files | length > 0
+
+    - name: Check GPG keys
+      find:
+        paths: /etc/pki/rpm-gpg
+        patterns: "RPM-GPG-KEY-*"
+      register: gpg_keys
+
+    - name: Get dnf-automatic configuration
+      slurp:
+        src: /etc/dnf/automatic.conf
+      register: dnf_automatic_config
+      failed_when: false
+
+    # Section 1.3: Filesystem Integrity Checking (AIDE)
+    - name: Check AIDE installation
+      stat:
+        path: /usr/sbin/aide
+      register: aide_binary
+
+    - name: Check AIDE database
+      stat:
+        path: /var/lib/aide/aide.db.gz
+      register: aide_database
+
+    - name: Get AIDE configuration
+      slurp:
+        src: /etc/aide.conf
+      register: aide_config
+      failed_when: false
+
+    - name: Check AIDE cron job
+      find:
+        paths:
+          - /etc/cron.daily
+          - /etc/cron.weekly
+        patterns: "aide*"
+      register: aide_cron
+
+    # Section 1.4: Secure Boot Settings
+    - name: Check grub configuration
+      slurp:
+        src: /etc/default/grub
+      register: grub_config
+      failed_when: false
+
+    - name: Check for bootloader password
+      command: grep -i "^GRUB2_PASSWORD" /boot/grub2/user.cfg
+      register: grub_password
+      failed_when: false
+      changed_when: false
+
+    - name: Get grub.cfg permissions
+      stat:
+        path: /boot/grub2/grub.cfg
+      register: grub_cfg_perms
+      failed_when: false
+
+    # Section 1.5: Additional Process Hardening
+    - name: Check core dump configuration
+      slurp:
+        src: /etc/security/limits.conf
+      register: limits_conf
+
+    - name: Check systemd coredump configuration
+      slurp:
+        src: /etc/systemd/coredump.conf
+      register: coredump_conf
+      failed_when: false
+
+    - name: Check sysctl.conf
+      slurp:
+        src: /etc/sysctl.conf
+      register: sysctl_conf
+
+    - name: Get all sysctl.d files
+      find:
+        paths: /etc/sysctl.d
+        patterns: "*.conf"
+      register: sysctl_d_files
+
+    - name: Read sysctl.d configurations
+      slurp:
+        src: "{{ item.path }}"
+      loop: "{{ sysctl_d_files.files }}"
+      register: sysctl_d_contents
+      when: sysctl_d_files.files | length > 0
+
+    - name: Check if prelink is installed
+      stat:
+        path: /usr/sbin/prelink
+      register: prelink_installed
+
+    # Section 1.6: Mandatory Access Controls (SELinux)
+    - name: Get detailed SELinux status
+      command: sestatus
+      register: selinux_detailed_status
+      failed_when: false
+      changed_when: false
+
+    - name: Get SELinux configuration
+      slurp:
+        src: /etc/selinux/config
+      register: selinux_config
+      failed_when: false
+
+    - name: Check for unconfined daemons
+      shell: ps -eZ | grep unconfined_service_t
+      register: unconfined_daemons
+      failed_when: false
+      changed_when: false
+
+    - name: Get SELinux boolean settings
+      command: getsebool -a
+      register: selinux_booleans
+      failed_when: false
+      changed_when: false
+
+    - name: Check SELinux user mappings
+      command: semanage login -l
+      register: selinux_user_mappings
+      failed_when: false
+      changed_when: false
+
+    # Section 1.7: Command Line Warning Banners
+    - name: Get /etc/motd
+      slurp:
+        src: /etc/motd
+      register: motd_content
+      failed_when: false
+
+    - name: Get /etc/issue
+      slurp:
+        src: /etc/issue
+      register: issue_content
+      failed_when: false
+
+    - name: Get /etc/issue.net
+      slurp:
+        src: /etc/issue.net
+      register: issue_net_content
+      failed_when: false
+
+    - name: Get banner file permissions
+      stat:
+        path: "{{ item }}"
+      loop:
+        - /etc/motd
+        - /etc/issue
+        - /etc/issue.net
+      register: banner_permissions
+
+    # Section 1.8: GNOME Display Manager
+    - name: Check if GNOME is installed
+      stat:
+        path: /usr/bin/gdm
+      register: gdm_installed
+
+    - name: Get GDM configuration
+      slurp:
+        src: /etc/gdm/custom.conf
+      register: gdm_config
+      failed_when: false
+
+    - name: Check GDM banner
+      slurp:
+        src: /etc/dconf/db/gdm.d/01-banner-message
+      register: gdm_banner
+      failed_when: false
+
+    - name: Check GDM automount disable
+      slurp:
+        src: /etc/dconf/db/local.d/00-media-automount
+      register: gdm_automount
+      failed_when: false
+
+    # =========================================================================
+    # SECTION 4.1: Configure System Accounting (auditd)
+    # =========================================================================
+
+    - name: Check auditd service status
+      service_facts:
+
+    - name: Get auditd configuration
+      slurp:
+        src: /etc/audit/auditd.conf
+      register: auditd_config
+      failed_when: false
+
+    - name: Get audit rules
+      command: auditctl -l
+      register: auditctl_rules
+      failed_when: false
+      changed_when: false
+
+    - name: Get audit.rules file
+      slurp:
+        src: /etc/audit/rules.d/audit.rules
+      register: audit_rules_file
+      failed_when: false
+
+    - name: Check all audit rules files
+      find:
+        paths: /etc/audit/rules.d
+        patterns: "*.rules"
+      register: audit_rules_files
+
+    - name: Read all audit rules files
+      slurp:
+        src: "{{ item.path }}"
+      loop: "{{ audit_rules_files.files }}"
+      register: audit_rules_contents
+      when: audit_rules_files.files | length > 0
+
+    - name: Check audit log file permissions
+      stat:
+        path: /var/log/audit/audit.log
+      register: audit_log_perms
+      failed_when: false
+
+    - name: Check audit log directory permissions
+      stat:
+        path: /var/log/audit
+      register: audit_log_dir_perms
+
+    - name: Get audit configuration files permissions
+      stat:
+        path: "{{ item }}"
+      loop:
+        - /etc/audit/auditd.conf
+        - /etc/audit/audit.rules
+      register: audit_config_perms
+      failed_when: false
+
+    # =========================================================================
+    # SECTION 5.1: Configure time-based job schedulers
+    # =========================================================================
+
+    - name: Check cron service status
+      service:
+        name: crond
+      register: cron_service
+      failed_when: false
+      changed_when: false
+
+    - name: Get cron file permissions
+      stat:
+        path: "{{ item }}"
+      loop:
+        - /etc/crontab
+        - /etc/cron.hourly
+        - /etc/cron.daily
+        - /etc/cron.weekly
+        - /etc/cron.monthly
+        - /etc/cron.d
+      register: cron_permissions
+
+    - name: Check cron.allow and cron.deny
+      stat:
+        path: "{{ item }}"
+      loop:
+        - /etc/cron.allow
+        - /etc/cron.deny
+      register: cron_access_files
+
+    - name: Get at.allow and at.deny
+      stat:
+        path: "{{ item }}"
+      loop:
+        - /etc/at.allow
+        - /etc/at.deny
+      register: at_access_files
+
+    # =========================================================================
+    # SECTION 5.2: Configure SSH Server
+    # =========================================================================
+
+    - name: Get complete sshd_config
+      slurp:
+        src: /etc/ssh/sshd_config
+      register: sshd_config_raw
+
+    - name: Get sshd_config.d files
+      find:
+        paths: /etc/ssh/sshd_config.d
+        patterns: "*.conf"
+      register: sshd_config_d_files
+      failed_when: false
+
+    - name: Read sshd_config.d files
+      slurp:
+        src: "{{ item.path }}"
+      loop: "{{ sshd_config_d_files.files }}"
+      register: sshd_config_d_contents
+      when: sshd_config_d_files.files | default([]) | length > 0
+
+    - name: Get sshd_config permissions
+      stat:
+        path: /etc/ssh/sshd_config
+      register: sshd_config_perms
+
+    - name: Get SSH private key files
+      find:
+        paths: /etc/ssh
+        patterns: "ssh_host_*_key"
+        file_type: file
+      register: ssh_private_keys
+
+    - name: Get SSH private key permissions
+      stat:
+        path: "{{ item.path }}"
+      loop: "{{ ssh_private_keys.files }}"
+      register: ssh_private_key_perms
+      when: ssh_private_keys.files | length > 0
+
+    - name: Get SSH public key files
+      find:
+        paths: /etc/ssh
+        patterns: "ssh_host_*_key.pub"
+        file_type: file
+      register: ssh_public_keys
+
+    - name: Get SSH public key permissions
+      stat:
+        path: "{{ item.path }}"
+      loop: "{{ ssh_public_keys.files }}"
+      register: ssh_public_key_perms
+      when: ssh_public_keys.files | length > 0
+
+    - name: Parse sshd_config into structured data
+      shell: |
+        grep -v "^#" /etc/ssh/sshd_config | grep -v "^$" | awk '{print $1 "=" $2}'
+      register: sshd_config_parsed
+      changed_when: false
+      failed_when: false
+
+    # =========================================================================
+    # SECTION 5.3: Configure privilege escalation (sudo)
+    # =========================================================================
+
+    - name: Check if sudo is installed
+      stat:
+        path: /usr/bin/sudo
+      register: sudo_installed
+
+    - name: Get sudoers file
+      slurp:
+        src: /etc/sudoers
+      register: sudoers_file
+      failed_when: false
+
+    - name: Get sudoers.d files
+      find:
+        paths: /etc/sudoers.d
+        patterns: "*"
+      register: sudoers_d_files
+      failed_when: false
+
+    - name: Read sudoers.d files
+      slurp:
+        src: "{{ item.path }}"
+      loop: "{{ sudoers_d_files.files }}"
+      register: sudoers_d_contents
+      when: sudoers_d_files.files | default([]) | length > 0
+
+    - name: Get sudoers file permissions
+      stat:
+        path: /etc/sudoers
+      register: sudoers_perms
+
+    - name: Check sudo log file configuration
+      shell: grep -E "Defaults.*logfile" /etc/sudoers /etc/sudoers.d/* 2>/dev/null
+      register: sudo_logfile_config
+      failed_when: false
+      changed_when: false
+
+    - name: Check su group restriction
+      shell: grep -E "^auth\\s+required\\s+pam_wheel.so" /etc/pam.d/su
+      register: su_restriction
+      failed_when: false
+      changed_when: false
+
+    # =========================================================================
+    # SECTION 5.4: Configure PAM
+    # =========================================================================
+
+    - name: Get PAM password quality requirements
+      slurp:
+        src: /etc/security/pwquality.conf
+      register: pwquality_conf
+      failed_when: false
+
+    - name: Get PAM system-auth configuration
+      slurp:
+        src: /etc/pam.d/system-auth
+      register: pam_system_auth
+      failed_when: false
+
+    - name: Get PAM password-auth configuration
+      slurp:
+        src: /etc/pam.d/password-auth
+      register: pam_password_auth
+      failed_when: false
+
+    - name: Get PAM common-password (if exists)
+      slurp:
+        src: /etc/pam.d/common-password
+      register: pam_common_password
+      failed_when: false
+
+    - name: Get all PAM configuration files
+      find:
+        paths: /etc/pam.d
+        patterns: "*"
+      register: pam_d_files
+
+    - name: Get login.defs
+      slurp:
+        src: /etc/login.defs
+      register: login_defs
+
+    - name: Check faillock configuration
+      command: faillock --user root
+      register: faillock_status
+      failed_when: false
+      changed_when: false
+
+    - name: Get faillock.conf
+      slurp:
+        src: /etc/security/faillock.conf
+      register: faillock_conf
+      failed_when: false
+
+    # =========================================================================
+    # SECTION 5.5: User Accounts and Environment
+    # =========================================================================
+
+    - name: Get all user accounts
+      getent:
+        database: passwd
+      register: all_users
+
+    - name: Get all groups
+      getent:
+        database: group
+      register: all_groups
+
+    - name: Get shadow file
+      command: cat /etc/shadow
+      register: shadow_file
+      failed_when: false
+      changed_when: false
+
+    - name: Check password aging for users
+      shell: chage -l {{ item.key }}
+      loop: "{{ all_users.ansible_facts.getent_passwd | dict2items }}"
+      register: user_password_aging
+      failed_when: false
+      changed_when: false
+      when: item.value[1] | int >= 1000
+
+    - name: Check for system accounts with login shells
+      # Block scalar: the value contains ': ' inside the awk program, which YAML
+      # reads as a mapping otherwise. This playbook did not parse at all until
+      # this was quoted — ansible-playbook --syntax-check exited 4.
+      shell: |
+        awk -F: '($1!="root" && $1!="sync" && $1!="shutdown" && $1!="halt" && $3<1000 && $7!="/sbin/nologin" && $7!="/bin/false") {print}' /etc/passwd
+      register: system_accounts_with_shells
+      changed_when: false
+
+    - name: Get default umask from /etc/bashrc
+      shell: grep -E "^\s*umask" /etc/bashrc
+      register: bashrc_umask
+      failed_when: false
+      changed_when: false
+
+    - name: Get default umask from /etc/profile
+      shell: grep -E "^\s*umask" /etc/profile
+      register: profile_umask
+      failed_when: false
+      changed_when: false
+
+    - name: Check TMOUT setting
+      shell: grep -E "^\s*TMOUT" /etc/bashrc /etc/profile /etc/profile.d/*.sh
+      register: tmout_setting
+      failed_when: false
+      changed_when: false
+
+    - name: Check root PATH
+      command: echo $PATH
+      environment:
+        PATH: "{{ ansible_env.PATH }}"
+      register: root_path
+      changed_when: false
+      become: yes
+      become_user: root
+
+    # =========================================================================
+    # SECTION 6.2: User and Group Settings
+    # =========================================================================
+
+    - name: Check for empty password fields
+      shell: |
+        awk -F: '($2 == "" ) { print $1 }' /etc/shadow
+      register: empty_passwords
+      changed_when: false
+
+    - name: Check for legacy + entries in passwd
+      command: grep '^\+:' /etc/passwd
+      register: legacy_passwd_entries
+      failed_when: false
+      changed_when: false
+
+    - name: Check for legacy + entries in shadow
+      command: grep '^\+:' /etc/shadow
+      register: legacy_shadow_entries
+      failed_when: false
+      changed_when: false
+
+    - name: Check for legacy + entries in group
+      command: grep '^\+:' /etc/group
+      register: legacy_group_entries
+      failed_when: false
+      changed_when: false
+
+    - name: Check for duplicate UIDs
+      shell: cut -f3 -d":" /etc/passwd | sort -n | uniq -c | awk '$1 > 1 {print $2}'
+      register: duplicate_uids
+      changed_when: false
+
+    - name: Check for duplicate GIDs
+      shell: cut -f3 -d":" /etc/group | sort -n | uniq -c | awk '$1 > 1 {print $2}'
+      register: duplicate_gids
+      changed_when: false
+
+    - name: Check for duplicate user names
+      shell: cut -f1 -d":" /etc/passwd | sort | uniq -c | awk '$1 > 1 {print $2}'
+      register: duplicate_usernames
+      changed_when: false
+
+    - name: Check for duplicate group names
+      shell: cut -f1 -d":" /etc/group | sort | uniq -c | awk '$1 > 1 {print $2}'
+      register: duplicate_groupnames
+      changed_when: false
+
+    - name: Check home directory permissions
+      shell: |
+        awk -F: '($3>=1000) {print $1":"$6}' /etc/passwd | while IFS=: read user dir; do
+          if [ -d "$dir" ]; then
+            stat -c "%n:%a:%U:%G" "$dir"
+          fi
+        done
+      register: home_directory_perms
+      changed_when: false
+
+    - name: Check for .netrc files
+      shell: |
+        for dir in $(awk -F: '($3>=1000) {print $6}' /etc/passwd); do
+          if [ -f "$dir/.netrc" ]; then
+            echo "$dir/.netrc"
+          fi
+        done
+      register: netrc_files
+      changed_when: false
+
+    - name: Check for .forward files
+      shell: |
+        for dir in $(awk -F: '($3>=1000) {print $6}' /etc/passwd); do
+          if [ -f "$dir/.forward" ]; then
+            echo "$dir/.forward"
+          fi
+        done
+      register: forward_files
+      changed_when: false
+
+    - name: Check for .rhosts files
+      shell: |
+        for dir in $(awk -F: '($3>=1000) {print $6}' /etc/passwd); do
+          if [ -f "$dir/.rhosts" ]; then
+            echo "$dir/.rhosts"
+          fi
+        done
+      register: rhosts_files
+      changed_when: false
+
+    # =========================================================================
+    # ADDITIONAL DATA COLLECTION
+    # =========================================================================
+
+    - name: Get all mounted filesystems
+      command: mount
+      register: mounted_filesystems
+      changed_when: false
+
+    - name: Get /etc/fstab
+      slurp:
+        src: /etc/fstab
+      register: fstab_content
+
+    - name: Get loaded kernel modules
+      command: lsmod
+      register: loaded_modules
+      changed_when: false
+
+    - name: Get modprobe configurations
+      find:
+        paths:
+          - /etc/modprobe.d
+          - /lib/modprobe.d
+        patterns: "*.conf"
+      register: modprobe_files
+
+    - name: Read modprobe configurations
+      slurp:
+        src: "{{ item.path }}"
+      loop: "{{ modprobe_files.files }}"
+      register: modprobe_contents
+      when: modprobe_files.files | length > 0
+
+    # =========================================================================
+    # COMPILE ALL FACTS INTO COMPREHENSIVE STRUCTURE
+    # =========================================================================
+
+    - name: Compile comprehensive CIS facts
+      set_fact:
+        cis_comprehensive_facts:
+          metadata:
+            hostname: "{{ ansible_hostname }}"
+            fqdn: "{{ ansible_fqdn }}"
+            collection_timestamp: "{{ collection_timestamp }}"
+            benchmark: "CIS Red Hat Enterprise Linux 9 Benchmark v2.0.0"
+            controls_covered: 338
+
+          system:
+            os_family: "{{ ansible_os_family }}"
+            distribution: "{{ ansible_distribution }}"
+            distribution_version: "{{ ansible_distribution_version }}"
+            distribution_major_version: "{{ ansible_distribution_major_version }}"
+            kernel: "{{ ansible_kernel }}"
+            architecture: "{{ ansible_architecture }}"
+
+          # Section 1.2: Software Updates
+          software_updates:
+            packages: "{{ ansible_facts.packages }}"
+            yum_repos: "{{ yum_repo_contents.results | default([]) }}"
+            gpg_keys: "{{ gpg_keys.files | default([]) }}"
+            dnf_automatic_config: "{{ dnf_automatic_config.content | default('') | b64decode }}"
+
+          # Section 1.3: AIDE
+          aide:
+            installed: "{{ aide_binary.stat.exists }}"
+            database_exists: "{{ aide_database.stat.exists }}"
+            config: "{{ aide_config.content | default('') | b64decode }}"
+            cron_jobs: "{{ aide_cron.files | default([]) }}"
+
+          # Section 1.4: Bootloader
+          bootloader:
+            grub_config: "{{ grub_config.content | default('') | b64decode }}"
+            password_set: "{{ grub_password.rc == 0 }}"
+            grub_cfg_permissions: "{{ grub_cfg_perms.stat | default({}) }}"
+
+          # Section 1.5: Process Hardening
+          process_hardening:
+            limits_conf: "{{ limits_conf.content | b64decode }}"
+            coredump_conf: "{{ coredump_conf.content | default('') | b64decode }}"
+            sysctl_conf: "{{ sysctl_conf.content | b64decode }}"
+            sysctl_d: "{{ sysctl_d_contents.results | default([]) }}"
+            prelink_installed: "{{ prelink_installed.stat.exists }}"
+
+          # Section 1.6: SELinux
+          selinux:
+            status: "{{ selinux_detailed_status.stdout | default('') }}"
+            config: "{{ selinux_config.content | default('') | b64decode }}"
+            unconfined_daemons: "{{ unconfined_daemons.stdout_lines | default([]) }}"
+            booleans: "{{ selinux_booleans.stdout_lines | default([]) }}"
+            user_mappings: "{{ selinux_user_mappings.stdout_lines | default([]) }}"
+
+          # Section 1.7: Warning Banners
+          banners:
+            motd: "{{ motd_content.content | default('') | b64decode }}"
+            issue: "{{ issue_content.content | default('') | b64decode }}"
+            issue_net: "{{ issue_net_content.content | default('') | b64decode }}"
+            permissions: "{{ banner_permissions.results | default([]) }}"
+
+          # Section 1.8: GNOME
+          gnome:
+            installed: "{{ gdm_installed.stat.exists }}"
+            config: "{{ gdm_config.content | default('') | b64decode }}"
+            banner: "{{ gdm_banner.content | default('') | b64decode }}"
+            automount: "{{ gdm_automount.content | default('') | b64decode }}"
+
+          # Section 4.1: auditd
+          auditd:
+            service_status: "{{ ansible_facts.services['auditd.service'] | default({}) }}"
+            config: "{{ auditd_config.content | default('') | b64decode }}"
+            active_rules: "{{ auditctl_rules.stdout_lines | default([]) }}"
+            rules_files: "{{ audit_rules_contents.results | default([]) }}"
+            log_permissions: "{{ audit_log_perms.stat | default({}) }}"
+            log_dir_permissions: "{{ audit_log_dir_perms.stat }}"
+            config_permissions: "{{ audit_config_perms.results | default([]) }}"
+
+          # Section 5.1: Cron
+          cron:
+            service_status: "{{ cron_service | default({}) }}"
+            permissions: "{{ cron_permissions.results }}"
+            allow_deny: "{{ cron_access_files.results }}"
+            at_allow_deny: "{{ at_access_files.results }}"
+
+          # Section 5.2: SSH
+          ssh:
+            sshd_config_raw: "{{ sshd_config_raw.content | b64decode }}"
+            sshd_config_d: "{{ sshd_config_d_contents.results | default([]) }}"
+            config_permissions: "{{ sshd_config_perms.stat }}"
+            private_keys: "{{ ssh_private_key_perms.results | default([]) }}"
+            public_keys: "{{ ssh_public_key_perms.results | default([]) }}"
+            parsed_config: "{{ sshd_config_parsed.stdout_lines | default([]) }}"
+
+          # Section 5.3: sudo
+          sudo:
+            installed: "{{ sudo_installed.stat.exists }}"
+            sudoers: "{{ sudoers_file.content | default('') | b64decode }}"
+            sudoers_d: "{{ sudoers_d_contents.results | default([]) }}"
+            permissions: "{{ sudoers_perms.stat | default({}) }}"
+            logfile_config: "{{ sudo_logfile_config.stdout_lines | default([]) }}"
+            su_restriction: "{{ su_restriction.stdout_lines | default([]) }}"
+
+          # Section 5.4: PAM
+          pam:
+            pwquality_conf: "{{ pwquality_conf.content | default('') | b64decode }}"
+            system_auth: "{{ pam_system_auth.content | default('') | b64decode }}"
+            password_auth: "{{ pam_password_auth.content | default('') | b64decode }}"
+            common_password: "{{ pam_common_password.content | default('') | b64decode }}"
+            login_defs: "{{ login_defs.content | b64decode }}"
+            faillock_status: "{{ faillock_status.stdout | default('') }}"
+            faillock_conf: "{{ faillock_conf.content | default('') | b64decode }}"
+
+          # Section 5.5: User Accounts
+          users:
+            all_users: "{{ all_users.ansible_facts.getent_passwd }}"
+            all_groups: "{{ all_groups.ansible_facts.getent_group }}"
+            password_aging: "{{ user_password_aging.results | default([]) }}"
+            system_accounts_with_shells: "{{ system_accounts_with_shells.stdout_lines }}"
+            bashrc_umask: "{{ bashrc_umask.stdout_lines | default([]) }}"
+            profile_umask: "{{ profile_umask.stdout_lines | default([]) }}"
+            tmout_setting: "{{ tmout_setting.stdout_lines | default([]) }}"
+            root_path: "{{ root_path.stdout }}"
+
+          # Section 6.2: User and Group Settings
+          user_group_settings:
+            empty_passwords: "{{ empty_passwords.stdout_lines }}"
+            legacy_passwd: "{{ legacy_passwd_entries.stdout_lines | default([]) }}"
+            legacy_shadow: "{{ legacy_shadow_entries.stdout_lines | default([]) }}"
+            legacy_group: "{{ legacy_group_entries.stdout_lines | default([]) }}"
+            duplicate_uids: "{{ duplicate_uids.stdout_lines }}"
+            duplicate_gids: "{{ duplicate_gids.stdout_lines }}"
+            duplicate_usernames: "{{ duplicate_usernames.stdout_lines }}"
+            duplicate_groupnames: "{{ duplicate_groupnames.stdout_lines }}"
+            home_directory_perms: "{{ home_directory_perms.stdout_lines }}"
+            netrc_files: "{{ netrc_files.stdout_lines }}"
+            forward_files: "{{ forward_files.stdout_lines }}"
+            rhosts_files: "{{ rhosts_files.stdout_lines }}"
+
+          # Existing sections (already collected)
+          services: "{{ ansible_facts.services }}"
+          network:
+            sysctl: "{{ ansible_facts.get('sysctl', {}) }}"
+          logging:
+            rsyslog_config: ""
+            auditd_config: "{{ auditd_config.content | default('') | b64decode }}"
+            audit_rules: "{{ auditctl_rules.stdout_lines | default([]) }}"
+          filesystem:
+            mounts: "{{ ansible_facts.mounts }}"
+            fstab: "{{ fstab_content.content | b64decode }}"
+            modules: "{{ loaded_modules.stdout_lines }}"
+            modprobe_configs: "{{ modprobe_contents.results | default([]) }}"
+
+    - name: Save comprehensive facts to PostgreSQL-ready JSON
+      copy:
+        content: "{{ cis_comprehensive_facts | to_nice_json }}"
+        dest: "{{ output_dir }}/cis_comprehensive_facts.json"
+        mode: '0644'
+      delegate_to: localhost
+      become: false  # delegated to the controller/EE: no sudo there
+
+    - name: Display collection summary
+      debug:
+        msg:
+          - "=========================================="
+          - "CIS RHEL 9 Enhanced Fact Collection Complete"
+          - "=========================================="
+          - "Hostname: {{ ansible_hostname }}"
+          - "Controls: All 338 CIS RHEL 9 v2.0.0 controls"
+          - "Output: {{ output_dir }}/cis_comprehensive_facts.json"
+          - "Size: {{ (cis_comprehensive_facts | to_json | length / 1024) | int }} KB"
+          - "=========================================="

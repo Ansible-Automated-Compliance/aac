@@ -1,0 +1,181 @@
+---
+# patch_backup.yml — capture a pre-change recovery point
+#
+# Implements docs/patch_remediation_lifecycle.md Stage 7a (backup depth).
+#
+# DEPTH IS A POLICY DECISION, NOT A FIXED PROCEDURE (design position 2). Backup
+# depth should come from a risk tier (0-3) driven by criticality, regulatory
+# scope, blast radius and reversibility. **Risk tiering in OPA is Stage 6 and is
+# NOT BUILT** — so this playbook captures the documented MINIMUM and says so,
+# rather than implying a depth it did not achieve.
+#
+#   package_manifest  — the exact NEVRA/version of every installed package.
+#                       Supports recovery level R1 (package downgrade). BUILT.
+#   config_archive    — /etc and service config. Supports R2. NOT BUILT.
+#   snapshot          — filesystem/VM snapshot. Supports R3. NOT BUILT.
+#   golden_image      — reimage from baseline. R4. Machinery exists in the Golden
+#                       Image demo but is NOT wired to patching.
+#
+# A manifest is a real recovery point for a package update: it is exactly what
+# `dnf downgrade <pkg>-<old-version>` needs. It is NOT a recovery point for a
+# patch that rewrites configuration, and the closing message says so.
+#
+# AAP Job Template: "AAC - Patch Backup (pre-change)"
+# Credentials: Ansible Vault + Machine    EE: AAC Compliance EE
+
+# `target_host` is the name the workflow and every survey actually pass. This line
+# read `target_hostname`, which nothing sets, so it silently fell back to localhost
+# and captured a manifest of the EXECUTION ENVIRONMENT instead of the target host —
+# a recovery point for the wrong machine. It only surfaced as a failure because the
+# EE has no sudo; with sudo present it would have "succeeded" and been wrong.
+# `target_hostname` is still honoured second, for anything that sets the old name.
+- name: Require a target host before anything runs
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Refuse to run without an explicit target
+      ansible.builtin.assert:
+        that:
+          - (target_host | default('', true) | length > 0) or (target_hostname | default('', true) | length > 0)
+        fail_msg: >-
+          target_host is not set. This play will NOT fall back to localhost:
+          falling back runs against the execution environment instead of the host
+          being patched, which produces a recovery point, an install or an
+          assurance pass for the wrong machine. Set target_host explicitly.
+
+- name: Capture the pre-change package manifest  # Falls back to a SENTINEL that matches no host in any inventory — never
+  # 'localhost', because a localhost fallback is what silently ran these plays
+  # inside the execution environment. The gate play above is the real control and
+  # stops the run with a clear message; this is the second line of defence and it
+  # resolves to nothing rather than to the wrong machine.
+  #
+  # A sentinel rather than an empty string because `syntax-check` is unskippable
+  # in ansible-lint: an empty `hosts` is a fatal lint error, and excluding these
+  # files to excuse it would drop lint coverage from the very playbooks that
+  # carried the Jinja defect.
+  hosts: "{{ target_host | default('', true) or target_hostname | default('', true) or '__no_target_host_set__' }}"
+  gather_facts: true
+  become: true
+
+  vars:
+    ticket_id: "{{ patch_ticket_id | default(none) }}"
+    cve_id: "{{ cve | default('') }}"
+    backup_depth: "package_manifest"
+
+  tasks:
+
+    - name: Collect installed package facts
+      ansible.builtin.package_facts:
+        manager: auto
+
+    - name: Build the manifest
+      ansible.builtin.set_fact:
+        pkg_manifest: >-
+          {{ ansible_facts.packages | dict2items
+             | map(attribute='value') | flatten
+             | map('dict2items') | map('items2dict')
+             | list }}
+
+    - name: Summarise what was captured
+      ansible.builtin.debug:
+        msg:
+          - "Host              : {{ inventory_hostname }}"
+          - "Packages captured : {{ ansible_facts.packages | length }}"
+          - "Depth             : {{ backup_depth }} (recovery level R1 — package downgrade)"
+
+    - name: Publish the manifest to the controller for storage
+      ansible.builtin.set_fact:
+        manifest_payload:
+          hostname: "{{ inventory_hostname }}"
+          os_family: "{{ ansible_facts.os_family | default('unknown') }}"
+          captured: "{{ ansible_facts.packages | length }}"
+          packages: "{{ ansible_facts.packages }}"
+
+
+- name: Store the manifest as the recovery point
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - [ "../vars/vault_secrets.yml", "../vars/empty_fallback.yml" ]
+    - ../vars/site_config.yml
+
+  vars:
+    pg_port: "{{ compliance_db_port | default(5432) }}"
+    pg_db: "compliance"
+    pg_user: "postgres"
+    pg_password: "{{ compliance_db_password }}"
+    target_host: "{{ target_hostname | default('') }}"
+    ticket_id: "{{ patch_ticket_id | default(none) }}"
+    cve_id: "{{ cve | default('') }}"
+
+  tasks:
+
+    - name: Ensure the backup schema exists
+      community.postgresql.postgresql_script:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        path: "{{ playbook_dir }}/../files/patch_change_schema.sql"
+
+    - name: Warn when the ticket id did not propagate
+      when: not ticket_id
+      ansible.builtin.debug:
+        msg: >-
+          patch_ticket_id is not set. It is published by the change-record node via
+          set_stats and should reach every downstream node. Without it this recovery
+          point is stored UNLINKED to any change record — the audit trail will look
+          intact but nothing ties it to the change. Check that node 05 ran and that
+          the controller has set_stats propagation enabled.
+
+    - name: Fail when no manifest was produced
+      ansible.builtin.fail:
+        msg: >-
+          No package manifest was captured for '{{ target_host }}'. Proceeding to patch
+          without a recovery point removes the only thing that makes the change
+          reversible. Stopping here is the correct behaviour — a patch you cannot undo
+          is not a change, it is a gamble.
+      when: hostvars[target_host] is not defined or
+            hostvars[target_host].manifest_payload is not defined
+
+    - name: Store the recovery point
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: |
+          INSERT INTO patch_backup_manifests
+            (hostname, ticket_id, cve_id, depth, manifest, package_count)
+          VALUES
+            (%(host)s, %(tid)s, NULLIF(%(cve)s, ''), 'package_manifest',
+             %(manifest)s::jsonb, %(count)s)
+          RETURNING id, captured_at
+        named_args:
+          host: "{{ target_host }}"
+          tid: "{{ ticket_id if ticket_id else None }}"
+          cve: "{{ cve_id }}"
+          manifest: "{{ hostvars[target_host].manifest_payload | to_json }}"
+          count: "{{ hostvars[target_host].manifest_payload.captured | int }}"
+      register: stored
+
+    - name: Recovery point captured
+      ansible.builtin.debug:
+        msg:
+          - "──────────────────────────────────────────────────────────"
+          - "PRE-CHANGE RECOVERY POINT CAPTURED"
+          - "  Backup id : #{{ stored.query_result[0].id }}"
+          - "  Host      : {{ target_host }}"
+          - "  Packages  : {{ hostvars[target_host].manifest_payload.captured }}"
+          - "  Depth     : package_manifest → recovery level R1"
+          - "──────────────────────────────────────────────────────────"
+          - "This supports package downgrade (R1). It does NOT cover config"
+          - "rewrites (R2), filesystem state (R3) or reimage (R4)."
+          - "Depth should be risk-tier driven — Stage 6 tiering is NOT built,"
+          - "so this is the documented minimum, applied uniformly."
+          - "──────────────────────────────────────────────────────────"

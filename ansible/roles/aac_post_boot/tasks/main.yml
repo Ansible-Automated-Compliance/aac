@@ -1,0 +1,118 @@
+---
+# Installs the post-boot recovery hook as a systemd *user* unit.
+#
+# Why user-scoped: everything it touches (rootless podman, crc, the user's
+# kubeconfig) belongs to aapuser1. Running it as root would use a different
+# podman store and a different CRC instance. `Linger=yes` is what makes user
+# units start at boot without a login — it is asserted below rather than
+# assumed, because the hook silently never runs without it.
+
+# Fail before installing anything: a hook without a usable AAP URL would be
+# installed and enabled but could never launch the refresh templates. Blank,
+# hostless, <placeholder> and unresolved-marker (SET_...) URLs are rejected.
+- name: Require a resolved AAP URL
+  ansible.builtin.assert:
+    that:
+      - aac_post_boot_aap_url is match('^https?://')
+      - (aac_post_boot_aap_url | urlsplit('hostname')) | default('', true) | length > 0
+      - aac_post_boot_aap_url is not search('[<>\\s]|SET_')
+    fail_msg: >-
+      aac_post_boot_aap_url is '{{ aac_post_boot_aap_url }}'. Set
+      external_aap_url in the environment profile (-e env_profile=<env>),
+      site_config.yml, or -e.
+    quiet: true
+
+# Same rule for the OPA route: sync_registry re-publishes the template registry
+# there after every boot, and the script refuses to start without it.
+- name: Require a resolved OPA compliance URL
+  ansible.builtin.assert:
+    that:
+      - aac_post_boot_opa_compliance_url is match('^https?://')
+      - (aac_post_boot_opa_compliance_url | urlsplit('hostname')) | default('', true) | length > 0
+      - aac_post_boot_opa_compliance_url is not search('[<>\\s]|SET_')
+    fail_msg: >-
+      aac_post_boot_opa_compliance_url is '{{ aac_post_boot_opa_compliance_url }}'.
+      Set external_opa_compliance_url in the environment profile
+      (-e env_profile=<env>), site_config.yml, or -e.
+    quiet: true
+
+- name: Ensure directories exist
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ aac_post_boot_user }}"
+    group: "{{ aac_post_boot_user }}"
+    mode: "0755"
+  loop:
+    - "{{ aac_post_boot_home }}/.local/bin"
+    - "{{ aac_post_boot_home }}/.local/state"
+    - "{{ aac_post_boot_unit_dir }}"
+    - "{{ aac_post_boot_conf_dir }}"
+
+- name: Install the recovery script
+  ansible.builtin.copy:
+    src: aac-post-boot.sh
+    dest: "{{ aac_post_boot_bin }}"
+    owner: "{{ aac_post_boot_user }}"
+    group: "{{ aac_post_boot_user }}"
+    mode: "0750"
+
+- name: Install the config (credentials — 0600)
+  ansible.builtin.copy:
+    dest: "{{ aac_post_boot_conf_dir }}/post-boot.env"
+    owner: "{{ aac_post_boot_user }}"
+    group: "{{ aac_post_boot_user }}"
+    mode: "0600"
+    content: |
+      AAP_URL={{ aac_post_boot_aap_url }}
+      OPA_COMPLIANCE_URL={{ aac_post_boot_opa_compliance_url }}
+      AAP_USER={{ aac_post_boot_aap_user }}
+      AAP_PASS={{ aac_post_boot_aap_pass }}
+      START_CRC={{ aac_post_boot_start_crc | lower }}
+      AAP_WAIT_SECONDS={{ aac_post_boot_aap_wait_seconds }}
+      REFRESH_TEMPLATES={{ aac_post_boot_refresh_templates }}
+  no_log: true
+
+- name: Install the systemd user unit
+  ansible.builtin.template:
+    src: aac-post-boot.service.j2
+    dest: "{{ aac_post_boot_unit_dir }}/aac-post-boot.service"
+    owner: "{{ aac_post_boot_user }}"
+    group: "{{ aac_post_boot_user }}"
+    mode: "0644"
+
+- name: Confirm lingering is enabled (user units do not start at boot without it)
+  ansible.builtin.command: "loginctl show-user {{ aac_post_boot_user }} --property=Linger"
+  register: _linger
+  changed_when: false
+  failed_when: false
+
+- name: Enable lingering if it is off
+  ansible.builtin.command: "loginctl enable-linger {{ aac_post_boot_user }}"
+  when: "'Linger=yes' not in (_linger.stdout | default(''))"
+  changed_when: true
+
+- name: Resolve the user's uid (needed for XDG_RUNTIME_DIR on user-scoped units)
+  ansible.builtin.command: "id -u {{ aac_post_boot_user }}"
+  register: _uid
+  changed_when: false
+
+- name: Reload the user systemd manager and enable the unit
+  ansible.builtin.systemd_service:
+    name: aac-post-boot.service
+    scope: user
+    daemon_reload: true
+    enabled: true
+  become: true
+  become_user: "{{ aac_post_boot_user }}"
+  environment:
+    XDG_RUNTIME_DIR: "/run/user/{{ _uid.stdout | trim }}"
+    DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/{{ _uid.stdout | trim }}/bus"
+
+- name: Report
+  ansible.builtin.debug:
+    msg:
+      - "aac-post-boot.service installed and enabled for {{ aac_post_boot_user }}"
+      - "script : {{ aac_post_boot_bin }}"
+      - "log    : {{ aac_post_boot_home }}/.local/state/aac-post-boot.log"
+      - "test   : systemctl --user start aac-post-boot.service (safe — idempotent)"

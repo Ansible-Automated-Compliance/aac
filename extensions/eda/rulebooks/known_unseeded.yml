@@ -1,0 +1,34 @@
+# Template names that EDA rulebooks reference but that NO seeder or CaC
+# file defines — each entry is acknowledged technical debt, visible here
+# instead of failing scripts/check_eda_template_refs.py silently.
+#
+# Adding to this list requires a reason and (ideally) an owner. Remove
+# the entry when the template gets a seeder/CaC definition or the
+# rulebook reference is retired.
+known_unseeded:
+  - name: "CIS Oracle 19c Assessment"
+    referenced_by: compliance_oracle_events.yml
+    reason: >-
+      No Oracle assessment playbook exists anywhere in the repo; the
+      rulebook is aspirational (its own header says Oracle audit-log
+      wiring via SIEM is a prerequisite) and has no activation on any
+      controller. Tracked as future framework work — implement the
+      playbook + seeder before activating the rulebook.
+
+  # ── Cross-repo dispatch (Phase 6 split) ─────────────────────────────
+  # These templates are DEFINED in the aac-demos repository
+  # (config_as_code/controller_templates_demos.yml) and exist on any
+  # controller with demo content installed. The core rulebooks dispatch
+  # them by name; the checker cannot see across repos, so they are
+  # acknowledged here. If the demo content is not installed, the
+  # dispatch is a no-op logged by the missing-template guard.
+  - name: "AAC - CAF Assessment and Store"
+    referenced_by: compliance_webhook_events.yml
+    reason: >-
+      Defined in aac-demos CaC (Phase 6 split, 2026-09-01); resolves on
+      controllers with the AAC Demos project installed.
+  - name: "AAC_Sentinel_AIControls"
+    referenced_by: ai_governance_enforcement.yml
+    reason: >-
+      Defined in aac-demos CaC (Phase 6 split, 2026-09-01); resolves on
+      controllers with the AAC Demos project installed.

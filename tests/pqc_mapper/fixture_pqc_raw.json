@@ -1,0 +1,54 @@
+{
+  "opa_hostname": "fixture-host.example.net",
+  "pqc_raw": {
+    "rc": 0,
+    "stdout_lines": [
+      "openssl|3.2.2",
+      "mlkem_available|no",
+      "crypto_policy|DEFAULT",
+      "fips|0",
+      "cert|/etc/pki/tls/certs/server.pem|rsaEncryption|2048||sha256WithRSAEncryption",
+      "cert|/etc/pki/tls/certs/legacy-ca.crt|rsaEncryption|1024||sha1WithRSAEncryption",
+      "cert|/etc/pki/tls/certs/api.pem|id-ecPublicKey|256|P-256|ecdsa-with-SHA256",
+      "cert|/etc/pki/tls/certs/signing-mldsa.pem|ML-DSA-65|||ML-DSA-65",
+      "cert|/etc/pki/tls/certs/broken.pem|unparsable|||",
+      "sshkey|/etc/ssh/ssh_host_rsa_key.pub|RSA|3072",
+      "sshkey|/etc/ssh/ssh_host_ecdsa_key.pub|ECDSA|256",
+      "sshkey|/etc/ssh/ssh_host_ed25519_key.pub|ED25519|256",
+      "kex|sntrup761x25519-sha512@openssh.com",
+      "kex|mlkem768x25519-sha512",
+      "kex|curve25519-sha256",
+      "kex|ecdh-sha2-nistp256",
+      "kex|diffie-hellman-group14-sha256",
+      "tls|443|X25519|TLSv1.3",
+      "tls|8443|X25519MLKEM768|TLSv1.3",
+      "end:ok"
+    ]
+  },
+  "pqc_attested_by": "fixture attester",
+  "pqc_attestations": {
+    "profile": "federal",
+    "inventory": {
+      "complete": true,
+      "refreshed_within_year": true,
+      "hndl_data_identified": false,
+      "migration_plan_exists": true
+    },
+    "agility": {
+      "algorithms_replaceable": true,
+      "library_inventory_maintained": true,
+      "vendor_roadmaps_tracked": true
+    },
+    "federal": {
+      "key_establishment_migration_on_track": true,
+      "signature_migration_on_track": true,
+      "tls_endpoints_support_pqc_kem": true,
+      "contractor_fips_pqc_required": false
+    }
+  },
+  "pqc_migration_planned_default": false,
+  "pqc_migration_planned_assets": [
+    "fixture-host.example.net:/etc/pki/tls/certs/server.pem",
+    "fixture-host.example.net:sshd"
+  ]
+}

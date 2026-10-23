@@ -1,0 +1,136 @@
+---
+# Push Compliance Database Backup to GitHub
+#
+# Dumps the in-cluster compliance PostgreSQL database, gzips it, and
+# force-pushes a single-commit branch (backup/latest) to GitHub so the
+# file never accumulates in git history. seed_rhpds_database.yml (aac-demos repo) clones
+# that branch when seeding a new RHPDS demo environment.
+#
+# Schedule: Daily at 02:00 (AAP schedule on "AAC - Push DB Backup to GitHub")
+#
+# AAP Job Template: "AAC - Push DB Backup to GitHub"
+# Credentials: Ansible Vault, GitHub PAT (Source Control)
+# EE: AAC Compliance EE
+# Inventory: Compliance Infrastructure, limit: localhost
+#
+# Topology note: the AAP 2.6 lab-aap version of this playbook used
+# `ssh aapuser1@host.containers.internal "podman exec postgresql ..."`
+# because the host ran rootless podman with a postgresql container. On
+# AAP 2.7 / CRC the compliance DB is an in-cluster Service. We now talk
+# directly to it via community.postgresql.postgresql_db state=dump from
+# the EE pod — no SSH, no podman, no host-internal DNS required.
+
+- name: Push compliance database backup to GitHub
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - ../vars/site_config.yml
+    - [ "../vars/vault_secrets.yml", "../vars/empty_fallback.yml" ]
+
+  vars:
+    backup_file: "/tmp/compliance_backup.sql.gz"
+    git_repo_dir: "/tmp/compliance-backup-repo"
+    github_repo: "ansible-automated-compliance/aac"
+    backup_branch: "backup/latest"
+    git_user_email: "aac-backup@automation.local"
+    git_user_name: "AAC Backup Job"
+    # In-cluster compliance DB connection — overridable per environment
+    pg_port: "{{ compliance_db_port | default(5432) }}"
+    pg_user: "{{ compliance_db_user | default('postgres') }}"
+    pg_password: "{{ compliance_db_password | mandatory }}"
+    pg_db: "{{ compliance_db_name | default('compliance') }}"
+
+  tasks:
+
+    - name: Dump and push compliance database
+      block:
+
+        - name: Dump compliance database to gzipped file
+          community.postgresql.postgresql_db:
+            login_host: "{{ pg_host }}"
+            login_port: "{{ pg_port }}"
+            login_user: "{{ pg_user }}"
+            login_password: "{{ pg_password }}"
+            name: "{{ pg_db }}"
+            state: dump
+            target: "{{ backup_file }}"
+            # postgresql_db handles .gz extension by piping pg_dump → gzip
+          register: dump_result
+
+        - name: Check backup file size
+          ansible.builtin.stat:
+            path: "{{ backup_file }}"
+          register: backup_stat
+
+        - name: Show backup size
+          ansible.builtin.debug:
+            msg: "Backup size: {{ (backup_stat.stat.size | int / 1024) | round(1) }} KB (compressed)"
+
+        # Fresh temp repo every run — simplest way to force-push a single
+        # commit to backup/latest without orphan branch complexity.
+        - name: Init fresh backup repo and stage backup file
+          ansible.builtin.shell: |
+            set -euo pipefail
+            rm -rf {{ git_repo_dir | quote }}
+            mkdir -p {{ git_repo_dir | quote }}/data
+            cp {{ backup_file | quote }} {{ git_repo_dir | quote }}/data/compliance_backup.sql.gz
+            cd {{ git_repo_dir | quote }}
+            git init -q
+            git config user.email '{{ git_user_email }}'
+            git config user.name  '{{ git_user_name }}'
+            # Strip any global credential helper that could pause for a TTY
+            git config --global credential.helper ""
+            git remote add origin https://ynotbhatc:{{ vault_github_pat }}@github.com/{{ github_repo }}.git
+            git add data/compliance_backup.sql.gz
+          environment:
+            GIT_TERMINAL_PROMPT: "0"
+          no_log: true
+
+        - name: Commit and force-push backup to backup/latest branch
+          # `timeout 120` caps it at 2 minutes — a 10 MB push to GitHub
+          # over the CRC NAT typically completes in 3-5 seconds; anything
+          # past 120s is a credential prompt or stalled receptor, not a
+          # legitimate transfer.
+          # Note: stdout/stderr are routed through `sed` to scrub any
+          # echo of the PAT before logging (the URL includes the PAT).
+          ansible.builtin.shell: |
+            set -euo pipefail
+            cd {{ git_repo_dir | quote }}
+            git commit -q -m 'chore: compliance DB backup'
+            timeout 120 git push origin HEAD:{{ backup_branch }} --force 2>&1 \
+              | sed -E 's|https://[^@]+@github.com|https://***@github.com|g'
+          environment:
+            GIT_TERMINAL_PROMPT: "0"
+            GIT_ASKPASS: /bin/true
+          register: git_result
+
+        - name: Show git result
+          ansible.builtin.debug:
+            msg: "{{ git_result.stdout_lines | default([]) }}"
+
+      always:
+        - name: Clean up temp files
+          ansible.builtin.file:
+            path: "{{ item }}"
+            state: absent
+          loop:
+            - "{{ backup_file }}"
+            - "{{ git_repo_dir }}"
+          ignore_errors: true
+
+    - name: "=== Backup Complete ==="
+      ansible.builtin.debug:
+        msg:
+          - ""
+          - "╔══════════════════════════════════════════════════════════╗"
+          - "║       Compliance DB Backup Pushed to GitHub              ║"
+          - "╚══════════════════════════════════════════════════════════╝"
+          - ""
+          - "  Repo:    github.com/{{ github_repo }}"
+          - "  Branch:  {{ backup_branch }} (single-commit, force-pushed)"
+          - "  File:    data/compliance_backup.sql.gz"
+          - "  Size:    {{ (backup_stat.stat.size | int / 1024) | round(1) }} KB (compressed)"
+          - ""
+          - "  Used by: 'AAC - Seed RHPDS Database' (no seed cluster needed)"

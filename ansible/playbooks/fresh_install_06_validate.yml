@@ -1,0 +1,260 @@
+---
+# AAC Fresh Install — Phase 6: Validate Installation
+#
+# Comprehensive GO/NO-GO validation of every AAC component on the target host.
+# Checks OPA containers (health + policy count), PostgreSQL (connectivity + schema),
+# AAP gateway + controller API, and all required job templates by name.
+#
+# This is a READ-ONLY check — safe to run at any time.
+#
+# Survey variables (required):
+#   target_host            — public IP from Phase 1
+#   new_aap_admin_password — AAP admin password set in Phase 4
+#
+# AAP Job Template: "AAC - Fresh Install: 06 Validate"
+# Credentials: Ansible Vault, Compliance SSH Credential
+# EE: AAC Compliance EE
+
+- name: Validate AAC Fresh Installation
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - [ "../vars/vault_secrets.yml", "../vars/empty_fallback.yml" ]
+    - ../vars/site_config.yml
+
+  vars:
+    target_host:            "{{ target_host }}"
+    new_aap_admin_password: "{{ new_aap_admin_password }}"
+
+    # Expected policy counts (minimum)
+    opa_security_min_policies:   10
+    opa_compliance_min_policies: 5
+    opa_ot_min_policies:         3
+
+    # Required job template names — all must exist after configure_aap.sh
+    required_templates:
+      - "AAC - Load OPA Policies"
+      - "AAC - Deploy OPA Containers"
+      - "AAC - Demo Stability Setup"
+      - "AAC - Seed Sentinel Job Templates"
+      - "AAC - Seed Sentinel Templates"
+      - "AAC - Seed Phase 2 Templates"
+      - "AAC - Seed AMI Templates"
+      - "AAC - Verify Installation"
+
+    # Required PostgreSQL tables
+    required_tables:
+      - compliance_results
+      - systems
+
+  tasks:
+
+    # ── OPA Health Checks ─────────────────────────────────────────────────────
+    - name: Check opa-security health
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "http://{{ target_host }}:8181/health"
+        method: GET
+        status_code: 200
+        timeout: 10
+      register: opa_sec_health
+      ignore_errors: true
+
+    - name: Check opa-security policy count
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "http://{{ target_host }}:8181/v1/policies"
+        method: GET
+        status_code: 200
+        timeout: 10
+      register: opa_sec_policies
+      ignore_errors: true
+
+    - name: Check opa-compliance health
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "http://{{ target_host }}:8182/health"
+        method: GET
+        status_code: 200
+        timeout: 10
+      register: opa_comp_health
+      ignore_errors: true
+
+    - name: Check opa-compliance policy count
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "http://{{ target_host }}:8182/v1/policies"
+        method: GET
+        status_code: 200
+        timeout: 10
+      register: opa_comp_policies
+      ignore_errors: true
+
+    - name: Check opa-ot health
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "http://{{ target_host }}:8183/health"
+        method: GET
+        status_code: 200
+        timeout: 10
+      register: opa_ot_health
+      ignore_errors: true
+
+    - name: Check opa-ot policy count
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "http://{{ target_host }}:8183/v1/policies"
+        method: GET
+        status_code: 200
+        timeout: 10
+      register: opa_ot_policies
+      ignore_errors: true
+
+    # ── PostgreSQL Checks ─────────────────────────────────────────────────────
+    - name: Check PostgreSQL schema via remote psql
+      ansible.builtin.shell: |
+        podman exec postgresql psql -U postgres -d compliance -t -c \
+          "SELECT table_name FROM information_schema.tables WHERE table_schema='public' ORDER BY table_name;"
+      delegate_to: "{{ target_host }}"
+      vars:
+        ansible_user: ec2-user
+      register: pg_tables
+      ignore_errors: true
+
+    - name: Count PostgreSQL tables
+      ansible.builtin.set_fact:
+        pg_table_count: "{{ pg_tables.stdout_lines | select('match', '\\S') | list | length }}"
+      when: pg_tables is succeeded
+
+    # ── AAP API Checks ────────────────────────────────────────────────────────
+    - name: Check AAP Gateway
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "https://{{ target_host }}/api/gateway/v1/ping/"
+        method: GET
+        validate_certs: false
+        status_code: 200
+        timeout: 10
+      register: aap_gateway
+      ignore_errors: true
+
+    - name: Check AAP Controller API + get version
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "https://{{ target_host }}/api/controller/v2/ping/"
+        method: GET
+        validate_certs: false
+        status_code: 200
+        timeout: 10
+        headers:
+          Authorization: "Basic {{ ('admin:' + new_aap_admin_password) | b64encode }}"
+      register: aap_controller
+      ignore_errors: true
+
+    # ── Job Template Presence ─────────────────────────────────────────────────
+    - name: Get all job templates from target AAP
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "https://{{ target_host }}/api/controller/v2/job_templates/?page_size=200"
+        method: GET
+        validate_certs: false
+        status_code: 200
+        timeout: 15
+        headers:
+          Authorization: "Basic {{ ('admin:' + new_aap_admin_password) | b64encode }}"
+      register: aap_templates
+      ignore_errors: true
+
+    - name: Find missing required templates
+      ansible.builtin.set_fact:
+        existing_template_names: >-
+          {{ aap_templates.json.results | map(attribute='name') | list
+             if aap_templates is succeeded else [] }}
+        missing_templates: >-
+          {{ required_templates | reject('in',
+               aap_templates.json.results | map(attribute='name') | list
+               if aap_templates is succeeded else []) | list }}
+
+    # ── Build Results Summary ─────────────────────────────────────────────────
+    - name: Set check results
+      ansible.builtin.set_fact:
+        check_opa_sec_health:    "{{ opa_sec_health is succeeded }}"
+        check_opa_sec_policies:  >-
+          {{ opa_sec_health is succeeded and
+             (opa_sec_policies.json.result | default([]) | length) >= opa_security_min_policies }}
+        check_opa_comp_health:   "{{ opa_comp_health is succeeded }}"
+        check_opa_comp_policies: >-
+          {{ opa_comp_health is succeeded and
+             (opa_comp_policies.json.result | default([]) | length) >= opa_compliance_min_policies }}
+        check_opa_ot_health:     "{{ opa_ot_health is succeeded }}"
+        check_opa_ot_policies:   >-
+          {{ opa_ot_health is succeeded and
+             (opa_ot_policies.json.result | default([]) | length) >= opa_ot_min_policies }}
+        check_pg:                "{{ pg_tables is succeeded and pg_table_count | int > 0 }}"
+        check_aap_gateway:       "{{ aap_gateway is succeeded }}"
+        check_aap_controller:    "{{ aap_controller is succeeded }}"
+        check_templates:         "{{ missing_templates | length == 0 }}"
+
+    - name: Count failures
+      ansible.builtin.set_fact:
+        fail_count: >-
+          {{ [check_opa_sec_health, check_opa_sec_policies,
+              check_opa_comp_health, check_opa_comp_policies,
+              check_opa_ot_health, check_opa_ot_policies,
+              check_pg, check_aap_gateway, check_aap_controller,
+              check_templates]
+             | map('bool') | map('ternary', 0, 1) | sum }}
+
+    # ── Print Report ──────────────────────────────────────────────────────────
+    - name: Print validation report
+      ansible.builtin.debug:
+        msg:
+          - ""
+          - "╔══════════════════════════════════════════════════════════╗"
+          - "║         AAC FRESH INSTALL — Validation Report            ║"
+          - "╚══════════════════════════════════════════════════════════╝"
+          - "  Target: {{ target_host }}"
+          - "  AAP Version: {{ aap_controller.json.version | default('unknown') }}"
+          - ""
+          - "  ── OPA Containers ────────────────────────────────────────"
+          - "  {{ '✅' if check_opa_sec_health | bool else '❌' }}  opa-security  (:8181) — health"
+          - "  {{ '✅' if check_opa_sec_policies | bool else '⚠️ ' }}  opa-security  (:8181) — {{ opa_sec_policies.json.result | default([]) | length }} policies (min {{ opa_security_min_policies }})"
+          - "  {{ '✅' if check_opa_comp_health | bool else '❌' }}  opa-compliance (:8182) — health"
+          - "  {{ '✅' if check_opa_comp_policies | bool else '⚠️ ' }}  opa-compliance (:8182) — {{ opa_comp_policies.json.result | default([]) | length }} policies (min {{ opa_compliance_min_policies }})"
+          - "  {{ '✅' if check_opa_ot_health | bool else '❌' }}  opa-ot         (:8183) — health"
+          - "  {{ '✅' if check_opa_ot_policies | bool else '⚠️ ' }}  opa-ot         (:8183) — {{ opa_ot_policies.json.result | default([]) | length }} policies (min {{ opa_ot_min_policies }})"
+          - ""
+          - "  ── PostgreSQL ────────────────────────────────────────────"
+          - "  {{ '✅' if check_pg | bool else '❌' }}  PostgreSQL — {{ pg_table_count | default(0) }} tables in compliance DB"
+          - "{{ '  Tables: ' + pg_tables.stdout_lines | select('match', '\\S') | list | join(', ') if pg_tables is succeeded else '  (could not query)' }}"
+          - ""
+          - "  ── AAP ───────────────────────────────────────────────────"
+          - "  {{ '✅' if check_aap_gateway | bool else '❌' }}  AAP Gateway:    https://{{ target_host }}"
+          - "  {{ '✅' if check_aap_controller | bool else '❌' }}  AAP Controller: https://{{ target_host }}/api/controller/v2/"
+          - ""
+          - "  ── Job Templates ({{ existing_template_names | length }} found) ─────────────────────────"
+          - "  {{ '✅' if check_templates | bool else '❌' }}  {{ required_templates | length }} required templates present"
+          - "{% if missing_templates | length > 0 %}  MISSING: {{ missing_templates | join(', ') }}{% endif %}"
+          - ""
+          - "  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "  {{ '  🎉 GO — Installation validated! All checks passed.' if fail_count | int == 0 else '  ❌ NO-GO — ' + fail_count | string + ' check(s) failed.' }}"
+          - "  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - ""
+          - "{% if not check_opa_sec_health | bool or not check_opa_comp_health | bool or not check_opa_ot_health | bool %}  FIX OPA: Log into target and run: podman ps; podman logs opa-security{% endif %}"
+          - "{% if check_opa_sec_health | bool and not check_opa_sec_policies | bool %}  FIX POLICIES: Run 'AAC - Load OPA Policies' job template on target AAP{% endif %}"
+          - "{% if not check_pg | bool %}  FIX DB: Log into target and run: podman ps; podman logs postgresql{% endif %}"
+          - "{% if not check_aap_gateway | bool or not check_aap_controller | bool %}  FIX AAP: Check install log: /tmp/aap_install_log.txt on target{% endif %}"
+          - "{% if not check_templates | bool %}  FIX TEMPLATES: Re-run configure_aap.sh or run each seed template on target AAP{% endif %}"
+          - ""
+          - "{% if fail_count | int == 0 %}  NEXT: Destroy the instance (it was a test){% endif %}"
+          - "{% if fail_count | int == 0 %}  Run: 'AAC - Fresh Install: 00 Teardown' with instance_id{% endif %}"
+          - "╚══════════════════════════════════════════════════════════╝"
+
+    - name: Fail job if any critical checks failed
+      ansible.builtin.fail:
+        msg: >
+          Validation failed — {{ fail_count }} check(s) did not pass.
+          See the report above for details and remediation steps.
+      when: fail_count | int > 0

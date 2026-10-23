@@ -1,0 +1,470 @@
+---
+# seed_phase3.yml — Create Phase 3 baseline management + remediation templates
+#
+# Creates:
+#   Template: AAC - Set Baseline
+#   Template: AAC - Compare to Baseline
+#   Template: AAC - Generate Remediation Playbook
+#   Template: AAC - Apply Remediation
+#   Workflow:  AAC - Reset to Known Good
+#             (Compare to Baseline → Generate Remediation → Apply Remediation)
+#
+# Prerequisites:
+#   Phase 1 templates (60-63) must exist
+#   Phase 2 templates (64-69) must exist
+#   Schema v2 migration must be applied (is_baseline column exists)
+#
+# AAP Job Template: "AAC - Seed Phase 3"
+# Credentials: Ansible Vault
+
+- name: Seed Phase 3 baseline management templates and workflow
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - ../vars/site_config.yml
+
+  vars:
+    aap_api: "{{ aap_url }}/api/controller/v2"
+    aap_token: "{{ aap_token }}"
+    aap_headers:
+      Authorization: "Bearer {{ aap_token }}"
+      Content-Type: "application/json"
+
+  tasks:
+
+    # ── Resolve object IDs ────────────────────────────────────────────────────
+
+    - name: Look up inventory ID
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/inventories/?name={{ aap_inventory_name | urlencode }}"
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+      register: inv_lookup
+    - set_fact:
+        inventory_id: "{{ inv_lookup.json.results[0].id }}"
+
+    - name: Look up EE ID
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/execution_environments/?name={{ aap_ee_name | urlencode }}"
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+      register: ee_lookup
+    - set_fact:
+        ee_id: "{{ ee_lookup.json.results[0].id }}"
+
+    - name: Look up vault credential ID
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/credentials/?name={{ aap_vault_credential_name | urlencode }}&credential_type__kind=vault"
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+      register: vault_cred_lookup
+    - set_fact:
+        vault_cred_id: "{{ vault_cred_lookup.json.results[0].id }}"
+
+    - name: Look up project ID
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/projects/?name={{ aap_project_name | urlencode }}"
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+      register: project_lookup
+    - set_fact:
+        project_id: "{{ project_lookup.json.results[0].id }}"
+
+    # ── Resolve Phase 3 prerequisite template IDs ──────────────────────────────
+
+    - name: Look up 'AAC - Compare to Baseline' (if exists)
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/job_templates/?name=AAC+-+Compare+to+Baseline"
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+      register: compare_existing
+
+    - name: Look up 'AAC - Generate Remediation Playbook' (if exists)
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/job_templates/?name=AAC+-+Generate+Remediation+Playbook"
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+      register: gen_existing
+
+    - name: Look up 'AAC - Apply Remediation' (if exists)
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/job_templates/?name=AAC+-+Apply+Remediation"
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+      register: apply_existing
+
+    # ── Create job templates ──────────────────────────────────────────────────
+
+    - name: Create or get 'AAC - Set Baseline'
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/job_templates/"
+        method: POST
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+        body_format: json
+        body:
+          name: "AAC - Set Baseline"
+          description: >
+            Tags a compliance_facts snapshot as the approved baseline for a host.
+            The baseline is the "known good" hardened state reviewed by the security
+            team. Once set: Compare to Baseline shows drift, Generate Remediation
+            Playbook creates restore tasks, and Reset to Known Good workflow
+            applies them. Only one baseline per host at a time — setting a new
+            one clears the previous flag (old snapshot is retained for history).
+          job_type: run
+          inventory: "{{ inventory_id | int }}"
+          project: "{{ project_id | int }}"
+          playbook: ansible/playbooks/set_baseline.yml
+          execution_environment: "{{ ee_id | int }}"
+          survey_enabled: true
+        status_code: [200, 201]
+      register: set_baseline_jt
+    - set_fact:
+        set_baseline_jt_id: "{{ set_baseline_jt.json.id }}"
+
+    - name: Create or get 'AAC - Compare to Baseline'
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/job_templates/"
+        method: POST
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+        body_format: json
+        body:
+          name: "AAC - Compare to Baseline"
+          description: >
+            Diffs the current fact snapshot against the approved baseline for a host.
+            Shows all changes by severity (critical/high/medium/low), identifies
+            whether each change is already authorized, and flags compliance impact.
+            Use after collecting new facts to check for drift. Run before Generate
+            Remediation Playbook to understand what will be restored.
+          job_type: run
+          inventory: "{{ inventory_id | int }}"
+          project: "{{ project_id | int }}"
+          playbook: ansible/playbooks/compare_to_baseline.yml
+          execution_environment: "{{ ee_id | int }}"
+          survey_enabled: true
+        status_code: [200, 201]
+      register: compare_jt
+    - set_fact:
+        compare_jt_id: "{{ compare_jt.json.id }}"
+
+    - name: Create or get 'AAC - Generate Remediation Playbook'
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/job_templates/"
+        method: POST
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+        body_format: json
+        body:
+          name: "AAC - Generate Remediation Playbook"
+          description: >
+            Analyzes baseline vs current facts and generates targeted Ansible tasks
+            to restore each changed security path to its baseline value.
+            Auto-generates tasks for: sshd_config, login.defs, auditd.conf,
+            SELinux mode, world-writable files, SUID/SGID files, kernel module
+            blacklist. Flags manual-review paths (sudoers, audit rules, firewall,
+            GRUB, user accounts). Generated plan is stored in remediation_actions
+            for retrieval by Apply Remediation. Returns an action_id to pass to
+            the next step.
+          job_type: run
+          inventory: "{{ inventory_id | int }}"
+          project: "{{ project_id | int }}"
+          playbook: ansible/playbooks/generate_remediation_playbook.yml
+          execution_environment: "{{ ee_id | int }}"
+          survey_enabled: true
+        status_code: [200, 201]
+      register: gen_jt
+    - set_fact:
+        gen_jt_id: "{{ gen_jt.json.id }}"
+
+    - name: Create or get 'AAC - Apply Remediation'
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/job_templates/"
+        method: POST
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+        body_format: json
+        body:
+          name: "AAC - Apply Remediation"
+          description: >
+            Applies the generated remediation tasks from 'AAC - Generate Remediation
+            Playbook' to the target host via SSH. Use dry_run=true to preview
+            changes before applying. When dry_run=false: SSHes to the host, applies
+            each restore task, verifies sshd config syntax, and logs the action.
+            After applying: Run 'AAC - Collect Facts' then 'AAC - Compare to Baseline'
+            to verify the host now matches the approved baseline.
+          job_type: run
+          inventory: "{{ inventory_id | int }}"
+          project: "{{ project_id | int }}"
+          playbook: ansible/playbooks/apply_remediation.yml
+          execution_environment: "{{ ee_id | int }}"
+          survey_enabled: true
+        status_code: [200, 201]
+      register: apply_jt
+    - set_fact:
+        apply_jt_id: "{{ apply_jt.json.id }}"
+
+    # ── Attach vault credential ───────────────────────────────────────────────
+
+    - name: Attach vault credential to Phase 3 templates
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/job_templates/{{ item }}/credentials/"
+        method: POST
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+        body_format: json
+        body:
+          id: "{{ vault_cred_id | int }}"
+        status_code: [200, 201, 204]
+      loop:
+        - "{{ set_baseline_jt_id }}"
+        - "{{ compare_jt_id }}"
+        - "{{ gen_jt_id }}"
+        - "{{ apply_jt_id }}"
+      failed_when: false
+
+    # ── Add surveys ───────────────────────────────────────────────────────────
+
+    - name: Add survey to 'AAC - Set Baseline'
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/job_templates/{{ set_baseline_jt_id }}/survey_spec/"
+        method: POST
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+        body_format: json
+        body:
+          name: "Set Baseline Survey"
+          description: ""
+          spec:
+            - question_name: Target Hostname
+              question_description: "Hostname to baseline (must have fact snapshots)"
+              variable: target_hostname
+              type: text
+              required: true
+            - question_name: Baseline Label
+              question_description: "Human-readable label e.g. post-hardening-2026-03-17"
+              variable: baseline_label
+              type: text
+              required: true
+            - question_name: Snapshot Date
+              question_description: "Use 'latest' or ISO date YYYY-MM-DD"
+              variable: snapshot_date
+              type: text
+              default: "latest"
+              required: false
+        status_code: [200, 201]
+      failed_when: false
+
+    - name: Add survey to 'AAC - Compare to Baseline'
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/job_templates/{{ compare_jt_id }}/survey_spec/"
+        method: POST
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+        body_format: json
+        body:
+          name: "Compare to Baseline Survey"
+          description: ""
+          spec:
+            - question_name: Target Hostname
+              question_description: "Hostname to compare against its baseline"
+              variable: target_hostname
+              type: text
+              required: true
+            - question_name: Snapshot Date
+              question_description: "Snapshot to compare: 'latest' or YYYY-MM-DD"
+              variable: snapshot_date
+              type: text
+              default: "latest"
+              required: false
+        status_code: [200, 201]
+      failed_when: false
+
+    - name: Add survey to 'AAC - Generate Remediation Playbook'
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/job_templates/{{ gen_jt_id }}/survey_spec/"
+        method: POST
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+        body_format: json
+        body:
+          name: "Generate Remediation Survey"
+          description: ""
+          spec:
+            - question_name: Target Hostname
+              question_description: "Hostname to generate remediation for"
+              variable: target_hostname
+              type: text
+              required: true
+            - question_name: Remediation Label
+              question_description: "Label for this remediation run (default: auto-YYYY-MM-DD)"
+              variable: remediation_label
+              type: text
+              default: ""
+              required: false
+            - question_name: Include Low Severity
+              question_description: "Include low-severity changes in generated tasks"
+              variable: include_low
+              type: multiplechoice
+              choices: "false\ntrue"
+              default: "false"
+              required: false
+        status_code: [200, 201]
+      failed_when: false
+
+    - name: Add survey to 'AAC - Apply Remediation'
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/job_templates/{{ apply_jt_id }}/survey_spec/"
+        method: POST
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+        body_format: json
+        body:
+          name: "Apply Remediation Survey"
+          description: "Get action_id from 'AAC - Generate Remediation Playbook' output"
+          spec:
+            - question_name: Action ID
+              question_description: "remediation_actions.id from Generate Remediation Playbook"
+              variable: action_id
+              type: integer
+              required: true
+            - question_name: Dry Run
+              question_description: "true=preview only (recommended first), false=apply changes"
+              variable: dry_run
+              type: multiplechoice
+              choices: "true\nfalse"
+              default: "true"
+              required: false
+        status_code: [200, 201]
+      failed_when: false
+
+    # ── Create 'AAC - Reset to Known Good' workflow ───────────────────────────
+
+    - name: Create 'AAC - Reset to Known Good' workflow
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/workflow_job_templates/"
+        method: POST
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+        body_format: json
+        body:
+          name: "AAC - Reset to Known Good"
+          description: >
+            Full baseline restore workflow: Compare current facts to baseline →
+            Generate targeted remediation tasks → Apply restore tasks via SSH.
+            Requires a baseline to be set ('AAC - Set Baseline') and recent facts
+            collected ('AAC - Collect Facts'). After completion, run
+            'AAC - Collect and Assess' to confirm resolved compliance status.
+          organization: 1
+          inventory: "{{ inventory_id | int }}"
+        status_code: [200, 201]
+      register: workflow
+
+    - name: Create workflow node 1 — Compare to Baseline
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/workflow_job_templates/{{ workflow.json.id }}/workflow_nodes/"
+        method: POST
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+        body_format: json
+        body:
+          unified_job_template: "{{ compare_jt_id | int }}"
+          identifier: compare_to_baseline
+        status_code: [200, 201]
+      register: node1
+
+    - name: Create workflow node 2 — Generate Remediation Playbook
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/workflow_job_templates/{{ workflow.json.id }}/workflow_nodes/"
+        method: POST
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+        body_format: json
+        body:
+          unified_job_template: "{{ gen_jt_id | int }}"
+          identifier: generate_remediation
+        status_code: [200, 201]
+      register: node2
+
+    - name: Create workflow node 3 — Apply Remediation
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/workflow_job_templates/{{ workflow.json.id }}/workflow_nodes/"
+        method: POST
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+        body_format: json
+        body:
+          unified_job_template: "{{ apply_jt_id | int }}"
+          identifier: apply_remediation
+        status_code: [200, 201]
+      register: node3
+
+    - name: Link node 1 → node 2 on success
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/workflow_job_template_nodes/{{ node1.json.id }}/success_nodes/"
+        method: POST
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+        body_format: json
+        body: "{{ {'id': node2.json.id | int} }}"
+        status_code: [200, 201, 204]
+
+    - name: Link node 2 → node 3 on success
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/workflow_job_template_nodes/{{ node2.json.id }}/success_nodes/"
+        method: POST
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+        body_format: json
+        body: "{{ {'id': node3.json.id | int} }}"
+        status_code: [200, 201, 204]
+
+    # ── Print summary ─────────────────────────────────────────────────────────
+
+    - name: Seed complete
+      debug:
+        msg:
+          - "✅ Phase 3 baseline management templates created"
+          - ""
+          - "  Template {{ set_baseline_jt_id }}:   AAC - Set Baseline"
+          - "  Template {{ compare_jt_id }}:   AAC - Compare to Baseline"
+          - "  Template {{ gen_jt_id }}:   AAC - Generate Remediation Playbook"
+          - "  Template {{ apply_jt_id }}:   AAC - Apply Remediation"
+          - "  Workflow {{ workflow.json.id }}:   AAC - Reset to Known Good"
+          - "    └─ Compare ({{ compare_jt_id }}) → Generate ({{ gen_jt_id }}) → Apply ({{ apply_jt_id }})"
+          - ""
+          - "  PHASE 3 WORKFLOW:"
+          - "  1. Run 'AAC - Collect Facts' for the target host"
+          - "  2. Run 'AAC - Set Baseline' to tag the approved known-good snapshot"
+          - "  3. (Later) Run 'AAC - Collect and Assess' to detect drift"
+          - "  4. Run 'AAC - Compare to Baseline' to review changes"
+          - "  5. Run 'AAC - Generate Remediation Playbook' to create restore tasks"
+          - "  6. Run 'AAC - Apply Remediation' with dry_run=true first, then false"
+          - "  7. Run 'AAC - Collect Facts' + 'AAC - Compare to Baseline' to verify"
+          - ""
+          - "  OR use the workflow:"
+          - "  'AAC - Reset to Known Good' (steps 4→5→6 in one click)"

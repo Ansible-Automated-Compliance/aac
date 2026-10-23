@@ -1,0 +1,72 @@
+---
+# Example Ansible Playbook — deliberately contains Sentinel violations for testing
+# Violations expected:
+#   SENTINEL-ANS-002: targets 'all' hosts in production
+#   SENTINEL-ANS-003: hardcoded database password in vars
+#   SENTINEL-ANS-004: multiple tasks missing tags
+
+- name: Deploy Application Stack
+  hosts: all
+  become: true
+  gather_facts: true
+
+  vars:
+    app_version: "2.1.4"
+    db_password: changeme_use_vault    # SENTINEL-ANS-003: plaintext value triggers violation
+    db_host: "192.0.2.100"
+    api_token: "{{ vault_api_token }}"
+
+  tasks:
+    - name: Install required packages
+      ansible.builtin.dnf:
+        name:
+          - python3
+          - git
+        state: present
+      tags:
+        - install
+        - packages
+
+    - name: Configure application
+      ansible.builtin.template:
+        src: app.conf.j2
+        dest: /etc/myapp/app.conf
+        mode: "0640"
+
+    - name: Start application service
+      ansible.builtin.systemd:
+        name: myapp
+        state: started
+        enabled: true
+
+    - name: Run database migrations
+      ansible.builtin.command:
+        cmd: "/opt/myapp/bin/migrate --db-host {{ db_host }}"
+      tags:
+        - migrate
+        - database
+
+- name: Configure Monitoring
+  hosts: monitoring
+  gather_facts: false
+
+  vars:
+    grafana_password: "{{ vault_grafana_password }}"
+    alert_email: "ops@example.com"
+
+  tasks:
+    - name: Deploy Prometheus config
+      ansible.builtin.copy:
+        src: prometheus.yml
+        dest: /etc/prometheus/prometheus.yml
+      tags:
+        - monitoring
+        - prometheus
+
+    - name: Restart Prometheus
+      ansible.builtin.systemd:
+        name: prometheus
+        state: restarted
+      tags:
+        - monitoring
+        - restart

@@ -1,0 +1,45 @@
+---
+# Create /opt/aap-mcp-server and write mcp.env with the AAP token.
+
+- name: Ensure MCP app directory exists
+  file:
+    path: "{{ aac_mcp_app_dir }}"
+    state: directory
+    owner: "{{ aac_mcp_run_user }}"
+    group: "{{ aac_mcp_run_user }}"
+    mode: "0750"
+  delegate_to: "{{ aac_host }}"
+  become: true
+
+- name: Write mcp.env (token from vault; placeholder if token not yet set)
+  copy:
+    dest: "{{ aac_mcp_app_dir }}/mcp.env"
+    owner: "{{ aac_mcp_run_user }}"
+    group: "{{ aac_mcp_run_user }}"
+    mode: "0600"
+    # force: false means we never overwrite a token that is already set.
+    # Run "AAC - Rotate MCP Token" (Template 40) to update the token.
+    force: false
+    content: |
+      # AAP MCP Server environment variables
+      # Written by aac_mcp_server role — update token via Template 40
+      AAP_TOKEN={{ (aac_mcp_token | default('', true)) if (aac_mcp_token | default('', true)) else 'UPDATE_ME_RUN_ROTATE_MCP_TOKEN_JOB' }}
+  delegate_to: "{{ aac_host }}"
+  become: true
+  no_log: true
+
+# Separate env file: unlike mcp.env (force: false — never overwrite a rotated
+# token), the decision-log DSN is role-managed config and re-written each run.
+# It carries a DB credential, so it goes through an EnvironmentFile like
+# AAP_TOKEN — never embedded in the podman command line or systemd unit text.
+- name: Write mcp-decision-log.env (decision-log DSN; role-managed)
+  copy:
+    dest: "{{ aac_mcp_app_dir }}/mcp-decision-log.env"
+    owner: "{{ aac_mcp_run_user }}"
+    group: "{{ aac_mcp_run_user }}"
+    mode: "0600"
+    content: |
+      DECISION_LOG_DSN={{ (aac_mcp_decision_log_dsn | default('', true)) }}
+  delegate_to: "{{ aac_host }}"
+  become: true
+  no_log: true

@@ -1,0 +1,229 @@
+---
+# Trivy State Assessment
+#
+# Measures the STATE of a customer-supplied artifact against the Aqua
+# Security trivy-checks library (MIT). Runs the `trivy` CLI as the
+# evaluation engine (the policies use Trivy-runtime builtins that are
+# not portable to vanilla OPA), parses its JSON output, and records
+# results in compliance_results for historical state trending.
+#
+# What's measured (state, not activities):
+#   - K8s manifest:   the declared spec of a Deployment/Pod/Service/etc.
+#   - Dockerfile:     the declared instructions of an image build
+#   - Helm chart:     the rendered templates' state
+#   - Terraform plan: the declared infrastructure state
+#   - Filesystem:     vulnerabilities + misconfig in a code tree
+#
+# What's NOT measured: deploy events, who-ran-what, runtime syscalls,
+# admission decisions. Trivy only evaluates the artifact's content.
+#
+# ── Variables ────────────────────────────────────────────────────────
+#   artifact_path     (required) Absolute path to artifact, or directory
+#   scan_type         "config" (K8s/IaC/Dockerfile) | "fs" (codebase) |
+#                     "image" (container image reference)
+#                     Default: config
+#   severity_floor    Min severity to record: CRITICAL | HIGH | MEDIUM
+#                     | LOW | UNKNOWN. Default: LOW (records everything).
+#   record_to_db      true|false — store results to PostgreSQL. Default true.
+#   target_label      Human label for this scan (used as hostname column
+#                     in compliance_results). Default: basename of artifact.
+#
+# ── AAP Job Template ─────────────────────────────────────────────────
+#   "AAC - Trivy Assessment"
+#   Inventory: Compliance Infrastructure, limit: localhost
+#   EE: AAC Compliance EE v1.2.2+  (needs trivy binary)
+#   Survey: artifact_path, scan_type, severity_floor, target_label
+
+- name: Trivy state assessment
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - ../vars/site_config.yml
+
+  vars:
+    scan_type: "config"
+    severity_floor: "LOW"
+    record_to_db: true
+    # artifact_path: <set via extra_vars / survey / inventory>
+    # target_label: <set via extra_vars / survey / inventory>
+    # Connection params for compliance DB (in-cluster Service URL when
+    # running from the EE on CRC; seeder/template extra_vars overrides
+    # for other topologies — see [[topology_agnostic_pattern]] memory).
+    pg_port: "{{ compliance_db_port | default(5432) }}"
+    pg_user: "{{ compliance_db_user | default('postgres') }}"
+    pg_password: "{{ compliance_db_password | mandatory }}"
+    pg_db: "{{ compliance_db_name | default('compliance') }}"
+
+  tasks:
+    - name: Fail if artifact_path not provided
+      ansible.builtin.fail:
+        msg: "artifact_path is required (absolute path to file or directory to scan)"
+      when: (artifact_path | default('', true)) | length == 0
+
+    - name: Verify artifact exists
+      ansible.builtin.stat:
+        path: "{{ (artifact_path | default('', true)) }}"
+      register: artifact_stat
+
+    - name: Fail if artifact missing
+      ansible.builtin.fail:
+        msg: "artifact_path does not exist: {{ (artifact_path | default('', true)) }}"
+      when: not artifact_stat.stat.exists
+
+    - name: Derive target_label if not provided
+      ansible.builtin.set_fact:
+        target_label: "{{ (artifact_path | default('', true)) | basename }}"
+      when: (target_label | default('', true)) | length == 0
+
+    - name: Set json output path (one-shot, no re-evaluation)
+      ansible.builtin.set_fact:
+        json_out: "/tmp/trivy_result_{{ lookup('pipe', 'date +%s%N') }}.json"
+
+    - name: Get trivy version (for metadata)
+      ansible.builtin.command:
+        cmd: trivy --version
+      register: trivy_version_raw
+      changed_when: false
+
+    - name: Banner
+      ansible.builtin.debug:
+        msg:
+          - "════════════════════════════════════════════════════════════"
+          - "  Trivy state assessment"
+          - "════════════════════════════════════════════════════════════"
+          - "  Artifact: {{ (artifact_path | default('', true)) }}"
+          - "  Scan type: {{ scan_type }}"
+          - "  Severity floor: {{ severity_floor }}"
+          - "  Trivy: {{ trivy_version_raw.stdout_lines[0] | default(trivy_version_raw.stdout[:80]) }}"
+
+    - name: Build severity list (trivy --severity expects comma-list)
+      ansible.builtin.set_fact:
+        severity_list: >-
+          {%- set order = ['UNKNOWN','LOW','MEDIUM','HIGH','CRITICAL'] -%}
+          {%- set start = order.index(severity_floor) if severity_floor in order else 1 -%}
+          {{ order[start:] | join(',') }}
+
+    - name: Run trivy
+      ansible.builtin.command:
+        argv:
+          - trivy
+          - "{{ scan_type }}"
+          - "--format"
+          - "json"
+          - "--quiet"
+          - "--severity"
+          - "{{ severity_list }}"
+          - "--output"
+          - "{{ json_out }}"
+          - "{{ (artifact_path | default('', true)) }}"
+      register: trivy_run
+      # trivy exits non-zero when findings exceed --exit-code threshold;
+      # we don't set one, so any non-zero is a real error.
+      changed_when: false
+
+    - name: Read trivy JSON
+      ansible.builtin.set_fact:
+        trivy_report: "{{ lookup('file', json_out) | from_json }}"
+
+    - name: Aggregate misconfiguration findings across all targets
+      ansible.builtin.set_fact:
+        all_findings: >-
+          {%- set out = [] -%}
+          {%- for r in trivy_report.Results | default([]) -%}
+            {%- for m in r.Misconfigurations | default([]) -%}
+              {%- set _ = out.append({
+                'target': r.Target,
+                'id': m.ID,
+                'avd_id': m.AVDID | default(''),
+                'title': m.Title,
+                'severity': m.Severity,
+                'status': m.Status,
+                'description': m.Description | default(''),
+                'message': m.Message | default(''),
+                'resolution': m.Resolution | default(''),
+                'references': m.References | default([]),
+              }) -%}
+            {%- endfor -%}
+          {%- endfor -%}
+          {{ out }}
+
+    - name: Compute pass/fail counts
+      ansible.builtin.set_fact:
+        total_findings: "{{ all_findings | length }}"
+        failed_count: "{{ all_findings | selectattr('status', 'equalto', 'FAIL') | list | length }}"
+        passed_count: "{{ all_findings | selectattr('status', 'equalto', 'PASS') | list | length }}"
+        critical_count: "{{ all_findings | selectattr('status', 'equalto', 'FAIL') | selectattr('severity', 'equalto', 'CRITICAL') | list | length }}"
+        high_count: "{{ all_findings | selectattr('status', 'equalto', 'FAIL') | selectattr('severity', 'equalto', 'HIGH') | list | length }}"
+
+    - name: Compute compliance percentage
+      ansible.builtin.set_fact:
+        compliance_pct: >-
+          {{ ((passed_count | int) / (total_findings | int) * 100) | round(1)
+             if total_findings | int > 0 else 100.0 }}
+        compliant: "{{ failed_count | int == 0 }}"
+
+    - name: Print state summary
+      ansible.builtin.debug:
+        msg:
+          - ""
+          - "  Artifact state: {{ (target_label | default('', true)) }}"
+          - "  ──────────────────────────────────"
+          - "  Misconfigurations evaluated: {{ total_findings }}"
+          - "  PASS:     {{ passed_count }}"
+          - "  FAIL:     {{ failed_count }}"
+          - "    of which CRITICAL: {{ critical_count }}"
+          - "    of which HIGH:     {{ high_count }}"
+          - "  Compliance: {{ compliance_pct }}%  ({{ '✓ COMPLIANT' if compliant else '✗ NON-COMPLIANT' }})"
+          - ""
+          - "  Top 5 FAIL findings (by severity):"
+          - "{% for f in (all_findings | selectattr('status','equalto','FAIL') | sort(attribute='severity'))[:5] %}    [{{ f.severity }}] {{ f.id }} {{ f.title | truncate(80, end='') }}\n{% endfor %}"
+
+    - name: Record assessment to PostgreSQL
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port }}"
+        # evidence write: the least-privilege writer when configured (docs/EVIDENCE_IMMUTABILITY.md)
+        login_user: "{{ aac_evidence_writer_user | default(pg_user, true) }}"
+        login_password: >-
+          {{ compliance_writer_password
+             if (aac_evidence_writer_user | default('', true) | length > 0)
+             else (pg_password) }}
+        login_db: "{{ pg_db }}"
+        query: |
+          INSERT INTO compliance_results
+            (hostname, framework, policy_name, policy_version, compliant,
+             total_controls, passed_controls, failed_controls,
+             compliance_percentage, violations, metadata)
+          VALUES (%s, %s, %s, %s, %s,
+                  %s, %s, %s, %s,
+                  %s::jsonb, %s::jsonb)
+        positional_args:
+          - "{{ (target_label | default('', true)) }}"
+          - "trivy"
+          - "trivy-checks"
+          - "{{ trivy_version_raw.stdout_lines[0] | default('?') | regex_replace('^Version: ', '') }}"
+          - "{{ compliant }}"
+          - "{{ total_findings }}"
+          - "{{ passed_count }}"
+          - "{{ failed_count }}"
+          - "{{ compliance_pct }}"
+          - "{{ all_findings | selectattr('status','equalto','FAIL') | list | to_json }}"
+          - >-
+            {{ {
+              'artifact_path': artifact_path,
+              'scan_type': scan_type,
+              'severity_floor': severity_floor,
+              'critical_fail': critical_count | int,
+              'high_fail': high_count | int,
+              'tool': 'trivy',
+              'tool_version': trivy_version_raw.stdout_lines[0] | default('?'),
+              'evaluation_engine': 'trivy CLI (Apache-2.0 / MIT checks)',
+            } | to_json }}
+      when: record_to_db | bool
+
+    - name: Clean up temp JSON
+      ansible.builtin.file:
+        path: "{{ json_out }}"
+        state: absent

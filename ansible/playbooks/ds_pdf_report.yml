@@ -1,0 +1,136 @@
+---
+# ds_pdf_report.yml — Digital Sovereignty Audit Report PDF
+#
+# Queries the latest Digital Sovereignty result from PostgreSQL, runs
+# scripts/generate_ds_pdf.py (reportlab) locally in the EE container,
+# then SCPs the PDF to the AAP controller host for retrieval.
+#
+# Output: /tmp/digital_sovereignty_report_<YYYY-MM-DD>.pdf (on controller host)
+#
+# AAP Job Template: "DS - Generate Audit PDF"
+# Credentials: Ansible Vault + AAC Build Host (aapuser1) SSH key
+# EE: AAC Compliance EE
+
+- name: Generate Digital Sovereignty Audit Report PDF
+  hosts: localhost
+  connection: local
+  gather_facts: true
+
+  vars_files:
+    - ../vars/site_config.yml
+
+  vars:
+    pg_password:     "{{ compliance_db_password }}"
+    report_date:     "{{ ansible_date_time.date }}"
+    local_pdf_path:  "/tmp/digital_sovereignty_report_{{ ansible_date_time.date }}.pdf"
+    local_data_path: "/tmp/ds_report_data_{{ ansible_date_time.date }}.json"
+    script_path:     "{{ playbook_dir }}/../../scripts/generate_ds_pdf.py"
+    host_pdf_path:   "/tmp/digital_sovereignty_report_{{ ansible_date_time.date }}.pdf"
+    ssh_user:        "{{ aap_ssh_user | default('aapuser1') }}"
+
+  tasks:
+
+    # ── Query latest DS result from PostgreSQL ──────────────────────────────
+    - name: Query latest Digital Sovereignty result
+      community.postgresql.postgresql_query:
+        login_host:     "{{ pg_host }}"
+        login_port:     "{{ pg_port | default(5433) }}"
+        login_user:     "{{ pg_user | default('postgres') }}"
+        login_password: "{{ pg_password }}"
+        login_db:             "{{ pg_db | default('compliance') }}"
+        query: |
+          SELECT policy_name, policy_version, compliance_percentage,
+                 passed_controls, failed_controls, total_controls,
+                 violations, metadata, evaluation_timestamp
+          FROM compliance_results
+          WHERE policy_name = 'Digital Sovereignty'
+          ORDER BY evaluation_timestamp DESC LIMIT 1
+      register: ds_row
+
+    - name: Fail if no Digital Sovereignty data found
+      fail:
+        msg: >-
+          No Digital Sovereignty data found in compliance_results.
+          Run 'DS - Digital Sovereignty Assessment' (Template 57) first.
+      when: ds_row.query_result | length == 0
+
+    # ── Assemble report data ────────────────────────────────────────────────
+    - name: Set DS report facts
+      vars:
+        row:  "{{ ds_row.query_result[0] }}"
+        meta: "{{ row.metadata | default({}) }}"
+        viols: "{{ row.violations | default([]) }}"
+      set_fact:
+        report_data:
+          organization:      "{{ meta.get('organization', 'My Organization') }}"
+          assessment_date:   "{{ report_date }}"
+          generated:         "{{ ansible_date_time.iso8601 }} UTC"
+          sovereignty_level: "{{ meta.get('sovereignty_level', 'NON_SOVEREIGN') }}"
+          sovereignty_score: "{{ row.compliance_percentage | int }}"
+          domains_assessed:  "{{ meta.get('domains_assessed', 0) | int }}"
+          domains_passing:   "{{ meta.get('domains_passing', 0) | int }}"
+          violation_summary:
+            total:    "{{ viols | length }}"
+            critical: "{{ viols | selectattr('severity', 'equalto', 'critical') | list | length }}"
+            high:     "{{ viols | selectattr('severity', 'equalto', 'high')     | list | length }}"
+          domains:   "{{ meta.get('domains', {}) }}"
+
+    # ── Generate PDF locally in EE container ────────────────────────────────
+    - name: Write report data JSON locally
+      copy:
+        content: "{{ report_data | to_nice_json }}"
+        dest:    "{{ local_data_path }}"
+
+    - name: Ensure reportlab is installed
+      pip:
+        name: reportlab
+        state: present
+        executable: pip3
+
+    - name: Generate PDF locally
+      command: >
+        python3 {{ script_path }}
+        {{ local_pdf_path }}
+        --data {{ local_data_path }}
+      register: pdf_result
+      changed_when: true
+
+    - name: Verify PDF was created locally
+      stat:
+        path: "{{ local_pdf_path }}"
+      register: pdf_stat
+
+    - name: Fail if PDF not generated
+      fail:
+        msg: "PDF generation failed: {{ pdf_result.stderr | default('unknown error') }}"
+      when: not pdf_stat.stat.exists
+
+    # ── SCP PDF to controller host for retrieval ─────────────────────────────
+    - name: Copy PDF to controller host via SCP
+      shell: >
+        scp -o StrictHostKeyChecking=no -o BatchMode=yes
+        {{ local_pdf_path }}
+        {{ ssh_user }}@{{ aac_host }}:{{ host_pdf_path }}
+      register: scp_result
+      changed_when: true
+      ignore_errors: true
+
+    # ── Summary ─────────────────────────────────────────────────────────────
+    - name: Report complete
+      debug:
+        msg:
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "  Digital Sovereignty Report — PDF Generated"
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "  Organization  : {{ report_data.organization }}"
+          - "  Date          : {{ report_data.assessment_date }}"
+          - "  Level         : {{ report_data.sovereignty_level }}"
+          - "  Score         : {{ report_data.sovereignty_score }}%"
+          - "  Violations    : {{ report_data.violation_summary.total }}"
+          - "  File size     : {{ pdf_stat.stat.size | filesizeformat }}"
+          - "  SCP status    : {{ 'OK' if scp_result.rc == 0 else 'FAILED — download locally instead' }}"
+          - ""
+          - "  PDF on controller: {{ host_pdf_path }}"
+          - "  Download:"
+          - "    scp {{ ssh_user }}@{{ aac_host }}:{{ host_pdf_path }} ~/Downloads/"
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

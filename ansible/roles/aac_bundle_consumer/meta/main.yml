@@ -1,0 +1,13 @@
+---
+galaxy_info:
+  author: AAC
+  description: >-
+    Pull, verify (ed25519), load and ack the tenant's signed customer-policy
+    bundle from the AAC Customer Portal into a dedicated OPA container.
+  license: Apache-2.0
+  min_ansible_version: "2.14"
+  platforms:
+    - name: EL
+      versions:
+        - "9"
+dependencies: []

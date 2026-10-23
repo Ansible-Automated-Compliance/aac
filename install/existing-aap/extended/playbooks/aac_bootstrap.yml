@@ -1,0 +1,747 @@
+---
+# AAC Bootstrap Playbook
+#
+# Run as the compliance user (non-root):
+#   cd ~/repos/compliance
+#   ansible-playbook install/existing-prod/playbooks/aac_bootstrap.yml
+#
+# Run specific sections:
+#   ansible-playbook install/existing-prod/playbooks/aac_bootstrap.yml \
+#     --tags "host-setup,secrets-setup,podman-secrets"
+
+- name: AAC Production Bootstrap
+  hosts: localhost
+  connection: local
+  gather_facts: true
+
+  vars_prompt:
+    - name: aac_hostname
+      prompt: "\n[AAC] Hostname or FQDN for this AAC host (e.g. <compliance-host>)"
+      private: false
+
+    - name: vault_redhat_username
+      prompt: "Red Hat subscription username"
+      private: false
+
+    - name: vault_redhat_offline_token
+      prompt: "Red Hat offline token (https://access.redhat.com/management/api)"
+      private: true
+
+    - name: vault_github_pat
+      prompt: "GitHub PAT (scopes: repo, workflow)"
+      private: true
+
+    - name: vault_quay_username
+      prompt: "Quay.io username (Enter to skip)"
+      private: false
+      default: "PLACEHOLDER"
+
+    - name: vault_quay_password
+      prompt: "Quay.io password (Enter to skip)"
+      private: true
+      default: "PLACEHOLDER"
+
+    - name: vault_aap_admin_password
+      prompt: "AAP admin password"
+      private: true
+
+    - name: compliance_db_password
+      prompt: "PostgreSQL compliance DB password (Enter for default)"
+      private: true
+      default: "compliance"
+
+    - name: compliance_reader_password
+      prompt: "PostgreSQL reader password (Enter for default)"
+      private: true
+      default: "compliance"
+
+    - name: grafana_admin_password
+      prompt: "Grafana admin password (Enter for default)"
+      private: true
+      default: ""   # set via survey or AAP credential; no baked-in default
+
+    - name: vault_encrypt_password
+      prompt: "Ansible Vault password (used to encrypt vault_secrets.yml)"
+      private: true
+
+  vars:
+    aac_upgrade_system: false
+    repo_root: "{{ playbook_dir }}/../../../.."
+    vault_secrets_path: "{{ repo_root }}/ansible/vars/vault_secrets.yml"
+    vault_secrets_example: "{{ repo_root }}/ansible/vars/vault_secrets.yml.example"
+    quadlets_src: "{{ playbook_dir }}/../quadlets"
+    quadlets_dest: "{{ ansible_env.HOME }}/.config/containers/systemd"
+    caa_keys_dir: "{{ playbook_dir }}/../ee/aac-caa-keys"
+    vault_pw_tmpfile: "{{ ansible_env.HOME }}/.aac_vault_pw.tmp"
+    opa_image: "docker.io/openpolicyagent/opa:latest"
+    pg_image: "registry.redhat.io/rhel9/postgresql-15:latest"
+    grafana_image: "registry.redhat.io/rhel9/grafana:latest"
+    cosign_image: "registry.access.redhat.com/rhtas/cosign-rhel9:latest"
+    opa_containers:
+      - name: opa-security
+        port: 8181
+        policy_subdir: security
+      - name: opa-compliance
+        port: 8182
+        policy_subdir: compliance
+      - name: opa-ot
+        port: 8183
+        policy_subdir: ot
+    firewall_ports:
+      - 3000
+      - 5432
+      - 8181
+      - 8182
+      - 8183
+    quadlet_services:
+      - opa-security.service
+      - opa-compliance.service
+      - opa-ot.service
+      - aac-postgresql.service
+      - aac-grafana.service
+
+  tasks:
+
+    # ── 1. Host Setup ──────────────────────────────────────────────────
+    - name: Host setup
+      tags: [host-setup]
+      block:
+        - name: Install required packages
+          ansible.builtin.dnf:
+            name:
+              - podman
+              - ansible-core
+              - vim
+              - tree
+              - jq
+              - curl
+              - python3-pip
+              - bash-completion
+            state: present
+          become: true
+
+        - name: Upgrade all packages
+          ansible.builtin.dnf:
+            name: "*"
+            state: upgrade
+          become: true
+          when: aac_upgrade_system | bool
+
+        - name: Create ~/repos directory
+          ansible.builtin.file:
+            path: "{{ ansible_env.HOME }}/repos"
+            state: directory
+            mode: "0755"
+
+    # ── 2. Repository Setup ────────────────────────────────────────────
+    - name: Repository setup
+      tags: [repo-setup]
+      block:
+        - name: Verify we are inside the compliance repository
+          ansible.builtin.stat:
+            path: "{{ repo_root }}/ansible/playbooks"
+          register: _repo_check
+
+        - name: Fail if not in the compliance repo
+          ansible.builtin.fail:
+            msg: >-
+              Cannot find {{ repo_root }}/ansible/playbooks.
+              Run this playbook from inside the cloned compliance repository.
+          when: not _repo_check.stat.exists
+
+        - name: Initialize git submodules
+          ansible.builtin.command:
+            cmd: git submodule update --init --recursive
+            chdir: "{{ repo_root }}"
+          register: _submodule
+          changed_when: _submodule.stdout | length > 0
+
+        - name: Verify policies submodule has content
+          ansible.builtin.find:
+            paths: "{{ repo_root }}/policies/benchmarks"
+            file_type: any
+          register: _policies_check
+
+        - name: Fail if policies submodule is empty
+          ansible.builtin.fail:
+            msg: >-
+              policies/benchmarks/ is empty. Submodule init may have failed.
+              Ensure you have access to https://github.com/ynotbhatc/rego_policy_libraries.
+          when: _policies_check.matched == 0
+
+    # ── 3. Secrets Setup ──────────────────────────────────────────────
+    - name: Secrets setup
+      tags: [secrets-setup]
+      block:
+        - name: Generate vault_secrets.yml from prompted values
+          ansible.builtin.copy:
+            dest: "{{ vault_secrets_path }}"
+            mode: "0600"
+            content: |
+              ---
+              # AAC vault_secrets.yml — generated by aac_bootstrap.yml
+              # Encrypted with ansible-vault. NEVER commit the decrypted version.
+
+              # CATEGORY 1 — PERSONAL CREDENTIALS
+              vault_redhat_username: {{ vault_redhat_username }}
+              vault_redhat_offline_token: {{ vault_redhat_offline_token }}
+              vault_github_pat: {{ vault_github_pat }}
+              vault_quay_username: {{ vault_quay_username }}
+              vault_quay_password: {{ vault_quay_password }}
+              vault_anthropic_api_key: PLACEHOLDER
+
+              # CATEGORY 2 — LOCAL LAB AWS CREDENTIALS
+              aws_lab_access_key: PLACEHOLDER
+              aws_lab_secret_key: PLACEHOLDER
+              aws_local_account_id: PLACEHOLDER
+              aws_local_account_name: PLACEHOLDER
+              aws_local_iam_user: PLACEHOLDER
+
+              # CATEGORY 3 — RHPDS AWS CREDENTIALS
+              aws_rhpds_access_key: PLACEHOLDER
+              aws_rhpds_secret_key: PLACEHOLDER
+              aws_rhpds_account_id: PLACEHOLDER
+              aws_rhpds_account_name: PLACEHOLDER
+              aws_rhpds_iam_user: PLACEHOLDER
+
+              # CATEGORY 4 — AAP-INSTALL-SPECIFIC
+              vault_aap_admin_password: {{ vault_aap_admin_password }}
+              vault_aap_mac_admin_password: PLACEHOLDER
+              vault_windows_admin_password: PLACEHOLDER
+              vault_aap_local_mcp_token: PLACEHOLDER
+              vault_aap_mac_mcp_token: PLACEHOLDER
+
+              # CATEGORY 5 — DEFAULTS
+              compliance_db_password: {{ compliance_db_password }}
+              compliance_reader_password: {{ compliance_reader_password }}
+              grafana_admin_password: {{ grafana_admin_password }}
+
+              # CATEGORY 6 — CAA (populated by caa-keys step)
+              caa_signing_private_key: "PLACEHOLDER_paste_cosign_private_pem_here_as_YAML_block_scalar"
+              caa_signing_password: ""
+          no_log: true
+
+    # ── 4. CAA Signing Key Generation ──────────────────────────────────
+    - name: CAA key generation
+      tags: [caa-keys]
+      block:
+        - name: Check if cosign key pair already exists
+          ansible.builtin.stat:
+            path: "{{ caa_keys_dir }}/cosign.key"
+          register: _cosign_key
+
+        - name: Extract cosign binary from container
+          when: not _cosign_key.stat.exists
+          block:
+            - name: Create CAA keys directory
+              ansible.builtin.file:
+                path: "{{ caa_keys_dir }}"
+                state: directory
+                mode: "0700"
+
+            - name: Create temporary container with cosign
+              ansible.builtin.command:
+                cmd: podman create {{ cosign_image }}
+              register: _cosign_cid
+              changed_when: true
+
+            - name: Copy cosign binary out of container
+              ansible.builtin.command:
+                cmd: podman cp {{ _cosign_cid.stdout }}:/usr/bin/cosign {{ caa_keys_dir }}/cosign
+              changed_when: true
+
+            - name: Remove temporary container
+              ansible.builtin.command:
+                cmd: podman rm {{ _cosign_cid.stdout }}
+              changed_when: true
+
+            - name: Make cosign binary executable
+              ansible.builtin.file:
+                path: "{{ caa_keys_dir }}/cosign"
+                mode: "0755"
+
+            - name: Generate cosign key pair
+              ansible.builtin.command:
+                cmd: "{{ caa_keys_dir }}/cosign generate-key-pair"
+                chdir: "{{ caa_keys_dir }}"
+              environment:
+                COSIGN_PASSWORD: ""
+              changed_when: true
+
+        - name: Read generated private key
+          ansible.builtin.slurp:
+            src: "{{ caa_keys_dir }}/cosign.key"
+          register: _cosign_private_key
+          no_log: true
+
+        - name: Update vault_secrets.yml with CAA signing key
+          ansible.builtin.replace:
+            path: "{{ vault_secrets_path }}"
+            regexp: '^caa_signing_private_key:.*$'
+            replace: "caa_signing_private_key: |\n{{ _cosign_private_key.content | b64decode | indent(2, first=true) }}"
+          no_log: true
+
+    # ── 5. Encrypt vault_secrets.yml ───────────────────────────────────
+    - name: Encrypt vault secrets
+      tags: [vault-encrypt]
+      block:
+        - name: Write vault password to temporary file
+          ansible.builtin.copy:
+            dest: "{{ vault_pw_tmpfile }}"
+            content: "{{ vault_encrypt_password }}"
+            mode: "0600"
+          no_log: true
+
+        - name: Check if vault_secrets.yml is already encrypted
+          ansible.builtin.command:
+            cmd: head -1 {{ vault_secrets_path }}
+          register: _vault_header
+          changed_when: false
+
+        - name: Encrypt vault_secrets.yml with ansible-vault
+          ansible.builtin.command:
+            cmd: >-
+              ansible-vault encrypt
+              --vault-password-file {{ vault_pw_tmpfile }}
+              {{ vault_secrets_path }}
+          when: "'$ANSIBLE_VAULT' not in _vault_header.stdout"
+          changed_when: true
+
+    # ── 6. Podman Secrets ──────────────────────────────────────────────
+    - name: Podman secrets
+      tags: [podman-secrets]
+      block:
+        - name: Check existing podman secrets
+          ansible.builtin.command:
+            cmd: podman secret inspect {{ item.name }}
+          loop:
+            - { name: compliance_db_password, value: "{{ compliance_db_password }}" }
+            - { name: compliance_reader_password, value: "{{ compliance_reader_password }}" }
+            - { name: grafana_admin_password, value: "{{ grafana_admin_password }}" }
+          register: _secret_check
+          failed_when: false
+          changed_when: false
+          no_log: true
+
+        - name: Create missing podman secrets
+          ansible.builtin.shell:
+            cmd: "printf '%s' '{{ item.item.value }}' | podman secret create {{ item.item.name }} -"
+          loop: "{{ _secret_check.results }}"
+          when: item.rc != 0
+          changed_when: true
+          no_log: true
+
+    # ── 7. OPA Prerequisites ──────────────────────────────────────────
+    - name: OPA directory setup
+      tags: [opa-prereqs]
+      block:
+        - name: Create OPA policy directories
+          ansible.builtin.file:
+            path: "/etc/opa/{{ item }}"
+            state: directory
+            owner: "{{ ansible_user_id }}"
+            group: "{{ ansible_user_id }}"
+            mode: "0755"
+          loop:
+            - security
+            - compliance
+            - ot
+          become: true
+
+    # ── 8. OPA Container Deployment ───────────────────────────────────
+    - name: OPA container deployment
+      tags: [opa-containers]
+      block:
+        - name: Pull OPA image
+          ansible.builtin.command:
+            cmd: podman pull {{ opa_image }}
+          register: _opa_pull
+          changed_when: "'Copying' in _opa_pull.stderr"
+
+        - name: Check if OPA containers are running
+          ansible.builtin.command:
+            cmd: podman inspect --format '{{ '{{' }}.State.Status{{ '}}' }}' {{ item.name }}
+          loop: "{{ opa_containers }}"
+          register: _opa_status
+          failed_when: false
+          changed_when: false
+
+        - name: Deploy OPA containers
+          ansible.builtin.command:
+            cmd: >-
+              podman run -d
+              --name {{ item.item.name }}
+              -p {{ item.item.port }}:8181
+              --restart=always
+              -v /etc/opa/{{ item.item.policy_subdir }}:/policies:ro,z
+              {{ opa_image }}
+              run --server --addr :8181 /policies
+          loop: "{{ _opa_status.results }}"
+          when: item.rc != 0 or item.stdout != 'running'
+          changed_when: true
+
+        - name: Wait for OPA containers to become healthy
+          ansible.builtin.uri:
+            url: "http://{{ aac_hostname }}:{{ item.port }}/health"
+            method: GET
+            status_code: 200
+          loop: "{{ opa_containers }}"
+          register: _opa_health
+          retries: 12
+          delay: 5
+          until: _opa_health is succeeded
+
+    # ── 9. PostgreSQL Deployment ──────────────────────────────────────
+    - name: PostgreSQL deployment
+      tags: [postgresql]
+      block:
+        - name: Pull PostgreSQL image
+          ansible.builtin.command:
+            cmd: podman pull {{ pg_image }}
+          register: _pg_pull
+          changed_when: "'Copying' in _pg_pull.stderr"
+
+        - name: Create PostgreSQL data volume
+          ansible.builtin.command:
+            cmd: podman volume create compliance_pgdata
+          register: _pg_vol
+          failed_when: _pg_vol.rc != 0 and 'already exists' not in _pg_vol.stderr
+          changed_when: _pg_vol.rc == 0
+
+        - name: Check if PostgreSQL container is running
+          ansible.builtin.command:
+            cmd: podman inspect --format '{{ '{{' }}.State.Status{{ '}}' }}' aac-postgresql
+          register: _pg_status
+          failed_when: false
+          changed_when: false
+
+        - name: Deploy PostgreSQL container
+          ansible.builtin.command:
+            cmd: >-
+              podman run -d --name aac-postgresql
+              -p 5432:5432
+              -e POSTGRESQL_USER=compliance
+              -e POSTGRESQL_DATABASE=compliance
+              --secret compliance_db_password,type=env,target=POSTGRESQL_PASSWORD
+              -v compliance_pgdata:/var/lib/pgsql/data
+              --restart=always
+              {{ pg_image }}
+          when: _pg_status.rc != 0 or _pg_status.stdout != 'running'
+          changed_when: true
+
+        - name: Wait for PostgreSQL to accept connections
+          ansible.builtin.wait_for:
+            host: "{{ aac_hostname }}"
+            port: 5432
+            delay: 3
+            timeout: 60
+
+        - name: Install psycopg2-binary
+          ansible.builtin.pip:
+            name: psycopg2-binary
+            extra_args: --user
+
+        - name: Install community.postgresql collection
+          ansible.builtin.command:
+            cmd: ansible-galaxy collection install community.postgresql --force
+          register: _pg_collection
+          changed_when: "'Installing' in _pg_collection.stdout"
+
+        - name: Run PostgreSQL schema initialisation
+          ansible.builtin.command:
+            cmd: >-
+              ansible-playbook
+              --vault-password-file {{ vault_pw_tmpfile }}
+              {{ repo_root }}/ansible/playbooks/postgres_database_init.yml
+              -e aac_host={{ aac_hostname }}
+              -e pg_host={{ aac_hostname }}
+              -e pg_user=compliance
+              -e aac_db_container_name=aac-postgresql
+              -e aac_db_skip_container_deploy=true
+          changed_when: true
+
+    # ── 10. REGO Policy Loading ───────────────────────────────────────
+    - name: REGO policy loading
+      tags: [rego-policies]
+      block:
+        - name: Install amazon.aws collection
+          ansible.builtin.command:
+            cmd: ansible-galaxy collection install amazon.aws --force
+          register: _aws_collection
+          changed_when: "'Installing' in _aws_collection.stdout"
+
+        - name: Seed the framework catalog (baseline + per-tenant selection rows)
+          ansible.builtin.command:
+            cmd: >-
+              ansible-playbook
+              --vault-password-file {{ vault_pw_tmpfile }}
+              {{ repo_root }}/ansible/playbooks/seed_framework_catalog.yml
+              -e {{ ('@' ~ vault_secrets_path) | quote }}
+              -e {{ ('pg_host=' ~ aac_hostname) | quote }}
+              -e pg_user=compliance
+          changed_when: true
+
+        - name: Load OPA policies via existing playbook (the tenant's selection, never all)
+          ansible.builtin.command:
+            cmd: >-
+              ansible-playbook
+              --vault-password-file {{ vault_pw_tmpfile }}
+              {{ repo_root }}/ansible/playbooks/load_opa_policies.yml
+              -e opa_security_url=http://{{ aac_hostname }}:8181
+              -e opa_compliance_url=http://{{ aac_hostname }}:8182
+              -e opa_ot_url=http://{{ aac_hostname }}:8183
+          changed_when: true
+
+        - name: Verify policy counts on each OPA container
+          ansible.builtin.uri:
+            url: "http://{{ aac_hostname }}:{{ item.port }}/v1/policies"
+            method: GET
+            return_content: true
+          loop: "{{ opa_containers }}"
+          register: _policy_counts
+
+        - name: Display loaded policy counts
+          ansible.builtin.debug:
+            msg: "{{ item.item.name }} (port {{ item.item.port }}): {{ (item.json.result | default([])) | length }} policies loaded"
+          loop: "{{ _policy_counts.results }}"
+
+    # ── 11. Grafana Deployment ────────────────────────────────────────
+    - name: Grafana deployment
+      tags: [grafana]
+      block:
+        - name: Pull Grafana image
+          ansible.builtin.command:
+            cmd: podman pull {{ grafana_image }}
+          register: _grafana_pull
+          changed_when: "'Copying' in _grafana_pull.stderr"
+
+        - name: Create Grafana data volume
+          ansible.builtin.command:
+            cmd: podman volume create compliance_grafanadata
+          register: _grafana_vol
+          failed_when: _grafana_vol.rc != 0 and 'already exists' not in _grafana_vol.stderr
+          changed_when: _grafana_vol.rc == 0
+
+        - name: Check if Grafana container is running
+          ansible.builtin.command:
+            cmd: podman inspect --format '{{ '{{' }}.State.Status{{ '}}' }}' aac-grafana
+          register: _grafana_status
+          failed_when: false
+          changed_when: false
+
+        - name: Deploy Grafana container
+          ansible.builtin.command:
+            cmd: >-
+              podman run -d --name aac-grafana
+              -p 3000:3000
+              --restart=always
+              -v compliance_grafanadata:/var/lib/grafana
+              -e GF_SECURITY_ADMIN_USER=admin
+              --secret grafana_admin_password,type=env,target=GF_SECURITY_ADMIN_PASSWORD
+              -e GF_SERVER_HTTP_ADDR=0.0.0.0
+              -e GF_SERVER_PORT=3000
+              -e GF_SERVER_ROOT_URL=http://{{ aac_hostname }}:3000
+              -e GF_INSTALL_PLUGINS=grafana-postgresql-datasource
+              {{ grafana_image }}
+          when: _grafana_status.rc != 0 or _grafana_status.stdout != 'running'
+          changed_when: true
+
+        - name: Wait for Grafana to become healthy
+          ansible.builtin.uri:
+            url: "http://{{ aac_hostname }}:3000/api/health"
+            method: GET
+            status_code: 200
+          retries: 12
+          delay: 5
+          register: _grafana_health
+          until: _grafana_health is succeeded
+
+        - name: Deploy Grafana dashboards via existing playbook
+          ansible.builtin.command:
+            cmd: >-
+              ansible-playbook
+              --vault-password-file {{ vault_pw_tmpfile }}
+              {{ repo_root }}/ansible/playbooks/deploy_grafana_dashboard.yml
+              -e grafana_url=http://{{ aac_hostname }}:3000
+              -e pg_host={{ aac_hostname }}
+          changed_when: true
+
+    # ── 12. Firewall Configuration ────────────────────────────────────
+    - name: Firewall configuration
+      tags: [firewall]
+      block:
+        - name: Open AAC service ports
+          ansible.builtin.command:
+            cmd: firewall-cmd --permanent --add-port={{ item }}/tcp
+          loop: "{{ firewall_ports }}"
+          register: _fw_add
+          changed_when: "'ALREADY_ENABLED' not in _fw_add.stderr"
+          become: true
+
+        - name: Reload firewall
+          ansible.builtin.command:
+            cmd: firewall-cmd --reload
+          become: true
+          changed_when: true
+
+        - name: Verify open ports
+          ansible.builtin.command:
+            cmd: firewall-cmd --list-ports
+          register: _fw_ports
+          changed_when: false
+          become: true
+
+        - name: Display open ports
+          ansible.builtin.debug:
+            msg: "Firewall ports: {{ _fw_ports.stdout }}"
+
+    # ── 13. Quadlets ──────────────────────────────────────────────────
+    - name: Quadlet setup
+      tags: [quadlets]
+      block:
+        - name: Disable old system-level container units
+          ansible.builtin.systemd:
+            name: "{{ item }}"
+            state: stopped
+            enabled: false
+          loop:
+            - container-opa-security.service
+            - container-opa-compliance.service
+            - container-opa-ot.service
+            - container-aac-postgresql.service
+            - container-aac-grafana.service
+          become: true
+          failed_when: false
+
+        - name: Remove stale system-level unit files
+          ansible.builtin.file:
+            path: "/etc/systemd/system/{{ item }}"
+            state: absent
+          loop:
+            - container-opa-security.service
+            - container-opa-compliance.service
+            - container-opa-ot.service
+            - container-aac-postgresql.service
+            - container-aac-grafana.service
+          become: true
+          register: _stale_units
+
+        - name: Reload system daemon after removing stale units
+          ansible.builtin.systemd:
+            daemon_reload: true
+          become: true
+          when: _stale_units is changed
+
+        - name: Create user systemd quadlet directory
+          ansible.builtin.file:
+            path: "{{ quadlets_dest }}"
+            state: directory
+            mode: "0755"
+
+        - name: Copy quadlet container files
+          ansible.builtin.copy:
+            src: "{{ quadlets_src }}/{{ item }}"
+            dest: "{{ quadlets_dest }}/{{ item }}"
+            mode: "0644"
+          loop:
+            - opa-security.container
+            - opa-compliance.container
+            - opa-ot.container
+            - aac-postgresql.container
+            - aac-grafana.container
+
+        - name: Remove hand-started containers so quadlet owns them
+          ansible.builtin.command:
+            cmd: podman rm -f {{ item }}
+          loop:
+            - opa-security
+            - opa-compliance
+            - opa-ot
+            - aac-postgresql
+            - aac-grafana
+          register: _rm_containers
+          failed_when: false
+          changed_when: _rm_containers.rc == 0
+
+        - name: Reload user systemd daemon
+          ansible.builtin.systemd:
+            daemon_reload: true
+            scope: user
+
+        - name: Start quadlet services
+          ansible.builtin.systemd:
+            name: "{{ item }}"
+            state: started
+            scope: user
+          loop: "{{ quadlet_services }}"
+
+        - name: Verify all quadlet services are active
+          ansible.builtin.command:
+            cmd: systemctl --user is-active {{ item }}
+          loop: "{{ quadlet_services }}"
+          register: _svc_active
+          changed_when: false
+
+        - name: Enable lingering for compliance user
+          ansible.builtin.command:
+            cmd: loginctl enable-linger {{ ansible_user_id }}
+          become: true
+          register: _linger
+          changed_when: true
+
+        - name: Verify linger is enabled
+          ansible.builtin.command:
+            cmd: loginctl show-user {{ ansible_user_id }} -p Linger
+          register: _linger_check
+          changed_when: false
+
+        - name: Display linger status
+          ansible.builtin.debug:
+            msg: "{{ _linger_check.stdout }}"
+
+        - name: Check for failed user units
+          ansible.builtin.command:
+            cmd: systemctl --user --failed --no-pager
+          register: _failed_units
+          changed_when: false
+
+        - name: Display failed units (if any)
+          ansible.builtin.debug:
+            msg: "{{ _failed_units.stdout }}"
+          when: "'0 loaded units listed' not in _failed_units.stdout"
+
+    # ── Cleanup ───────────────────────────────────────────────────────
+    - name: Remove vault password temp file
+      tags: [always]
+      block:
+        - name: Ensure vault password temp file is removed
+          ansible.builtin.file:
+            path: "{{ vault_pw_tmpfile }}"
+            state: absent
+          no_log: true
+
+    # ── Summary ───────────────────────────────────────────────────────
+    - name: Bootstrap complete
+      tags: [always]
+      ansible.builtin.debug:
+        msg: |
+          ╔══════════════════════════════════════════════════════════════╗
+          ║            AAC Production Bootstrap Complete                ║
+          ╠══════════════════════════════════════════════════════════════╣
+          ║                                                            ║
+          ║  OPA Security:   http://{{ aac_hostname }}:8181/health      ║
+          ║  OPA Compliance: http://{{ aac_hostname }}:8182/health      ║
+          ║  OPA OT:         http://{{ aac_hostname }}:8183/health      ║
+          ║  PostgreSQL:     {{ aac_hostname }}:5432                    ║
+          ║  Grafana:        http://{{ aac_hostname }}:3000             ║
+          ║                                                            ║
+          ║  Secrets:  ansible/vars/vault_secrets.yml (encrypted)      ║
+          ║  CAA keys: install/existing-prod/ee/aac-caa-keys/          ║
+          ║  Quadlets: ~/.config/containers/systemd/                   ║
+          ║                                                            ║
+          ║  Next steps:                                               ║
+          ║    1. AAP Project Sync (add compliance repo as project)    ║
+          ║    2. Build and push the Compliance EE                     ║
+          ║    3. Launch CIS RHEL 9 assessment from AAP                ║
+          ║                                                            ║
+          ╚══════════════════════════════════════════════════════════════╝

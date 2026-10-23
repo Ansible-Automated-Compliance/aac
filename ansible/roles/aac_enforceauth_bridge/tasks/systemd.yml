@@ -1,0 +1,53 @@
+---
+# Install a user-level systemd unit so the container survives reboots without a
+# login session. Mirrors the aac_mcp_server pattern (linger + user unit).
+
+- name: Enable systemd linger for {{ aac_eauth_run_user }}
+  command: "loginctl enable-linger {{ aac_eauth_run_user }}"
+  delegate_to: "{{ aac_host }}"
+  become: true
+  changed_when: true
+
+- name: Ensure user systemd directory exists
+  file:
+    path: "/home/{{ aac_eauth_run_user }}/.config/systemd/user"
+    state: directory
+    owner: "{{ aac_eauth_run_user }}"
+    group: "{{ aac_eauth_run_user }}"
+    mode: "0755"
+  delegate_to: "{{ aac_host }}"
+  become: true
+
+- name: Write Compliance-State API systemd user unit
+  copy:
+    dest: "/home/{{ aac_eauth_run_user }}/.config/systemd/user/container-{{ aac_eauth_container_name }}.service"
+    owner: "{{ aac_eauth_run_user }}"
+    group: "{{ aac_eauth_run_user }}"
+    mode: "0644"
+    content: |
+      [Unit]
+      Description=AAC Compliance-State API (EnforceAuth authorization-context bridge)
+      After=network-online.target
+      Wants=network-online.target
+
+      [Service]
+      Type=simple
+      Restart=always
+      RestartSec=10
+      ExecStartPre=-/usr/bin/podman stop {{ aac_eauth_container_name }}
+      ExecStartPre=-/usr/bin/podman rm {{ aac_eauth_container_name }}
+      ExecStart=/usr/bin/podman run \
+        --name {{ aac_eauth_container_name }} \
+        -p {{ aac_eauth_port }}:{{ aac_eauth_port }} \
+        --env-file {{ aac_eauth_app_dir }}/compliance-state.env \
+        {{ aac_eauth_image }}
+      ExecStop=/usr/bin/podman stop {{ aac_eauth_container_name }}
+
+      [Install]
+      WantedBy=default.target
+  delegate_to: "{{ aac_host }}"
+  become: true
+  notify: reload_and_enable_eauth_unit
+
+- name: Force handler flush (ensure unit is enabled before play ends)
+  meta: flush_handlers

@@ -1,0 +1,120 @@
+---
+# AWS Compliance Lab - Manage Instance State
+# Start or stop lab instances to manage costs
+#
+# Required AAP Credentials:
+#   - Amazon Web Services credential
+#
+# Variables:
+#   - aws_region: AWS region (default: us-east-1)
+#   - lab_name: Name prefix (default: compliance-lab)
+#   - instance_state: desired state - 'running' or 'stopped'
+
+- name: Manage AWS Compliance Lab Instances
+  hosts: localhost
+  connection: local
+  gather_facts: no
+
+  vars:
+    # Plain defaults, deliberately NOT written as `x: "{{ x | default(...) }}"`.
+    # A play var that refers to itself is a recursive loop — Ansible aborts with
+    # "recursive loop detected in template string" and the template becomes
+    # unusable from the UI unless every var is passed by hand. Extra vars (survey
+    # or launch-time) already outrank play vars, so a bare default is both
+    # simpler and correct.
+    aws_region: us-east-1
+    lab_name: compliance-lab
+    instance_state: running
+    # The dynamic inventory composes the connection user from the instance's
+    # own SSHUser tag (`ansible_user: tags['SSHUser'] | default('ec2-user')`).
+    # Ubuntu AMIs log in as `ubuntu`, so an untagged Ubuntu instance fails with
+    # "Permission denied (publickey)" for ec2-user — which is exactly what
+    # happened to compliance-lab-ubuntu22 on every fact collection. Asserting
+    # the tags here, on the template that manages the instances, keeps the fix
+    # where the design says it lives: on the instance, not hand-set per host.
+    ssh_user_tags:
+      compliance-lab-ubuntu22: ubuntu
+
+  tasks:
+    - name: Validate instance_state
+      assert:
+        that:
+          - instance_state in ['running', 'stopped']
+        fail_msg: "instance_state must be 'running' or 'stopped'"
+
+    - name: Find lab instances
+      amazon.aws.ec2_instance_info:
+        region: "{{ aws_region }}"
+        filters:
+          "tag:Project": "{{ lab_name }}"
+      register: lab_instances
+
+    - name: Display current state
+      debug:
+        msg: |
+          Found {{ lab_instances.instances | length }} instances
+          {% for inst in lab_instances.instances %}
+          - {{ inst.tags.Name }}: {{ inst.state.name }} ({{ inst.public_ip_address | default('no public IP') }})
+          {% endfor %}
+
+    - name: Ensure SSHUser tags match each instance's login account
+      amazon.aws.ec2_tag:
+        region: "{{ aws_region }}"
+        resource: "{{ item.instance_id }}"
+        state: present
+        tags:
+          SSHUser: "{{ ssh_user_tags[item.tags.Name] }}"
+      loop: "{{ lab_instances.instances }}"
+      loop_control:
+        label: "{{ item.tags.Name }}"
+      when: item.tags.Name in ssh_user_tags
+
+    - name: Set instances to {{ instance_state }}
+      amazon.aws.ec2_instance:
+        instance_ids: "{{ lab_instances.instances | map(attribute='instance_id') | list }}"
+        region: "{{ aws_region }}"
+        state: "{{ instance_state }}"
+        wait: yes
+      when: lab_instances.instances | length > 0
+      register: state_change
+
+    - name: Wait for instances to be ready
+      pause:
+        seconds: 30
+      when:
+        - instance_state == 'running'
+        - lab_instances.instances | length > 0
+
+    - name: Get updated instance info
+      amazon.aws.ec2_instance_info:
+        region: "{{ aws_region }}"
+        filters:
+          "tag:Project": "{{ lab_name }}"
+      register: updated_instances
+      when: instance_state == 'running'
+
+    - name: Display results
+      debug:
+        msg: |
+
+          =============================================
+          Instance State: {{ instance_state | upper }}
+          =============================================
+
+          {% if instance_state == 'running' and updated_instances is defined %}
+          {% for inst in updated_instances.instances %}
+          {{ inst.tags.Name }}:
+            State: {{ inst.state.name }}
+            Public IP: {{ inst.public_ip_address | default('pending...') }}
+            Instance ID: {{ inst.instance_id }}
+          {% endfor %}
+          {% else %}
+          All {{ lab_instances.instances | length }} instances are now {{ instance_state }}.
+          {% endif %}
+
+          {% if instance_state == 'stopped' %}
+          Cost Savings: Instances are stopped - no compute charges.
+          Storage charges still apply for EBS volumes.
+          {% endif %}
+
+          =============================================

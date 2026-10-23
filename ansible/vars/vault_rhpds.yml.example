@@ -1,0 +1,29 @@
+---
+# AAC vault_rhpds.yml — RHPDS cluster credentials
+#
+# SETUP: Copy this file to vault_rhpds.yml and fill in your values.
+#   cp ansible/vars/vault_rhpds.yml.example ansible/vars/vault_rhpds.yml
+#
+# vault_rhpds.yml is gitignored — your cluster credentials stay local.
+# Update this file when you provision a new RHPDS cluster, or run the
+# "AAC - Update RHPDS AWS Credentials" AAP job template to update it automatically.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# RHPDS AWS CREDENTIALS (change each time you provision a new RHPDS cluster)
+# Source: RHPDS cluster allocation email
+# ─────────────────────────────────────────────────────────────────────────────
+
+aws_rhpds_access_key:   PLACEHOLDER         # RHPDS-allocated AWS access key
+aws_rhpds_secret_key:   PLACEHOLDER         # RHPDS-allocated AWS secret key
+aws_rhpds_account_id:   'PLACEHOLDER'       # 12-digit AWS account ID
+aws_rhpds_account_name: PLACEHOLDER         # e.g. open-environment-abc123-admin
+aws_rhpds_iam_user:     PLACEHOLDER         # e.g. open-environment-abc123-admin
+
+# ─────────────────────────────────────────────────────────────────────────────
+# RHPDS CLUSTER DETAILS (optional — used when cluster is known at config time)
+# Can also be passed interactively via AAP survey at workflow launch.
+# ─────────────────────────────────────────────────────────────────────────────
+
+rhpds_cluster:            PLACEHOLDER       # e.g. cluster-abc12.dynamic.redhatworkshops.io
+rhpds_gateway_password:   PLACEHOLDER       # AAP gateway admin password
+rhpds_controller_password: PLACEHOLDER      # AAP controller admin password

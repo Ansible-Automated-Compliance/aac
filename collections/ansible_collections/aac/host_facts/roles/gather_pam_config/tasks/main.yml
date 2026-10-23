@@ -1,0 +1,160 @@
+---
+# tasks file for gather_pam_config
+
+- name: Check authselect current profile
+  shell: authselect current 2>/dev/null || echo "not configured"
+  register: authselect_current
+  changed_when: false
+
+- name: Parse authselect configuration
+  set_fact:
+    authselect_profile: "{{ authselect_current.stdout | regex_search('Profile ID: (\\S+)', '\\1') | first | default('unknown') }}"
+    authselect_features: "{{ authselect_current.stdout | regex_findall('- (\\S+)') }}"
+  when: "'Profile ID' in authselect_current.stdout"
+
+- name: Check for authselect custom profile
+  stat:
+    path: /etc/authselect/custom
+  register: authselect_custom_dir
+
+- name: Read PAM password-auth configuration
+  slurp:
+    src: /etc/pam.d/password-auth
+  register: pam_password_auth
+  failed_when: false
+
+- name: Read PAM system-auth configuration
+  slurp:
+    src: /etc/pam.d/system-auth
+  register: pam_system_auth
+  failed_when: false
+
+- name: Read faillock configuration
+  slurp:
+    src: /etc/security/faillock.conf
+  register: faillock_conf
+  failed_when: false
+
+- name: Parse faillock configuration
+  set_fact:
+    faillock_config: "{{ faillock_conf.content | b64decode | regex_findall('^\\s*([^#]\\S+)\\s*=\\s*(.+)$', multiline=True) | items2dict }}"
+  when:
+    - faillock_conf is defined
+    - faillock_conf.content is defined
+
+- name: Read pwquality configuration
+  slurp:
+    src: /etc/security/pwquality.conf
+  register: pwquality_conf
+  failed_when: false
+
+- name: Parse pwquality configuration
+  set_fact:
+    pwquality_config: "{{ pwquality_conf.content | b64decode | regex_findall('^\\s*([^#]\\S+)\\s*=\\s*(.+)$', multiline=True) | items2dict }}"
+  when:
+    - pwquality_conf is defined
+    - pwquality_conf.content is defined
+
+- name: Read login.defs for password policy
+  slurp:
+    src: /etc/login.defs
+  register: login_defs_content
+
+- name: Parse login.defs
+  set_fact:
+    login_defs_parsed: "{{ login_defs_content.content | b64decode | regex_findall('^\\s*([A-Z_]+)\\s+(\\S+)', multiline=True) | items2dict }}"
+
+- name: Read useradd defaults
+  slurp:
+    src: /etc/default/useradd
+  register: useradd_defaults_content
+  failed_when: false
+
+- name: Parse useradd defaults
+  set_fact:
+    useradd_defaults: "{{ useradd_defaults_content.content | b64decode | regex_findall('^\\s*([A-Z_]+)\\s*=\\s*(.+)$', multiline=True) | items2dict }}"
+  when:
+    - useradd_defaults_content is defined
+    - useradd_defaults_content.content is defined
+
+- name: Check PAM password-auth for pwquality
+  shell: |
+    grep -E 'password.*pam_pwquality.so' /etc/pam.d/password-auth | grep -v '^#' || echo "not found"
+  register: pam_pwquality_check
+  changed_when: false
+
+- name: Check PAM password-auth for faillock
+  shell: |
+    grep -E 'auth.*pam_faillock.so' /etc/pam.d/password-auth | grep -v '^#' || echo "not found"
+  register: pam_faillock_check
+  changed_when: false
+
+- name: Check PAM password-auth for pwhistory
+  shell: |
+    grep -E 'password.*pam_pwhistory.so.*remember=' /etc/pam.d/password-auth | grep -oP 'remember=\K[0-9]+' || echo "0"
+  register: pam_pwhistory_check
+  changed_when: false
+
+- name: Check PAM password hash algorithm
+  shell: |
+    grep -E 'password.*pam_unix.so' /etc/pam.d/password-auth | grep -oP '(sha512|yescrypt)' | head -1 || echo "unknown"
+  register: pam_hash_check
+  changed_when: false
+
+- name: Check PAM su restriction
+  shell: |
+    grep -E 'auth.*required.*pam_wheel.so.*use_uid' /etc/pam.d/su | grep -v '^#' > /dev/null && echo "true" || echo "false"
+  register: pam_su_restricted_check
+  changed_when: false
+
+- name: Set comprehensive PAM facts
+  set_fact:
+    host_pam_facts:
+      authselect:
+        profile: "{{ authselect_profile | default('unknown') }}"
+        features: "{{ authselect_features | default([]) }}"
+        custom_profile_exists: "{{ authselect_custom_dir.stat.exists | default(false) }}"
+        includes_faillock: "{{ 'with-faillock' in (authselect_features | default([])) }}"
+      faillock:
+        configured: "{{ faillock_config is defined }}"
+        deny: "{{ faillock_config.deny | default('not set') }}"
+        unlock_time: "{{ faillock_config.unlock_time | default('not set') }}"
+        fail_interval: "{{ faillock_config.fail_interval | default('not set') }}"
+        pam_enabled: "{{ 'not found' not in pam_faillock_check.stdout }}"
+      pwquality:
+        configured: "{{ pwquality_config is defined }}"
+        minlen: "{{ pwquality_config.minlen | default('not set') }}"
+        minclass: "{{ pwquality_config.minclass | default('not set') }}"
+        dcredit: "{{ pwquality_config.dcredit | default('not set') }}"
+        ucredit: "{{ pwquality_config.ucredit | default('not set') }}"
+        ocredit: "{{ pwquality_config.ocredit | default('not set') }}"
+        lcredit: "{{ pwquality_config.lcredit | default('not set') }}"
+        pam_enabled: "{{ 'not found' not in pam_pwquality_check.stdout }}"
+      pwhistory:
+        remember: "{{ pam_pwhistory_check.stdout | int }}"
+      password_policy:
+        pass_max_days: "{{ login_defs_parsed.PASS_MAX_DAYS | default('not set') }}"
+        pass_min_days: "{{ login_defs_parsed.PASS_MIN_DAYS | default('not set') }}"
+        pass_warn_age: "{{ login_defs_parsed.PASS_WARN_AGE | default('not set') }}"
+        pass_min_len: "{{ login_defs_parsed.PASS_MIN_LEN | default('not set') }}"
+      useradd:
+        inactive: "{{ useradd_defaults.INACTIVE | default('not set') }}"
+        expire: "{{ useradd_defaults.EXPIRE | default('not set') }}"
+        shell: "{{ useradd_defaults.SHELL | default('not set') }}"
+      password_hash: "{{ pam_hash_check.stdout }}"
+      su_restricted: "{{ pam_su_restricted_check.stdout | bool }}"
+      pam_files:
+        password_auth: "{{ pam_password_auth.content | b64decode if pam_password_auth.content is defined else 'not found' }}"
+        system_auth: "{{ pam_system_auth.content | b64decode if pam_system_auth.content is defined else 'not found' }}"
+      collection_timestamp: "{{ ansible_date_time.iso8601 }}"
+
+- name: Display PAM facts summary
+  debug:
+    msg:
+      - "Authselect profile: {{ host_pam_facts.authselect.profile }}"
+      - "Faillock configured: {{ host_pam_facts.faillock.configured }}"
+      - "Faillock deny attempts: {{ host_pam_facts.faillock.deny }}"
+      - "Pwquality minlen: {{ host_pam_facts.pwquality.minlen }}"
+      - "Password history remember: {{ host_pam_facts.pwhistory.remember }}"
+      - "Password hash algorithm: {{ host_pam_facts.password_hash }}"
+      - "SU access restricted: {{ host_pam_facts.su_restricted }}"

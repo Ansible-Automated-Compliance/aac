@@ -1,0 +1,48 @@
+---
+# linux_cron.yml — Collect cron and scheduled task facts
+
+- name: Get system cron jobs
+  shell: |
+    for f in /etc/cron.d/* /etc/crontab; do
+      [ -f "$f" ] && echo "=== $f ===" && grep -v "^#" "$f" 2>/dev/null || true
+    done
+  register: system_cron_raw
+  changed_when: false
+  failed_when: false
+
+- name: Get cron access control
+  shell: |
+    echo "=== cron.allow ===" && cat /etc/cron.allow 2>/dev/null || echo "not_present"
+    echo "=== cron.deny ===" && cat /etc/cron.deny 2>/dev/null || echo "not_present"
+    echo "=== at.allow ===" && cat /etc/at.allow 2>/dev/null || echo "not_present"
+    echo "=== at.deny ===" && cat /etc/at.deny 2>/dev/null || echo "not_present"
+  register: cron_access_raw
+  changed_when: false
+  failed_when: false
+
+- name: Check for user crontabs
+  shell: |
+    for user in $(cut -d: -f1 /etc/passwd); do
+      crontab -l -u "$user" 2>/dev/null && echo "USER:$user" || true
+    done | head -50
+  register: user_crontabs_raw
+  changed_when: false
+  failed_when: false
+
+- name: Get systemd timers
+  shell: |
+    systemctl list-timers --all --no-pager --no-legend 2>/dev/null \
+      | awk '{print $NF}' | sort | uniq || echo ""
+  register: systemd_timers_raw
+  changed_when: false
+  failed_when: false
+
+- name: Set cron facts
+  set_fact:
+    aac_cron:
+      system_cron_raw:    "{{ system_cron_raw.stdout | default('') }}"
+      cron_access_raw:    "{{ cron_access_raw.stdout | default('') }}"
+      user_crontabs_raw:  "{{ user_crontabs_raw.stdout | default('') }}"
+      systemd_timers:     "{{ systemd_timers_raw.stdout_lines | default([]) }}"
+      cron_allow_exists:  "{{ '/etc/cron.allow' is exists }}"
+      cron_deny_exists:   "{{ '/etc/cron.deny' is exists }}"

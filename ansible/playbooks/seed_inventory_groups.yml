@@ -1,0 +1,152 @@
+---
+# Recreate the OS-targeting inventory groups and CIS template limits.
+#
+# Why: the inventories lost their groups at the CRC migration (CLAUDE.md
+# documented "no groups exist — recreate them"), which left every CIS
+# assessment targeting `hosts: all` — including the controller-internal
+# pseudo-hosts (localhost, aap-controller, aap-postgres), which live
+# INSIDE the execution environment where sudo does not exist. That was
+# the real root cause of the chronic CIS nightly failures (39–69 failed
+# runs each), surfaced by the nightly lab pipeline's maiden run
+# (workflow 3549, 2026-09-01).
+#
+# Idempotent: find-or-create by name; host/limit assignment converges.
+# TLS: verification defaults ON (fail closed). Environments with
+# self-signed controller certs (the lab CRC) pass
+# -e aap_validate_certs=false explicitly at launch.
+# Run from a job template with the "AAP Token (extra_vars)" credential
+# and -e aap_url=https://<gateway-host>, or from an operator machine
+# where site_config/vault_secrets provide both.
+
+- name: Seed inventory groups and CIS template limits
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    hdrs:
+      Authorization: "Bearer {{ aap_api_token }}"
+    groups_spec:
+      - { inventory: "Compliance Infrastructure", name: os_rhel9,        desc: "RHEL 9 CIS/STIG targets",                     hosts: "{{ seed_rhel9_hosts | default(['compliance-lab-rhel9']) }}" }
+      - { inventory: "Compliance Infrastructure", name: os_rhel10,       desc: "RHEL 10 targets",                             hosts: ["compliance-lab-rhel10"] }
+      - { inventory: "Compliance Infrastructure", name: os_windows,      desc: "Windows Server targets (WinRM)",              hosts: ["compliance-lab-windows2022"] }
+      - { inventory: "Compliance Infrastructure", name: os_ubuntu,       desc: "Ubuntu targets",                              hosts: ["compliance-lab-ubuntu22"] }
+      - { inventory: "Compliance Infrastructure", name: os_amazon_linux, desc: "Amazon Linux targets",                        hosts: ["compliance-lab-amazon-linux"] }
+      - { inventory: "Compliance Infrastructure", name: infra_internal,  desc: "Controller-internal pseudo-hosts — never OS-assessment targets", hosts: ["localhost", "aap-controller", "aap-controller-ssh", "aap-postgres"] }
+      - { inventory: "localhost",                 name: net_vyos,        desc: "VyOS router targets",                         hosts: ["vyos-router-01"] }
+      - { inventory: "localhost",                 name: net_pfsense,     desc: "pfSense targets",                             hosts: ["compliance-lab-pfsense"] }
+    jt_limits:
+      - { jt: "CIS RHEL 9 Compliance Assessment",  limit: os_rhel9 }
+      - { jt: "CIS Windows Server 2022 Assessment", limit: os_windows }
+      - { jt: "CIS Ubuntu 22.04 Assessment",        limit: os_ubuntu }
+      - { jt: "CIS Amazon Linux 2023 Assessment",   limit: os_amazon_linux }
+      - { jt: "CIS VyOS Assessment",                limit: net_vyos }
+      - { jt: "CIS pfSense Assessment",             limit: net_pfsense }
+
+  tasks:
+    - name: Load optional local config (operator machine only)
+      ansible.builtin.include_vars: "{{ item }}"
+      with_first_found:
+        - files: ["{{ playbook_dir }}/../vars/site_config.yml"]
+          skip: true
+
+    - name: Load optional local secrets (operator machine only)
+      ansible.builtin.include_vars: "{{ item }}"
+      with_first_found:
+        - files: ["{{ playbook_dir }}/../vars/vault_secrets.yml"]
+          skip: true
+
+    - name: Resolve controller URL and token
+      ansible.builtin.set_fact:
+        api: "{{ aap_url | default('') }}/api/controller/v2"
+        aap_api_token: "{{ aap_token | default(vault_aap_local_mcp_token | default('', true), true) }}"
+
+    - name: Require controller URL and token
+      ansible.builtin.assert:
+        that:
+          - aap_url is defined and (aap_url | length > 0)
+          - aap_api_token | length > 0
+        fail_msg: >-
+          aap_url and an API token are required. From AAP: attach the
+          "AAP Token (extra_vars)" credential and launch with
+          -e aap_url=https://<gateway-host>.
+
+    - name: Resolve inventories by name
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "{{ api }}/inventories/?name={{ item | urlencode }}"
+        headers: "{{ hdrs }}"
+        validate_certs: "{{ aap_validate_certs | default(true) | bool }}"
+      register: inv_lookup
+      loop: "{{ groups_spec | map(attribute='inventory') | unique | list }}"
+      failed_when: inv_lookup.json.count != 1
+
+    - name: Build inventory id map
+      ansible.builtin.set_fact:
+        inv_ids: "{{ dict(inv_lookup.results | map(attribute='item')
+                     | zip(inv_lookup.results | map(attribute='json.results.0.id'))) }}"
+
+    - name: Find-or-create each group
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "{{ api }}/inventories/{{ inv_ids[item.inventory] }}/groups/"
+        method: POST
+        headers: "{{ hdrs }}"
+        validate_certs: "{{ aap_validate_certs | default(true) | bool }}"
+        body_format: json
+        body: "{{ {'name': item.name, 'description': item.desc} }}"
+        status_code: [201, 400]   # 400 = already exists — converge, don't fail
+      loop: "{{ groups_spec }}"
+      loop_control:
+        label: "{{ item.inventory }}/{{ item.name }}"
+
+    - name: Resolve group ids
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "{{ api }}/inventories/{{ inv_ids[item.inventory] }}/groups/?name={{ item.name | urlencode }}"
+        headers: "{{ hdrs }}"
+        validate_certs: "{{ aap_validate_certs | default(true) | bool }}"
+      register: grp_lookup
+      loop: "{{ groups_spec }}"
+      loop_control:
+        label: "{{ item.name }}"
+      failed_when: grp_lookup.json.count != 1
+
+    - name: Associate hosts with groups
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "{{ api }}/groups/{{ (grp_lookup.results | selectattr('item.name', 'equalto', item.0.name) | first).json.results.0.id }}/hosts/"
+        method: POST
+        headers: "{{ hdrs }}"
+        validate_certs: "{{ aap_validate_certs | default(true) | bool }}"
+        body_format: json
+        body: "{{ {'name': item.1, 'inventory': inv_ids[item.0.inventory] | int} }}"
+        status_code: [201, 204, 400]
+      loop: "{{ groups_spec | subelements('hosts') }}"
+      loop_control:
+        label: "{{ item.0.name }} <- {{ item.1 }}"
+
+    - name: Set CIS template limits
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "{{ api }}/job_templates/?name={{ item.jt | urlencode }}"
+        headers: "{{ hdrs }}"
+        validate_certs: "{{ aap_validate_certs | default(true) | bool }}"
+      register: jt_lookup
+      loop: "{{ jt_limits }}"
+      loop_control:
+        label: "{{ item.jt }}"
+      failed_when: jt_lookup.json.count != 1
+
+    - name: Apply limits
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "{{ api }}/job_templates/{{ (jt_lookup.results | selectattr('item.jt', 'equalto', item.jt) | first).json.results.0.id }}/"
+        method: PATCH
+        headers: "{{ hdrs }}"
+        validate_certs: "{{ aap_validate_certs | default(true) | bool }}"
+        body_format: json
+        body: "{{ {'limit': item.limit} }}"
+      loop: "{{ jt_limits }}"
+      loop_control:
+        label: "{{ item.jt }} -> {{ item.limit }}"

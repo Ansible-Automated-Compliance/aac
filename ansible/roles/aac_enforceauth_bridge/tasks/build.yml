@@ -1,0 +1,15 @@
+---
+# Build the Compliance-State API image on aac_host from the synced source.
+# Uses the podman CLI directly (the AAC EE does not ship containers.podman),
+# matching the shell-based pattern used by aac_mcp_server / aac_opa_containers.
+# Rootless build as the AAP user so the image lands in that user's storage.
+
+- name: Build Compliance-State API image
+  command: >
+    podman build -f {{ aac_eauth_app_dir }}/Containerfile
+    -t {{ aac_eauth_image }} {{ aac_eauth_app_dir }}
+  delegate_to: "{{ aac_host }}"
+  become: true
+  become_user: "{{ aac_eauth_run_user }}"
+  register: eauth_build
+  changed_when: "'COMMIT' in eauth_build.stdout or eauth_build.rc == 0"

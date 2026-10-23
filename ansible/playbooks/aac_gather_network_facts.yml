@@ -1,0 +1,265 @@
+---
+# aac_gather_network_facts.yml — Collect network/storage device facts → host_facts
+#
+# Queries each network simulator (or real device) REST API and stores facts
+# into the host_facts table using the same schema as aac_gather_facts.yml.
+#
+# Simulators:   http://<aac-host>:8091-8094/facts
+# Real devices: set device_endpoints var to point at production APIs
+#
+# os_family = 'network' or 'storage' in host_facts — query accordingly:
+#   SELECT hostname, facts->>'platform' FROM host_facts_latest
+#   WHERE os_family IN ('network','storage');
+#
+# AAP Job Template: "AAC - Gather Network Facts"
+
+- name: Collect Network and Storage Device Facts
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - [ "../vars/vault_secrets.yml", "../vars/empty_fallback.yml" ]
+    - ../vars/site_config.yml
+
+  vars:
+    pg_password: "{{ compliance_db_password }}"
+    sim_host: "{{ network_sim_host | default(aac_host) }}"
+
+    device_endpoints:
+      - host_id:      "cisco-core-rtr-01"
+        hostname:     "cisco-core-rtr-01"
+        os_family:    "network"
+        device_class: "router"
+        url:          "http://{{ sim_host }}:8091/facts"
+
+      - host_id:      "juniper-core-sw-01"
+        hostname:     "juniper-core-sw-01"
+        os_family:    "network"
+        device_class: "switch"
+        url:          "http://{{ sim_host }}:8092/facts"
+
+      - host_id:      "paloalto-fw-01"
+        hostname:     "paloalto-fw-01"
+        os_family:    "network"
+        device_class: "firewall"
+        url:          "http://{{ sim_host }}:8093/facts"
+
+      - host_id:      "s3-storage-01"
+        hostname:     "s3-storage-01"
+        os_family:    "storage"
+        device_class: "object_storage"
+        url:          "http://{{ sim_host }}:8094/facts"
+
+    # SSH-based network devices (real — VyOS container, pfSense AWS)
+    ssh_devices:
+      - host_id:      "vyos-router-01"
+        hostname:     "vyos-router-01"
+        os_family:    "network"
+        device_class: "router"
+        platform:     "vyos"
+        ansible_host: "{{ vyos_host | default(sim_host) }}"
+        ansible_port: "{{ vyos_ssh_port | default(2222) }}"
+        ansible_user: "{{ vyos_ssh_user | default('vyos') }}"
+
+      - host_id:      "compliance-lab-pfsense"
+        hostname:     "compliance-lab-pfsense"
+        os_family:    "network"
+        device_class: "firewall"
+        platform:     "pfsense"
+        ansible_host: "{{ pfsense_host | default('') }}"
+        ansible_port: "{{ pfsense_ssh_port | default(22) }}"
+        ansible_user: "{{ pfsense_ssh_user | default('admin') }}"
+
+  tasks:
+
+    # ── Collect facts from each device ────────────────────────────────────────
+    - name: Fetch facts from network/storage devices
+      uri:
+        use_proxy: false
+        url:          "{{ item.url }}"
+        method:       GET
+        return_content: true
+        status_code:  200
+        timeout:      10
+      loop: "{{ device_endpoints }}"
+      loop_control:
+        label: "{{ item.hostname }}"
+      register: device_facts_raw
+      ignore_errors: true
+
+    # ── Store each device's facts into host_facts ──────────────────────────────
+    - name: Store network device facts to host_facts
+      community.postgresql.postgresql_query:
+        login_host:     "{{ pg_host }}"
+        login_port: "{{ pg_port | default(5433) }}"
+        login_user:     "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db:             "{{ pg_db }}"
+        query: |
+          INSERT INTO host_facts
+            (host_id, hostname, ip_address, os_family, os_distribution, os_version,
+             cloud_provider, aws_instance_id, aws_region,
+             collected_at, schema_version, checksum, facts)
+          VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), %s, %s, %s::jsonb)
+          ON CONFLICT DO NOTHING
+        positional_args:
+          - "{{ item.item.host_id }}"
+          - "{{ item.item.hostname }}"
+          - "{{ sim_host }}"
+          - "{{ item.item.os_family }}"
+          - "{{ (item.json.platform | default(item.item.device_class)) }}"
+          - "{{ item.json.panos_version | default(item.json.junos_version) | default(item.json.ios_version) | default('unknown') }}"
+          - "on_prem"
+          - ""
+          - ""
+          - "1.0"
+          - ""
+          - "{{ item.json | to_json }}"
+      loop: "{{ device_facts_raw.results }}"
+      loop_control:
+        label: "{{ item.item.hostname }}"
+      when:
+        - item.failed is not defined or not item.failed
+        - item.json is defined
+      ignore_errors: true
+      register: store_results
+
+    # ── Collect facts from VyOS via SSH ──────────────────────────────────────
+    - name: Collect VyOS configuration via SSH
+      shell: |
+        timeout 30 ssh -o StrictHostKeyChecking=no \
+          -o ConnectTimeout=10 \
+          -o ServerAliveInterval=5 \
+          -o ServerAliveCountMax=2 \
+          -p {{ item.ansible_port }} \
+          {{ item.ansible_user }}@{{ item.ansible_host }} \
+          "vbash -c 'source /opt/vyatta/etc/functions/script-template && run show configuration json 2>/dev/null'" 2>/dev/null
+      loop: "{{ ssh_devices | selectattr('platform', 'equalto', 'vyos') | list }}"
+      loop_control:
+        label: "{{ item.hostname }}"
+      register: vyos_facts_raw
+      ignore_errors: true
+      timeout: 35
+      when: item.ansible_host | length > 0
+
+    - name: Store VyOS facts to host_facts
+      community.postgresql.postgresql_query:
+        login_host:     "{{ pg_host }}"
+        login_port:     "{{ pg_port | default(5433) }}"
+        login_user:     "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db:             "{{ pg_db }}"
+        query: |
+          INSERT INTO host_facts
+            (host_id, hostname, ip_address, os_family, os_distribution, os_version,
+             cloud_provider, aws_instance_id, aws_region,
+             collected_at, schema_version, checksum, facts)
+          VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), %s, %s, %s::jsonb)
+          ON CONFLICT (host_id) DO UPDATE
+            SET facts = EXCLUDED.facts,
+                collected_at = NOW(),
+                ip_address = EXCLUDED.ip_address
+        positional_args:
+          - "{{ item.item.host_id }}"
+          - "{{ item.item.hostname }}"
+          - "{{ item.item.ansible_host }}"
+          - "network"
+          - "vyos"
+          - "{{ (item.stdout | from_json).system['host-name'] | default('unknown') if item.stdout | length > 2 else 'unknown' }}"
+          - "on_prem"
+          - ""
+          - ""
+          - "1.0"
+          - ""
+          - "{{ item.stdout | default('{}') }}"
+      loop: "{{ vyos_facts_raw.results | default([]) }}"
+      loop_control:
+        label: "{{ item.item.hostname }}"
+      when:
+        - item.rc is defined
+        - item.rc == 0
+        - item.stdout | length > 2
+      ignore_errors: true
+
+    # ── Collect facts from pfSense via SSH ────────────────────────────────────
+    - name: Collect pfSense configuration via SSH
+      shell: |
+        timeout 30 ssh -o StrictHostKeyChecking=no \
+          -o ConnectTimeout=10 \
+          -o ServerAliveInterval=5 \
+          -o ServerAliveCountMax=2 \
+          -p {{ item.ansible_port }} \
+          {{ item.ansible_user }}@{{ item.ansible_host }} \
+          "php -r \"\\\$xml=simplexml_load_string(file_get_contents('/cf/conf/config.xml')); echo json_encode(\\\$xml);\"" 2>/dev/null
+      loop: "{{ ssh_devices | selectattr('platform', 'equalto', 'pfsense') | list }}"
+      loop_control:
+        label: "{{ item.hostname }}"
+      register: pfsense_facts_raw
+      ignore_errors: true
+      timeout: 35
+      when: item.ansible_host | length > 0
+
+    - name: Store pfSense facts to host_facts
+      community.postgresql.postgresql_query:
+        login_host:     "{{ pg_host }}"
+        login_port:     "{{ pg_port | default(5433) }}"
+        login_user:     "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db:             "{{ pg_db }}"
+        query: |
+          INSERT INTO host_facts
+            (host_id, hostname, ip_address, os_family, os_distribution, os_version,
+             cloud_provider, aws_instance_id, aws_region,
+             collected_at, schema_version, checksum, facts)
+          VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), %s, %s, %s::jsonb)
+          ON CONFLICT (host_id) DO UPDATE
+            SET facts = EXCLUDED.facts,
+                collected_at = NOW(),
+                ip_address = EXCLUDED.ip_address
+        positional_args:
+          - "{{ item.item.host_id }}"
+          - "{{ item.item.hostname }}"
+          - "{{ item.item.ansible_host }}"
+          - "network"
+          - "pfsense"
+          - "unknown"
+          - "aws"
+          - ""
+          - "us-east-1"
+          - "1.0"
+          - ""
+          - "{{ item.stdout | default('{}') }}"
+      loop: "{{ pfsense_facts_raw.results | default([]) }}"
+      loop_control:
+        label: "{{ item.item.hostname }}"
+      when:
+        - item.rc is defined
+        - item.rc == 0
+        - item.stdout | length > 2
+      ignore_errors: true
+
+    # ── Summary ────────────────────────────────────────────────────────────────
+    - name: Network facts collection summary
+      vars:
+        collected: "{{ device_facts_raw.results | selectattr('json', 'defined') | list | length }}"
+        stored:    "{{ store_results.results | default([]) | selectattr('changed', 'defined') | selectattr('changed') | list | length }}"
+        failed:    "{{ device_facts_raw.results | selectattr('failed', 'defined') | selectattr('failed') | list | length }}"
+      debug:
+        msg:
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "  AAC Network Facts Collection Complete"
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "  Devices queried:  {{ device_endpoints | length }}"
+          - "  Facts collected:  {{ collected }}"
+          - "  Stored to DB:     {{ stored }}"
+          - "  Unreachable:      {{ failed }}"
+          - ""
+          - "  Query stored network facts:"
+          - "    SELECT hostname, os_family, facts->>'platform', collected_at"
+          - "    FROM host_facts_latest"
+          - "    WHERE os_family IN ('network','storage');"
+          - ""
+          - "  Tanium cannot collect any of these — agent required."
+          - "  AAC uses agentless REST/SSH — no agent installation needed."
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

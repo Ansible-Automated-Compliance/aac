@@ -1,0 +1,140 @@
+---
+# OPA Policy Inventory Report
+# Queries the OPA REST API and generates a formatted report of all loaded policies
+# Organized by compliance framework
+#
+# Usage:
+#   Run via AAP job template "AAC - OPA Policy Report"
+#   Or: ansible-playbook ansible/playbooks/opa_policy_report.yml
+#
+# Output:
+#   Console summary + /tmp/opa_policy_report_<timestamp>.json
+
+- name: OPA Policy Inventory Report
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - ../vars/site_config.yml
+
+  vars:
+    opa_server_url: "{{ opa_security_url }}"
+    report_path: "/tmp/opa_policy_report_{{ lookup('pipe', 'date +%Y%m%d_%H%M%S') }}.json"
+
+    # Framework grouping rules: key = display name, value = list of policy ID prefix patterns
+    framework_patterns:
+      "CIS RHEL 9":            ["cis_rhel9_"]
+      "CIS Ubuntu 22.04":      ["cis_ubuntu_22_04_"]
+      "CIS Windows Server 2022": ["cis_windows_server_2022_", "cis_windows_2022"]
+      "NERC-CIP":              ["nerc_cip_"]
+      "AI Governance":         ["ai_governance_"]
+      "Security / Crypto":     ["security_crypto_"]
+
+  tasks:
+    - name: Query OPA /v1/policies endpoint
+      uri:
+        use_proxy: false
+        url: "{{ opa_server_url }}/v1/policies"
+        method: GET
+        return_content: true
+        status_code: 200
+      register: opa_response
+
+    - name: Parse policy list
+      set_fact:
+        all_policies: "{{ opa_response.json.result }}"
+
+    - name: Build policy summary per framework
+      set_fact:
+        framework_report: >-
+          {{
+            framework_report | default({}) | combine({
+              item.key: {
+                "count": (all_policies | selectattr('id', 'match',
+                  '^(' + item.value | join('|') + ')') | list | length),
+                "policies": (all_policies
+                  | selectattr('id', 'match', '^(' + item.value | join('|') + ')')
+                  | map(attribute='id') | list | sort)
+              }
+            })
+          }}
+      loop: "{{ framework_patterns | dict2items }}"
+      loop_control:
+        label: "{{ item.key }}"
+
+    - name: Identify uncategorized policies
+      set_fact:
+        categorized_ids: >-
+          {{
+            framework_report.values()
+            | map(attribute='policies')
+            | flatten
+          }}
+        all_policy_ids: "{{ all_policies | map(attribute='id') | list }}"
+
+    - name: Build uncategorized list
+      set_fact:
+        uncategorized_policies: >-
+          {{
+            all_policy_ids | difference(categorized_ids) | sort
+          }}
+
+    - name: Build final report object
+      set_fact:
+        final_report:
+          generated_at: "{{ lookup('pipe', 'date -u +%Y-%m-%dT%H:%M:%SZ') }}"
+          opa_server: "{{ opa_server_url }}"
+          total_policies: "{{ all_policies | length }}"
+          frameworks: "{{ framework_report }}"
+          uncategorized:
+            count: "{{ uncategorized_policies | length }}"
+            policies: "{{ uncategorized_policies }}"
+          all_policy_ids: "{{ all_policy_ids | sort }}"
+
+    - name: Save report to file
+      copy:
+        content: "{{ final_report | to_nice_json }}"
+        dest: "{{ report_path }}"
+      delegate_to: "{{ aac_host }}"
+
+    - name: Print summary header
+      debug:
+        msg: "========== OPA Policy Inventory Report =========="
+
+    - name: Print total policy count
+      debug:
+        msg: "Total policies loaded: {{ final_report.total_policies }}"
+
+    - name: Print framework breakdown
+      debug:
+        msg: "  {{ item.key }}: {{ item.value.count }} policies"
+      loop: "{{ final_report.frameworks | dict2items | sort(attribute='key') }}"
+      loop_control:
+        label: "{{ item.key }}"
+
+    - name: Print uncategorized count
+      debug:
+        msg: "  Uncategorized: {{ final_report.uncategorized.count }} policies"
+      when: (final_report.uncategorized.count | int) > 0
+
+    - name: Print uncategorized policy IDs
+      debug:
+        msg: "    - {{ item }}"
+      loop: "{{ final_report.uncategorized.policies }}"
+      when: (final_report.uncategorized.count | int) > 0
+
+    - name: Print framework details
+      debug:
+        msg: |
+          {{ item.key }} ({{ item.value.count }} policies):
+          {% for p in item.value.policies %}
+            - {{ p }}
+          {% endfor %}
+      loop: "{{ final_report.frameworks | dict2items | sort(attribute='key') }}"
+      loop_control:
+        label: "{{ item.key }}"
+
+    - name: Print report location
+      debug:
+        msg: "Full report saved to: {{ report_path }}"

@@ -1,0 +1,64 @@
+---
+# aac_mcp_server — entry point
+# Expects: aac_host, aap_ssh_user, mcp_image (from site_config.yml)
+# and vault_aap_local_mcp_token (from vault_secrets.yml) when aac_mcp_token is not set.
+
+# Before anything changes: container.yml stops and removes the running MCP
+# container, so a missing or placeholder endpoint must fail here, not after.
+# An unset external_aap_url / external_opa_compliance_url fails on the role
+# defaults' `mandatory`; this also rejects blanks, URLs with no hostname,
+# <placeholders> and unresolved profile markers (rhpds: SET_rhpds_cluster).
+- name: Require resolved MCP endpoints before the running container is replaced
+  ansible.builtin.assert:
+    that:
+      - aac_mcp_gateway_url is match('^https?://')
+      - (aac_mcp_gateway_url | urlsplit('hostname')) | default('', true) | length > 0
+      - aac_mcp_gateway_url is not search('[<>\\s]|SET_')
+      - aac_mcp_controller_url is match('^https?://')
+      - (aac_mcp_controller_url | urlsplit('hostname')) | default('', true) | length > 0
+      - aac_mcp_controller_url is not search('[<>\\s]|SET_')
+      - aac_mcp_opa_url is match('^https?://')
+      - (aac_mcp_opa_url | urlsplit('hostname')) | default('', true) | length > 0
+      - aac_mcp_opa_url is not search('[<>\\s]|SET_')
+    fail_msg: >-
+      MCP endpoints are not configured (gateway '{{ aac_mcp_gateway_url }}',
+      OPA '{{ aac_mcp_opa_url }}'). Set external_aap_url and
+      external_opa_compliance_url (an OPA URL reachable from the MCP host, not
+      in-cluster DNS) in the environment profile (-e env_profile=<env>),
+      site_config.yml, or -e.
+    quiet: true
+  tags: [aac_mcp, aac_mcp_container]
+
+- name: Ensure MCP app directory and env file exist
+  import_tasks: dirs.yml
+  tags: [aac_mcp, aac_mcp_dirs]
+
+- name: Deploy MCP server container
+  import_tasks: container.yml
+  tags: [aac_mcp, aac_mcp_container]
+
+- name: Wait for MCP server to be reachable
+  import_tasks: healthcheck.yml
+  tags: [aac_mcp, aac_mcp_healthcheck]
+
+- name: Install user-level systemd unit for MCP server
+  import_tasks: systemd.yml
+  when: aac_mcp_generate_systemd | bool
+  tags: [aac_mcp, aac_mcp_systemd]
+
+- name: MCP server deployment summary
+  debug:
+    msg:
+      - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+      - "  AAC MCP Server — Deployed"
+      - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+      - "  Container:  {{ aac_mcp_container_name }}"
+      - "  URL:        http://{{ aac_host }}:{{ aac_mcp_port }}/sse"
+      - "  App dir:    {{ aac_mcp_app_dir }}"
+      - "  Token file: {{ aac_mcp_app_dir }}/mcp.env"
+      - ""
+      - "  If this is a fresh install, run next:"
+      - "    Template 40 — AAC - Rotate MCP Token"
+      - "    (generates a real AAP token and updates mcp.env)"
+      - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  tags: [aac_mcp]

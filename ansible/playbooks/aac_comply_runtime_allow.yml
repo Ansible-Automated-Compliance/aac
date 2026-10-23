@@ -1,0 +1,67 @@
+---
+# Sentinel — Demo: Runtime Pre-flight ALLOW
+#
+# Counterpart to aac_comply_runtime_demo.yml (the BLOCK scenario).
+# This shows the SAME enforcement point — pre-flight runs first — but the
+# playbook is compliant so OPA returns ALLOW and execution proceeds normally.
+#
+# Demonstrates:
+#   1. Pre-flight fires before any task
+#   2. OPA evaluates the playbook — 0 violations
+#   3. ALLOW — tasks execute normally
+#
+# Key differences from the BAD version:
+#   hosts: webservers          (not bare 'all')
+#   db_password: vault ref     (not plaintext)
+#   every task has tags        (not missing)
+#
+# AAP Job Template: "AAC Only — Runtime Pre-flight Allow"
+
+- name: Deploy Application Stack (Compliant)
+  hosts: aap-controller
+  become: false
+  gather_facts: false
+
+  vars_files:
+    - ../vars/site_config.yml
+
+  vars:
+    app_version: "2.1.4"
+    db_password: "{{ vault_db_password | mandatory }}"
+    db_host:     "{{ vault_db_host     | default('from_vault') }}"
+    api_token:   "{{ vault_api_token   | mandatory }}"
+
+  pre_tasks:
+    # -------------------------------------------------------------------
+    # SENTINEL PRE-FLIGHT — runs first, before ANY deployment task
+    # This playbook is compliant — OPA returns ALLOW and we continue.
+    # -------------------------------------------------------------------
+    - name: Sentinel pre-flight — validate this playbook before execution
+      include_tasks: ../tasks/aac_comply_preflight.yml
+      vars:
+        sentinel_playbook_path: "{{ playbook_dir }}/aac_comply_runtime_allow.yml"
+        sentinel_environment:   "production"
+        sentinel_opa_url:       "{{ opa_compliance_url }}"
+
+  tasks:
+    # These tasks RUN because Sentinel ALLOWED the playbook
+    - name: Show deployment proceeding
+      ansible.builtin.debug:
+        msg: "✅ Sentinel ALLOWED — deployment is proceeding normally"
+      tags:
+        - deploy
+        - status
+
+    - name: Show app version being deployed
+      ansible.builtin.debug:
+        msg: "Deploying application version {{ app_version }} to webservers"
+      tags:
+        - deploy
+        - application
+
+    - name: Confirm all secrets come from vault
+      ansible.builtin.debug:
+        msg: "All credentials sourced from Ansible Vault — no plaintext secrets in playbook"
+      tags:
+        - security
+        - audit

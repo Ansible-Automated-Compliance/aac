@@ -1,0 +1,77 @@
+name: Framework Catalog Consistency
+
+# Why this exists
+# ---------------
+# Framework wiring lives in two hand-maintained lists that drift apart silently:
+#
+#   ansible/playbooks/load_opa_policies.yml   — the loader (source: all)
+#   ansible/playbooks/seed_framework_catalog.yml — the catalog (source: database)
+#
+# In `source: database` mode, enabled_frameworks is derived from
+# customer_frameworks, which is seeded from framework_catalog. A framework wired
+# into the loader but NOT given a catalog row is therefore invisible in database
+# mode — never selectable, never loaded — while passing every test because it
+# still works under `source: all`.
+#
+# That exact gap shipped twice: #609 (cis_controls_v8) and #599 (scuba_m365,
+# nsa_cisa_k8s, k8s_pss, ferpa, coppa), each found only by post-merge review.
+# This gate fails the PR when a loader key has no catalog row, so the drift is
+# caught before merge instead of after.
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'ansible/playbooks/load_opa_policies.yml'
+      - 'ansible/playbooks/seed_framework_catalog.yml'
+      - '.github/workflows/catalog-consistency.yml'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'ansible/playbooks/load_opa_policies.yml'
+      - 'ansible/playbooks/seed_framework_catalog.yml'
+      - '.github/workflows/catalog-consistency.yml'
+
+jobs:
+  catalog-consistency:
+    name: Loader keys have catalog rows
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Every loader key has a framework_catalog row
+        run: |
+          python3 - <<'PY'
+          import re, sys, pathlib
+
+          loader = pathlib.Path('ansible/playbooks/load_opa_policies.yml').read_text()
+          catalog = pathlib.Path('ansible/playbooks/seed_framework_catalog.yml').read_text()
+
+          # A loader framework entry is a single-line dict carrying both dir: and
+          # key: — e.g. `- { dir: "...", prefix: "...", key: scuba_m365 }`.
+          # Keying off dir+key avoids matching unrelated `key:` tokens elsewhere.
+          loader_keys = set()
+          for line in loader.splitlines():
+              if 'dir:' in line and 'key:' in line:
+                  m = re.search(r'\bkey:\s*([A-Za-z0-9_]+)', line)
+                  if m:
+                      loader_keys.add(m.group(1))
+
+          catalog_keys = set(re.findall(r'\bloader_key:\s*([A-Za-z0-9_]+)', catalog))
+
+          missing = sorted(loader_keys - catalog_keys)
+          if missing:
+              print("FAIL: loader keys with no framework_catalog row "
+                    "(unloadable in `source: database` mode):")
+              for k in missing:
+                  print(f"  - {k}")
+              print("\nAdd a matching entry to "
+                    "ansible/playbooks/seed_framework_catalog.yml "
+                    "(loader_key, opa_container, policy_dir, opa_keys).")
+              sys.exit(1)
+
+          print(f"OK: all {len(loader_keys)} loader keys have a catalog row.")
+          PY

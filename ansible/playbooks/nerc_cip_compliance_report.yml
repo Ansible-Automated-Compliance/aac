@@ -1,0 +1,237 @@
+---
+# NERC CIP Compliance Report
+# Evaluates CIP-002 through CIP-015 against OPA policies and generates a report
+#
+# Usage via AAP survey variables:
+#   assessment_data_file: path to YAML file with compliance data
+#                         default: examples/nerc_cip_assessment_data.yml
+#
+# Output: Console report + /tmp/nerc_cip_report_<timestamp>.json
+
+- name: NERC CIP Compliance Assessment Report
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - [ "../vars/vault_secrets.yml", "../vars/empty_fallback.yml" ]
+    - ../vars/site_config.yml
+
+  vars:
+    opa_server_url: "{{ opa_ot_url }}"
+    assessment_data_file: "examples/nerc_cip_assessment_data.yml"
+    report_timestamp: "{{ lookup('pipe', 'date +%Y%m%d_%H%M%S') }}"
+    report_path: "/tmp/nerc_cip_report_{{ report_timestamp }}.json"
+
+  tasks:
+    - name: Load assessment data from YAML file
+      set_fact:
+        cip_input: "{{ lookup('file', playbook_dir + '/../../' + assessment_data_file) | from_yaml }}"
+
+    - name: Evaluate full NERC-CIP package against OPA
+      uri:
+        use_proxy: false
+        url: "{{ opa_server_url }}/v1/data/nerc_cip_main"
+        method: POST
+        body_format: json
+        body:
+          input: "{{ cip_input }}"
+        return_content: true
+        status_code: 200
+      register: nerc_cip_result
+
+    - name: Evaluate CIP-015 INSM compliance against OPA
+      uri:
+        use_proxy: false
+        url: "{{ opa_server_url }}/v1/data/nerc_cip_cip015/cip_015_compliance_report"
+        method: POST
+        body_format: json
+        body:
+          input: "{{ cip_input }}"
+        return_content: true
+        status_code: 200
+      register: cip015_result
+
+    - name: Extract compliance data
+      set_fact:
+        nerc_data: "{{ nerc_cip_result.json.result }}"
+        cip015_report: "{{ cip015_result.json.result | default({}) }}"
+
+    - name: Build NERC-CIP main report structure
+      set_fact:
+        nerc_report:
+          compliant: "{{ nerc_data.nerc_cip_compliance_level | default('NON_COMPLIANT') == 'COMPLIANT' }}"
+          compliance_level: "{{ nerc_data.nerc_cip_compliance_level | default('NON_COMPLIANT') }}"
+          score: "{{ nerc_data.nerc_cip_compliance_score | default(0) }}"
+          violation_count: "{{ nerc_data.nerc_cip_violations | default([]) | length }}"
+          violations: "{{ nerc_data.nerc_cip_violations | default([]) }}"
+          systems_assessed: "{{ cip_input.bes_cyber_systems | default([]) | length }}"
+          requirements:
+            CIP_002_categorization: "{{ nerc_data.all_bes_cyber_systems_categorized | default(false) }}"
+            CIP_003_security_management: "{{ not (nerc_data.organization_violations | default([]) | length > 0) }}"
+            CIP_004_personnel_training: "{{ not (nerc_data.personnel_violations | default([]) | length > 0) }}"
+            CIP_005_electronic_security: "{{ not (nerc_data.security_perimeter_violations | default([]) | length > 0) }}"
+            CIP_006_physical_security: "{{ not (nerc_data.physical_security_violations | default([]) | length > 0) }}"
+            CIP_007_systems_security: "{{ nerc_data.system_security_management_compliant | default(false) }}"
+            CIP_008_incident_response: "{{ not (nerc_data.incident_response_violations | default([]) | length > 0) }}"
+            CIP_009_recovery_plans: "{{ nerc_data.recovery_plans_compliant | default(false) }}"
+            CIP_010_configuration_management: "{{ nerc_data.configuration_change_management_compliant | default(false) }}"
+            CIP_011_information_protection: "{{ not (nerc_data.information_protection_violations | default([]) | length > 0) }}"
+            CIP_012_communications_protection: "{{ nerc_data.communication_protection_implemented | default(false) }}"
+            CIP_013_supply_chain: "{{ nerc_data.cip_013_compliant | default(false) }}"
+
+    - name: Build combined report
+      set_fact:
+        combined_report:
+          organization: "{{ cip_input.organization | default('Unknown') }}"
+          assessment_date: "{{ cip_input.assessment_date | default(report_timestamp) }}"
+          assessor: "{{ cip_input.assessor | default('Unknown') }}"
+          generated_at: "{{ lookup('pipe', 'date -u +%Y-%m-%dT%H:%M:%SZ') }}"
+          overall_compliant: "{{ nerc_report.compliant and cip015_report.compliant }}"
+          standards:
+            nerc_cip_main: "{{ nerc_report }}"
+            cip_015_insm: "{{ cip015_report }}"
+
+    - name: Save report to file
+      copy:
+        content: "{{ combined_report | to_nice_json }}"
+        dest: "{{ report_path }}"
+      delegate_to: localhost
+
+    - name: Print compliance summary
+      debug:
+        msg: |
+          ╔══════════════════════════════════════════════════════╗
+          ║         NERC CIP COMPLIANCE ASSESSMENT REPORT        ║
+          ╚══════════════════════════════════════════════════════╝
+
+          Organization : {{ combined_report.organization }}
+          Assessment   : {{ combined_report.assessment_date }}
+          Assessor     : {{ combined_report.assessor }}
+          Generated    : {{ combined_report.generated_at }}
+
+          ┌──────────────────────────────────────────────────────┐
+          │ OVERALL STATUS: {{ 'COMPLIANT ✅' if combined_report.overall_compliant else 'NON-COMPLIANT ❌' }}
+          └──────────────────────────────────────────────────────┘
+
+          CIP-002 through CIP-015 Score: {{ nerc_report.score | default(0) }}%
+          CIP-015 INSM Score          : {{ cip015_report.score | default(0) }}%
+
+          Standards Compliance:
+            CIP-002 BES Categorization    : {{ '✅' if nerc_report.requirements.CIP_002_categorization else '❌' }}
+            CIP-003 Security Management   : {{ '✅' if nerc_report.requirements.CIP_003_security_management else '❌' }}
+            CIP-004 Personnel & Training  : {{ '✅' if nerc_report.requirements.CIP_004_personnel_training else '❌' }}
+            CIP-005 Electronic Security   : {{ '✅' if nerc_report.requirements.CIP_005_electronic_security else '❌' }}
+            CIP-006 Physical Security     : {{ '✅' if nerc_report.requirements.CIP_006_physical_security else '❌' }}
+            CIP-007 Systems Security      : {{ '✅' if nerc_report.requirements.CIP_007_systems_security else '❌' }}
+            CIP-008 Incident Response     : {{ '✅' if nerc_report.requirements.CIP_008_incident_response else '❌' }}
+            CIP-009 Recovery Plans        : {{ '✅' if nerc_report.requirements.CIP_009_recovery_plans else '❌' }}
+            CIP-010 Config Management     : {{ '✅' if nerc_report.requirements.CIP_010_configuration_management else '❌' }}
+            CIP-011 Info Protection       : {{ '✅' if nerc_report.requirements.CIP_011_information_protection else '❌' }}
+            CIP-012 Comms Protection      : {{ '✅' if nerc_report.requirements.CIP_012_communications_protection else '❌' }}
+            CIP-013 Supply Chain Risk Mgmt: {{ '✅' if nerc_report.requirements.CIP_013_supply_chain else '❌' }}
+            CIP-015 INSM                  : {{ '✅' if cip015_report.compliant else '❌' }}
+
+          BES Cyber Systems Assessed: {{ nerc_report.systems_assessed | default(0) }}
+
+    - name: Print violations if any
+      debug:
+        msg: |
+          VIOLATIONS FOUND ({{ nerc_report.violation_count | default(0) | int + cip015_report.violation_count | default(0) | int }} total):
+          {% for v in nerc_report.violations | default([]) %}
+            • {{ v }}
+          {% endfor %}
+          {% for v in cip015_report.violations | default([]) %}
+            • {{ v }}
+          {% endfor %}
+      when: >
+        (nerc_report.violation_count | default(0) | int > 0) or
+        (cip015_report.violation_count | default(0) | int > 0)
+
+    - name: Report fully compliant
+      debug:
+        msg: "No violations found. All NERC CIP requirements satisfied."
+      when: >
+        (nerc_report.violation_count | default(0) | int == 0) and
+        (cip015_report.violation_count | default(0) | int == 0)
+
+    - name: Print report file location
+      debug:
+        msg: "Full JSON report saved to: {{ report_path }}"
+
+    # -------------------------------------------------------------------------
+    # Store results to PostgreSQL
+    # -------------------------------------------------------------------------
+    - name: Store NERC CIP main results to PostgreSQL (+ CAA)
+      include_role:
+        name: aac_store_results
+      vars:
+        aac_result_policy_name:    "NERC CIP"
+        aac_result_framework:      "nerc_cip"
+        aac_result_policy_version: "CIP-002 through CIP-015"
+        aac_result_total_controls: 14
+        aac_result_failed_controls: "{{ 14 - (nerc_report.requirements.values() | select | list | length) }}"
+        aac_result_passed_controls: "{{ nerc_report.requirements.values() | select | list | length }}"
+        aac_result_compliance_pct:  "{{ nerc_report.score }}"
+        aac_result_violations: "{{ nerc_report.violations }}"
+        aac_result_metadata: "{{ {'organization': combined_report.organization, 'assessment_date': combined_report.assessment_date, 'compliance_level': nerc_report.compliance_level, 'requirements': nerc_report.requirements} }}"
+        aac_result_opa_server: "{{ opa_server_url }}"
+        aac_result_pg_db: "compliance"
+        # CAA opt-in — fleet-scoped, organization as scope_value. Highest-
+        # regulator-scrutiny framework in AAC's coverage — auditor-verifiable
+        # rows are load-bearing here.
+        aac_caa_enabled: true
+        aac_result_caa_scope: "fleet"
+        aac_result_caa_scope_value: "{{ combined_report.organization }}"
+        aac_result_caa_framework_version: "CIP-002 through CIP-015"
+        aac_result_caa_result:
+          framework:             "nerc_cip"
+          standard:              "NERC CIP CIP-002 through CIP-015"
+          organization:          "{{ combined_report.organization }}"
+          compliance_level:      "{{ nerc_report.compliance_level }}"
+          compliant:             "{{ nerc_report.compliant | bool }}"
+          compliance_percentage: "{{ nerc_report.score | float }}"
+          total_controls:        14
+          violations:            "{{ nerc_report.violations }}"
+          requirements:          "{{ nerc_report.requirements }}"
+        aac_result_caa_input: "{{ cip_input }}"
+
+    - name: Store CIP-015 INSM results to PostgreSQL (+ CAA)
+      include_role:
+        name: aac_store_results
+      vars:
+        aac_result_policy_name:    "NERC CIP-015 INSM"
+        aac_result_framework:      "nerc_cip"
+        aac_result_policy_version: "CIP-015-1"
+        aac_result_total_controls: 3
+        aac_result_failed_controls: "{{ 3 - ([cip015_report.requirements.R1_insm_categorization | bool, cip015_report.requirements.R2_insm_implementation | bool, cip015_report.requirements.R3_documentation_management | bool] | select | list | length) }}"
+        aac_result_passed_controls: "{{ [cip015_report.requirements.R1_insm_categorization | bool, cip015_report.requirements.R2_insm_implementation | bool, cip015_report.requirements.R3_documentation_management | bool] | select | list | length }}"
+        aac_result_compliance_pct:  "{{ cip015_report.score }}"
+        aac_result_violations: "{{ cip015_report.violations }}"
+        aac_result_metadata: "{{ {'organization': combined_report.organization, 'assessment_date': combined_report.assessment_date, 'requirements': cip015_report.requirements} }}"
+        aac_result_opa_server: "{{ opa_server_url }}"
+        aac_result_pg_db: "compliance"
+        # CAA opt-in for CIP-015 INSM — separate CAA row per assessment so
+        # auditors can verify CIP-015 independently of the main NERC-CIP bundle.
+        aac_caa_enabled: true
+        aac_result_caa_scope: "fleet"
+        aac_result_caa_scope_value: "{{ combined_report.organization }}"
+        aac_result_caa_framework_version: "CIP-015-1"
+        aac_result_caa_result:
+          framework:             "nerc_cip"
+          standard:              "NERC CIP-015-1 INSM"
+          organization:          "{{ combined_report.organization }}"
+          compliant:             "{{ cip015_report.compliant | default(false) | bool }}"
+          compliance_percentage: "{{ cip015_report.score | default(0) | float }}"
+          total_controls:        3
+          violations:            "{{ cip015_report.violations }}"
+          requirements:          "{{ cip015_report.requirements | default({}) }}"
+        aac_result_caa_input: "{{ cip_input }}"
+
+    - name: Results stored
+      debug:
+        msg: "Results stored to PostgreSQL compliance database."
+
+    - name: "📊 View results in Grafana"
+      debug:
+        msg: "Dashboard: {{ grafana_url }}/d/nerc-cip-001"

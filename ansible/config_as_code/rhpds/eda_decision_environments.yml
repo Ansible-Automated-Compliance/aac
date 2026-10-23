@@ -1,0 +1,22 @@
+---
+# AAC EDA Decision Environments
+#
+# Defines the container images EDA uses to execute rulebooks.
+#
+# Live system (<aac-host>) uses:
+#   Default Decision Environment — registry.redhat.io/ansible-automation-platform-26/de-supported-rhel9:latest
+#
+# All three activations (Golden Image, Sentinel, Webhook Compliance) run
+# against the Default DE — it includes ansible-rulebook + required collections
+# for all AAC rulebook types.
+#
+# pull_policy: always ensures rulebook updates take effect on activation restart.
+
+eda_decision_environments:
+
+  - name: AAC Default Decision Environment
+    description: "Red Hat supported DE for AAC EDA rulebooks (CIS drift, Golden Image, Sentinel, NERC-CIP)"
+    image_url: "registry.redhat.io/ansible-automation-platform-26/de-supported-rhel9:latest"
+    credential: Decision Environment Container Registry
+    pull_policy: always
+    organization: "{{ aac_organization }}"

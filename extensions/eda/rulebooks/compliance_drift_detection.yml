@@ -1,0 +1,201 @@
+---
+# EDA Rulebook: Compliance Drift Detection (webhook variant)
+#
+# Receives drift events via HTTP POST on port 5004 and triggers
+# CIS RHEL 9 re-assessment via AAP job template.
+#
+# Designed for OpenShift EDA — activation pods have no host filesystem
+# access, so the legacy `ansible.eda.file_watch` source cannot reach
+# /etc/ssh/, /etc/pam.d/, etc. on managed nodes.
+#
+# To feed drift events from managed nodes, run a small daemon on each
+# host (or a journald → webhook bridge) that POSTs:
+#   POST http://<eda-host>:5004/  Content-Type: application/json
+#   {
+#     "path": "/etc/ssh/sshd_config",
+#     "change_type": "modified",
+#     "meta": {"host": "rhel-target-01"}
+#   }
+#
+# Covered frameworks: CIS RHEL 9, FISMA, NERC-CIP, SOC 2, PCI-DSS
+# AAP Job Template: "CIS RHEL 9 Assessment"
+
+- name: Compliance Drift Detection
+  hosts: all
+  sources:
+    - name: drift_webhook
+      ansible.eda.webhook:
+        host: 0.0.0.0
+        port: 5004
+
+  rules:
+    # ── SSH ─────────────────────────────────────────────────────────────
+    - name: SSH Configuration Drift Detected
+      condition: event.payload.path is search("/etc/ssh/")
+      throttle:
+        once_within: 5 minutes
+        group_by_attributes:
+          - event.payload.path
+      action:
+        run_job_template:
+          name: "CIS RHEL 9 Assessment"
+          organization: Default
+          job_args:
+            limit: "{{ event.payload.meta.host | default('localhost') }}"
+            extra_vars:
+              drift_trigger: ssh_config
+              changed_file: "{{ event.payload.path }}"
+              change_type: "{{ event.payload.change_type | default('modified') }}"
+              priority: critical
+
+    # ── PAM / Password Policy ────────────────────────────────────────────
+    - name: PAM / Authentication Configuration Drift Detected
+      condition: event.payload.path is search("/etc/pam\\.d/|/etc/security/")
+      throttle:
+        once_within: 5 minutes
+        group_by_attributes:
+          - event.payload.path
+      action:
+        run_job_template:
+          name: "CIS RHEL 9 Assessment"
+          organization: Default
+          job_args:
+            limit: "{{ event.payload.meta.host | default('localhost') }}"
+            extra_vars:
+              drift_trigger: pam_config
+              changed_file: "{{ event.payload.path }}"
+              change_type: "{{ event.payload.change_type | default('modified') }}"
+              priority: critical
+
+    # ── Audit ────────────────────────────────────────────────────────────
+    - name: Audit Configuration Drift Detected
+      condition: event.payload.path is search("/etc/audit/")
+      throttle:
+        once_within: 5 minutes
+        group_by_attributes:
+          - event.payload.path
+      action:
+        run_job_template:
+          name: "CIS RHEL 9 Assessment"
+          organization: Default
+          job_args:
+            limit: "{{ event.payload.meta.host | default('localhost') }}"
+            extra_vars:
+              drift_trigger: audit_config
+              changed_file: "{{ event.payload.path }}"
+              change_type: "{{ event.payload.change_type | default('modified') }}"
+              priority: high
+
+    # ── Firewall ─────────────────────────────────────────────────────────
+    - name: Firewall Configuration Drift Detected
+      condition: event.payload.path is search("/etc/firewalld/|/etc/sysconfig/iptables")
+      throttle:
+        once_within: 5 minutes
+        group_by_attributes:
+          - event.payload.path
+      action:
+        run_job_template:
+          name: "CIS RHEL 9 Assessment"
+          organization: Default
+          job_args:
+            limit: "{{ event.payload.meta.host | default('localhost') }}"
+            extra_vars:
+              drift_trigger: firewall_config
+              changed_file: "{{ event.payload.path }}"
+              change_type: "{{ event.payload.change_type | default('modified') }}"
+              priority: critical
+
+    # ── Kernel Parameters ────────────────────────────────────────────────
+    - name: Kernel Parameter Drift Detected
+      condition: event.payload.path is search("/etc/sysctl|/etc/modprobe\\.d/")
+      throttle:
+        once_within: 10 minutes
+        group_by_attributes:
+          - event.payload.path
+      action:
+        run_job_template:
+          name: "CIS RHEL 9 Assessment"
+          organization: Default
+          job_args:
+            limit: "{{ event.payload.meta.host | default('localhost') }}"
+            extra_vars:
+              drift_trigger: kernel_config
+              changed_file: "{{ event.payload.path }}"
+              change_type: "{{ event.payload.change_type | default('modified') }}"
+              priority: medium
+
+    # ── SELinux ──────────────────────────────────────────────────────────
+    - name: SELinux Configuration Drift Detected
+      condition: event.payload.path is search("/etc/selinux/")
+      throttle:
+        once_within: 5 minutes
+        group_by_attributes:
+          - event.payload.path
+      action:
+        run_job_template:
+          name: "CIS RHEL 9 Assessment"
+          organization: Default
+          job_args:
+            limit: "{{ event.payload.meta.host | default('localhost') }}"
+            extra_vars:
+              drift_trigger: selinux_config
+              changed_file: "{{ event.payload.path }}"
+              change_type: "{{ event.payload.change_type | default('modified') }}"
+              priority: critical
+
+    # ── Cron ─────────────────────────────────────────────────────────────
+    - name: Cron Configuration Drift Detected
+      condition: event.payload.path is search("/etc/cron|/var/spool/cron/")
+      throttle:
+        once_within: 10 minutes
+        group_by_attributes:
+          - event.payload.path
+      action:
+        run_job_template:
+          name: "CIS RHEL 9 Assessment"
+          organization: Default
+          job_args:
+            limit: "{{ event.payload.meta.host | default('localhost') }}"
+            extra_vars:
+              drift_trigger: cron_config
+              changed_file: "{{ event.payload.path }}"
+              change_type: "{{ event.payload.change_type | default('modified') }}"
+              priority: high
+
+    # ── User / Group Accounts ────────────────────────────────────────────
+    - name: User or Group Account Drift Detected
+      condition: event.payload.path is search("/etc/passwd|/etc/shadow|/etc/group|/etc/gshadow")
+      throttle:
+        once_within: 5 minutes
+        group_by_attributes:
+          - event.payload.path
+      action:
+        run_job_template:
+          name: "CIS RHEL 9 Assessment"
+          organization: Default
+          job_args:
+            limit: "{{ event.payload.meta.host | default('localhost') }}"
+            extra_vars:
+              drift_trigger: user_group_config
+              changed_file: "{{ event.payload.path }}"
+              change_type: "{{ event.payload.change_type | default('modified') }}"
+              priority: critical
+
+    # ── Sudo ─────────────────────────────────────────────────────────────
+    - name: Sudo Configuration Drift Detected
+      condition: event.payload.path is search("/etc/sudoers")
+      throttle:
+        once_within: 5 minutes
+        group_by_attributes:
+          - event.payload.path
+      action:
+        run_job_template:
+          name: "CIS RHEL 9 Assessment"
+          organization: Default
+          job_args:
+            limit: "{{ event.payload.meta.host | default('localhost') }}"
+            extra_vars:
+              drift_trigger: sudo_config
+              changed_file: "{{ event.payload.path }}"
+              change_type: "{{ event.payload.change_type | default('modified') }}"
+              priority: critical

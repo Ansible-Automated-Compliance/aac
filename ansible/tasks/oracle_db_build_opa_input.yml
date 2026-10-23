@@ -1,0 +1,163 @@
+---
+# oracle_db_build_opa_input.yml — the ONE mapper from collected Oracle Database
+# facts to the input contract shared by the DISA STIG Oracle Database 19c module
+# (benchmarks/stig/oracle_database_19c, input.oracle.*) and the CIS Oracle
+# Database 23ai module in the Rego library.
+#
+# Input:   oracle_raw  — {sql_raw, net_raw, perms_raw, dirs_raw, oracle_home,
+#                         oracle_sid} from ../tasks/collect_oracle_db_facts.yml
+#          oracle_stig_attestations, oracle_authorized_*, oracle_expected_patch_id
+#          — ansible/vars/oracle_stig_attestations.yml
+#          opa_hostname — hostname to report (optional)
+# Output:  opa_input   ({"oracle": {...}, "system_info": {...}})
+#
+# RULE: NEVER FABRICATE. A fact the SQL script did not print is left out of
+# input.oracle, and the module reports its rule Open. The site allowlists only
+# ever REMOVE rows the STIG query returned (documented and authorized), never
+# add a pass. Attestations default to false.
+#
+# sql_raw holds `@@fact@@<json>` lines; a CLOB that wrapped at the sqlplus line
+# width continues on following lines, so the lines are re-joined before parsing.
+
+- name: Build Oracle Database OPA input from collected facts (no fabricated values)
+  vars:
+    _att: "{{ oracle_stig_attestations | default({}) }}"
+    # re-join wrapped CLOB lines: a line that does not start with @@ belongs to the fact before it
+    _sql_joined: "{{ (oracle_raw.sql_raw | default('')) | regex_replace('\\n(?!@@)', '') }}"
+    _facts: "{{ dict(_sql_joined | regex_findall('(?m)^@@([a-z0-9_]+)@@(.*?)\\s*$')) }}"
+    _ok: "{{ _facts | dict2items | selectattr('value', 'match', '^\\s*[\\[{]') | map(attribute='key') | list }}"
+    _parameters: "{{ (_facts.parameters | from_json) if 'parameters' in _ok else {} }}"
+    _hidden: "{{ (_facts.hidden_parameters | from_json) if 'hidden_parameters' in _ok else {} }}"
+    _instance: "{{ (_facts.instance | from_json) if 'instance' in _ok else {} }}"
+    _database: "{{ (_facts.database | from_json) if 'database' in _ok else {} }}"
+    _profiles: "{{ (_facts.profiles | from_json) if 'profiles' in _ok else {} }}"
+    _tablespaces: "{{ (_facts.tablespaces | from_json) if 'tablespaces' in _ok else [] }}"
+    _wallet: "{{ (_facts.encryption_wallet | from_json) if 'encryption_wallet' in _ok else [] }}"
+    _patches: "{{ (_facts.sqlpatches | from_json) if 'sqlpatches' in _ok else [] }}"
+    _components: "{{ (_facts.components | from_json) if 'components' in _ok else [] }}"
+    _options: "{{ (_facts.options_enabled | from_json) if 'options_enabled' in _ok else [] }}"
+    _db_links: "{{ (_facts.db_links | from_json) if 'db_links' in _ok else [] }}"
+    _direct_admin: "{{ (_facts.direct_admin_privileges | from_json) if 'direct_admin_privileges' in _ok else [] }}"
+    _admin_sys: "{{ (_facts.admin_option_system_privileges | from_json) if 'admin_option_system_privileges' in _ok else [] }}"
+    _admin_roles: "{{ (_facts.admin_option_roles | from_json) if 'admin_option_roles' in _ok else [] }}"
+    _default_admin_roles: "{{ (_facts.default_admin_roles | from_json) if 'default_admin_roles' in _ok else [] }}"
+    _public_obj: "{{ (_facts.public_object_privileges | from_json) if 'public_object_privileges' in _ok else [] }}"
+    _object_owners: "{{ (_facts.object_owners | from_json) if 'object_owners' in _ok else [] }}"
+    _unified_opt: "{{ (_facts.unified_auditing_option | from_json) if 'unified_auditing_option' in _ok else {} }}"
+
+    # ── network files and listener
+    _net: "{{ oracle_raw.net_raw | default('') }}"
+    _listener_ora: "{{ _net | regex_findall('(?s)=== listener.ora ===\\n(.*?)(?:\\n=== |\\Z)') | first | default('') }}"
+    _sqlnet_ora: "{{ _net | regex_findall('(?s)=== sqlnet.ora ===\\n(.*?)(?:\\n=== |\\Z)') | first | default('') }}"
+    _tnsnames_ora: "{{ _net | regex_findall('(?s)=== tnsnames.ora ===\\n(.*?)(?:\\n=== |\\Z)') | first | default('') }}"
+    _cman_ora: "{{ _net | regex_findall('(?s)=== cman.ora ===\\n(.*?)(?:\\n=== |\\Z)') | first | default('') }}"
+    _fips_ora: "{{ _net | regex_findall('(?s)=== fips.ora ===\\n(.*?)(?:\\n=== |\\Z)') | first | default('') }}"
+    _extproc_ora: "{{ _net | regex_findall('(?s)=== extproc.ora ===\\n(.*?)(?:\\n=== |\\Z)') | first | default('') }}"
+    _lsnrctl: "{{ _net | regex_findall('(?s)=== lsnrctl ===\\n(.*?)(?:\\n=== |\\Z)') | first | default('') }}"
+    _sqlnet_pairs: "{{ _sqlnet_ora | regex_findall('(?im)^\\s*([A-Za-z0-9_.]+)\\s*=\\s*(.*?)\\s*$') }}"
+    _sqlnet: "{{ dict(_sqlnet_pairs | map('first') | map('upper') | zip(_sqlnet_pairs | map('last'))) }}"
+    _listener_security: "{{ _lsnrctl | regex_findall('(?im)^\\s*Security\\s*(.*?)\\s*$') }}"
+    _listeners_seen: "{{ _lsnrctl | regex_findall('(?m)^listener:(\\S+)') }}"
+    _ext_refs: "{{ (_listener_ora ~ _tnsnames_ora) is search('(?i)extproc') }}"
+
+    # ── permissions
+    _perms: "{{ oracle_raw.perms_raw | default('') }}"
+    _home_mode: "{{ _perms | regex_findall('(?s)=== oracle_home ===\\n(\\d{4})\\|') | first | default('') }}"
+    _pwfile_mode: "{{ _perms | regex_findall('(?s)=== password_file ===\\n(\\d{4})\\|') | first | default('') }}"
+    _diag_mode: "{{ _perms | regex_findall('(?s)=== diag ===\\n(\\d{4})\\|') | first | default('') }}"
+    _dba_group: "{{ _perms | regex_findall('(?m)^dba:[^:]*:[^:]*:(.*)$') | first | default('') }}"
+    _root_groups: "{{ _perms | regex_findall('(?s)=== root_groups ===\\n(.*?)(?:\\n=== |\\Z)') | first | default('') }}"
+    _dir_rows: "{{ (oracle_raw.dirs_raw | default('')) | regex_findall('(?m)^(\\d{4})\\|\\S+\\|\\S+\\|(.*)$') }}"
+    _archive_dests: "{{ (_facts.archive_dests | from_json) if 'archive_dests' in _ok else [] }}"
+    _datafile_dirs: "{{ (_facts.datafile_dirs | from_json) if 'datafile_dirs' in _ok else [] }}"
+    _world_dirs: "{{ _dir_rows | selectattr(0, 'match', '^\\d{3}[1-7]$') | map(attribute=1) | list }}"
+
+    # ── derived
+    _tde_all: "{{ (_tablespaces | length) > 0 and (_tablespaces | rejectattr('encrypted', 'equalto', 'YES') | list | length) == 0 }}"
+    _wallet_open: "{{ _wallet | selectattr('status', 'equalto', 'OPEN') | list | length > 0 }}"
+    # "OWNER: DB_LINK" and "GRANTEE:ROLE" strings (the allowlist spelling), built with a loop — no json_query
+    _db_link_names: >-
+      [{% for l in _db_links %}{{ ((l.owner | default('')) ~ ': ' ~ (l.db_link | default(''))) | to_json }}{{ ',' if not loop.last }}{% endfor %}]
+    _default_admin_names: >-
+      [{% for r in _default_admin_roles %}{{ ((r.grantee | default('')) ~ ':' ~ (r.granted_role | default(''))) | to_json }}{{ ',' if not loop.last }}{% endfor %}]
+    _applied_ids: "{{ _patches | selectattr('status', 'equalto', 'SUCCESS') | rejectattr('action', 'equalto', 'ROLLBACK') | map(attribute='patch_id') | map('string') | list }}"
+    _sqlnet_encryption: "{{ (_sqlnet['SQLNET.ENCRYPTION_SERVER'] | default('') | upper) == 'REQUIRED' or (_sqlnet['SQLNET.ENCRYPTION_SERVER'] | default('') | upper) == 'REQUESTED' and (_sqlnet['SQLNET.CRYPTO_CHECKSUM_SERVER'] | default('') | upper) == 'REQUIRED' }}"
+    _tls: "{{ ('WALLET_LOCATION' in _sqlnet) and (('SSL_VERSION' in _sqlnet) or (_listener_ora is search('(?i)PROTOCOL\\s*=\\s*TCPS'))) }}"
+    _oracle:
+      instance_name: "{{ _instance.instance_name | default('') }}"
+      version: "{{ _instance.version | default('') }}"
+      log_mode: "{{ _database.log_mode | default('') }}"
+      parameters: "{{ _parameters | combine(_hidden) }}"
+      profiles: "{{ _profiles }}"
+      user_profiles: "{{ (_facts.user_profiles | from_json) if 'user_profiles' in _ok else {} }}"
+      unified_audit_policies_enabled: "{{ (_facts.unified_audit_policies_enabled | from_json) if 'unified_audit_policies_enabled' in _ok else [] }}"
+      unified_audit_sys_policies: "{{ ((_facts.unified_audit_sys_policies | from_json).count | int) if 'unified_audit_sys_policies' in _ok else 0 }}"
+      unified_auditing: "{{ (_unified_opt.value | default('')) == 'TRUE' }}"
+      unauthorized_object_owners: "{{ _object_owners | reject('in', oracle_authorized_object_owners | default([])) | list }}"
+      direct_admin_privilege_grantees: "{{ _direct_admin | rejectattr('grantee', 'in', oracle_authorized_admin_grantees | default([])) | map(attribute='grantee') | unique | list }}"
+      unauthorized_db_links: "{{ ((_db_link_names | from_json) if _db_link_names is string else _db_link_names) | reject('in', oracle_authorized_db_links | default([])) | list }}"
+      grantable_privileges_non_dba: "{{ (_facts.grantable_privileges_non_dba | from_json) if 'grantable_privileges_non_dba' in _ok else [] }}"
+      unauthorized_admin_option_system_privileges: "{{ _admin_sys | rejectattr('grantee', 'in', oracle_authorized_admin_option_grantees | default([])) | list }}"
+      public_system_privileges: "{{ (_facts.public_system_privileges | from_json) if 'public_system_privileges' in _ok else [] }}"
+      unauthorized_admin_option_roles: "{{ _admin_roles | rejectattr('grantee', 'in', oracle_authorized_admin_option_grantees | default([])) | list }}"
+      unauthorized_public_object_privileges: "{{ _public_obj | reject('in', oracle_authorized_public_object_privileges | default([])) | list }}"
+      public_granted_roles: "{{ (_facts.public_granted_roles | from_json) if 'public_granted_roles' in _ok else [] }}"
+      unauthorized_default_admin_roles: "{{ ((_default_admin_names | from_json) if _default_admin_names is string else _default_admin_names) | reject('in', oracle_authorized_default_admin_roles | default([])) | list }}"
+      users_with_default_password: "{{ (_facts.users_with_default_password | from_json) if 'users_with_default_password' in _ok else [] }}"
+      users_with_10g_password_verifier: "{{ (_facts.users_with_10g_password_verifier | from_json) if 'users_with_10g_password_verifier' in _ok else [] }}"
+      sample_schemas_present: "{{ (_facts.sample_schemas_present | from_json) if 'sample_schemas_present' in _ok else [] }}"
+      unused_components_installed: "{{ _components | rejectattr('comp_id', 'in', oracle_authorized_components | default([])) | map(attribute='comp_id') | list }}"
+      unused_integrated_options_enabled: "{{ _options | reject('in', oracle_authorized_options | default([])) | list }}"
+      control_files: "{{ (_facts.control_files | from_json) if 'control_files' in _ok else [] }}"
+      redo_log_groups: "{{ (_facts.redo_log_groups | from_json) if 'redo_log_groups' in _ok else [] }}"
+      tablespaces: "{{ _tablespaces }}"
+      tde:
+        enabled: "{{ (_tde_all | bool) and (_wallet_open | bool) }}"
+        wallet_open: "{{ _wallet_open | bool }}"
+      patches:
+        applied: "{{ _applied_ids }}"
+        expected: "{{ oracle_expected_patch_id | default('') | string }}"
+        latest_cpu_applied: "{{ (oracle_expected_patch_id | default('') | string | length > 0) and ((oracle_expected_patch_id | default('') | string) in _applied_ids) }}"
+      listener:
+        rate_limit_configured: "{{ _listener_ora is search('(?i)RATE_LIMIT|CONNECTION_RATE_') }}"
+        admin_authentication_required: "{{ (_listener_security | length) > 0 and (_listener_security | reject('search', '(?i)ON:\\s*Local OS Authentication$') | list | length) == 0 }}"
+        extproc_configured: "{{ _ext_refs | bool }}"
+        listeners: "{{ _listeners_seen }}"
+        security: "{{ _listener_security }}"
+      sqlnet:
+        allowed_logon_version_server: "{{ _sqlnet['SQLNET.ALLOWED_LOGON_VERSION_SERVER'] | default('') | string }}"
+        allowed_logon_version_client: "{{ _sqlnet['SQLNET.ALLOWED_LOGON_VERSION_CLIENT'] | default('') | string }}"
+        encryption_server: "{{ _sqlnet['SQLNET.ENCRYPTION_SERVER'] | default('') }}"
+        fips_140: "{{ _sqlnet['SQLNET.FIPS_140'] | default('') }}"
+        validnode_checking: "{{ _sqlnet['TCP.VALIDNODE_CHECKING'] | default('') }}"
+      network:
+        access_restriction_enforced: "{{ ((_sqlnet['TCP.VALIDNODE_CHECKING'] | default('') | upper) == 'YES' and ('TCP.INVITED_NODES' in _sqlnet)) or (_cman_ora is search('(?im)^\\s*\\(rule\\s*=')) }}"
+        tls_or_native_encryption_required: "{{ (_sqlnet_encryption | bool) or (_tls | bool) }}"
+      cman:
+        present: "{{ _cman_ora is search('(?m)^present:yes') }}"
+        remote_admin: "{{ (_cman_ora | regex_findall('(?im)^\\s*REMOTE_ADMIN\\s*=\\s*(\\w+)') | first | default('')) | upper }}"
+      fips:
+        sslfips_140: "{{ _fips_ora is search('(?im)^\\s*SSLFIPS_140\\s*=\\s*TRUE') }}"
+      extproc:
+        dlls_only: "{{ _extproc_ora is search('(?im)^\\s*EXTPROC_DLLS\\s*=\\s*ONLY:') }}"
+      filesystem:
+        oracle_home_world_accessible: "{{ _home_mode is match('^\\d{3}[1-7]$') }}"
+        password_file_world_accessible: "{{ _pwfile_mode is match('^\\d{3}[1-7]$') }}"
+        diag_dir_world_accessible: "{{ _diag_mode is match('^\\d{3}[1-7]$') }}"
+        database_files_world_accessible: "{{ (_world_dirs | select('in', _datafile_dirs) | list | length) > 0 }}"
+        archive_log_dirs_world_accessible: "{{ (_world_dirs | select('in', _archive_dests) | list | length) > 0 }}"
+        world_accessible_dirs: "{{ _world_dirs }}"
+      os:
+        root_in_dba_group: "{{ ('root' in (_dba_group | split(','))) or ('dba' in (_root_groups | split)) }}"
+        dba_group_members: "{{ _dba_group | split(',') | select | list }}"
+      attest: "{{ _att }}"
+      attested_by: "{{ oracle_stig_attested_by | default('') }}"
+      collected_at: "{{ ((_facts.collected_at | from_json).at) if 'collected_at' in _ok else '' }}"
+    _system_info:
+      hostname: "{{ opa_hostname | default(inventory_hostname) }}"
+      oracle_home: "{{ oracle_raw.oracle_home | default('') }}"
+      oracle_sid: "{{ oracle_raw.oracle_sid | default('') }}"
+      facts_present: "{{ _ok }}"
+      facts_missing: "{{ ['instance','parameters','profiles','database','control_files','redo_log_groups','tablespaces','sqlpatches','components','options_enabled','db_links','direct_admin_privileges','admin_option_system_privileges','admin_option_roles','default_admin_roles','public_object_privileges','public_system_privileges','public_granted_roles','object_owners','users_with_default_password','users_with_10g_password_verifier','sample_schemas_present','unified_audit_policies_enabled','grantable_privileges_non_dba'] | difference(_ok) }}"
+  set_fact:
+    opa_input: "{{ {'oracle': _oracle, 'system_info': _system_info} }}"

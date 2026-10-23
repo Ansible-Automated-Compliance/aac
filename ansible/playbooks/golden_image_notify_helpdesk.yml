@@ -1,0 +1,179 @@
+---
+# golden_image_notify_helpdesk.yml — open OR close a helpdesk ticket in the
+# helpdesk_tickets table.
+#
+# Topology-neutral product version of the AO job template
+# AAC_GoldenImage_NotifyHelpDesk (the SSH-shape family, next to
+# golden_image_check.yml / golden_image_rollback.yml). It touches only the
+# evidence database and never connects to the target host. In production this
+# would also push to ServiceNow / Jira / Slack — here it logs to PostgreSQL so
+# the audit trail is complete and demoable.
+#
+# ── Required extra_vars ─────────────────────────────────────────────────────
+#   target_host   Hostname the ticket is filed against (helpdesk_tickets.hostname)
+# ── Database (all three) ────────────────────────────────────────────────────
+#   pg_host / pg_user / pg_db / pg_password (or compliance_db_password)
+#                 Evidence database. From site_config.yml / vault_secrets.yml
+#                 when the checkout has them (gitignored; AAP project checkouts
+#                 do not), else from a credential or extra_vars. pg_host has no
+#                 default and the play fails without it. pg_port defaults to
+#                 5432. There is no default password.
+# ── Optional (survey/extra_vars) ────────────────────────────────────────────
+#   action        "open" or "close". Default: open.
+#   severity      Open-ticket severity. Default: high when drift was found,
+#                 low when the enforcement run found none.
+#   description   Free-text incident description. Default is DERIVED from the
+#                 facts the Check publishes (any_drift, changed_files,
+#                 drifted_key) so the ticket says what was actually observed —
+#                 not a canned "drift detected" line on a clean host.
+
+- name: Notify Helpdesk
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    action: "open"
+    # Facts from the upstream Check node (set_stats → workflow artifacts). All
+    # optional: a stand-alone launch without them gets the conservative defaults.
+    _drifted: "{{ any_drift | default(true) | bool }}"
+    # changed_files arrives as a list from the Check's artifacts; tolerate a bare string too.
+    _files: >-
+      {{ ((changed_files | default([])) if ((changed_files | default([])) is not string)
+          else [changed_files]) | join(', ') }}
+    _key: "{{ drifted_key | default('selinux_config') }}"
+    severity: "{{ 'high' if (_drifted | bool) else 'low' }}"
+    description: >-
+      {{ ('Golden image drift detected on ' ~ (_files if _files else '/etc/selinux/config')
+          ~ ' (' ~ _key ~ ' differs from the approved baseline).')
+         if (_drifted | bool)
+         else ('Golden image enforcement ran on ' ~ target_host
+               ~ ': no drift detected, baseline intact. No remediation required.') }}
+
+  tasks:
+    - name: Load site config if present
+      ansible.builtin.include_vars: "{{ item }}"
+      loop: "{{ query('first_found', ['../vars/site_config.yml'], errors='ignore') }}"
+
+    - name: Load vault secrets if present
+      ansible.builtin.include_vars: "{{ item }}"
+      loop: "{{ query('first_found', ['../vars/vault_secrets.yml'], errors='ignore') }}"
+      no_log: true
+
+    - name: Require a target host
+      ansible.builtin.assert:
+        that:
+          - target_host is defined
+          - (target_host | default('', true)) | length > 0
+          # Deliberately NOT checked against groups['all']: this play only
+          # talks to the evidence database and never SSHes to the host, so
+          # target_host is a database key (hostname), not an inventory member.
+        fail_msg: >-
+          target_host is not set. Supply the hostname the evidence database
+          knows this system by, via extra_vars or the job template survey.
+        quiet: true
+
+    - name: Require a database host
+      ansible.builtin.assert:
+        that:
+          - (pg_host | default('', true)) | length > 0
+        fail_msg: >-
+          pg_host is not set. Supply it via site_config.yml, an evidence-database
+          credential, or extra_vars — this playbook has no environment default.
+        quiet: true
+
+    - name: Validate action
+      ansible.builtin.fail:
+        msg: "action must be 'open' or 'close', got '{{ action }}'"
+      when: action not in ['open', 'close']
+
+    # ── OPEN ticket ──────────────────────────────────────────────────────────
+    - name: OPEN — insert a new helpdesk ticket
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port | default(5432) }}"
+        login_user: "{{ pg_user | default('postgres') }}"
+        login_password: "{{ pg_password | default(compliance_db_password | default(omit)) }}"
+        login_db: "{{ pg_db | default('compliance') }}"
+        query: |
+          INSERT INTO helpdesk_tickets
+            (hostname, incident_type, severity, description,
+             triggered_by, rollback_status, status)
+          VALUES (%s, 'golden_image_drift', %s, %s,
+                  %s, 'IN_PROGRESS', 'OPEN')
+          RETURNING id, created_at, status
+        positional_args:
+          - "{{ target_host }}"
+          - "{{ severity }}"
+          - "{{ description }}"
+          - "AAC Golden Image Workflow ({{ awx_workflow_job_id | default('manual') }})"
+      register: opened
+      when: action == "open"
+
+    - name: Report — ticket OPENED
+      ansible.builtin.debug:
+        msg:
+          - "═══════════════════════════════════════════════════════"
+          - "  HELPDESK TICKET OPENED"
+          - "═══════════════════════════════════════════════════════"
+          - "  Ticket ID:    {{ opened.query_result[0].id }}"
+          - "  Created:      {{ opened.query_result[0].created_at }}"
+          - "  Status:       OPEN"
+          - "  Host:         {{ target_host }}"
+          - "  Severity:     {{ severity }}"
+          - "  Description:  {{ description }}"
+          - "═══════════════════════════════════════════════════════"
+          - ""
+          - "{{ '  Rollback will run next to remediate.' if (_drifted | bool) else '  No drift — nothing to remediate.' }}"
+      when: action == "open"
+
+    # ── CLOSE ticket ─────────────────────────────────────────────────────────
+    - name: CLOSE — update the most recent OPEN ticket for this host
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port | default(5432) }}"
+        login_user: "{{ pg_user | default('postgres') }}"
+        login_password: "{{ pg_password | default(compliance_db_password | default(omit)) }}"
+        login_db: "{{ pg_db | default('compliance') }}"
+        query: |
+          UPDATE helpdesk_tickets
+          SET status          = 'AUTO_REMEDIATED',
+              rollback_status = 'COMPLETED',
+              resolved_at       = NOW(),
+              description     = description || E'\n--- closed ---\n' || %s
+          WHERE id = (
+            SELECT id FROM helpdesk_tickets
+            WHERE hostname = %s AND status = 'OPEN'
+            ORDER BY created_at DESC
+            LIMIT 1
+          )
+          RETURNING id, created_at, resolved_at, status
+        positional_args:
+          - "{{ 'Drift remediated; verification check passed.' if (_drifted | bool) else 'No drift was found; verification check passed. Closed without remediation.' }}"
+          - "{{ target_host }}"
+      register: closed
+      when: action == "close"
+
+    - name: Report — ticket CLOSED
+      ansible.builtin.debug:
+        msg:
+          - "═══════════════════════════════════════════════════════"
+          - "  HELPDESK TICKET CLOSED"
+          - "═══════════════════════════════════════════════════════"
+          - "  Ticket ID:    {{ closed.query_result[0].id }}"
+          - "  Opened:       {{ closed.query_result[0].created_at }}"
+          - "  Closed:       {{ closed.query_result[0].resolved_at }}"
+          - "  Status:       {{ closed.query_result[0].status }}"
+          - "  Host:         {{ target_host }}"
+          - "═══════════════════════════════════════════════════════"
+          - ""
+          - "{{ '  Audit trail complete: drift → ticket opened → remediated →' if (_drifted | bool) else '  Audit trail complete: enforcement run → ticket opened → no drift →' }}"
+          - "  verified → ticket closed."
+      when: action == "close" and (closed.query_result | length) > 0
+
+    - name: Warning — no OPEN ticket found to close
+      ansible.builtin.debug:
+        msg: |
+          No OPEN ticket found for host '{{ target_host }}'.
+          Either the previous step didn't open one, or it was already closed.
+      when: action == "close" and (closed.query_result | length) == 0

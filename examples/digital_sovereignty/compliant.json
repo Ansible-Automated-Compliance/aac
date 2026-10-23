@@ -1,0 +1,660 @@
+{
+  "input": {
+    "approved_jurisdictions": [
+      "AU",
+      "NZ",
+      "GB",
+      "DE",
+      "FR"
+    ],
+    "approved_cloud_regions": [
+      "ap-southeast-2",
+      "eu-west-1",
+      "eu-central-1",
+      "on_prem_au",
+      "on_prem_de"
+    ],
+    "cloud_resources": [
+      {
+        "resource_id": "s3-hr-data-001",
+        "resource_type": "object_storage",
+        "provider": "aws",
+        "region": "ap-southeast-2",
+        "country": "AU",
+        "infrastructure_type": "public_cloud",
+        "data_classification": "sensitive",
+        "stores_regulated_data": true,
+        "key_management": "customer_managed",
+        "key_location_country": "AU",
+        "byok_enabled": true,
+        "hyok_enabled": false,
+        "algorithm": "AES-256"
+      },
+      {
+        "resource_id": "rds-finance-001",
+        "resource_type": "database",
+        "provider": "aws",
+        "region": "ap-southeast-2",
+        "country": "AU",
+        "infrastructure_type": "public_cloud",
+        "data_classification": "sensitive",
+        "stores_regulated_data": true,
+        "key_management": "customer_managed",
+        "key_location_country": "AU",
+        "byok_enabled": true,
+        "hyok_enabled": false,
+        "algorithm": "AES-256"
+      },
+      {
+        "resource_id": "sovereign-vault-001",
+        "resource_type": "secret_store",
+        "provider": "on_prem",
+        "region": "on_prem_au",
+        "country": "AU",
+        "infrastructure_type": "on_prem",
+        "data_classification": "sovereign",
+        "stores_regulated_data": true,
+        "key_management": "customer_managed",
+        "key_location_country": "AU",
+        "byok_enabled": true,
+        "hyok_enabled": true,
+        "algorithm": "AES-256"
+      }
+    ],
+    "backup_configurations": [
+      {
+        "resource_id": "s3-hr-data-001",
+        "backup_region": "ap-southeast-2",
+        "backup_country": "AU",
+        "offsite_country": "AU"
+      },
+      {
+        "resource_id": "rds-finance-001",
+        "backup_region": "ap-southeast-2",
+        "backup_country": "AU",
+        "offsite_country": "AU"
+      }
+    ],
+    "dr_configurations": [
+      {
+        "resource_id": "s3-hr-data-001",
+        "dr_region": "ap-southeast-2",
+        "dr_country": "AU"
+      }
+    ],
+    "metadata_storage": {
+      "location_country": "AU",
+      "in_approved_jurisdiction": true
+    },
+    "telemetry_and_logs": {
+      "location_country": "AU",
+      "in_approved_jurisdiction": true,
+      "vendor_access_to_logs": false
+    },
+    "data_flows": [
+      {
+        "flow_id": "flow-001",
+        "source_country": "AU",
+        "destination_country": "AU",
+        "data_classification": "sensitive",
+        "transfer_mechanism_documented": true
+      }
+    ],
+    "data_flow_inventory": {
+      "maintained": true,
+      "last_review_date": "2026-01-15T00:00:00Z"
+    },
+    "hsm_configuration": {
+      "deployed": true,
+      "type": "fips_140_2_level3",
+      "location_country": "AU",
+      "vendor_access_possible": false,
+      "key_material_leaves_hsm": false
+    },
+    "key_management_policies": {
+      "rotation_policy_documented": true,
+      "rotation_frequency_days": 365,
+      "key_ceremony_documented": true,
+      "dual_control_enforced": true,
+      "split_knowledge_enforced": true,
+      "escrow": {
+        "exists": false
+      }
+    },
+    "encryption_standards": {
+      "algorithms_approved": [
+        "AES-256",
+        "AES-128",
+        "RSA-4096",
+        "ECDSA-P-384",
+        "SHA-256",
+        "SHA-384"
+      ],
+      "tls_minimum_version": "1.2",
+      "prohibited_algorithms": [
+        "DES",
+        "3DES",
+        "RC4",
+        "MD5",
+        "SHA-1",
+        "NULL"
+      ]
+    },
+    "encrypted_resources_in_transit": [
+      {
+        "connection_id": "conn-web-001",
+        "protocol": "HTTPS",
+        "tls_version": "1.3",
+        "cipher_suite": "TLS_AES_256_GCM_SHA384",
+        "involves_regulated_data": true
+      }
+    ],
+    "code_signing": {
+      "implemented": true,
+      "key_location_country": "AU",
+      "private_key_in_approved_jurisdiction": true
+    },
+    "infrastructure_components": [
+      {
+        "component_id": "aws-ap-southeast-2",
+        "component_type": "cloud_service",
+        "deployment_type": "public_cloud",
+        "provider": "AWS",
+        "provider_hq_country": "US",
+        "physical_location_country": "AU",
+        "data_classification": "sensitive",
+        "subject_to_foreign_surveillance_law": true,
+        "foreign_government_access_risk": "low",
+        "mitigation": {
+          "encryption_before_upload": true,
+          "sovereign_cloud_used": false
+        }
+      }
+    ],
+    "cloud_providers": [
+      {
+        "provider_id": "aws",
+        "provider_name": "Amazon Web Services",
+        "hq_country": "US",
+        "subject_to_cloud_act": true,
+        "sovereign_cloud_offering": {
+          "available": true,
+          "jurisdiction": "AU"
+        },
+        "data_processed_pct": 45
+      }
+    ],
+    "hardware_components": [
+      {
+        "component_id": "server-rack-01",
+        "component_type": "server",
+        "manufacturer_country": "AU",
+        "firmware_origin_country": "AU",
+        "supply_chain_audited": true,
+        "known_vulnerabilities": {
+          "hardware_backdoor": false
+        }
+      }
+    ],
+    "network_infrastructure": {
+      "dns_provider": {
+        "location_country": "AU",
+        "under_foreign_jurisdiction": false
+      },
+      "cdn": {
+        "provider_hq_country": "AU",
+        "content_cached_in_approved_regions": true
+      }
+    },
+    "concentration_limits": {
+      "max_single_provider_pct": 70,
+      "max_foreign_provider_pct": 50
+    },
+    "exit_strategy": {
+      "documented": true,
+      "portability_tested": true,
+      "estimated_migration_days": 60,
+      "data_portability_format_open": true
+    },
+    "sbom": {
+      "maintained": true,
+      "format": "cyclonedx",
+      "last_updated": "2026-04-01T00:00:00Z",
+      "coverage_pct": 97,
+      "includes_transitive_dependencies": true
+    },
+    "software_components": [
+      {
+        "component_id": "rhel-9",
+        "name": "Red Hat Enterprise Linux 9",
+        "version": "9.3",
+        "component_type": "os",
+        "vendor_country": "US",
+        "source_available": true,
+        "audited": true,
+        "forced_update_mechanism": false,
+        "telemetry_to_vendor": false,
+        "telemetry_can_be_disabled": true,
+        "license_type": "open_source",
+        "license_reviewed": true,
+        "sbom_available": true
+      }
+    ],
+    "update_mechanisms": [
+      {
+        "software_id": "rhel-9",
+        "update_type": "manual",
+        "requires_approval_before_update": true,
+        "update_source_in_jurisdiction": true
+      }
+    ],
+    "software_provenance": {
+      "signing": {
+        "all_artifacts_signed": true,
+        "key_in_approved_jurisdiction": true
+      },
+      "verification": {
+        "integrity_checked_on_deploy": true,
+        "hash_validation": true
+      }
+    },
+    "dependency_management": {
+      "private_registry_used": true,
+      "registry_in_approved_jurisdiction": true,
+      "dependency_pinning_enforced": true,
+      "vulnerability_scanning": {
+        "enabled": true,
+        "last_scan_date": "2026-05-01T00:00:00Z"
+      }
+    },
+    "code_repositories": [
+      {
+        "repo_id": "repo-compliance",
+        "location_country": "AU",
+        "hosting_provider_jurisdiction": "AU",
+        "access_controls_adequate": true
+      }
+    ],
+    "personnel": [
+      {
+        "person_id": "P001",
+        "role": "Platform Administrator",
+        "location_country": "AU",
+        "nationality_screened": true,
+        "security_clearance_level": "nv1",
+        "access_level": "admin",
+        "vetting_current": true,
+        "foreign_government_connection": false
+      },
+      {
+        "person_id": "P002",
+        "role": "Security Analyst",
+        "location_country": "AU",
+        "nationality_screened": true,
+        "security_clearance_level": "baseline",
+        "access_level": "privileged",
+        "vetting_current": true,
+        "foreign_government_connection": false
+      }
+    ],
+    "vendor_access": [
+      {
+        "vendor_id": "V001",
+        "vendor_name": "Support Vendor AU",
+        "vendor_hq_country": "AU",
+        "access_type": "remote",
+        "sessions_monitored": true,
+        "sessions_logged": true,
+        "sessions_recorded": true,
+        "access_requires_approval": true,
+        "just_in_time_access": true,
+        "data_classification_accessed": "sensitive"
+      }
+    ],
+    "support_contracts": [
+      {
+        "vendor_id": "V001",
+        "vendor_name": "Support Vendor AU",
+        "support_personnel_location": "AU",
+        "right_to_refuse_foreign_access": true,
+        "data_handling_agreement": true,
+        "foreign_government_disclosure_clause": true
+      }
+    ],
+    "privileged_access_management": {
+      "pam_solution_deployed": true,
+      "session_recording_enabled": true,
+      "credential_vaulting_enabled": true,
+      "just_in_time_provisioning": true,
+      "privileged_access_review_current": true,
+      "review_frequency_days": 90
+    },
+    "foreign_access_requests": {
+      "policy_documented": true,
+      "legal_review_required": true,
+      "notification_to_data_owner": true,
+      "right_to_challenge": true
+    },
+    "remote_operations": {
+      "vpn_in_jurisdiction": true,
+      "jump_host_in_jurisdiction": true,
+      "remote_from_approved_countries_only": true
+    },
+    "bgp_configuration": {
+      "autonomous_system_number_owned": true,
+      "route_filtering_enabled": true,
+      "rpki_deployed": true,
+      "route_origin_validation": true,
+      "peer_list_reviewed_date": "2025-12-01T00:00:00Z",
+      "routes_documented": true
+    },
+    "dns_configuration": {
+      "resolver_location_country": "AU",
+      "resolver_under_org_control": true,
+      "dnssec_enabled": true,
+      "dns_over_https_or_tls": true,
+      "public_dns_providers_blocked": true,
+      "zone_transfers_controlled": true,
+      "dns_logs_retained_days": 180
+    },
+    "internet_egress": {
+      "single_controlled_egress_point": true,
+      "egress_country": "AU",
+      "traffic_inspected_at_egress": true,
+      "allowed_destinations_documented": true,
+      "blocked_destinations_documented": true
+    },
+    "traffic_routing": {
+      "sensitive_traffic_transits_foreign_country": false,
+      "traffic_routed_over_approved_paths": true,
+      "encrypted_if_transits_foreign": true
+    },
+    "network_monitoring": {
+      "netflow_collection_enabled": true,
+      "deep_packet_inspection": {
+        "enabled": true
+      },
+      "anomaly_detection_enabled": true,
+      "foreign_destination_alerting": true,
+      "retention_days": 180
+    },
+    "private_connectivity": {
+      "dedicated_links_for_sensitive": {
+        "used": false
+      },
+      "vpn_used_for_sensitive": true,
+      "vpn_termination_country": "AU"
+    },
+    "network_segments": [
+      {
+        "segment_id": "seg-prod",
+        "segment_name": "Production",
+        "location_country": "AU",
+        "handles_regulated_data": true,
+        "traffic_inspected": true,
+        "encrypted_in_transit": true,
+        "routing_policy_documented": true
+      }
+    ],
+    "ai_services": [
+      {
+        "service_id": "ai-internal-001",
+        "service_name": "Internal LLM",
+        "service_type": "llm",
+        "provider": "self_hosted",
+        "provider_hq_country": "AU",
+        "deployment_type": "on_prem",
+        "inference_location_country": "AU",
+        "data_sent_for_inference": true,
+        "data_used_for_training": false,
+        "data_classification_processed": "sensitive",
+        "opt_out_of_training": {
+          "available": true,
+          "enabled": true
+        },
+        "data_retention_by_provider_days": 0
+      }
+    ],
+    "ml_training": {
+      "training_data_location_country": "AU",
+      "training_infrastructure_country": "AU",
+      "training_data_classification": "internal",
+      "data_leaves_jurisdiction_for_training": false,
+      "federated_learning_used": false
+    },
+    "ml_models": [
+      {
+        "model_id": "model-001",
+        "model_name": "Internal Compliance Classifier",
+        "origin": "internal",
+        "origin_country": "AU",
+        "audited_for_backdoors": true,
+        "model_weights_location_country": "AU",
+        "inference_in_jurisdiction": true
+      }
+    ],
+    "ai_governance": {
+      "policy_documented": true,
+      "approved_ai_services_list": true,
+      "shadow_ai_controls": true,
+      "data_handling_procedures": true,
+      "human_oversight_for_decisions": true
+    },
+    "ai_output_controls": {
+      "outputs_reviewed_before_action": true,
+      "output_logging_enabled": true,
+      "output_jurisdiction": "AU"
+    },
+    "ai_bias_fairness": {
+      "bias_audit_policy_documented": true,
+      "audit_frequency_days": 180,
+      "last_audit_date": "2026-02-01T00:00:00Z",
+      "audit_findings_documented": true,
+      "remediation_process_documented": true
+    },
+    "ai_fairness_controls": {
+      "fairness_metrics_defined": true,
+      "fairness_thresholds_enforced": true,
+      "disparate_impact_tested": true,
+      "remediation_applied_when_breached": true,
+      "fairness_monitoring_ongoing": true
+    },
+    "surveillance_law_response": {
+      "procedure_documented": true,
+      "legal_counsel_on_retainer": true,
+      "notification_to_data_owner_required": true,
+      "challenge_mechanism_available": true,
+      "cloud_act_specific_procedure": true,
+      "fisa_702_specific_procedure": true,
+      "response_timeline_hours": 48
+    },
+    "vendor_lock_in_assessment": {
+      "conducted": true,
+      "last_assessment_date": "2025-12-01T00:00:00Z",
+      "estimated_exit_cost_usd": 450000,
+      "exit_cost_acceptable": true,
+      "cost_reduction_plan_documented": true,
+      "proprietary_api_dependencies": [
+        {
+          "service_id": "aws-s3-api",
+          "mitigation_documented": true
+        },
+        {
+          "service_id": "azure-cognitive-services",
+          "mitigation_documented": true
+        }
+      ]
+    },
+    "breach_notification": {
+      "policy_documented": true,
+      "procedure_tested_date": "2026-01-15T00:00:00Z",
+      "procedure_test_frequency_days": 365,
+      "supervisory_authority_contact_in_jurisdiction": true,
+      "notification_timeline_hours": 48,
+      "early_warning_timeline_hours": 12,
+      "notification_channel_in_jurisdiction": true,
+      "notification_vendor_hq_country": "AU",
+      "data_processor_notification_procedure": true,
+      "breach_register_maintained": true,
+      "forensic_evidence_jurisdiction": "AU",
+      "breach_comms_encrypted": true,
+      "law_enforcement_disclosure_controlled": true
+    },
+    "dora": {
+      "ict_risk_management_framework_documented": true,
+      "ict_risk_framework_reviewed_date": "2026-01-10T00:00:00Z",
+      "ict_risk_framework_review_frequency_days": 365,
+      "ict_asset_register_maintained": true,
+      "ict_asset_register_reviewed_date": "2026-02-01T00:00:00Z",
+      "ict_asset_register_review_frequency_days": 180,
+      "rto_defined": true,
+      "rto_hours": 4,
+      "rpo_defined": true,
+      "rpo_hours": 1,
+      "business_continuity_plan_documented": true,
+      "business_continuity_tested_date": "2026-01-20T00:00:00Z",
+      "business_continuity_test_frequency_days": 365,
+      "major_incident_classification_defined": true,
+      "initial_notification_timeline_hours": 2,
+      "intermediate_report_timeline_hours": 24,
+      "digital_resilience_testing_conducted": true,
+      "digital_resilience_test_date": "2026-02-15T00:00:00Z",
+      "digital_resilience_test_frequency_days": 365,
+      "tlpt_required": true,
+      "tlpt_conducted": true,
+      "tlpt_date": "2025-06-01T00:00:00Z",
+      "tlpt_frequency_years": 3,
+      "critical_ict_providers_register_maintained": true,
+      "critical_ict_providers": [
+        {
+          "provider_id": "aws-au",
+          "provider_name": "AWS Australia",
+          "pct_critical_functions": 40,
+          "exit_strategy_documented": true,
+          "contractual_requirements_met": true
+        },
+        {
+          "provider_id": "telco-au",
+          "provider_name": "AU Telco Primary",
+          "pct_critical_functions": 20,
+          "exit_strategy_documented": true,
+          "contractual_requirements_met": true
+        }
+      ],
+      "concentration_risk_threshold_pct": 60
+    },
+    "cyber_resilience": {
+      "redundancy": {
+        "critical_systems_have_active_redundancy": true,
+        "failover_tested_date": "2026-02-01T00:00:00Z",
+        "failover_test_frequency_days": 180
+      },
+      "backup_and_recovery": {
+        "backups_taken_frequency_hours": 4,
+        "recovery_tested_date": "2026-02-10T00:00:00Z",
+        "recovery_test_frequency_days": 180,
+        "recovery_test_met_rto": true,
+        "recovery_test_met_rpo": true,
+        "backup_immutability_enforced": true,
+        "backup_location_sovereign": true
+      },
+      "adversarial_testing": {
+        "red_team_conducted": true,
+        "red_team_date": "2025-11-01T00:00:00Z",
+        "red_team_frequency_days": 365,
+        "purple_team_or_chaos_engineering": true
+      },
+      "incident_response": {
+        "ir_plan_documented": true,
+        "ir_plan_tested_date": "2026-01-15T00:00:00Z",
+        "ir_plan_test_frequency_days": 365,
+        "roles_formally_assigned": true,
+        "nation_state_scenario_included": true
+      },
+      "threat_intelligence": {
+        "feeds_active": true,
+        "feeds_integrated_into_soc": true,
+        "sovereign_feed_available": true
+      },
+      "supply_chain_resilience": {
+        "assessment_conducted": true,
+        "assessment_date": "2025-12-01T00:00:00Z",
+        "assessment_frequency_days": 365,
+        "critical_suppliers_have_alternatives": true,
+        "software_bill_of_materials_for_resilience": true
+      },
+      "metrics": {
+        "mttr_tracked": true,
+        "mttr_hours": 2,
+        "mttr_threshold_hours": 8,
+        "mttd_tracked": true
+      },
+      "governance": {
+        "board_cyber_resilience_review_frequency_days": 90,
+        "board_review_date": "2026-03-01T00:00:00Z",
+        "cyber_resilience_training_date": "2026-01-20T00:00:00Z",
+        "cyber_resilience_training_frequency_days": 365
+      }
+    },
+    "geopolitical_risk": {
+      "risk_register_maintained": true,
+      "last_risk_review_date": "2026-02-15T00:00:00Z",
+      "review_frequency_days": 90,
+      "designated_sovereign_risk_owner": true,
+      "geopolitical_event_triggers": [
+        {
+          "trigger_id": "trig-001",
+          "event_type": "sanctions",
+          "response_procedure_documented": true,
+          "escalation_path_defined": true,
+          "activation_criteria_defined": true
+        },
+        {
+          "trigger_id": "trig-002",
+          "event_type": "regulatory_change",
+          "response_procedure_documented": true,
+          "escalation_path_defined": true,
+          "activation_criteria_defined": true
+        },
+        {
+          "trigger_id": "trig-003",
+          "event_type": "supply_chain_disruption",
+          "response_procedure_documented": true,
+          "escalation_path_defined": true,
+          "activation_criteria_defined": true
+        }
+      ],
+      "country_exit_procedures": [
+        {
+          "country": "US",
+          "data_egress_procedure_documented": true,
+          "infrastructure_withdrawal_plan": true,
+          "personnel_relocation_plan": true
+        },
+        {
+          "country": "CN",
+          "data_egress_procedure_documented": true,
+          "infrastructure_withdrawal_plan": true,
+          "personnel_relocation_plan": true
+        }
+      ],
+      "supply_chain_geopolitical_assessment": {
+        "conducted": true,
+        "critical_suppliers_mapped": true,
+        "alternative_suppliers_identified": true,
+        "last_assessment_date": "2025-12-01T00:00:00Z"
+      },
+      "regulatory_change_monitoring": {
+        "process_documented": true,
+        "jurisdictions_monitored": [
+          "AU",
+          "NZ",
+          "GB",
+          "DE",
+          "FR"
+        ],
+        "notification_mechanism": true
+      }
+    }
+  }
+}

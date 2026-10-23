@@ -1,0 +1,137 @@
+---
+# resolve_evidence_provenance.yml — set the provenance facts every stored result needs
+#
+# Include ONCE, as early as possible, before storing any compliance result:
+#
+#   - include_tasks: ../tasks/resolve_evidence_provenance.yml
+#     vars:
+#       evidence_subject: "{{ target_hostname }}"   # optional but preferred
+#
+# Sets:
+#   aac_policy_sha       digest of the policy set that rendered the verdict
+#   aac_project_sha      compliance repo commit that ran the assessment
+#   aac_evidence_subject the asset the evidence is ABOUT
+#
+# WHY THE POLICY DIGEST IS NOT A GIT SHA
+# --------------------------------------
+# The obvious answer is `git ls-tree HEAD policies`. It does not work: AAP exports
+# the project into /runner/project WITHOUT a .git directory, so git commands fail
+# inside the execution environment. (The controller's own checkout does have .git —
+# checking there and concluding it works is a trap.)
+#
+# The better answer turned out to be more accurate anyway. What decides a verdict is
+# not what is committed in the repo, it is **what OPA actually had loaded** at the
+# moment of evaluation — and those differ: the checkout ships 628 .rego files while
+# OPA had 310 loaded. So the primary source is a SHA-256 over OPA's loaded policy
+# set (ids + raw source), which is a true fingerprint of the rules that produced the
+# result. The checkout digest is the fallback for contexts with no OPA URL.
+#
+# WHY THE SUBJECT NEEDS RESOLVING
+# -------------------------------
+# Most assessment playbooks run `hosts: localhost` and reach the target by
+# delegation or by querying stored facts, so `inventory_hostname` is the execution
+# context rather than the asset. That is exactly how 82% of the evidence corpus lost
+# its subject: 1,338 rows said 'localhost' and 906 had no hostname at all.
+#
+# CAVEAT — INDEPENDENT VERIFICATION
+# ---------------------------------
+# The digest is reproducible only by the SAME canonicalisation: OPA's
+# `GET /v1/policies` result, sorted by `id`, serialised with Ansible's `to_json`,
+# then sha256. Recomputing it with a different JSON serialiser (key order, spacing,
+# separators) yields a DIFFERENT digest for identical policy content — verified, so
+# do not treat a mismatch as evidence of tampering without matching the method.
+#
+# It is therefore a strong *change-detection* fingerprint — two verdicts with the
+# same policy_sha were produced by the same rules — but it is not yet an
+# independently verifiable artefact. Making it one means pinning a canonical JSON
+# form (sorted keys, fixed separators) and publishing it. Worth doing before this
+# is offered to an external auditor as a verification mechanism.
+#
+# Resolution order: explicit `evidence_subject` -> target_host/target_hostname ->
+# inventory_hostname (when not localhost) -> the controller's real hostname.
+# 'localhost' is never accepted as a final answer.
+
+- name: Fingerprint the policy set OPA actually has loaded
+  ansible.builtin.uri:
+    use_proxy: false
+    url: "{{ opa_server_url }}/v1/policies"
+    method: GET
+    return_content: true
+    timeout: 15
+  register: _aac_opa_policies
+  when: opa_server_url is defined and (opa_server_url | length > 0)
+  failed_when: false
+  changed_when: false
+
+- name: Fall back to a digest of the shipped policy files
+  ansible.builtin.shell:
+    cmd: >-
+      find policies -name '*.rego' -type f 2>/dev/null | sort |
+      xargs sha256sum 2>/dev/null | sha256sum | cut -c1-64
+    chdir: "{{ playbook_dir }}/../.."
+  register: _aac_file_digest
+  changed_when: false
+  failed_when: false
+  when: >-
+    _aac_opa_policies.skipped | default(true)
+    or (_aac_opa_policies.json.result | default([]) | length) == 0
+
+- name: Set provenance facts
+  ansible.builtin.set_fact:
+    aac_policy_sha: >-
+      {{ (_aac_opa_policies.json.result | sort(attribute='id') | to_json | hash('sha256'))
+         if (not (_aac_opa_policies.skipped | default(true))
+             and (_aac_opa_policies.json.result | default([]) | length) > 0)
+         else (_aac_file_digest.stdout | default('') | trim) }}
+    aac_policy_source: >-
+      {{ 'opa_loaded_set:' ~ (_aac_opa_policies.json.result | default([]) | length) ~ '_policies'
+         if (not (_aac_opa_policies.skipped | default(true))
+             and (_aac_opa_policies.json.result | default([]) | length) > 0)
+         else 'checkout_rego_files' }}
+    # AAP injects the job's scm_revision as awx_project_revision.
+    aac_project_sha: >-
+      {{ awx_project_revision | default(tower_project_revision | default('')) }}
+
+- name: Resolve the subject this evidence is about
+  ansible.builtin.set_fact:
+    aac_evidence_subject: >-
+      {{ (evidence_subject   | default('', true))
+         or (target_hostname | default('', true))
+         or (target_host     | default('', true))
+         or (inventory_hostname if inventory_hostname not in ['localhost', '127.0.0.1'] else '')
+         or (ansible_facts.fqdn | default('', true))
+         or (ansible_facts.hostname | default('', true))
+         or ((lookup('env', 'HOSTNAME') | default('', true) | trim)
+             if not ((lookup('env', 'HOSTNAME') | default('', true) | trim) is match('^automation-job-'))
+             else '') }}
+
+- name: Refuse to record evidence against a placeholder subject
+  ansible.builtin.assert:
+    that:
+      - aac_evidence_subject | length > 0
+      - aac_evidence_subject not in ['localhost', '127.0.0.1', 'None']
+    # NOTE: no Jinja in this message. An earlier version embedded a usage example
+    # containing braces, which Ansible rendered — so the failure message itself
+    # failed on an undefined variable.
+    fail_msg: >-
+      Could not resolve the asset this evidence is about (resolved to
+      '{{ aac_evidence_subject }}'). Evidence that cannot name its subject is not
+      evidence — an auditor's first question is "which system is this about?".
+      Pass evidence_subject explicitly when including this task file.
+
+- name: Warn when the policy set could not be fingerprinted
+  when: aac_policy_sha | default('') | length == 0
+  ansible.builtin.debug:
+    msg: >-
+      WARNING - no policy fingerprint. This result will be stored without
+      provenance and "which rule produced this verdict" will be unanswerable for
+      it. Either opa_server_url was not set and the checkout has no .rego files,
+      or OPA returned an empty policy list.
+
+- name: Provenance resolved
+  ansible.builtin.debug:
+    msg:
+      - "subject     : {{ aac_evidence_subject }}"
+      - "policy_sha  : {{ aac_policy_sha | default('(unresolved)', true) }}"
+      - "policy_src  : {{ aac_policy_source | default('(none)', true) }}"
+      - "project_sha : {{ aac_project_sha | default('(unresolved)', true) }}"

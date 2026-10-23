@@ -1,0 +1,18 @@
+---
+galaxy_info:
+  role_name: aac_store_results
+  author: AAC
+  description: >
+    Single authoritative INSERT into compliance_results.
+    Eliminates copy-paste SQL and prevents schema drift across assessment playbooks.
+  license: Apache-2.0
+  min_ansible_version: "2.14"
+  platforms:
+    - name: EL
+      versions: ["8", "9"]
+  galaxy_tags:
+    - compliance
+    - postgresql
+    - aac
+
+dependencies: []

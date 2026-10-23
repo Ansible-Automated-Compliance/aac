@@ -1,0 +1,116 @@
+---
+# AAC Fresh Install — Phase 3: Verify Bundle & Manifest
+#
+# Confirms the AAP installer bundle and Red Hat manifest are present on the
+# target instance before the installer runs. Fails with clear instructions
+# if either file is missing.
+#
+# Files expected (transferred manually from Mac before this phase):
+#   /home/ec2-user/aap-bundle.tar.gz   — AAP 2.6 containerized setup bundle (~2.3GB)
+#   /home/ec2-user/aap-manifest.zip    — Red Hat subscription manifest
+#
+# Manual transfer commands (run from Mac with your AWS SSH key):
+#   scp [-i ~/.ssh/<key>.pem] \
+#     ~/Downloads/ansible-automation-platform-containerized-setup-bundle-2.6-1-x86_64.tar.gz \
+#     ec2-user@<TARGET_IP>:/home/ec2-user/aap-bundle.tar.gz
+#
+#   scp [-i ~/.ssh/<key>.pem] \
+#     ~/Downloads/0ec418ab-59ed-4654-8ca9-de11cc57c0ce.zip \
+#     ec2-user@<TARGET_IP>:/home/ec2-user/aap-manifest.zip
+#
+# Survey variables (required):
+#   target_host — public IP from Phase 1
+#
+# AAP Job Template: "AAC - Fresh Install: 03 Verify Bundle"
+# Credentials: Ansible Vault, Compliance SSH Credential
+# EE: AAC Compliance EE
+
+- name: Verify AAP Bundle and Manifest on Target
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - ../vars/site_config.yml
+
+  vars:
+    target_host: "{{ target_host }}"
+    bundle_path: "/home/ec2-user/aap-bundle.tar.gz"
+    manifest_path: "/home/ec2-user/aap-manifest.zip"
+    bundle_min_size_mb: 2000
+
+  tasks:
+
+    - name: Check bundle file exists
+      ansible.builtin.stat:
+        path: "{{ bundle_path }}"
+      delegate_to: "{{ target_host }}"
+      vars:
+        ansible_user: ec2-user
+      register: bundle_stat
+
+    - name: Check manifest file exists
+      ansible.builtin.stat:
+        path: "{{ manifest_path }}"
+      delegate_to: "{{ target_host }}"
+      vars:
+        ansible_user: ec2-user
+      register: manifest_stat
+
+    - name: Fail if bundle is missing
+      ansible.builtin.fail:
+        msg: |
+          AAP bundle not found at {{ bundle_path }} on {{ target_host }}
+
+          Transfer it from your Mac:
+            scp ~/Downloads/ansible-automation-platform-containerized-setup-bundle-2.6-1-x86_64.tar.gz \
+                ec2-user@{{ target_host }}:/home/ec2-user/aap-bundle.tar.gz
+
+          Add -i ~/.ssh/<key>.pem if your key is not in the default location.
+          Then re-run this job.
+      when: not bundle_stat.stat.exists
+
+    - name: Fail if manifest is missing
+      ansible.builtin.fail:
+        msg: |
+          AAP manifest not found at {{ manifest_path }} on {{ target_host }}
+
+          Transfer it from your Mac:
+            scp ~/Downloads/0ec418ab-59ed-4654-8ca9-de11cc57c0ce.zip \
+                ec2-user@{{ target_host }}:/home/ec2-user/aap-manifest.zip
+
+          Then re-run this job.
+      when: not manifest_stat.stat.exists
+
+    - name: Check bundle is not truncated
+      ansible.builtin.fail:
+        msg: |
+          Bundle file is only {{ (bundle_stat.stat.size / 1024 / 1024) | round(0) }}MB.
+          Expected at least {{ bundle_min_size_mb }}MB.
+          The transfer may have been incomplete — retry the scp.
+      when:
+        - bundle_stat.stat.exists
+        - (bundle_stat.stat.size / 1024 / 1024) | int < bundle_min_size_mb
+
+    - name: Show file details
+      ansible.builtin.debug:
+        msg:
+          - "Bundle:   {{ bundle_path }}"
+          - "  Size:   {{ (bundle_stat.stat.size / 1024 / 1024) | round(1) }} MB"
+          - "  Mode:   {{ bundle_stat.stat.mode }}"
+          - ""
+          - "Manifest: {{ manifest_path }}"
+          - "  Size:   {{ (manifest_stat.stat.size / 1024) | round(1) }} KB"
+          - "  Mode:   {{ manifest_stat.stat.mode }}"
+
+    - name: "=== Phase 3 Complete ==="
+      ansible.builtin.debug:
+        msg:
+          - "╔══════════════════════════════════════════════════════════╗"
+          - "║               Bundle Verification: PASS                  ║"
+          - "╚══════════════════════════════════════════════════════════╝"
+          - ""
+          - "  ✅ AAP bundle:   {{ (bundle_stat.stat.size / 1024 / 1024) | round(1) }} MB — OK"
+          - "  ✅ Manifest zip: {{ (manifest_stat.stat.size / 1024) | round(1) }} KB — OK"
+          - ""
+          - "  Run Phase 04 with target_host = {{ target_host }}"

@@ -1,0 +1,297 @@
+---
+# ===========================================================================
+# sync_sales_demos_pack.yml — publish the AAC pack to the public repository
+# ynotbhatc/aac-pack: push to main, tag the day. Weekly from the lab AAP; by
+# hand before a demo build.
+#
+# Backs job template: "AAC - Sync AAC Pack" (project: Compliance Automation
+# (main); credentials: Ansible Vault, GitHub PAT (extra_vars)). The template
+# and its weekly schedule are created by seed_sales_demos_pack_schedule.yml.
+#
+# WHAT IT DOES
+#   1. runs scripts/export_sales_demos_pack.py on THIS project checkout, so
+#      the pack is exactly what the pinned commit contains
+#   2. clones aac-pack (main) and replaces its whole tree with the pack
+#   3. no diff → reports "current" and stops: no commit, no tag, so a
+#      consumer's pin stays exactly what it was
+#   4. otherwise commits, pushes main, and pushes a tag vYYYY.MM.DD (a second
+#      publication on the same day gets vYYYY.MM.DD-2, and so on)
+#
+# WHY A PUBLIC REPOSITORY AND A TAG. The sales demos platform (a separate
+# team's) fetches public content at a pinned tag and carries no token for
+# anything else; its maintainer asked for "a public branch that we keep in sync" that he points to (2026-10-08,
+# sales.demos#841). Nothing generated lands in their repository: their side is one
+# variable, aac_pack_version, that they move to a new tag when he wants to.
+# main moves with every sync; a tag never does.
+#
+# WHY THE TOKEN IS OURS. vault_github_pat (AAP credential "GitHub PAT
+# (extra_vars)") pushes to our own repository; nothing of theirs is touched.
+# The token appears only in the clone/push URLs, which are no_log.
+#
+# Variables (extra_vars / survey):
+#   vault_github_pat   REQUIRED  injected by the credential
+#   pack_repo          ynotbhatc/aac-pack
+#   pack_branch        main
+#   sync_dry_run       false   true = export + diff only, no push, no tag
+# ===========================================================================
+
+- name: Publish the AAC pack to aac-pack
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    pack_repo: "ynotbhatc/aac-pack"
+    pack_branch: "main"
+    sync_dry_run: false
+    _repo_root: "{{ playbook_dir }}/../.."
+    _work: "/tmp/aac-pack-sync"
+    _pack: "{{ _work }}/pack"
+    _clone: "{{ _work }}/aac-pack"
+    _tag_base: "v{{ lookup('pipe', 'date -u +%Y.%m.%d') }}"
+
+  tasks:
+    - name: Require the GitHub token
+      ansible.builtin.assert:
+        that:
+          - vault_github_pat | default('') | length > 0
+        fail_msg: >-
+          vault_github_pat is not set. Attach the "GitHub PAT (extra_vars)"
+          credential to the job template, or pass it as an extra var.
+        quiet: true
+      no_log: true
+
+    # The pack replaces the destination's whole tree. Only our own pack
+    # repository may be the destination: a typo that pointed this at a
+    # consumer's repository would otherwise be a wipe-and-push of main there.
+    - name: Require the destination to be an aac-pack repository of ours
+      ansible.builtin.assert:
+        that:
+          - pack_repo is string
+          - pack_repo is match('^ynotbhatc/aac-pack([_-][A-Za-z0-9_-]+)?$')
+        fail_msg: >-
+          pack_repo must be ynotbhatc/aac-pack (or ynotbhatc/aac-pack-<suffix>);
+          got {{ pack_repo | to_json }}. This playbook replaces the destination's
+          entire tree, so it only ever targets a pack repository.
+        quiet: true
+
+    - name: Start from a clean work directory
+      ansible.builtin.file:
+        path: "{{ _work }}"
+        state: "{{ item }}"
+        mode: "0700"
+      loop: [absent, directory]
+
+    # -----------------------------------------------------------------------
+    # 1. Export
+    # -----------------------------------------------------------------------
+    # An AAP job's project directory has no .git, so the exporter cannot read
+    # the source commit itself. AAP supplies it (awx_project_revision, also
+    # PROJECT_REVISION in the job environment); a laptop run leaves it empty
+    # and the exporter falls back to git. The commit's date comes from the
+    # GitHub API for the same reason; it is what makes the tree deterministic.
+    - name: Resolve the source commit
+      ansible.builtin.set_fact:
+        _src_commit: >-
+          {{ awx_project_revision
+             | default(lookup('ansible.builtin.env', 'PROJECT_REVISION'), true)
+             | default('', true) }}
+        _src_branch: "{{ awx_job_scm_branch | default(awx_project_scm_branch | default('', true), true) }}"
+
+    - name: Read the source commit's date
+      when: _src_commit | length > 0
+      ansible.builtin.uri:
+        url: "https://api.github.com/repos/ansible-automated-compliance/aac/commits/{{ _src_commit }}"
+        headers:
+          Authorization: "Bearer {{ vault_github_pat }}"
+          Accept: "application/vnd.github+json"
+          X-GitHub-Api-Version: "2022-11-28"
+        return_content: true
+      register: _src_commit_api
+      no_log: true
+
+    - name: Export the pack from this checkout
+      ansible.builtin.command:
+        argv: >-
+          {{ ['python3', _repo_root ~ '/scripts/export_sales_demos_pack.py',
+              '--repo', _repo_root, '--out', _pack]
+             + (['--source-commit', _src_commit,
+                 '--source-committed-at', _src_commit_api.json.commit.committer.date,
+                 '--source-branch', _src_branch]
+                if _src_commit | length > 0 else []) }}
+      register: _export
+      changed_when: false
+      # exit 2 = a forbidden pattern survived; the message names the line.
+      # exit 3 = no source commit from either git or AAP.
+
+    - name: Read the pack manifest
+      ansible.builtin.slurp:
+        src: "{{ _pack }}/MANIFEST.yml"
+      register: _manifest_raw
+
+    - name: Parse it
+      ansible.builtin.set_fact:
+        _manifest: "{{ _manifest_raw.content | b64decode | from_yaml }}"
+
+    - name: Refuse a pack with missing sources
+      # The manifest lists what was asked for and not found. A pack that
+      # silently lacks a playbook would make a job template on the other
+      # side fail at launch, days later, with no link back to here.
+      ansible.builtin.assert:
+        that:
+          - _manifest.missing | length == 0
+        fail_msg: >-
+          The pack is incomplete — requested but not found in this checkout:
+          {{ _manifest.missing | join(', ') }}. Fix ansible/ao/sales_demos_pack.yml
+          or land the files, then re-run.
+        quiet: true
+
+    # -----------------------------------------------------------------------
+    # 2. The destination
+    # -----------------------------------------------------------------------
+    - name: Clone aac-pack
+      ansible.builtin.command:
+        argv:
+          - git
+          - clone
+          - --quiet
+          - --branch
+          - "{{ pack_branch }}"
+          - "https://x-access-token:{{ vault_github_pat }}@github.com/{{ pack_repo }}.git"
+          - "{{ _clone }}"
+      changed_when: false
+      no_log: true
+
+    # Everything but .git goes: the repository IS the pack, and a file the
+    # manifest stopped shipping must disappear from it. LICENSE ships from
+    # the manifest like everything else.
+    - name: Find the current tree
+      ansible.builtin.find:
+        paths: "{{ _clone }}"
+        file_type: any
+        hidden: true
+        recurse: false
+        excludes: [".git"]
+      register: _old_tree
+
+    - name: Remove it
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: absent
+      loop: "{{ _old_tree.files }}"
+      loop_control:
+        label: "{{ item.path | basename }}"
+
+    - name: Copy the pack in
+      ansible.builtin.copy:
+        src: "{{ _pack }}/"
+        dest: "{{ _clone }}/"
+        mode: preserve
+
+    - name: What changed
+      ansible.builtin.command:
+        argv: [git, -C, "{{ _clone }}", status, --porcelain]
+      register: _status
+      changed_when: false
+
+    - name: Nothing to publish
+      when: _status.stdout | trim | length == 0
+      block:
+        - name: Report
+          ansible.builtin.debug:
+            msg: >-
+              {{ pack_repo }}@{{ pack_branch }} already matches
+              {{ _manifest.source.repository }}@{{ _manifest.source.commit[:12] }}
+              ({{ _manifest.files | length }} files). Nothing pushed, no new tag.
+        - name: Stop here
+          ansible.builtin.meta: end_play
+
+    - name: Stage the diff
+      ansible.builtin.command:
+        argv: [git, -C, "{{ _clone }}", add, -A]
+      changed_when: false
+
+    - name: Diff stat
+      ansible.builtin.command:
+        argv: [git, -C, "{{ _clone }}", diff, --cached, --stat]
+      register: _diffstat
+      changed_when: false
+
+    # Tags already on the remote decide today's name: vYYYY.MM.DD, then -2, -3…
+    - name: Tags already published today
+      ansible.builtin.command:
+        argv: [git, -C, "{{ _clone }}", tag, --list, "{{ _tag_base }}", "{{ _tag_base }}-*"]
+      register: _today_tags
+      changed_when: false
+
+    - name: Name the tag
+      ansible.builtin.set_fact:
+        _tag: >-
+          {{ _tag_base if _today_tags.stdout_lines | length == 0
+             else _tag_base ~ '-' ~ (_today_tags.stdout_lines | length + 1) }}
+
+    - name: Dry run stops before pushing
+      when: sync_dry_run | bool
+      block:
+        - name: Report what would be published
+          ansible.builtin.debug:
+            msg: "{{ ['DRY RUN — would push to ' ~ pack_repo ~ '@' ~ pack_branch ~ ' and tag ' ~ _tag ~ ':'] + _diffstat.stdout_lines }}"
+        - name: Stop here
+          ansible.builtin.meta: end_play
+
+    # -----------------------------------------------------------------------
+    # 3. Commit, push, tag
+    # -----------------------------------------------------------------------
+    - name: Commit
+      ansible.builtin.command:
+        argv:
+          - git
+          - -C
+          - "{{ _clone }}"
+          - -c
+          - user.name=AAC pack sync
+          - -c
+          - user.email=ynotbha@aisle-five.com
+          - commit
+          - -q
+          - -F
+          - "-"
+        stdin: |
+          sync: AAC pack from compliance@{{ _manifest.source.commit[:12] }}
+
+          Generated by scripts/export_sales_demos_pack.py in the AAC repository
+          (source committed {{ _manifest.source.committed_at }}); {{ _manifest.files | length }} files.
+          Source paths and checksums are in MANIFEST.yml. Tag: {{ _tag }}.
+
+          Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+      changed_when: true
+
+    - name: Tag
+      ansible.builtin.command:
+        argv:
+          - git
+          - -C
+          - "{{ _clone }}"
+          - -c
+          - user.name=AAC pack sync
+          - -c
+          - user.email=ynotbha@aisle-five.com
+          - tag
+          - -a
+          - "{{ _tag }}"
+          - -m
+          - "AAC pack {{ _tag }} from compliance@{{ _manifest.source.commit[:12] }}"
+      changed_when: true
+
+    - name: Push the branch and the tag
+      ansible.builtin.command:
+        argv: [git, -C, "{{ _clone }}", push, -q, origin, "{{ pack_branch }}", "{{ _tag }}"]
+      changed_when: true
+      no_log: true
+
+    - name: Report
+      ansible.builtin.debug:
+        msg:
+          - "Pack {{ _manifest.source.repository }}@{{ _manifest.source.commit[:12] }}: {{ _manifest.files | length }} files"
+          - "Pushed {{ pack_repo }}@{{ pack_branch }} and tag {{ _tag }}"
+          - "Consumers pin it with: aac_pack_version: {{ _tag }}"

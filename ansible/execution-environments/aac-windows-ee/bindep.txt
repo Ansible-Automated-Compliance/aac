@@ -1,0 +1,4 @@
+python3-devel [platform:centos-8 platform:centos-9 platform:rhel-8 platform:rhel-9 platform:rocky-9]
+libpq-devel [platform:centos-8 platform:centos-9 platform:rhel-8 platform:rhel-9 platform:rocky-9]
+postgresql-devel [platform:centos-8 platform:centos-9 platform:rhel-8 platform:rhel-9 platform:rocky-9]
+gcc [compile]

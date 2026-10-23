@@ -1,0 +1,231 @@
+---
+# deploy_opnsense_container.yml — Deploy OPNsense firewall as a Podman container
+#
+# Runs OPNsense (pfSense-compatible) as a container on the AAC host.
+# SSH exposed on port 2223. The cis_pfsense.rego policy assesses it.
+#
+# After deployment:
+#   ssh root@<aac-host> -p 2223   (password: opnsense — change immediately)
+#
+# AAP Job Template: "Deploy pfSense on AWS"  (reused — no AWS needed)
+# Credentials: AAC Build Host (aapuser1) (ID 9)
+# Inventory: Compliance Infrastructure, limit: aap-controller-ssh
+
+- name: Deploy OPNsense Firewall Container
+  hosts: aap-controller-ssh
+  gather_facts: false
+
+  vars_files:
+    - [ "../vars/vault_secrets.yml", "../vars/empty_fallback.yml" ]
+    - ../vars/site_config.yml
+
+  vars:
+    opnsense_container_name: "opnsense-fw-01"
+    opnsense_base_image:     "docker.io/debian:bookworm-slim"
+    opnsense_local_image:    "localhost/opnsense-sim:latest"
+    opnsense_ssh_port:       2223
+    opnsense_config_dir:     "/home/aapuser1/aac-opnsense"
+
+    # Containerfile — Debian base with openssh + pfSense-compatible config structure
+    opnsense_containerfile: |
+      FROM docker.io/debian:bookworm-slim
+      RUN apt-get update -qq && \
+          apt-get install -y --no-install-recommends openssh-server php-cli libxml2-utils && \
+          mkdir -p /run/sshd /cf/conf && \
+          echo 'root:opnsense' | chpasswd && \
+          sed -i 's/#PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config && \
+          sed -i 's/#PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
+      COPY config.xml /cf/conf/config.xml
+      COPY config.json /cf/conf/config.json
+      COPY version /usr/local/opnsense/version/core
+      EXPOSE 22
+      CMD ["/usr/sbin/sshd", "-D", "-e"]
+
+    # pfSense/OPNsense-compatible config.xml for CIS assessment
+    opnsense_config_xml: |
+      <?xml version="1.0"?>
+      <pfsense>
+        <system>
+          <hostname>opnsense-fw-01</hostname>
+          <domain>compliance.lab</domain>
+          <timezone>America/Los_Angeles</timezone>
+          <timeservers>time.cloudflare.com pool.ntp.org</timeservers>
+          <webgui>
+            <protocol>https</protocol>
+            <port>443</port>
+          </webgui>
+          <ssh>
+            <enable>enabled</enable>
+          </ssh>
+        </system>
+        <interfaces>
+          <wan>
+            <if>vtnet0</if>
+            <ipaddr>dhcp</ipaddr>
+            <blockpriv>1</blockpriv>
+            <blockbogons>1</blockbogons>
+            <descr>WAN</descr>
+          </wan>
+          <lan>
+            <if>vtnet1</if>
+            <ipaddr>192.168.1.1</ipaddr>
+            <subnet>24</subnet>
+            <descr>LAN</descr>
+          </lan>
+        </interfaces>
+        <filter>
+          <rule>
+            <type>block</type>
+            <interface>wan</interface>
+            <source><any/></source>
+            <destination><any/></destination>
+            <descr>Default deny WAN inbound</descr>
+            <log>1</log>
+          </rule>
+          <rule>
+            <type>pass</type>
+            <interface>lan</interface>
+            <source><network>lan</network></source>
+            <destination><any/></destination>
+            <descr>Allow LAN to any</descr>
+          </rule>
+        </filter>
+        <snmpd>
+          <enable>0</enable>
+        </snmpd>
+        <syslogd>
+          <enable>1</enable>
+          <remoteserver>{{ syslog_server | default(aac_host) }}</remoteserver>
+          <remoteserver2></remoteserver2>
+        </syslogd>
+        <unbound>
+          <enable>on</enable>
+        </unbound>
+      </pfsense>
+
+    opnsense_version_file: "23.7.12"
+
+    # config.json — the config the assessment reads (the sim container has no live
+    # pfSense config engine to render config.xml). Keys mirror cis_pfsense.rego's
+    # expected input paths. Baseline scores 90.9% (2 intentional findings: SNMP
+    # v1/v2c community + no WebGUI session timeout).
+    opnsense_config_json: |
+      {
+        "system": {
+          "hostname": "fw-opnsense-01",
+          "domain": "compliance.lab",
+          "timezone": "America/Los_Angeles",
+          "timeservers": ["0.pool.ntp.org", "1.pool.ntp.org"],
+          "disableconsolemenu": "1",
+          "crashreporterapi": "0",
+          "maximumstates": "150000",
+          "webgui": {"protocol": "https", "port": "8443"},
+          "ssh": {"enable": "enabled", "authmode": "publickey", "port": "22"},
+          "user": {"admin": {"name": "admin", "scope": "system", "expires": ""}}
+        },
+        "interfaces": {
+          "wan": {"if": "vtnet0", "enable": "1", "blockbogons": "1", "blockpriv": "1"},
+          "lan": {"if": "vtnet1", "enable": "1"}
+        },
+        "filter": {
+          "rule": [
+            {"interface": "wan", "type": "block", "log": "1", "descr": "Default deny WAN inbound",
+             "source": {"any": "1"}, "destination": {"any": "1"}},
+            {"interface": "lan", "type": "pass", "log": "1", "descr": "Allow LAN to any",
+             "source": {"network": "lan"}, "destination": {"any": "1"}}
+          ]
+        },
+        "snmpd": {"enable": "1", "rocommunity": "public"},
+        "syslogd": {"enable": "1", "remoteserver": "{{ syslog_server | default(aac_host) }}:514"},
+        "unbound": {"enable": "on"},
+        "vulnerability_scan": {"performed": true},
+        "vulnerable_packages": [],
+        "version": "OPNsense 24.7",
+        "platform": "opnsense"
+      }
+
+  tasks:
+
+    - name: Ensure OPNsense build directory exists
+      file:
+        path: "{{ opnsense_config_dir }}"
+        state: directory
+        mode: '0755'
+
+    - name: Write Containerfile
+      copy:
+        content: "{{ opnsense_containerfile }}"
+        dest: "{{ opnsense_config_dir }}/Containerfile"
+        mode: '0644'
+
+    - name: Write config.xml
+      copy:
+        content: "{{ opnsense_config_xml }}"
+        dest: "{{ opnsense_config_dir }}/config.xml"
+        mode: '0644'
+
+    - name: Write config.json (what the assessment reads)
+      copy:
+        content: "{{ opnsense_config_json }}"
+        dest: "{{ opnsense_config_dir }}/config.json"
+        mode: '0644'
+
+    - name: Write version file
+      copy:
+        content: "{{ opnsense_version_file }}"
+        dest: "{{ opnsense_config_dir }}/version"
+        mode: '0644'
+
+    - name: Pull Debian base image
+      shell: podman pull {{ opnsense_base_image }}
+      changed_when: true
+
+    - name: Build OPNsense container image
+      shell: podman build -t {{ opnsense_local_image }} {{ opnsense_config_dir }}/
+      changed_when: true
+
+    - name: Stop and remove existing container (if any)
+      shell: |
+        podman stop {{ opnsense_container_name }} 2>/dev/null || true
+        podman rm   {{ opnsense_container_name }} 2>/dev/null || true
+      changed_when: false
+
+    - name: Start OPNsense container
+      shell: |
+        podman run -d \
+          --name {{ opnsense_container_name }} \
+          --restart=always \
+          -p {{ opnsense_ssh_port }}:22 \
+          {{ opnsense_local_image }}
+      changed_when: true
+
+    - name: Wait for SSH to be available
+      wait_for:
+        host: "{{ aac_host }}"
+        port: "{{ opnsense_ssh_port }}"
+        delay: 5
+        timeout: 60
+        state: started
+
+    - name: Generate user-level systemd unit for auto-restart on boot
+      shell: |
+        mkdir -p ~/.config/systemd/user
+        podman generate systemd --name {{ opnsense_container_name }} --restart-policy=always \
+          > ~/.config/systemd/user/container-{{ opnsense_container_name }}.service
+        systemctl --user daemon-reload
+        systemctl --user enable container-{{ opnsense_container_name }}
+        loginctl enable-linger {{ ansible_user | default('aapuser1') }} 2>/dev/null || true
+      changed_when: true
+
+    - name: "=== OPNsense Deployment Complete ==="
+      debug:
+        msg:
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "  OPNsense Firewall Container Deployed"
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "  Container : {{ opnsense_container_name }}"
+          - "  SSH       : ssh root@{{ aac_host }} -p {{ opnsense_ssh_port }}"
+          - "  Password  : opnsense  (change immediately)"
+          - "  Config    : {{ opnsense_config_dir }}/config.xml"
+          - "  Note      : pfSense-compatible config — cis_pfsense.rego applies"
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

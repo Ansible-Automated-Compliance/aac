@@ -1,0 +1,102 @@
+---
+# collect_pqc_crypto_facts.yml — the cryptographic inventory a Linux host can
+# state about itself, for the PQC Readiness policy (frameworks/federal/pqc).
+#
+# What is read (all read-only, nothing leaves the host but names and algorithms):
+#   cert|<path>|<public key algorithm>|<bits>|<curve>|<signature algorithm>
+#       every *.crt / *.pem in /etc/pki/tls/certs and in pqc_extra_cert_dirs
+#   sshkey|<path>|<type>|<bits>          /etc/ssh/ssh_host_*_key.pub (fingerprint
+#                                        metadata only; the key never leaves)
+#   kex|<algorithm>                      sshd's EFFECTIVE key-exchange list (sshd -T)
+#   tls|<port>|<group>|<protocol>        the key-exchange group a local TLS listener
+#                                        negotiates, for each port in pqc_tls_probe_ports
+#                                        that is actually listening (openssl s_client)
+#   openssl|<version>  mlkem_available|yes/no  crypto_policy|<name>  fips|<0/1>
+#
+# EVIDENCE INTEGRITY — same contract as collect_linux_compliance_facts.yml:
+#   * nm() replaces any value holding '|' or a non-printable byte with
+#     unsafe:<hash> and reports unsafe_name|<tag>; the mapper never evaluates a
+#     host string, it only copies it.
+#   * a missing command is reported as missing_cmd|<cmd>; a cap is reported as
+#     truncated|<tag>; the block ends in end:ok only when it ran to the end.
+#     Without end:ok the mapper emits NO crypto_inventory and the policy fails
+#     closed (evidence missing), never a clean result.
+#
+# Expects (set by the playbook): pqc_extra_cert_dirs (list), pqc_tls_probe_ports
+# (list of ints). Registers pqc_raw.
+
+- name: Gather the host cryptographic inventory (certificates, SSH host keys, sshd key exchange, TLS listeners)
+  shell: |
+    export LC_ALL=C
+    exec 3>&1
+    ( sleep 90; kill -TERM $$ ) >/dev/null 2>&1 3>&- &
+    wd=$!
+    nm() { case "$1" in *[![:print:]]*|*'|'*) echo "unsafe_name|$2" >&3; printf 'unsafe:%s' "$(printf '%s' "$1" | sha256sum | cut -c1-16)" ;; *) printf '%s' "$1" ;; esac; }
+    need() { local r=0 c; for c in "$@"; do command -v "$c" >/dev/null 2>&1 || { echo "missing_cmd|$c"; r=1; }; done; return $r; }
+    need openssl || { kill "$wd" 2>/dev/null; echo "end:skipped"; exit 0; }
+    echo "openssl|$(nm "$(openssl version 2>/dev/null | awk '{print $2}')" openssl)"
+    if openssl list -kem-algorithms 2>/dev/null | grep -qi 'ML-KEM'; then echo "mlkem_available|yes"; else echo "mlkem_available|no"; fi
+    cp=$(update-crypto-policies --show 2>/dev/null) && echo "crypto_policy|$(nm "$cp" crypto_policy)"
+    echo "fips|$(cat /proc/sys/crypto/fips_enabled 2>/dev/null)"
+    # ── certificates: public key algorithm, size, curve, signature algorithm ──
+    if need find; then
+      n=0
+      for d in /etc/pki/tls/certs $PQC_EXTRA_CERT_DIRS; do
+        [ -d "$d" ] || continue
+        while IFS= read -r -d '' f; do
+          n=$((n + 1)); if [ "$n" -gt 200 ]; then echo "truncated|cert"; break 2; fi
+          sf=$(nm "$f" cert)
+          t=$(timeout 10 openssl x509 -in "$f" -noout -text 2>/dev/null) || { echo "cert|$sf|unparsable|||"; continue; }
+          alg=$(printf '%s\n' "$t" | awk -F': ' '/Public Key Algorithm:/{print $2; exit}')
+          bits=$(printf '%s\n' "$t" | sed -n 's/.*Public-Key: (\([0-9]*\) bit).*/\1/p' | head -1)
+          case "$bits" in *[!0-9]*) bits="" ;; esac
+          curve=$(printf '%s\n' "$t" | sed -n 's/.*NIST CURVE: \([A-Za-z0-9-]*\).*/\1/p; s/.*ASN1 OID: \([A-Za-z0-9-]*\).*/\1/p' | head -1)
+          sig=$(printf '%s\n' "$t" | awk -F': ' '/Signature Algorithm:/{print $2; exit}')
+          echo "cert|$sf|$(nm "$alg" cert)|$bits|$(nm "$curve" cert)|$(nm "$sig" cert)"
+        done < <(find "$d" -maxdepth 1 -type f \( -name '*.crt' -o -name '*.pem' \) -print0 2>/dev/null)
+      done
+    fi
+    # ── SSH host keys: type and size from the fingerprint line ──
+    if need ssh-keygen; then
+      for f in /etc/ssh/ssh_host_*_key.pub; do
+        [ -f "$f" ] || continue
+        sf=$(nm "$f" sshkey)
+        l=$(ssh-keygen -lf "$f" 2>/dev/null) || { echo "sshkey|$sf|unparsable|"; continue; }
+        bits=${l%% *}; typ=${l##*(}; typ=${typ%)}
+        case "$bits" in *[!0-9]*) bits="" ;; esac
+        echo "sshkey|$sf|$(nm "$typ" sshkey)|$bits"
+      done
+    fi
+    # ── sshd effective key exchange (what a client can actually negotiate) ──
+    if command -v sshd >/dev/null 2>&1; then
+      k=$(sshd -T 2>/dev/null | awk '$1=="kexalgorithms"{print $2; exit}')
+      if [ -n "$k" ]; then
+        printf '%s\n' "$k" | tr ',' '\n' | while IFS= read -r a; do [ -n "$a" ] && echo "kex|$(nm "$a" kex)"; done
+      else
+        echo "sshd_t_unavailable|"
+      fi
+    else
+      echo "missing_cmd|sshd"
+    fi
+    # ── local TLS listeners: the negotiated key-exchange group ──
+    if need ss; then
+      for p in $PQC_TLS_PROBE_PORTS; do
+        case "$p" in ''|*[!0-9]*) continue ;; esac
+        ss -ltnH 2>/dev/null | awk '{print $4}' | grep -qE "[:.]${p}\$" || continue
+        out=$(timeout 10 openssl s_client -connect "127.0.0.1:${p}" -brief </dev/null 2>&1)
+        grp=$(printf '%s\n' "$out" | sed -n 's/.*Negotiated TLS1.3 group: \([A-Za-z0-9_-]*\).*/\1/p' | head -1)
+        [ -z "$grp" ] && grp=$(printf '%s\n' "$out" | sed -n 's/^Server Temp Key: \([A-Za-z0-9_-]*\).*/\1/p' | head -1)
+        ver=$(printf '%s\n' "$out" | sed -n 's/^Protocol version: \(.*\)$/\1/p' | head -1)
+        echo "tls|$p|$(nm "${grp:-unknown}" tls)|$(nm "${ver:-unknown}" tls)"
+      done
+    fi
+    kill "$wd" 2>/dev/null; echo "end:ok"
+  args:
+    executable: /bin/bash
+  environment:
+    PQC_EXTRA_CERT_DIRS: "{{ pqc_extra_cert_dirs | default([]) | join(' ') }}"
+    PQC_TLS_PROBE_PORTS: "{{ pqc_tls_probe_ports | default([]) | map('string') | join(' ') }}"
+  timeout: 150
+  register: pqc_raw
+  changed_when: false
+  failed_when: false

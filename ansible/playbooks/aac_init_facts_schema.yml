@@ -1,0 +1,27 @@
+---
+# aac_init_facts_schema.yml — Initialize AAC Core Facts Store schema (ADR-001)
+#
+# Creates the host_facts and sidecar_datasets tables in PostgreSQL.
+# Also ensures compliance_results and compliance_facts tables exist.
+# Safe to re-run — all DDL uses IF NOT EXISTS.
+#
+# AAP Job Template: "AAC - Init Facts Schema" (ID 79)
+# Credentials: Ansible Vault
+# EE: AAC Compliance EE
+# Inventory: localhost
+# Run: Once at install, then safe to re-run for schema migrations
+
+- name: Initialize AAC Core Facts Store Schema
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - [ "../vars/vault_secrets.yml", "../vars/empty_fallback.yml" ]
+    - ../vars/site_config.yml
+
+  roles:
+    - role: aac_compliance_db
+      vars:
+        # Container is already running — only run schema + user + health tasks.
+        aac_db_skip_container_deploy: true

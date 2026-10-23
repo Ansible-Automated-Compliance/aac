@@ -1,0 +1,15 @@
+namespace: lab
+name: eda
+version: 1.0.0
+readme: README.md
+authors:
+  - Tim Coulter <tim@example.com>
+  - Claude (Anthropic)
+description: Custom EDA event source plugins for the AAC lab
+license:
+  - Apache-2.0
+tags:
+  - eda
+  - event_source
+  - windows
+repository: https://github.com/ansible-automated-compliance/aac

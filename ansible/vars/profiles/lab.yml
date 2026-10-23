@@ -1,0 +1,50 @@
+---
+# Environment profile: lab-aap (CRC / OpenShift Local, AAP 2.7)
+#
+# Layered on top of ansible/vars/site_config.yml (shared catalogs + defaults)
+# by tasks/load_install_profile.yml. Only environment-specific topology lives
+# here; the framework catalogs (opa_framework_map, caa_framework_scope) stay in
+# site_config.yml. Override any value from install_config.yml.
+#
+# Topology: OpenShift — every component is an in-cluster Service in the `aac`
+# namespace, reached over service DNS from the AAP Execution Environment pod.
+
+env_profile_name: lab
+topology: openshift
+
+# --- AAP ---
+aap_url: "http://aap.aap-operator.svc.cluster.local"
+# External (from outside the cluster, e.g. a laptop / CLI):
+external_aap_url: "https://aap-aap-operator.apps-crc.testing"
+# Externally reachable OPA routes (host-side consumers such as the MCP server).
+external_opa_compliance_url: "http://opa-compliance-aac.apps-crc.testing"
+external_opa_security_url: "http://opa-security-aac.apps-crc.testing"
+external_opa_ot_url: "http://opa-ot-aac.apps-crc.testing"
+aap_admin_user: "admin"
+aap_ssh_user: "aapuser1"
+
+# --- OPA (three in-cluster Services, each on 8181 internally) ---
+opa_security_url:   "http://opa-security.aac.svc.cluster.local:8181"
+opa_compliance_url: "http://opa-compliance.aac.svc.cluster.local:8181"
+opa_ot_url:         "http://opa-ot.aac.svc.cluster.local:8181"
+
+# --- Grafana / MCP / PostgreSQL ---
+grafana_url: "http://grafana.aac.svc.cluster.local:3000"
+mcp_url:     "http://aap-eda-api.aap-operator.svc.cluster.local:8000"
+pg_host: "compliance-db.aac.svc.cluster.local"
+pg_port: 5432
+pg_user: "postgres"
+pg_db:   "compliance"
+
+# --- Estate continuity (seed_estate_continuity_schedule.yml) ---
+# The EC2 region the AWS Compliance Lab runs in; the check asks EC2 whether each
+# known instance is running, stopped or gone.
+estate_continuity_aws_regions: ["us-east-1"]
+
+# --- Execution Environment ---
+ee_image: "image-registry.openshift-image-registry.svc:5000/aac/aac-compliance-ee:v1.3.0"
+
+# --- Secrets ---
+# aap_credential: a custom AAP credential injects secrets as extra_vars at run
+# time (works inside the EE pod, where the gitignored vault file is absent).
+secret_source: aap_credential

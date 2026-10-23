@@ -1,0 +1,131 @@
+---
+# aac-m365-ee — execution environment for CIS Microsoft 365 assessment
+#
+# WHY A SEPARATE EE
+#
+# 67 of the CIS M365 v7.0.0 benchmark's 160 recommendations can only be
+# audited through PowerShell — Exchange Online (35), Teams (16),
+# SharePoint (11) and Security & Compliance (5). Microsoft ships no REST
+# equivalent for those surfaces, so Graph alone caps coverage at roughly
+# 29 controls.
+#
+# The PowerShell modules below add several hundred MB. The compliance EE
+# is used by every AAC job template; making all of them carry an M365-only
+# dependency is the wrong trade. Multiple EEs is the established pattern
+# in this repo — register this one and point the M365 templates at it.
+#
+# AUTHENTICATION
+#
+# Collectors run unattended inside an AAP job with no human present, so
+# every connection here uses app-only **certificate** authentication:
+#
+#   Connect-ExchangeOnline -AppId <id> -CertificateFilePath <pfx> \
+#     -CertificatePassword <sec> -Organization <tenant>.onmicrosoft.com
+#
+# This needs ExchangeOnlineManagement 2.0.4 or later, the
+# Exchange.ManageAsApp application permission with admin consent, and an
+# Entra directory role assigned to the service principal. Client secrets
+# do NOT work for Exchange Online PowerShell — only certificates.
+#
+# Delegated-only APIs remain out of reach by design; see
+# docs/m365/CIS_M365_V7_AUTOMATION_LIMITS.md.
+#
+# BUILT AND VERIFIED 2026-08-14 on the linux/amd64 build host:
+#   localhost/aac-m365-ee:v1.0.0   1.98 GB
+#
+# v1.0.1 (pending verification at next build): wires bindep.txt into
+# dependencies.system — it was previously not declared, so bindep never
+# applied — and adds systemd/pkg-config native-build deps with generic
+# platform:rpm selectors (the base image is Fedora-based creator-ee;
+# distro-specific rhel/centos selectors do not match it).
+#   PowerShell 7.6.4
+#   ExchangeOnlineManagement 3.10.1
+#   MicrosoftTeams 7.9.0
+#   PnP.PowerShell 3.3.0
+#   ansible-core 2.16.3
+# Both in-build gates passed: modules present, app-only certificate auth
+# available.
+
+version: 3
+
+images:
+  base_image:
+    name: quay.io/ansible/creator-ee:v24.2.0
+
+dependencies:
+  galaxy: requirements.yml
+  python: requirements.txt
+  system: bindep.txt
+  ansible_core:
+    package_pip: ansible-core>=2.15.0
+  ansible_runner:
+    package_pip: ansible-runner>=2.3.0
+
+options:
+  package_manager_path: /usr/bin/microdnf
+
+additional_build_steps:
+  append_final:
+    # ── PowerShell 7.6.4 (LTS) ────────────────────────────────────────
+    # Installed from the upstream tar.gz rather than Microsoft's RPM repo:
+    # the tarball has no repo/subscription dependency, which keeps the
+    # build reproducible on a disconnected or unsubscribed builder.
+    # 7.6.4 is the current LTS (March 2026, .NET 10 LTS).
+    # Pinned deliberately — a floating "latest" would change the runtime
+    # under a passing assessment.
+    - RUN microdnf install -y tar gzip libicu openssl-libs && microdnf clean all
+    - >-
+      RUN curl -fsSLo /tmp/powershell.tar.gz
+      https://github.com/PowerShell/PowerShell/releases/download/v7.6.4/powershell-7.6.4-linux-x64.tar.gz
+      && mkdir -p /opt/microsoft/powershell/7
+      && tar -xzf /tmp/powershell.tar.gz -C /opt/microsoft/powershell/7
+      && chmod +x /opt/microsoft/powershell/7/pwsh
+      && ln -sf /opt/microsoft/powershell/7/pwsh /usr/local/bin/pwsh
+      && rm -f /tmp/powershell.tar.gz
+    - RUN pwsh -NoLogo -NoProfile -Command '$PSVersionTable.PSVersion.ToString()'
+
+    # ── M365 PowerShell modules ───────────────────────────────────────
+    # Version floors, not pins: ExchangeOnlineManagement 2.0.4 is the
+    # first release supporting app-only certificate auth, which is the
+    # whole reason this EE exists.
+    - >-
+      RUN pwsh -NoLogo -NoProfile -Command
+      "Set-PSRepository -Name PSGallery -InstallationPolicy Trusted;
+      Install-Module -Name ExchangeOnlineManagement -MinimumVersion 3.4.0 -Scope AllUsers -Force -AcceptLicense;
+      Install-Module -Name MicrosoftTeams -MinimumVersion 6.0.0 -Scope AllUsers -Force -AcceptLicense;
+      Install-Module -Name PnP.PowerShell -MinimumVersion 2.4.0 -Scope AllUsers -Force -AcceptLicense"
+
+    # PnP.PowerShell is used for SharePoint rather than
+    # Microsoft.Online.SharePoint.PowerShell, which is Windows-only and
+    # cannot run in a Linux EE at all.
+    #
+    # NOTE ON THE BASE IMAGE: creator-ee:v24.2.0 is Fedora 39 based, not
+    # ubi9, which is inherited from aac-compliance-ee rather than chosen
+    # here. It conflicts with the repo convention of ubi9 EE base images.
+    # Flagged rather than silently changed: switching the base is a change
+    # to every EE in the fleet, not a decision to make inside an M365 EE.
+    # NOTE: RUN is shell-form, so /bin/sh expands $variables BEFORE pwsh
+    # sees them -- an earlier version of this step used $_ and $m and the
+    # shell rewrote "-Name $_" to "-Name /bin/sh". These checks are written
+    # without any PowerShell variables so nothing survives to be expanded.
+    - >-
+      RUN pwsh -NoLogo -NoProfile -Command
+      "Get-Module -ListAvailable -Name ExchangeOnlineManagement,MicrosoftTeams,PnP.PowerShell |
+      Select-Object Name,Version | Format-Table -AutoSize | Out-String | Write-Host"
+    - >-
+      RUN pwsh -NoLogo -NoProfile -Command
+      "if ((Get-Module -ListAvailable -Name ExchangeOnlineManagement,MicrosoftTeams,PnP.PowerShell |
+      Select-Object -ExpandProperty Name -Unique).Count -lt 3)
+      { Write-Error 'one or more M365 PowerShell modules are missing'; exit 1 };
+      Write-Host 'M365 PowerShell modules: present'"
+
+    # Fail the build if app-only certificate auth is not available --
+    # without it nothing in this EE can run unattended, and discovering
+    # that at assessment time is far more expensive than here.
+    - >-
+      RUN pwsh -NoLogo -NoProfile -Command
+      "if ((Get-Command Connect-ExchangeOnline).Parameters.Keys -notcontains 'CertificateFilePath')
+      { Write-Error 'Connect-ExchangeOnline lacks -CertificateFilePath; app-only certificate auth unavailable'; exit 1 };
+      if ((Get-Command Connect-ExchangeOnline).Parameters.Keys -notcontains 'AppId')
+      { Write-Error 'Connect-ExchangeOnline lacks -AppId; app-only certificate auth unavailable'; exit 1 };
+      Write-Host 'app-only certificate auth: available'"

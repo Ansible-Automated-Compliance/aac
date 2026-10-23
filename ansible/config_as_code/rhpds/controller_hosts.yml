@@ -1,0 +1,21 @@
+---
+# AAC Inventory Hosts
+#
+# aac_demo_host is the AWS EC2 public IP — passed as a survey variable at
+# bootstrap time and stored as the ansible_host for aap-controller-ssh.
+# Update after EC2 instance is started if the IP changes.
+
+controller_hosts:
+
+  - name: localhost
+    inventory: Compliance Infrastructure
+    variables:
+      ansible_connection: local
+      ansible_python_interpreter: /usr/bin/python3
+
+  - name: aap-controller-ssh
+    description: "AWS EC2 demo host — update ansible_host when IP changes"
+    inventory: Compliance Infrastructure
+    variables:
+      ansible_user: "{{ rhpds_ssh_user | default('ec2-user') }}"
+      ansible_host: "{{ aac_demo_host | default('PENDING_AWS_EC2_IP') }}"

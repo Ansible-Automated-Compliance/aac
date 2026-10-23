@@ -1,0 +1,160 @@
+---
+# Each collector is independent and fail-closed: it records what it could
+# not read rather than raising, so one unreachable source does not cost
+# the whole assessment. The facts are assembled into a SINGLE input
+# document because the Rego reads across sections -- section 1 reads two
+# controls from the Exchange organization config.
+
+- name: Initialise the fact document
+  ansible.builtin.set_fact:
+    m365_facts: {}
+
+# ── Microsoft Graph ───────────────────────────────────────────────────
+
+- name: Collect admin center state (section 1)
+  aac.m365.m365_admin_center_facts:
+    tenant_id: "{{ (m365_tenant_id | default('', true)) }}"
+    client_id: "{{ (m365_client_id | default('', true)) }}"
+    client_secret: "{{ (m365_client_secret | default('', true)) }}"
+    use_proxy: "{{ m365_use_proxy }}"
+    proxy: "{{ m365_proxy | default(omit, true) }}"
+  register: m365_admin_center
+  when: "'admin_center' in m365_sections"
+
+- name: Collect Entra state (section 5)
+  aac.m365.m365_entra_facts:
+    tenant_id: "{{ (m365_tenant_id | default('', true)) }}"
+    client_id: "{{ (m365_client_id | default('', true)) }}"
+    client_secret: "{{ (m365_client_secret | default('', true)) }}"
+    use_proxy: "{{ m365_use_proxy }}"
+    proxy: "{{ m365_proxy | default(omit, true) }}"
+  register: m365_entra
+  when: "'entra' in m365_sections"
+
+- name: Collect Intune state (section 4)
+  aac.m365.m365_intune_facts:
+    tenant_id: "{{ (m365_tenant_id | default('', true)) }}"
+    client_id: "{{ (m365_client_id | default('', true)) }}"
+    client_secret: "{{ (m365_client_secret | default('', true)) }}"
+    use_proxy: "{{ m365_use_proxy }}"
+    proxy: "{{ m365_proxy | default(omit, true) }}"
+  register: m365_intune
+  when: "'intune' in m365_sections"
+
+- name: Collect Purview audit-log state (section 3, Graph part)
+  aac.m365.m365_purview_facts:
+    tenant_id: "{{ (m365_tenant_id | default('', true)) }}"
+    client_id: "{{ (m365_client_id | default('', true)) }}"
+    client_secret: "{{ (m365_client_secret | default('', true)) }}"
+    use_proxy: "{{ m365_use_proxy }}"
+    proxy: "{{ m365_proxy | default(omit, true) }}"
+  register: m365_purview_graph
+  when: "'purview' in m365_sections"
+
+- name: Collect verified domains for SPF, DKIM and DMARC (section 2)
+  aac.m365.m365_exchange_facts:
+    tenant_id: "{{ (m365_tenant_id | default('', true)) }}"
+    client_id: "{{ (m365_client_id | default('', true)) }}"
+    client_secret: "{{ (m365_client_secret | default('', true)) }}"
+    use_proxy: "{{ m365_use_proxy }}"
+    proxy: "{{ m365_proxy | default(omit, true) }}"
+  register: m365_exchange_graph
+  when: "'defender' in m365_sections"
+
+# ── Fabric admin API (a third auth surface) ───────────────────────────
+
+- name: Collect Fabric tenant settings (section 9)
+  aac.m365.m365_fabric_admin_facts:
+    tenant_id: "{{ (m365_tenant_id | default('', true)) }}"
+    client_id: "{{ (m365_client_id | default('', true)) }}"
+    client_secret: "{{ (m365_client_secret | default('', true)) }}"
+    use_proxy: "{{ m365_use_proxy }}"
+    proxy: "{{ m365_proxy | default(omit, true) }}"
+  register: m365_fabric
+  when: "'fabric' in m365_sections"
+
+# ── PowerShell, app-only certificate ──────────────────────────────────
+# These need an execution environment carrying pwsh and the M365 modules
+# (aac-m365-ee). Without it the collectors report every fact unavailable
+# and the Rego fails closed, which is correct but noisy -- so they are
+# skipped deliberately when m365_include_powershell_sections is false,
+# and the skip is recorded in the report.
+
+- name: Collect Exchange Online state (section 6, and 1.3.6 / 1.3.9)
+  aac.m365.m365_exchange_ps_facts:
+    app_id: "{{ (m365_client_id | default('', true)) }}"
+    organization: "{{ (m365_organization | default('', true)) }}"
+    certificate_path: "{{ (m365_certificate_path | default('', true)) }}"
+    certificate_password: "{{ (m365_certificate_password | default('', true)) }}"
+  register: m365_exchange_ps
+  when:
+    - m365_include_powershell_sections | bool
+    - "'exchange' in m365_sections or 'admin_center' in m365_sections"
+
+- name: Collect Defender policy state (section 2)
+  aac.m365.m365_defender_ps_facts:
+    app_id: "{{ (m365_client_id | default('', true)) }}"
+    organization: "{{ (m365_organization | default('', true)) }}"
+    certificate_path: "{{ (m365_certificate_path | default('', true)) }}"
+    certificate_password: "{{ (m365_certificate_password | default('', true)) }}"
+  register: m365_defender_ps
+  when:
+    - m365_include_powershell_sections | bool
+    - "'defender' in m365_sections"
+
+- name: Collect SharePoint tenant state (section 7)
+  aac.m365.m365_sharepoint_ps_facts:
+    app_id: "{{ (m365_client_id | default('', true)) }}"
+    organization: "{{ (m365_organization | default('', true)) }}"
+    sharepoint_admin_url: "{{ (m365_sharepoint_admin_url | default('', true)) }}"
+    certificate_path: "{{ (m365_certificate_path | default('', true)) }}"
+    certificate_password: "{{ (m365_certificate_password | default('', true)) }}"
+  register: m365_sharepoint_ps
+  when:
+    - m365_include_powershell_sections | bool
+    - "'sharepoint' in m365_sections"
+
+- name: Collect Teams state (section 8)
+  aac.m365.m365_teams_ps_facts:
+    app_id: "{{ (m365_client_id | default('', true)) }}"
+    tenant_id: "{{ (m365_tenant_id | default('', true)) }}"
+    organization: "{{ (m365_organization | default('', true)) }}"
+    certificate_thumbprint: "{{ (m365_certificate_thumbprint | default('', true)) }}"
+  register: m365_teams_ps
+  when:
+    - m365_include_powershell_sections | bool
+    - "'teams' in m365_sections"
+
+- name: Collect Purview DLP and label state (section 3)
+  aac.m365.m365_purview_ps_facts:
+    app_id: "{{ (m365_client_id | default('', true)) }}"
+    organization: "{{ (m365_organization | default('', true)) }}"
+    certificate_path: "{{ (m365_certificate_path | default('', true)) }}"
+    certificate_password: "{{ (m365_certificate_password | default('', true)) }}"
+  register: m365_purview_ps
+  when:
+    - m365_include_powershell_sections | bool
+    - "'purview' in m365_sections"
+
+# ── Assemble ──────────────────────────────────────────────────────────
+# Keys match the input contract each Rego module documents. A section
+# that did not run contributes nothing, and its module then fails closed
+# on absent facts -- which is the intended behaviour, not an oversight.
+
+- name: Assemble the single OPA input document
+  ansible.builtin.set_fact:
+    m365_facts: >-
+      {{
+        {}
+        | combine({'admin_center': m365_admin_center.facts} if m365_admin_center.facts | default({}) else {})
+        | combine({'entra': m365_entra.facts} if m365_entra.facts | default({}) else {})
+        | combine({'intune': m365_intune.facts} if m365_intune.facts | default({}) else {})
+        | combine({'purview': m365_purview_graph.facts} if m365_purview_graph.facts | default({}) else {})
+        | combine({'purview_ps': m365_purview_ps.facts} if m365_purview_ps.facts | default({}) else {})
+        | combine({'fabric': m365_fabric.facts} if m365_fabric.facts | default({}) else {})
+        | combine({'sharepoint': m365_sharepoint_ps.facts} if m365_sharepoint_ps.facts | default({}) else {})
+        | combine({'teams': m365_teams_ps.facts} if m365_teams_ps.facts | default({}) else {})
+        | combine({'defender': m365_defender_ps.facts} if m365_defender_ps.facts | default({}) else {})
+        | combine({'exchange': (m365_exchange_ps.facts | default({}))
+                               | combine(m365_exchange_graph.facts | default({}))})
+      }}

@@ -1,0 +1,41 @@
+---
+# aac_enforceauth_bridge role defaults
+# Deploys the AAC Compliance-State API — a read-only service that exposes the
+# latest compliance assessment per host as authorization context for EnforceAuth.
+# Override any of these in group_vars, host_vars, or the calling play's vars block.
+
+# Container image built on aac_host from integrations/enforceauth/app/Containerfile.
+aac_eauth_image: "aac-compliance-state:v1.0"
+
+# Container name and host port (8090 — free against OPA 8181/8182/8183, MCP 8004,
+# smart-meter 8085, Grafana 3000, EDA 5000-5004).
+aac_eauth_container_name: "aac-compliance-state"
+aac_eauth_port: 8090
+
+# App directory on aac_host — source is synced here and the image is built from it.
+aac_eauth_app_dir: "/opt/aac-compliance-state"
+
+# Source directory on the control node (the AAP project checkout / EE). Defaults to
+# the in-repo app source relative to this role; override if your layout differs.
+aac_eauth_src_dir: "{{ role_path }}/../../../integrations/enforceauth/app"
+
+# OS user that runs the rootless podman container (must match the AAP user).
+aac_eauth_run_user: "{{ aap_ssh_user | default('aapuser1') }}"
+
+# ── Database connection (read-only compliance_reader role) ───────────────────
+# Reached from INSIDE the container. host.containers.internal = the aac_host.
+# NOTE (post-CRC): if the compliance DB now lives in OpenShift
+# (compliance-db.aac.svc.cluster.local), set aac_eauth_db_host to a host/route the
+# container can actually reach — the podman `postgresql` container is stale.
+aac_eauth_db_host: "host.containers.internal"
+aac_eauth_db_port: 5432
+aac_eauth_db_name: "compliance"
+aac_eauth_db_user: "compliance_reader"
+# Read-only role password from vault_secrets.yml. Never hardcode.
+aac_eauth_db_password: "{{ compliance_reader_password | default('') }}"
+
+# Assessments older than this (seconds) are marked stale -> the policy denies.
+aac_eauth_max_age_seconds: 86400
+
+# Set to false to skip writing the user-level systemd unit.
+aac_eauth_generate_systemd: true

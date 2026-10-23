@@ -1,0 +1,313 @@
+---
+# Ansible Automation Platform 2.6 - OPA Compliance Assessment Playbook
+# This playbook performs comprehensive compliance assessment using OPA policies
+
+- name: CIS Compliance Assessment with OPA
+  hosts: all
+  gather_facts: yes
+  become: yes
+  vars:
+    opa_binary_path: "/usr/local/bin/opa"
+    opa_policies_path: "/opt/opa/policies"
+    assessment_results_path: "/tmp/opa_assessment"
+    database_config:
+      host: "{{ vault_db_host | default('localhost') }}"
+      port: 5432
+      database: compliance
+      username: "{{ vault_db_user }}"
+      password: "{{ vault_db_password }}"
+    
+    # Platform-specific policy mapping
+    platform_policy_map:
+      rhel8: "cis_rhel_8"
+      rhel9: "cis_rhel_9" 
+      rhel10: "cis_rhel_10"
+      ubuntu2004: "cis_ubuntu_20_04"
+      centos8: "cis_centos_8"
+      windows2016: "cis_windows_server_2016"
+      windows2019: "cis_windows_server_2019"
+      windows2022: "cis_windows_server_2022"
+      windows10: "cis_windows_10"
+      windows11: "cis_windows_11"
+
+  pre_tasks:
+    - name: Validate OPA installation
+      stat:
+        path: "{{ opa_binary_path }}"
+      register: opa_check
+      
+    - name: Fail if OPA not installed
+      fail:
+        msg: "OPA binary not found at {{ opa_binary_path }}"
+      when: not opa_check.stat.exists
+
+    - name: Create assessment directory
+      file:
+        path: "{{ assessment_results_path }}"
+        state: directory
+        mode: '0750'
+
+    - name: Determine target platform
+      set_fact:
+        target_platform: "{{ (ansible_distribution | lower) + (ansible_distribution_major_version | string) }}"
+        
+    - name: Validate platform support
+      fail:
+        msg: "Unsupported platform: {{ target_platform }}"
+      when: target_platform not in platform_policy_map
+
+  tasks:
+    # ==========================================
+    # SYSTEM DISCOVERY AND REGISTRATION
+    # ==========================================
+    
+    - name: Register system in compliance database
+      postgresql_query:
+        login_host: "{{ database_config.host }}"
+        login_user: "{{ database_config.username }}"
+        login_password: "{{ database_config.password }}"
+        login_db: "{{ database_config.database }}"
+        query: |
+          INSERT INTO systems (hostname, ip_address, system_type, platform, environment, owner)
+          VALUES (%(hostname)s, %(ip)s, %(type)s, %(platform)s, %(env)s, %(owner)s)
+          ON CONFLICT (hostname) DO UPDATE SET
+            ip_address = EXCLUDED.ip_address,
+            system_type = EXCLUDED.system_type,
+            platform = EXCLUDED.platform,
+            environment = EXCLUDED.environment,
+            updated_at = CURRENT_TIMESTAMP
+          RETURNING id
+        named_args:
+          hostname: "{{ inventory_hostname }}"
+          ip: "{{ ansible_default_ipv4.address | default('unknown') }}"
+          type: "{{ ansible_system | lower }}"
+          platform: "{{ target_platform }}"
+          env: "{{ environment | default('production') }}"
+          owner: "{{ system_owner | default('unknown') }}"
+      register: system_registration
+      delegate_to: localhost
+      become: false  # delegated to the controller/EE: no sudo there
+
+    - name: Extract system ID
+      set_fact:
+        system_id: "{{ system_registration.query_result[0].id }}"
+
+    # ==========================================
+    # CONFIGURATION DATA COLLECTION
+    # ==========================================
+
+    - name: Collect system configuration data
+      include_tasks: tasks/collect_config_{{ ansible_system | lower }}.yml
+      
+    - name: Generate OPA assessment input
+      template:
+        src: opa_input.json.j2
+        dest: "{{ assessment_results_path }}/input.json"
+        mode: '0640'
+
+    # ==========================================
+    # OPA POLICY EVALUATION
+    # ==========================================
+
+    - name: Get policy file path
+      set_fact:
+        policy_file: "{{ opa_policies_path }}/cis_benchmarks/{{ target_platform.split('0')[0] if target_platform.startswith('windows') else target_platform.split(ansible_distribution_major_version)[0] }}/{{ platform_policy_map[target_platform] }}.rego"
+
+    - name: Verify policy file exists
+      stat:
+        path: "{{ policy_file }}"
+      register: policy_check
+
+    - name: Run OPA compliance evaluation
+      shell: |
+        {{ opa_binary_path }} eval \
+          --data "{{ policy_file }}" \
+          --input "{{ assessment_results_path }}/input.json" \
+          --format json \
+          "data.{{ platform_policy_map[target_platform] }}.compliant"
+      register: opa_compliant_result
+      when: policy_check.stat.exists
+
+    - name: Run OPA violations evaluation  
+      shell: |
+        {{ opa_binary_path }} eval \
+          --data "{{ policy_file }}" \
+          --input "{{ assessment_results_path }}/input.json" \
+          --format json \
+          "data.{{ platform_policy_map[target_platform] }}.violations"
+      register: opa_violations_result
+      when: policy_check.stat.exists
+
+    - name: Run OPA findings evaluation
+      shell: |
+        {{ opa_binary_path }} eval \
+          --data "{{ policy_file }}" \
+          --input "{{ assessment_results_path }}/input.json" \
+          --format json \
+          "data.{{ platform_policy_map[target_platform] }}.findings"
+      register: opa_findings_result
+      when: policy_check.stat.exists
+
+    # ==========================================
+    # RESULTS PROCESSING
+    # ==========================================
+
+    - name: Parse OPA evaluation results
+      set_fact:
+        compliance_result: "{{ (opa_compliant_result.stdout | from_json)[0].result }}"
+        violations_list: "{{ (opa_violations_result.stdout | from_json)[0].result }}"
+        findings_data: "{{ (opa_findings_result.stdout | from_json)[0].result }}"
+      when: policy_check.stat.exists
+
+    - name: Calculate compliance metrics
+      set_fact:
+        total_violations: "{{ violations_list | length }}"
+        total_controls: "{{ findings_data[0].violations | length + (findings_data[0].violations | length) if findings_data | length > 0 else 0 }}"
+        compliance_score: "{{ ((total_controls | int - total_violations | int) / (total_controls | int) * 100) | round(2) if total_controls | int > 0 else 100 }}"
+      when: policy_check.stat.exists
+
+    # ==========================================
+    # DATABASE STORAGE
+    # ==========================================
+
+    - name: Store compliance assessment in database
+      postgresql_query:
+        login_host: "{{ database_config.host }}"
+        login_user: "{{ database_config.username }}"
+        login_password: "{{ database_config.password }}"
+        login_db: "{{ database_config.database }}"
+        query: |
+          INSERT INTO compliance_assessments 
+          (system_id, policy_id, is_compliant, total_violations, total_controls_checked, 
+           compliance_score, findings, assessed_by, assessment_method)
+          VALUES (
+            %(system_id)s,
+            (SELECT id FROM cis_policies WHERE platform = %(platform)s LIMIT 1),
+            %(compliant)s,
+            %(violations)s,
+            %(controls)s,
+            %(score)s,
+            %(findings)s,
+            %(assessor)s,
+            'automated'
+          )
+          RETURNING id
+        named_args:
+          system_id: "{{ system_id }}"
+          platform: "{{ target_platform }}"
+          compliant: "{{ compliance_result | bool }}"
+          violations: "{{ total_violations | int }}"
+          controls: "{{ total_controls | int }}"
+          score: "{{ compliance_score | float }}"
+          findings: "{{ {'compliance': compliance_result, 'violations': violations_list, 'findings': findings_data} | to_json }}"
+          assessor: "{{ ansible_user | default('automation') }}"
+      register: assessment_record
+      delegate_to: localhost
+      become: false  # delegated to the controller/EE: no sudo there
+      when: policy_check.stat.exists
+
+    - name: Store individual violations
+      postgresql_query:
+        login_host: "{{ database_config.host }}"
+        login_user: "{{ database_config.username }}"
+        login_password: "{{ database_config.password }}"
+        login_db: "{{ database_config.database }}"
+        query: |
+          INSERT INTO compliance_violations 
+          (assessment_id, control_id, control_title, violation_type, severity, 
+           current_value, expected_value, remediation_effort)
+          VALUES (
+            %(assessment_id)s,
+            %(control_id)s,
+            %(title)s,
+            %(type)s,
+            %(severity)s,
+            %(current)s,
+            %(expected)s,
+            'MEDIUM'
+          )
+        named_args:
+          assessment_id: "{{ assessment_record.query_result[0].id }}"
+          control_id: "{{ item.control_id | default('unknown') }}"
+          title: "{{ item.title | default('Compliance Violation') }}"
+          type: "{{ item.type | default('configuration') }}"
+          severity: "{{ item.severity | default('MEDIUM') }}"
+          current: "{{ item.current_value | default('') }}"
+          expected: "{{ item.expected_value | default('') }}"
+      loop: "{{ violations_list }}"
+      delegate_to: localhost
+      become: false  # delegated to the controller/EE: no sudo there
+      when: 
+        - policy_check.stat.exists
+        - violations_list | length > 0
+        - assessment_record.query_result is defined
+
+    # ==========================================
+    # REMEDIATION TASK CREATION
+    # ==========================================
+
+    - name: Create remediation tasks for violations
+      postgresql_query:
+        login_host: "{{ database_config.host }}"
+        login_user: "{{ database_config.username }}"
+        login_password: "{{ database_config.password }}"
+        login_db: "{{ database_config.database }}"
+        query: |
+          INSERT INTO remediation_tasks 
+          (assessment_id, task_name, task_description, aap_playbook, priority, created_by)
+          VALUES (
+            %(assessment_id)s,
+            %(task_name)s,
+            %(description)s,
+            %(playbook)s,
+            %(priority)s,
+            %(creator)s
+          )
+        named_args:
+          assessment_id: "{{ assessment_record.query_result[0].id }}"
+          task_name: "Remediate {{ item.control_id | default('compliance violation') }}"
+          description: "{{ item.remediation | default('Fix compliance violation') }}"
+          playbook: "remediate-{{ target_platform }}.yml"
+          priority: "{{ 'HIGH' if item.severity == 'CRITICAL' else 'MEDIUM' }}"
+          creator: "{{ ansible_user | default('automation') }}"
+      loop: "{{ violations_list }}"
+      delegate_to: localhost
+      become: false  # delegated to the controller/EE: no sudo there
+      when: 
+        - policy_check.stat.exists
+        - violations_list | length > 0
+        - assessment_record.query_result is defined
+        - item.remediation is defined
+
+  post_tasks:
+    - name: Generate assessment summary
+      debug:
+        msg: |
+          Compliance Assessment Summary for {{ inventory_hostname }}:
+          - Platform: {{ target_platform }}
+          - Compliant: {{ compliance_result | default('Unknown') }}
+          - Total Violations: {{ total_violations | default('Unknown') }}
+          - Compliance Score: {{ compliance_score | default('Unknown') }}%
+          - Assessment ID: {{ assessment_record.query_result[0].id if assessment_record.query_result is defined else 'Unknown' }}
+
+    - name: Clean up temporary files
+      file:
+        path: "{{ assessment_results_path }}"
+        state: absent
+
+  handlers:
+    - name: Send notification for critical violations
+      uri:
+        use_proxy: false
+        url: "{{ notification_webhook_url }}"
+        method: POST
+        body_format: json
+        body:
+          message: "Critical compliance violations found on {{ inventory_hostname }}"
+          system: "{{ inventory_hostname }}"
+          violations: "{{ total_violations }}"
+          platform: "{{ target_platform }}"
+      when: 
+        - notification_webhook_url is defined
+        - total_violations | int > 0
+      listen: "notify violations"

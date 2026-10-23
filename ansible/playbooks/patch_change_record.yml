@@ -1,0 +1,266 @@
+---
+# patch_change_record.yml — open or close the change record for a patch campaign
+#
+# Implements docs/patch_remediation_lifecycle.md Stage 5 (change record adapter).
+#
+# ADAPTER, NOT INTEGRATION (§10). Providers share one contract:
+#   open  -> returns a change reference and an approval verdict
+#   close -> records the terminal outcome against that reference
+#
+#   native      — the helpdesk_tickets table in the compliance DB (DEFAULT, works
+#                 with no customer system attached, which is what makes the whole
+#                 flow demoable)
+#   servicenow  — CONTRACT DEFINED, NOT IMPLEMENTED. Fails loudly if selected.
+#   jira        — CONTRACT DEFINED, NOT IMPLEMENTED. Fails loudly if selected.
+#
+# A REJECTED change record returns the finding with its exposure clock STILL
+# RUNNING (§10). Rejection is not closure — the CVE is still live on the estate
+# and the SLA continues to count against it.
+#
+# AAP Job Template: "AAC - Patch Change Record (open/close)"
+# Credentials: Ansible Vault    EE: AAC Compliance EE
+#
+# Survey / extra_vars:
+#   change_action    open | close          (required)
+#   target_host      hostname              (required)
+#   cve_id           CVE being remediated  (required for open)
+#   change_outcome   patched | patch_failed | service_failed_after_patch |
+#                    rolled_back | rejected   (required for close)
+#   change_provider  native | servicenow | jira   (default: native)
+
+- name: Patch change record — open or close
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - [ "../vars/vault_secrets.yml", "../vars/empty_fallback.yml" ]
+    - ../vars/site_config.yml
+
+  vars:
+    pg_port: "{{ compliance_db_port | default(5432) }}"
+    pg_db: "compliance"
+    pg_user: "postgres"
+    pg_password: "{{ compliance_db_password }}"
+
+    change_action: "{{ action | default('open') }}"
+    target_host: "{{ target_hostname | default('') }}"
+    cve_id: "{{ cve | default('') }}"
+    # The terminal outcome comes from the ASSURANCE verdict that node 09
+    # publishes via set_stats — not from a default. Hardcoding 'patched' here
+    # closed a ticket as patched while A0 had actually failed, which is exactly
+    # the kind of quiet inaccuracy that makes an audit trail worthless.
+    change_outcome: "{{ outcome | default(patch_assurance_outcome | default('unknown')) }}"
+    change_provider: "{{ provider | default('native') }}"
+    change_severity: "{{ severity | default('high') }}"
+    aap_job: "{{ tower_job_id | default(0) }}"
+
+  tasks:
+
+    - name: Validate inputs
+      ansible.builtin.assert:
+        that:
+          - change_action in ['open', 'close']
+          - target_host | length > 0
+        fail_msg: >-
+          change_action must be 'open' or 'close', and target_host must be set.
+          Got action='{{ change_action }}' host='{{ target_host }}'.
+
+    - name: Refuse unimplemented providers
+      ansible.builtin.fail:
+        msg: >-
+          change_provider '{{ change_provider }}' has a defined contract but NO
+          implementation. Its adapter would need to create a change request and
+          return a reference plus an approval verdict. Selecting it here would
+          silently proceed without a real change record, which is worse than
+          stopping. Use provider 'native' until the adapter is built.
+      when: change_provider not in ['native']
+
+    - name: Ensure the change/traffic/assurance schema exists
+      community.postgresql.postgresql_script:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        path: "{{ playbook_dir }}/../files/patch_change_schema.sql"
+
+    # -------------------------------------------------------------------------
+    # OPEN
+    # -------------------------------------------------------------------------
+    - name: Gather the work scope for this host
+      when: change_action == 'open'
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: |
+          SELECT count(*)                          AS items,
+                 count(DISTINCT product)           AS components,
+                 bool_or(kev_member)               AS any_kev,
+                 string_agg(DISTINCT product, ', ' ORDER BY product) AS component_list
+            FROM patch_worklist
+           WHERE hostname = %(host)s
+             AND (%(cve)s = '' OR cve_id = %(cve)s)
+        named_args:
+          host: "{{ target_host }}"
+          cve: "{{ cve_id }}"
+      register: scope
+
+    - name: Open the change record
+      when: change_action == 'open'
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: |
+          INSERT INTO helpdesk_tickets
+            (hostname, incident_type, severity, description, triggered_by,
+             aap_job_id, status, cve_id, change_provider, external_ref, phase)
+          VALUES
+            (%(host)s, 'patch_change', %(sev)s, %(desc)s, 'AAC Patch Lifecycle',
+             %(job)s, 'open', NULLIF(%(cve)s, ''), %(prov)s, NULL, 'opened')
+          RETURNING id, created_at
+        named_args:
+          host: "{{ target_host }}"
+          sev: "{{ 'critical' if (scope.query_result[0].any_kev | default(false)) else change_severity }}"
+          desc: >-
+            Patch change for {{ cve_id | default('all matched CVEs', true) }} on {{ target_host }}.
+            {{ scope.query_result[0]['items'] | default(0) }} work item(s) across
+            {{ scope.query_result[0].components | default(0) }} component(s):
+            {{ scope.query_result[0].component_list | default('none') }}.
+            KEV (actively exploited): {{ scope.query_result[0].any_kev | default(false) }}.
+          job: "{{ aap_job | int }}"
+          cve: "{{ cve_id }}"
+          prov: "{{ change_provider }}"
+      register: opened
+
+    - name: Publish the ticket id to downstream workflow nodes
+      when: change_action == 'open'
+      ansible.builtin.set_stats:
+        data:
+          patch_ticket_id: "{{ opened.query_result[0].id }}"
+          patch_ticket_host: "{{ target_host }}"
+          patch_ticket_cve: "{{ cve_id }}"
+
+    - name: Change record opened
+      when: change_action == 'open'
+      ansible.builtin.debug:
+        msg:
+          - "──────────────────────────────────────────────────────────"
+          - "CHANGE RECORD OPENED"
+          - "  Ticket        : #{{ opened.query_result[0].id }}"
+          - "  Host          : {{ target_host }}"
+          - "  CVE           : {{ cve_id | default('(all matched)', true) }}"
+          - "  Components    : {{ scope.query_result[0].component_list | default('none') }}"
+          - "  Work items    : {{ scope.query_result[0]['items'] | default(0) }}"
+          - "  KEV exploited : {{ scope.query_result[0].any_kev | default(false) }}"
+          - "  Provider      : {{ change_provider }}"
+          - "──────────────────────────────────────────────────────────"
+          - "The exposure clock is running and does not stop until the"
+          - "estate is re-measured and the exposure is proven gone."
+          - "──────────────────────────────────────────────────────────"
+
+    # -------------------------------------------------------------------------
+    # CLOSE — must run on EVERY exit path, including failure
+    # -------------------------------------------------------------------------
+    - name: Validate the terminal outcome
+      when: change_action == 'close'
+      ansible.builtin.assert:
+        that:
+          - change_outcome in ['patched', 'patch_failed', 'service_failed_after_patch',
+                               'rolled_back', 'rejected', 'dry_run', 'unknown']
+        fail_msg: >-
+          change_outcome '{{ change_outcome }}' is not a recognised terminal state.
+          'patch_failed' and 'service_failed_after_patch' are deliberately distinct:
+          they imply different recovery levels (R1 package downgrade vs R2/R3 config
+          restore or snapshot). Collapsing them makes the closure meaningless.
+          'dry_run' means nothing was applied. 'unknown' means the assurance node
+          never reported — treat that as unverified, not as success.
+
+    - name: Check whether the host was left out of service
+      when: change_action == 'close'
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: "SELECT state FROM patch_traffic_current WHERE hostname = %(host)s"
+        named_args:
+          host: "{{ target_host }}"
+      register: traffic
+
+    - name: Close the most recent open change record
+      when: change_action == 'close'
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: |
+          UPDATE helpdesk_tickets
+             SET status      = CASE WHEN %(oc)s = 'rejected'  THEN 'rejected'
+                                    WHEN %(oc)s = 'dry_run'   THEN 'closed'
+                                    WHEN %(oc)s IN ('patch_failed','service_failed_after_patch','unknown')
+                                                              THEN 'closed_unresolved'
+                                    ELSE 'closed' END,
+                 resolved_at = now(),
+                 outcome     = %(oc)s,
+                 phase       = 'closed',
+                 description = description || E'\n\nOutcome: ' || %(oc)s
+           WHERE id = (
+                 SELECT id FROM helpdesk_tickets
+                  WHERE hostname = %(host)s AND status = 'open'
+                    AND incident_type = 'patch_change'
+                  ORDER BY created_at DESC LIMIT 1)
+          RETURNING id, outcome, resolved_at
+        named_args:
+          host: "{{ target_host }}"
+          oc: "{{ change_outcome }}"
+      register: closed
+
+    - name: Warn when there was no open change record to close
+      when:
+        - change_action == 'close'
+        - closed.query_result | length == 0
+      ansible.builtin.debug:
+        msg: >-
+          No open patch_change ticket found for {{ target_host }}. Nothing was closed.
+          This is a no-op rather than an error so the 'always' edge cannot fail the
+          workflow — but it means the open node did not run, or ran against a
+          different host.
+
+    - name: Fail the close when the host is still out of service
+      when:
+        - change_action == 'close'
+        - traffic.query_result | length > 0
+        - traffic.query_result[0].state in ['draining', 'drained', 'failed']
+      ansible.builtin.fail:
+        msg: >-
+          REFUSING TO CLOSE CLEANLY: {{ target_host }} is still '{{ traffic.query_result[0].state }}'
+          — it is carrying no traffic. A drained asset left drained is the most common
+          operational mistake in patch automation, and closing the ticket over it is how
+          it goes unnoticed. The change record has been marked '{{ change_outcome }}',
+          but the undrain step must be investigated. Query: SELECT * FROM patch_traffic_stranded;
+
+    - name: Change record closed
+      when:
+        - change_action == 'close'
+        - closed.query_result | length > 0
+      ansible.builtin.debug:
+        msg:
+          - "──────────────────────────────────────────────────────────"
+          - "CHANGE RECORD CLOSED"
+          - "  Ticket   : #{{ closed.query_result[0].id }}"
+          - "  Host     : {{ target_host }}"
+          - "  Outcome  : {{ closed.query_result[0].outcome }}"
+          - "  Traffic  : {{ traffic.query_result[0].state | default('unknown') }}"
+          - "──────────────────────────────────────────────────────────"
+          - "{{ 'NOTE: rejected — the exposure clock is STILL RUNNING. The CVE remains live.' if change_outcome == 'rejected' else 'Closure is claimed here; it is PROVEN by the closure-verification node.' }}"
+          - "──────────────────────────────────────────────────────────"

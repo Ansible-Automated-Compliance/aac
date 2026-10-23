@@ -1,0 +1,301 @@
+---
+# =============================================================================
+# AAC Generic Framework Assessment
+#
+# Runs a compliance report for any framework registered in opa_framework_map.
+# The correct OPA container (:8181 / :8182 / :8183) is resolved automatically
+# from site_config.yml — no hardcoding needed.
+#
+# AAP Survey variables:
+#   framework         Framework key matching a key in opa_framework_map.
+#                     Examples: nist_800_82, dora, nis2, ny_dfs, hitrust,
+#                               swift_csp, cfr_part_11, tisax, sec_cyber
+#   assessment_input  JSON string of framework-specific input document.
+#                     Defaults to minimal stub (will return all violations).
+#   store_results     Whether to write results to PostgreSQL. Default: true
+#   target_hostname   Logical hostname for the assessment record. Default: "assessment-host"
+#
+# OPA endpoint resolved via:
+#   opa_endpoints[opa_framework_map[framework]] → e.g. http://host:8183
+#
+# OPA policy path convention:
+#   /v1/data/<path>/main/compliance_report
+#   where <path> is the framework key unless opa_framework_path (site_config.yml)
+#   overrides it — the library names entrypoints after the package that holds
+#   them, which is not always this repo's key spelling.
+# =============================================================================
+
+- name: AAC Generic Framework Assessment
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - [ "../vars/vault_secrets.yml", "../vars/empty_fallback.yml" ]
+    - ../vars/site_config.yml
+
+  vars:
+    # framework: <set via extra_vars / survey / inventory>   # required — must match a key in opa_framework_map
+    assessment_input: "{}"
+    store_results:    true
+    target_hostname:  "assessment-host"
+
+    pg_db:       "compliance"
+    pg_user:     "postgres"
+    pg_password: "{{ compliance_db_password | mandatory }}"
+
+  tasks:
+
+
+    # -------------------------------------------------------------------------
+    # Validate input
+    # -------------------------------------------------------------------------
+    - name: Ensure framework is specified
+      fail:
+        msg: "Required variable 'framework' is not set. Set it in the AAP survey."
+      when: (framework | default('', true)) == "" or framework is not defined
+
+    - name: Ensure framework is registered in opa_framework_map
+      fail:
+        msg: >-
+          Framework '{{ (framework | default('', true)) }}' is not in opa_framework_map.
+          Known frameworks: {{ opa_framework_map.keys() | sort | join(', ') }}
+      when: (framework | default('', true)) not in opa_framework_map
+
+    # -------------------------------------------------------------------------
+    # Resolve the OPA data path. Usually identical to the framework key; the
+    # exceptions live in opa_framework_path (site_config.yml) because the policy
+    # library names its entrypoints after the package that holds them, not after
+    # this repo's key spelling. Getting this wrong does not error — OPA answers
+    # {} for a path that resolves to nothing — so it must be explicit.
+    # -------------------------------------------------------------------------
+    - name: Resolve OPA data path for this framework
+      set_fact:
+        framework_path: "{{ opa_framework_path[(framework | default('', true))] | default((framework | default('', true)), true) }}"
+
+    - name: Report the resolved path when it differs from the key
+      debug:
+        msg: "framework '{{ (framework | default('', true)) }}' resolves to OPA path '{{ framework_path }}'"
+      when: framework_path != (framework | default('', true))
+
+    # -------------------------------------------------------------------------
+    # Resolve OPA endpoint — sets opa_server_url from opa_framework_map
+    # -------------------------------------------------------------------------
+    - name: Resolve OPA endpoint
+      include_tasks: ../tasks/resolve_opa_url.yml
+
+    - name: Resolve evidence provenance (policy SHA + real subject)
+      ansible.builtin.include_tasks: ../tasks/resolve_evidence_provenance.yml
+      vars:
+        evidence_subject: "{{ target_hostname | default('') }}"
+
+    - name: "Assessment configuration"
+      debug:
+        msg:
+          - "Framework:    {{ (framework | default('', true)) }}"
+          - "OPA endpoint: {{ opa_server_url }}/v1/data/{{ framework_path }}/main/compliance_report"
+          - "Store to DB:  {{ store_results }}"
+          - "Hostname:     {{ target_hostname }}"
+
+    # -------------------------------------------------------------------------
+    # Run the compliance report
+    # -------------------------------------------------------------------------
+    - name: Parse assessment input
+      set_fact:
+        parsed_input: "{{ assessment_input | from_json }}"
+
+    - name: "POST compliance report to OPA — {{ (framework | default('', true)) }}"
+      uri:
+        use_proxy: false
+        url: "{{ opa_server_url }}/v1/data/{{ framework_path }}/main/compliance_report"
+        method: POST
+        body_format: json
+        body:
+          input: "{{ parsed_input }}"
+        return_content: true
+        status_code: [200]
+        timeout: 30
+      register: opa_response
+
+    # ── Lazy load-on-miss (safety net) ───────────────────────────────────────
+    # With load-on-demand, a framework may be assessed before its bundle is
+    # loaded — OPA then returns an empty report. If AAP credentials are available
+    # (workflow / RHPDS contexts), load just this framework's bundle and retry
+    # once. The empty-report guard below stays the hard backstop when this can't
+    # recover (e.g. no creds, or the package genuinely isn't in the library).
+    - name: Detect an unloaded framework (empty report) with AAP creds available
+      ansible.builtin.set_fact:
+        _lazy_load: >-
+          {{ (((opa_response.json.result | default({})) | length == 0)
+              or (opa_response.json.result.total_controls is not defined))
+             and ((aap_url | default('', true)) | length > 0)
+             and ((aap_bearer_token | default(aap_token | default('', true), true)) | length > 0) }}
+
+    - name: Lazily load the framework's policies and retry
+      when: _lazy_load | bool
+      vars:
+        _tok: "{{ aap_bearer_token | default(aap_token | default('', true), true) }}"
+      block:
+        - name: Find the Load OPA Policies job template
+          ansible.builtin.uri:
+            use_proxy: false
+            url: "{{ aap_url }}/api/controller/v2/job_templates/?name=AAC%20-%20Load%20OPA%20Policies"
+            headers: { Authorization: "Bearer {{ _tok }}" }
+            validate_certs: false
+          register: _ljt
+
+        # AAP silently DROPS launch variables on a template that does not prompt
+        # for them, and the "scoped" load then runs as the template's default
+        # (the tenant selection), which does not contain this framework. Refuse
+        # before launching, and say how to fix it.
+        - name: Refuse when the Load OPA Policies template drops launch variables
+          ansible.builtin.fail:
+            msg: >-
+              Framework '{{ framework }}' is not loaded, and 'AAC - Load OPA Policies'
+              (job template {{ _ljt.json.results[0].id }}) does not accept launch
+              variables, so a scoped load of this framework cannot be requested.
+              Enable "Prompt on launch" for Variables on that template
+              (ask_variables_on_launch: true), or add '{{ framework }}' to the tenant's
+              selection (customer_frameworks / the selection file) and reload.
+          when:
+            - (_ljt.json.count | default(0) | int) > 0
+            - not (_ljt.json.results[0].ask_variables_on_launch | default(false) | bool)
+
+        - name: Launch a scoped load for this framework only
+          ansible.builtin.uri:
+            use_proxy: false
+            url: "{{ aap_url }}/api/controller/v2/job_templates/{{ _ljt.json.results[0].id }}/launch/"
+            method: POST
+            headers: { Authorization: "Bearer {{ _tok }}", Content-Type: "application/json" }
+            body_format: json
+            body:
+              extra_vars:
+                source: extra_vars
+                frameworks_to_load: "{{ (framework | default('', true)) }}"
+                # Additive: never prune the rest of the container (the loader
+                # also refuses to prune a scoped load unless reconcile_scoped).
+                reconcile: false
+            validate_certs: false
+            status_code: [201, 202]
+          register: _lload
+          when: (_ljt.json.count | default(0) | int) > 0
+
+        - name: Wait for the scoped load to finish
+          ansible.builtin.uri:
+            use_proxy: false
+            url: "{{ aap_url }}/api/controller/v2/jobs/{{ _lload.json.job }}/"
+            headers: { Authorization: "Bearer {{ _tok }}" }
+            validate_certs: false
+          register: _ljob
+          until: _ljob.json.status in ['successful', 'failed', 'error', 'canceled']
+          retries: 30
+          delay: 5
+          when: _lload is not skipped
+
+        - name: Retry the compliance report POST after loading
+          ansible.builtin.uri:
+            use_proxy: false
+            url: "{{ opa_server_url }}/v1/data/{{ framework_path }}/main/compliance_report"
+            method: POST
+            body_format: json
+            body:
+              input: "{{ parsed_input }}"
+            return_content: true
+            status_code: [200]
+            timeout: 30
+          register: opa_response
+          when: _lload is not skipped
+
+    - name: Validate OPA response structure
+      fail:
+        msg: >-
+          OPA returned an unexpected response for framework '{{ (framework | default('', true)) }}'.
+          Status: {{ opa_response.status | default('unknown') }}.
+          Content: {{ opa_response.content | default('<no content>') }}
+      when: >-
+        opa_response.status != 200 or
+        opa_response.json is not defined or
+        opa_response.json.result is not defined
+
+    # An undefined rule anywhere inside compliance_report collapses the whole
+    # object, and OPA reports that as HTTP 200 with `{"result": {}}` — `result`
+    # IS defined, so the check above passes and we would store an empty row.
+    # That is how every cis_* key silently wrote meaningless results before
+    # rego PR #52. Treat an empty or field-less report as a hard failure: a
+    # framework that cannot be evaluated must fail the job, never quietly
+    # record 0 controls.
+    - name: Fail when OPA returned an empty compliance report
+      fail:
+        msg: >-
+          OPA returned an EMPTY compliance report for framework '{{ (framework | default('', true)) }}'
+          at {{ opa_server_url }}/v1/data/{{ framework_path }}/main/compliance_report.
+          This almost always means there is no `package {{ framework_path | replace("/", ".") }}.main`
+          defining compliance_report, or a field inside it is undefined (which
+          collapses the whole object to {}).
+          Check the package name matches the resolved path — if they differ, add
+          an entry to opa_framework_path in site_config.yml (e.g. the key
+          cis_ubuntu_2204 maps to the package cis_ubuntu_22_04) — and verify
+          with:
+            opa eval -d policies/<dir> 'data.{{ framework_path | replace("/", ".") }}.main.compliance_report'
+          on EMPTY input. It must return a populated object.
+          Nothing has been written to compliance_results.
+      when: >-
+        opa_response.json.result | length == 0 or
+        opa_response.json.result.total_controls is not defined
+
+    - name: Extract compliance report
+      set_fact:
+        compliance_report: "{{ opa_response.json.result }}"
+        violation_count:   "{{ opa_response.json.result.violation_count | default(opa_response.json.result.violations | default([]) | length) }}"
+        is_compliant:      "{{ opa_response.json.result.compliant | default(false) }}"
+
+    - name: "Compliance result — {{ (framework | default('', true)) }}"
+      debug:
+        msg:
+          - "Framework:        {{ (framework | default('', true)) }}"
+          - "Compliant:        {{ is_compliant }}"
+          - "Violation count:  {{ violation_count }}"
+          - "Violations:"
+          - "{{ compliance_report.violations | default([]) | list }}"
+
+    # -------------------------------------------------------------------------
+    # Store to PostgreSQL
+    # -------------------------------------------------------------------------
+    - name: Store compliance report in PostgreSQL
+      community.postgresql.postgresql_query:
+        login_db:       "{{ pg_db }}"
+        # evidence write: the least-privilege writer when configured (docs/EVIDENCE_IMMUTABILITY.md)
+        login_user: "{{ aac_evidence_writer_user | default(pg_user, true) }}"
+        login_password: >-
+          {{ compliance_writer_password
+             if (aac_evidence_writer_user | default('', true) | length > 0)
+             else (pg_password) }}
+        login_host: "{{ pg_host | default(aac_host, true) }}"
+        query: |
+          INSERT INTO compliance_results (
+            hostname, framework, policy_name, policy_version,
+            total_controls, passed_controls, failed_controls,
+            compliance_percentage, compliant, violations, metadata, evaluation_timestamp,
+            policy_sha, project_sha
+          ) VALUES (
+            %(hostname)s, %(framework)s, %(policy_name)s, %(version)s,
+            %(total)s, %(passed)s, %(failed)s,
+            %(pct)s, %(compliant)s, %(violations)s::jsonb, %(metadata)s::jsonb,
+            NOW(),
+            NULLIF(%(policy_sha)s,''), NULLIF(%(project_sha)s,'')
+          )
+        named_args:
+          policy_sha:  "{{ aac_policy_sha | default('') }}"
+          project_sha: "{{ aac_project_sha | default('') }}"
+          hostname:    "{{ aac_evidence_subject | default(target_hostname, true) }}"
+          framework:   "{{ (framework | default('', true)) }}"
+          policy_name: "{{ (framework | default('', true)) }}"
+          version:     "{{ compliance_report.version | default(compliance_report.published | default('unknown')) }}"
+          total:       "{{ compliance_report.total_controls | default(0) }}"
+          passed:      "{{ (compliance_report.total_controls | default(0) | int) - (violation_count | int) }}"
+          failed:      "{{ violation_count | int }}"
+          pct:         "{{ (((compliance_report.total_controls | default(1) | int) - (violation_count | int)) / (compliance_report.total_controls | default(1) | int) * 100) | round(1) }}"
+          compliant:   "{{ is_compliant | bool }}"
+          violations:  "{{ compliance_report.violations | default([]) | to_json }}"
+          metadata:    "{{ compliance_report | to_json }}"
+      when: store_results | bool

@@ -1,0 +1,58 @@
+---
+# Default variables for gather_filesystem_config role
+
+# Required separate partitions per CIS
+required_separate_partitions:
+  - /tmp
+  - /var
+  - /var/tmp
+  - /var/log
+  - /var/log/audit
+  - /home
+
+# Required mount options per partition
+required_mount_options:
+  /tmp:
+    - nodev
+    - nosuid
+    - noexec
+  /dev/shm:
+    - nodev
+    - nosuid
+    - noexec
+  /home:
+    - nodev
+    - nosuid
+  /var:
+    - nodev
+    - nosuid
+  /var/tmp:
+    - nodev
+    - nosuid
+    - noexec
+  /var/log:
+    - nodev
+    - nosuid
+    - noexec
+  /var/log/audit:
+    - nodev
+    - nosuid
+    - noexec
+
+# Filesystem kernel modules that should be disabled
+disabled_filesystems:
+  - cramfs
+  - freevxfs
+  - jffs2
+  - hfs
+  - hfsplus
+  - udf
+  - vfat  # Optional, may be needed for EFI
+
+# USB storage control
+usb_storage_disabled: false  # Set to true if USB storage should be disabled
+
+# World-writable directories that require sticky bit
+sticky_bit_required:
+  - /tmp
+  - /var/tmp

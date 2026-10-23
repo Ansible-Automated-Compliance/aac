@@ -1,0 +1,132 @@
+---
+# AMI 2.0 Device Compliance Assessment Input Data
+# 3 sample meters demonstrating different compliance states:
+#   MTR-001: Fully compliant
+#   MTR-002: Certificate expiring soon + key rotation overdue
+#   MTR-003: CRITICAL — tamper detected, outdated firmware
+
+organization: "Example Electric Utility"
+assessment_date: "2026-02-28"
+assessor: "AMI Security Team"
+
+device_standards:
+  minimum_firmware_version: "3.2.1"
+  minimum_tls_version: "TLS_1.2"
+  max_key_rotation_days: 90
+  cert_expiry_warning_days: 30
+
+devices:
+  # --------------------------------------------------------------------------
+  # MTR-001: Fully compliant meter
+  # --------------------------------------------------------------------------
+  - device_id: "MTR-001"
+    meter_type: "residential"
+    location: "Zone-A"
+    installation_date: "2024-06-15"
+
+    firmware:
+      version: "3.4.2"
+      signature_valid: true
+      signature_algorithm: "ECDSA-P256"
+      ota_update_signing_required: true
+      unsigned_updates_blocked: true
+      rollback_protection: true
+
+    certificate:
+      expiry_date: "2027-06-15T00:00:00Z"    # 15+ months out — fully compliant
+      algorithm: "ECDSA-P256"
+      issuer: "AMI-Intermediate-CA"
+
+    key_management:
+      last_rotation_date: "2026-01-15T00:00:00Z"    # 44 days ago — within 90
+      secure_storage: "TPM"
+
+    communications:
+      encrypted: true
+      encryption_mode: "AES-128-CCM"
+      encryption_algorithms:
+        - "AES-128"
+      mutual_authentication: true
+
+    security:
+      tamper_status: "no_tamper"
+      tamper_detection_enabled: true
+      tamper_detection_status: "operational"
+      secure_boot: true
+
+  # --------------------------------------------------------------------------
+  # MTR-002: Cert expiring soon + key rotation overdue
+  # --------------------------------------------------------------------------
+  - device_id: "MTR-002"
+    meter_type: "commercial"
+    location: "Zone-B"
+    installation_date: "2023-03-10"
+
+    firmware:
+      version: "3.2.1"                       # Exactly minimum — compliant
+      signature_valid: true
+      signature_algorithm: "RSA-2048"
+      ota_update_signing_required: true
+      unsigned_updates_blocked: true
+      rollback_protection: true
+
+    certificate:
+      expiry_date: "2026-03-10T00:00:00Z"    # ~10 days out — WARNING (within 30-day window)
+      algorithm: "RSA-2048"
+      issuer: "AMI-Intermediate-CA"
+
+    key_management:
+      last_rotation_date: "2025-10-01T00:00:00Z"    # ~150 days ago — OVERDUE (>90 days)
+      secure_storage: "secure_element"
+
+    communications:
+      encrypted: true
+      encryption_mode: "AES-256-CCM"
+      encryption_algorithms:
+        - "AES-256"
+      mutual_authentication: true
+
+    security:
+      tamper_status: "no_tamper"
+      tamper_detection_enabled: true
+      tamper_detection_status: "operational"
+      secure_boot: true
+
+  # --------------------------------------------------------------------------
+  # MTR-003: CRITICAL — tamper detected, outdated firmware, weak encryption
+  # --------------------------------------------------------------------------
+  - device_id: "MTR-003"
+    meter_type: "residential"
+    location: "Zone-C"
+    installation_date: "2022-11-20"
+
+    firmware:
+      version: "3.1.0"                       # BELOW minimum 3.2.1 — non-compliant
+      signature_valid: true
+      signature_algorithm: "RSA-2048"
+      ota_update_signing_required: false      # NOT enforced — violation
+      unsigned_updates_blocked: false
+      rollback_protection: false              # Missing rollback protection
+
+    certificate:
+      expiry_date: "2026-09-01T00:00:00Z"    # > 30 days — OK
+      algorithm: "RSA-2048"
+      issuer: "AMI-Intermediate-CA"
+
+    key_management:
+      last_rotation_date: "2025-08-01T00:00:00Z"    # ~211 days ago — severely overdue
+      secure_storage: "TPM"
+
+    communications:
+      encrypted: true
+      encryption_mode: "AES-128-CCM"
+      encryption_algorithms:
+        - "AES-128"
+        - "3DES"                             # PROHIBITED algorithm — violation
+      mutual_authentication: false           # Not enforced — violation
+
+    security:
+      tamper_status: "tamper_detected"       # CRITICAL VIOLATION
+      tamper_detection_enabled: true
+      tamper_detection_status: "operational"
+      secure_boot: false                     # Secure boot disabled — violation

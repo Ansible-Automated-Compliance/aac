@@ -1,0 +1,66 @@
+---
+# Test inventory for Windows Server 2022 CIS compliance assessment
+# IMPORTANT: Windows hosts MUST use WinRM connection (not SSH)
+all:
+  children:
+    # Windows group - inherits WinRM settings from group_vars/windows.yml
+    windows:
+      hosts:
+        # Example Windows Server 2022 hosts
+        # Uncomment and configure for your environment
+        #
+        # win-server-01:
+        #   ansible_host: 192.168.1.20
+        #   ansible_user: Administrator
+        #   ansible_password: "{{ vault_win_password }}"
+
+        # AWS Compliance Lab Windows Server 2022
+        # IP is dynamic - set via extra vars or update after instance start
+        compliance-lab-windows2022:
+          ansible_host: "{{ aws_windows_ip | default('') }}"
+          ansible_user: Administrator
+          ansible_password: "{{ vault_windows_admin_password }}"
+
+  vars:
+    # OPA configuration
+    opa_server_url: "http://YOUR_AAP_HOST_IP:8181"
+
+    # Target platform
+    target_platform: "windows_server_2022"
+
+    # Compliance framework
+    compliance_framework: "cis"
+
+    # Windows connection settings (WinRM - NOT SSH)
+    # These are also set in group_vars/windows.yml
+    ansible_connection: winrm
+    ansible_winrm_transport: ntlm
+    ansible_winrm_server_cert_validation: ignore
+    ansible_port: 5986  # HTTPS WinRM port (5985 for HTTP)
+    ansible_shell_type: powershell
+
+    # Report generation
+    generate_report: true
+    report_format: "json"
+    assessment_output_dir: "/tmp/compliance_assessments"
+
+  # IMPORTANT: WinRM Setup Required
+  # On Windows Server 2022 hosts, run these commands in PowerShell (as Administrator):
+  #
+  # # Enable WinRM
+  # Enable-PSRemoting -Force
+  #
+  # # Configure WinRM for HTTPS (recommended)
+  # winrm quickconfig -transport:https
+  #
+  # # Or allow HTTP for testing (less secure)
+  # Set-Item WSMan:\localhost\Service\AllowUnencrypted -Value $true
+  #
+  # # Allow basic auth (if needed)
+  # Set-Item WSMan:\localhost\Service\Auth\Basic -Value $true
+  #
+  # # Configure firewall
+  # New-NetFirewallRule -Name "WinRM-HTTPS" -DisplayName "Windows Remote Management (HTTPS-In)" -Enabled True -Direction Inbound -Protocol TCP -LocalPort 5986
+  #
+  # # Test WinRM
+  # Test-WSMan

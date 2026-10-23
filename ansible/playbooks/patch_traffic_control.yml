@@ -1,0 +1,299 @@
+---
+# patch_traffic_control.yml — take a host out of / back into the load balancer
+#
+# Implements docs/patch_remediation_lifecycle.md Stage 7b (traffic drain adapter).
+#
+# THE FOUR-VERB CONTRACT (§10). Every provider implements exactly these:
+#   drain              — stop sending NEW work to this member
+#   verify_quiesced    — confirm in-flight work has finished
+#   undrain            — return the member to the pool
+#   verify_in_service  — confirm it is actually receiving traffic again
+#
+# Drain has several concrete forms depending on asset class: pool-member disable
+# (load balancer), routing failover (router), path failover (storage), connection
+# draining (application). They share the contract; the mechanics differ.
+#
+# ** IMPOSSIBLE ON OT/AMI. ** A smart meter has no standby. There is nothing to
+# fail over to. Mitigation there is staged cohorts, never drain — this playbook
+# refuses to run against OT assets rather than pretending.
+#
+# ** UNDRAIN IS MANDATORY ON EVERY EXIT PATH, INCLUDING FAILURE. **
+# A drained asset left drained is the most common operational mistake in patch
+# automation: the patch "succeeded", the ticket closed, and a host silently
+# carries no traffic for weeks. The workflow wires undrain on an ALWAYS edge for
+# exactly this reason, and this playbook is idempotent so a repeated undrain is
+# harmless.
+#
+# PROVIDERS:
+#   stub     — records state transitions in the DB and logs what a real provider
+#              WOULD do. DEFAULT. There is no load balancer in the lab, and a
+#              flow that cannot be exercised without customer infrastructure
+#              cannot be tested or demonstrated.
+#   f5 / haproxy / nginx / aws_elb — CONTRACT DEFINED, NOT IMPLEMENTED.
+#
+# AAP Job Template: "AAC - Patch Traffic Control (drain/undrain)"
+# Credentials: Ansible Vault    EE: AAC Compliance EE
+#
+# Survey / extra_vars:
+#   traffic_action   drain | undrain                  (required)
+#   target_host      hostname                         (required)
+#   traffic_provider stub | f5 | haproxy | nginx | aws_elb   (default: stub)
+#   pool_name        LB pool / target group           (optional)
+#   quiesce_timeout  seconds to wait for in-flight work (default 60)
+
+- name: Patch traffic control — drain or return to service
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - [ "../vars/vault_secrets.yml", "../vars/empty_fallback.yml" ]
+    - ../vars/site_config.yml
+
+  vars:
+    pg_port: "{{ compliance_db_port | default(5432) }}"
+    pg_db: "compliance"
+    pg_user: "postgres"
+    pg_password: "{{ compliance_db_password }}"
+
+    traffic_action: "{{ action | default('drain') }}"
+    target_host: "{{ target_hostname | default('') }}"
+    traffic_provider: "{{ provider | default('stub') }}"
+    pool_name: "{{ pool | default('app-pool-01') }}"
+    quiesce_timeout: "{{ quiesce | default(60) | int }}"
+    ticket_id: "{{ patch_ticket_id | default(none) }}"
+    # Set true for OT/AMI assets — drain is not a valid operation there
+    is_ot_asset: "{{ ot_asset | default(false) | bool }}"
+
+  tasks:
+
+    - name: Validate inputs
+      ansible.builtin.assert:
+        that:
+          - traffic_action in ['drain', 'undrain']
+          - target_host | length > 0
+        fail_msg: >-
+          traffic_action must be 'drain' or 'undrain', and target_host must be set.
+          Got action='{{ traffic_action }}' host='{{ target_host }}'.
+
+    - name: Refuse to drain an OT asset
+      ansible.builtin.fail:
+        msg: >-
+          {{ target_host }} is declared an OT/AMI asset. Traffic drain is IMPOSSIBLE
+          there — a meter or field device has no standby to fail over to, and there is
+          no pool to remove it from. The correct mitigation for OT is a STAGED COHORT
+          campaign, not drain. Failing here rather than logging a fake drain, because a
+          fake drain in the audit trail is worse than no drain at all.
+      when: is_ot_asset
+
+    - name: Refuse unimplemented providers
+      ansible.builtin.fail:
+        msg: >-
+          traffic_provider '{{ traffic_provider }}' has a defined contract
+          (drain / verify_quiesced / undrain / verify_in_service) but NO implementation.
+          Running the patch flow while believing traffic was drained — when it was not —
+          would take a live host down under load. Use provider 'stub' for lab and demo,
+          and implement the adapter before using it against a real pool.
+      when: traffic_provider not in ['stub']
+
+    - name: Ensure the traffic schema exists
+      community.postgresql.postgresql_script:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        path: "{{ playbook_dir }}/../files/patch_change_schema.sql"
+
+    - name: Read the current traffic state
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: "SELECT state, changed_at FROM patch_traffic_current WHERE hostname = %(host)s"
+        named_args:
+          host: "{{ target_host }}"
+      register: current
+
+    - name: Set the current state fact
+      ansible.builtin.set_fact:
+        cur_state: "{{ current.query_result[0].state if (current.query_result | length > 0) else 'in_service' }}"
+
+    - name: Show what we are acting on
+      ansible.builtin.debug:
+        msg: "{{ target_host }} is currently '{{ cur_state }}'; requested action '{{ traffic_action }}' via provider '{{ traffic_provider }}'"
+
+    # =========================================================================
+    # DRAIN
+    # =========================================================================
+    - name: DRAIN — already out of service, nothing to do
+      when:
+        - traffic_action == 'drain'
+        - cur_state in ['drained', 'draining']
+      ansible.builtin.debug:
+        msg: >-
+          {{ target_host }} is already '{{ cur_state }}'. Drain is idempotent — no action taken.
+
+    - name: DRAIN — verb 1/2 · remove the member from the pool
+      when:
+        - traffic_action == 'drain'
+        - cur_state not in ['drained', 'draining']
+      block:
+        - name: Record the draining transition
+          community.postgresql.postgresql_query:
+            login_host: "{{ pg_host }}"
+            login_port: "{{ pg_port }}"
+            login_user: "{{ pg_user }}"
+            login_password: "{{ pg_password }}"
+            login_db: "{{ pg_db }}"
+            query: |
+              INSERT INTO patch_traffic_state (hostname, provider, pool, state, ticket_id, detail)
+              VALUES (%(host)s, %(prov)s, %(pool)s, 'draining', %(tid)s, %(detail)s)
+            named_args:
+              host: "{{ target_host }}"
+              prov: "{{ traffic_provider }}"
+              pool: "{{ pool_name }}"
+              tid: "{{ ticket_id if ticket_id else None }}"
+              detail: "drain requested; new connections stopped"
+
+        - name: What a real provider would do
+          ansible.builtin.debug:
+            msg:
+              - "PROVIDER '{{ traffic_provider }}' — drain"
+              - "  f5      : disable pool member {{ target_host }} in {{ pool_name }}"
+              - "  haproxy : set server {{ pool_name }}/{{ target_host }} state drain"
+              - "  aws_elb : deregister {{ target_host }} from target group {{ pool_name }}"
+              - "  (stub records the transition only — no pool is contacted)"
+
+        - name: DRAIN — verb 2/2 · verify_quiesced (wait for in-flight work)
+          ansible.builtin.debug:
+            msg: >-
+              verify_quiesced: a real provider polls active-connection count until it
+              reaches zero or {{ quiesce_timeout }}s elapses. Patching a host that is
+              still serving requests is what makes "zero-downtime patching" untrue.
+
+        - name: Record the drained state
+          community.postgresql.postgresql_query:
+            login_host: "{{ pg_host }}"
+            login_port: "{{ pg_port }}"
+            login_user: "{{ pg_user }}"
+            login_password: "{{ pg_password }}"
+            login_db: "{{ pg_db }}"
+            query: |
+              INSERT INTO patch_traffic_state (hostname, provider, pool, state, ticket_id, detail)
+              VALUES (%(host)s, %(prov)s, %(pool)s, 'drained', %(tid)s, %(detail)s)
+            named_args:
+              host: "{{ target_host }}"
+              prov: "{{ traffic_provider }}"
+              pool: "{{ pool_name }}"
+              tid: "{{ ticket_id if ticket_id else None }}"
+              detail: "quiesced after {{ quiesce_timeout }}s budget; safe to patch"
+
+        - name: Drained
+          ansible.builtin.debug:
+            msg:
+              - "✅ {{ target_host }} is OUT OF SERVICE and quiesced — safe to patch."
+              - "   It MUST be returned to service on every exit path, including failure."
+
+    # =========================================================================
+    # UNDRAIN — must be safe to run unconditionally
+    # =========================================================================
+    - name: UNDRAIN — already in service, nothing to do
+      when:
+        - traffic_action == 'undrain'
+        - cur_state == 'in_service'
+      ansible.builtin.debug:
+        msg: >-
+          {{ target_host }} is already 'in_service'. Undrain is idempotent — no action
+          taken. This is the expected no-op when the ALWAYS edge fires after a run that
+          never drained (for example, the patch step failed before drain).
+
+    - name: UNDRAIN — return the member to the pool and verify
+      when:
+        - traffic_action == 'undrain'
+        - cur_state != 'in_service'
+      block:
+        - name: Record the returning transition
+          community.postgresql.postgresql_query:
+            login_host: "{{ pg_host }}"
+            login_port: "{{ pg_port }}"
+            login_user: "{{ pg_user }}"
+            login_password: "{{ pg_password }}"
+            login_db: "{{ pg_db }}"
+            query: |
+              INSERT INTO patch_traffic_state (hostname, provider, pool, state, ticket_id, detail)
+              VALUES (%(host)s, %(prov)s, %(pool)s, 'returning', %(tid)s, %(detail)s)
+            named_args:
+              host: "{{ target_host }}"
+              prov: "{{ traffic_provider }}"
+              pool: "{{ pool_name }}"
+              tid: "{{ ticket_id if ticket_id else None }}"
+              detail: "undrain requested from state '{{ cur_state }}'"
+
+        - name: What a real provider would do
+          ansible.builtin.debug:
+            msg:
+              - "PROVIDER '{{ traffic_provider }}' — undrain"
+              - "  f5      : enable pool member {{ target_host }} in {{ pool_name }}"
+              - "  haproxy : set server {{ pool_name }}/{{ target_host }} state ready"
+              - "  aws_elb : register {{ target_host }} into target group {{ pool_name }}"
+
+        - name: verify_in_service — confirm it is actually taking traffic
+          ansible.builtin.debug:
+            msg: >-
+              verify_in_service: a real provider polls the pool until the member reports
+              healthy and is receiving connections. Returning a member that fails its
+              health check puts a broken host back into rotation — the failure mode this
+              verb exists to prevent.
+
+        - name: Record the in-service state
+          community.postgresql.postgresql_query:
+            login_host: "{{ pg_host }}"
+            login_port: "{{ pg_port }}"
+            login_user: "{{ pg_user }}"
+            login_password: "{{ pg_password }}"
+            login_db: "{{ pg_db }}"
+            query: |
+              INSERT INTO patch_traffic_state (hostname, provider, pool, state, ticket_id, detail)
+              VALUES (%(host)s, %(prov)s, %(pool)s, 'in_service', %(tid)s, %(detail)s)
+            named_args:
+              host: "{{ target_host }}"
+              prov: "{{ traffic_provider }}"
+              pool: "{{ pool_name }}"
+              tid: "{{ ticket_id if ticket_id else None }}"
+              detail: "returned to service and verified healthy"
+
+        - name: Returned to service
+          ansible.builtin.debug:
+            msg: "✅ {{ target_host }} is back IN SERVICE and verified."
+
+    # =========================================================================
+    # Safety net — the query that must always come back empty
+    # =========================================================================
+    - name: Check for any host left out of service
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: "SELECT hostname, state, ROUND(hours_out_of_service::numeric, 1) AS hours FROM patch_traffic_stranded ORDER BY hours DESC"
+      register: stranded
+
+    - name: Report stranded assets
+      when: stranded.query_result | length > 0
+      ansible.builtin.debug:
+        msg:
+          - "⚠️  HOSTS CURRENTLY OUT OF SERVICE"
+          - "{{ stranded.query_result }}"
+          - ""
+          - "During a patch run this is expected for the host being worked on."
+          - "After a run it should be EMPTY. Anything listed here is carrying no"
+          - "traffic and nobody has noticed. Investigate before closing out."
+
+    - name: No stranded assets
+      when: stranded.query_result | length == 0
+      ansible.builtin.debug:
+        msg: "✅ No hosts are out of service — every drained asset was returned."

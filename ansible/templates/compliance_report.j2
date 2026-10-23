@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>CIS Compliance Report</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .header { background-color: #f0f0f0; padding: 10px; border-radius: 5px; }
+        .compliant { color: green; font-weight: bold; }
+        .non-compliant { color: red; font-weight: bold; }
+        .fact { margin: 10px 0; padding: 5px; background-color: #f9f9f9; }
+        table { border-collapse: collapse; width: 100%; margin-top: 20px; }
+        th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+        th { background-color: #f2f2f2; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>CIS Compliance Report</h1>
+        <p>Generated: {{ timestamp }}</p>
+        <p>Host: {{ system_config.hostname }} ({{ system_config.fqdn }})</p>
+        <p class="{{ 'compliant' if compliance_result else 'non-compliant' }}">
+            Overall Status: {{ 'COMPLIANT' if compliance_result else 'NON-COMPLIANT' }}
+        </p>
+    </div>
+
+    <h2>System Configuration</h2>
+    <table>
+        <tr><th>Property</th><th>Value</th></tr>
+        <tr><td>Operating System</td><td>{{ system_config.distribution }} {{ system_config.distribution_version }}</td></tr>
+        <tr><td>OS Family</td><td>{{ system_config.os_family }}</td></tr>
+        <tr><td>Kernel</td><td>{{ system_config.kernel }}</td></tr>
+        <tr><td>SELinux Status</td><td>{{ system_config.selinux_status }}</td></tr>
+        <tr><td>Firewall Enabled</td><td>{{ system_config.firewall_enabled }}</td></tr>
+        <tr><td>SSH Port</td><td>{{ system_config.ssh_port }}</td></tr>
+        <tr><td>Current User</td><td>{{ system_config.users }}</td></tr>
+    </table>
+
+    <h2>CIS Controls Evaluated</h2>
+    <ul>
+        <li><strong>1.6.1</strong> - SELinux enabled and configured</li>
+        <li><strong>3.5.1</strong> - Firewall is active</li>
+        <li><strong>5.2.2</strong> - SSH access configuration</li>
+        <li><strong>OS Support</strong> - Operating system version support</li>
+    </ul>
+
+    <p><em>This is a demonstration of OPA policy evaluation with Ansible facts. In production, implement comprehensive CIS benchmark coverage.</em></p>
+</body>
+</html>

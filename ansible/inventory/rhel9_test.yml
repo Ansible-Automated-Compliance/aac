@@ -1,0 +1,22 @@
+---
+# Test inventory for RHEL 9 CIS compliance assessment
+all:
+  hosts:
+    rhel9-test:
+      ansible_host: YOUR_RHEL9_HOST_IP
+      ansible_user: YOUR_SSH_USER
+      ansible_become: yes
+
+  vars:
+    # OPA configuration
+    opa_server_url: "http://localhost:8181"
+
+    # Target platform
+    target_platform: "rhel9"
+
+    # Compliance framework
+    compliance_framework: "cis"
+
+    # Report generation
+    generate_report: true
+    report_format: "json"

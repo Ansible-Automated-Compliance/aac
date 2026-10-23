@@ -1,0 +1,114 @@
+---
+# mitogen_latency_benchmark.yml — Measure gather_facts + task latency
+#
+# Runs fact collection and a series of lightweight tasks, recording wall-clock
+# time at each stage so Mitogen vs linear strategy can be compared fairly.
+#
+# Run twice — once with each EE/strategy — and compare AAP job elapsed times:
+#
+#   Linear:  AAC Compliance EE v1.0, no strategy override
+#   Mitogen: AAC Compliance EE v1.1.0, strategy = mitogen_linear
+#
+# AAP Job Templates:
+#   "AAC - Benchmark: Linear"  — uses EE v1.0, strategy: linear
+#   "AAC - Benchmark: Mitogen" — uses EE v1.1.0, strategy: mitogen_linear
+#
+# Survey:
+#   target_hosts — inventory group or host (default: all)
+#   task_repeat  — number of lightweight tasks to run per host (default: 20)
+
+- name: Latency Benchmark
+  hosts: "{{ target_hosts | default('all') }}"
+  gather_facts: false    # we time this manually below
+  become: true
+  strategy: "{{ benchmark_strategy | default('linear') }}"
+
+  vars:
+    # task_repeat: <set via extra_vars / survey / inventory>   # default 20 | int
+
+  tasks:
+
+    # ------------------------------------------------------------------
+    # Record benchmark start
+    # ------------------------------------------------------------------
+    - name: Record benchmark start time
+      set_fact:
+        bench_start_epoch: "{{ ansible_date_time.epoch | default(lookup('pipe','date +%s')) }}"
+      run_once: false
+
+    # ------------------------------------------------------------------
+    # Timed: gather_facts (the main latency target)
+    # ------------------------------------------------------------------
+    - name: "[TIMED] gather_facts start"
+      set_fact:
+        t_facts_start: "{{ lookup('pipe', 'date +%s%3N') }}"
+
+    - name: "[TIMED] Run setup module (gather_facts)"
+      setup:
+      register: setup_result
+
+    - name: "[TIMED] gather_facts end"
+      set_fact:
+        t_facts_end: "{{ lookup('pipe', 'date +%s%3N') }}"
+
+    - name: "gather_facts elapsed"
+      debug:
+        msg: >-
+          [{{ inventory_hostname }}] gather_facts:
+          {{ (t_facts_end | int - t_facts_start | int) }} ms
+
+    # ------------------------------------------------------------------
+    # Timed: N lightweight shell tasks (amplifies SSH round-trip cost)
+    # ------------------------------------------------------------------
+    - name: "[TIMED] lightweight tasks start"
+      set_fact:
+        t_tasks_start: "{{ lookup('pipe', 'date +%s%3N') }}"
+
+    - name: "[TIMED] Lightweight shell task {{ item }}"
+      command: "echo task-{{ item }}"
+      loop: "{{ range(1, (task_repeat | default(20)) | int + 1) | list }}"
+      loop_control:
+        label: "task {{ item }}"
+      when: ansible_system | default('Linux') != 'Windows'
+
+    - name: "[TIMED] lightweight tasks end"
+      set_fact:
+        t_tasks_end: "{{ lookup('pipe', 'date +%s%3N') }}"
+
+    # ------------------------------------------------------------------
+    # Per-host summary
+    # ------------------------------------------------------------------
+    - name: "=== Per-host benchmark results ==="
+      debug:
+        msg:
+          - "Host:              {{ inventory_hostname }}"
+          - "gather_facts:      {{ (t_facts_end | int - t_facts_start | int) }} ms"
+          - "{{ (task_repeat | default(20)) }} shell tasks:  {{ (t_tasks_end | int - t_tasks_start | int) }} ms"
+          - "Total measured:    {{ (t_tasks_end | int - t_facts_start | int) }} ms"
+
+# ------------------------------------------------------------------
+# Aggregate results across all hosts (runs on controller)
+# ------------------------------------------------------------------
+- name: Aggregate benchmark results
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  tasks:
+
+    - name: Build summary lines
+      set_fact:
+        summary_lines: >-
+          {%- set lines = [] -%}
+          {%- for h in hostvars | list -%}
+            {%- if hostvars[h].t_facts_end is defined -%}
+              {%- set facts_ms = hostvars[h].t_facts_end | int - hostvars[h].t_facts_start | int -%}
+              {%- set tasks_ms = hostvars[h].t_tasks_end | int - hostvars[h].t_tasks_start | int -%}
+              {%- set _ = lines.append(h ~ ': gather_facts=' ~ facts_ms ~ 'ms  tasks=' ~ tasks_ms ~ 'ms  total=' ~ (facts_ms + tasks_ms) ~ 'ms') -%}
+            {%- endif -%}
+          {%- endfor -%}
+          {{ lines }}
+
+    - name: "=== Benchmark Summary ==="
+      debug:
+        msg: "{{ ['━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━', '  LATENCY BENCHMARK RESULTS', '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'] + summary_lines + ['━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━', 'Compare AAP job Elapsed field for wall-clock total.', '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'] }}"

@@ -1,0 +1,39 @@
+# aac_config_reader_rbac.yaml — read-only RBAC for the AAC OCP compliance reader SA
+#
+# The `aac-co-reader` ServiceAccount (openshift-compliance) reads
+# ComplianceCheckResults for the collation playbook. The CIP-010 baseline/drift
+# playbooks (capture_ocp_baseline.yml, check_ocp_drift.yml) additionally fingerprint
+# the security-relevant cluster config objects, which live in config.openshift.io /
+# operator.openshift.io. This grants the SA read-only (get/list/watch) access to
+# exactly those objects — no write, no secrets.
+#
+# Apply once per cluster:  oc apply -f ansible/files/aac_config_reader_rbac.yaml
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: aac-config-reader
+  labels:
+    app.kubernetes.io/part-of: aac
+rules:
+  - apiGroups: ["config.openshift.io"]
+    resources: ["oauths", "apiservers", "images", "ingresses", "networks", "schedulers", "authentications"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["operator.openshift.io"]
+    resources: ["ingresscontrollers"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: aac-config-reader-binding
+  labels:
+    app.kubernetes.io/part-of: aac
+subjects:
+  - kind: ServiceAccount
+    name: aac-co-reader
+    namespace: openshift-compliance
+roleRef:
+  kind: ClusterRole
+  name: aac-config-reader
+  apiGroup: rbac.authorization.k8s.io

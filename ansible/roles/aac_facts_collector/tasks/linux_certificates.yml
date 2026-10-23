@@ -1,0 +1,43 @@
+---
+# linux_certificates.yml — Collect TLS certificate and PKI facts
+
+- name: Find installed certificates
+  find:
+    paths:
+      - /etc/pki/tls/certs
+      - /etc/ssl/certs
+      - /usr/local/share/ca-certificates
+    patterns: "*.crt,*.pem"
+    recurse: false
+  register: cert_files
+  failed_when: false
+
+- name: Check certificate expiry for found certs
+  shell: |
+    openssl x509 -noout -subject -enddate -in "{{ item.path }}" 2>/dev/null \
+      | tr '\n' '|' && echo "PATH:{{ item.path }}"
+  loop: "{{ (cert_files.files | default([]))[:20] }}"
+  register: cert_details_raw
+  changed_when: false
+  failed_when: false
+
+- name: Check for expiring certificates (within 90 days)
+  shell: |
+    threshold=$(date -d "+90 days" +%s 2>/dev/null || date -v+90d +%s 2>/dev/null || echo 0)
+    for f in /etc/pki/tls/certs/*.crt /etc/ssl/certs/*.crt 2>/dev/null; do
+      [ -f "$f" ] || continue
+      expiry=$(openssl x509 -noout -enddate -in "$f" 2>/dev/null \
+        | sed 's/notAfter=//')
+      exp_ts=$(date -d "$expiry" +%s 2>/dev/null || echo 9999999999)
+      [ "$exp_ts" -lt "$threshold" ] && echo "EXPIRING:$f:$expiry" || true
+    done || echo ""
+  register: expiring_certs_raw
+  changed_when: false
+  failed_when: false
+
+- name: Set certificate facts
+  set_fact:
+    aac_certificates:
+      cert_count:         "{{ cert_files.files | default([]) | length }}"
+      expiring_certs:     "{{ expiring_certs_raw.stdout_lines | default([]) | select | list }}"
+      cert_details_raw:   "{{ cert_details_raw.results | default([]) | map(attribute='stdout') | list }}"

@@ -1,0 +1,32 @@
+---
+# Example security exception waivers — copy entries into ansible/vars/waivers.yml
+# (or supply waiver_entries via extra_vars) and re-run "AAC - Load OPA Policies".
+#
+# A waiver never hides a finding: it is stored and reported as waived, with the
+# justification, approver, and expiry attached. Expired waivers revert to
+# active violations automatically.
+
+waiver_entries:
+  # One CVE, one host, time-boxed until the vendor patch lands
+  - host: "web01.example.com"
+    framework: "cis_rhel9"
+    control_id: "CVE-2026-12345"
+    reason: "Vendor patch scheduled for Q4 maintenance window; WAF rule 4411 mitigates in the interim"
+    approver: "security-officer@example.com"
+    expires: "2026-12-31"
+
+  # One control waived on a single system with a compensating control
+  - host: "legacy-app-01.example.com"
+    framework: "cis_rhel9"
+    control_id: "5.2.1"
+    reason: "Root SSH required by legacy backup agent; access restricted to jump host by firewall policy FW-118"
+    approver: "ciso@example.com"
+    expires: "2027-03-31"
+
+  # Estate-wide waiver for one control across every framework — use sparingly
+  - host: "*"
+    framework: "*"
+    control_id: "1.1.6"
+    reason: "Separate /tmp partition deferred to next image release per change CR-2201"
+    approver: "platform-lead@example.com"
+    expires: "2026-11-30"

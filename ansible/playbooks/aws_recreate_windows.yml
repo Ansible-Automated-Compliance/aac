@@ -1,0 +1,190 @@
+---
+# Recreate Windows Instance with WinRM enabled
+# Terminates the existing Windows instance and creates a new one
+
+- name: Recreate Windows Instance
+  hosts: localhost
+  gather_facts: no
+  connection: local
+
+  vars_files:
+    - [ "../../ansible/vars/vault_secrets.yml", "../../ansible/vars/empty_fallback.yml" ]
+
+  vars:
+    aws_region: us-east-1
+    lab_name: compliance-lab
+    instance_type: t3.micro
+    # Windows AMIs require RSA key pairs (ED25519 not supported).
+    # compliance-lab-key-win is an RSA key created by provision_lab.yml.
+    key_name: "{{ lab_name }}-key-win"
+
+    windows_password: "{{ vault_windows_admin_password }}"
+
+    windows_userdata: |
+      <powershell>
+      # WinRM setup for Ansible — LAB CONFIG (basic auth over HTTP:5985).
+      # SECURITY NOTE: basic/AllowUnencrypted sends credentials in cleartext.
+      # This is the proven working pattern for THIS lab only — an ephemeral,
+      # security-group-restricted, powered-off-after-use compliance lab.
+      # Do NOT use for customer/production hosts; use HTTPS(5986)/NTLM there.
+      Set-ExecutionPolicy Unrestricted -Force
+      Enable-PSRemoting -Force
+      winrm quickconfig -quiet
+      winrm set winrm/config/service/auth '@{Basic="true"}'
+      winrm set winrm/config/service '@{AllowUnencrypted="true"}'
+      winrm set winrm/config/winrs '@{MaxMemoryPerShellMB="1024"}'
+      winrm set winrm/config '@{MaxTimeoutms="1800000"}'
+
+      # Set Administrator password via ADSI — Set-LocalUser silently fails on
+      # some fresh Server 2022 AMIs; ADSI is the reliable method.
+      $adminUser = [ADSI]"WinNT://localhost/Administrator,user"
+      $adminUser.SetPassword("{{ vault_windows_admin_password }}")
+      $adminUser.SetInfo()
+
+      # Firewall: WinRM HTTP (5985) — the port the assessment connects on
+      netsh advfirewall firewall add rule name="WinRM HTTP" dir=in action=allow protocol=TCP localport=5985
+
+      # Enable and restart WinRM
+      Set-Service WinRM -StartupType Automatic
+      Restart-Service WinRM -Force
+
+      # Log completion
+      "WinRM setup completed at $(Get-Date)" | Out-File C:\winrm-setup.log
+      </powershell>
+      <persist>true</persist>
+
+  tasks:
+    - name: Ensure RSA key pair exists for Windows (Windows rejects ED25519)
+      amazon.aws.ec2_key:
+        region: "{{ aws_region }}"
+        name: "{{ key_name }}"
+        key_type: rsa
+        state: present
+      register: win_key_result
+
+    - name: Save new RSA private key locally (only on first creation)
+      copy:
+        content: "{{ win_key_result.key.private_key }}"
+        dest: "/tmp/{{ key_name }}.pem"
+        mode: '0600'
+      when: win_key_result.changed and win_key_result.key.private_key is defined
+      delegate_to: localhost
+
+    - name: Find existing Windows instance
+      amazon.aws.ec2_instance_info:
+        region: "{{ aws_region }}"
+        filters:
+          "tag:Name": "{{ lab_name }}-windows2022"
+          "instance-state-name": ["running", "stopped", "pending"]
+      register: existing_instance
+
+    - name: Get security group from existing instance
+      set_fact:
+        sg_id: "{{ existing_instance.instances[0].security_groups[0].group_id }}"
+        subnet_id: "{{ existing_instance.instances[0].subnet_id }}"
+      when: existing_instance.instances | length > 0
+
+    - name: Find another lab instance to borrow SG/subnet (when no Windows instance exists)
+      amazon.aws.ec2_instance_info:
+        region: "{{ aws_region }}"
+        filters:
+          "tag:Project": "{{ lab_name }}"
+          "instance-state-name": ["running", "stopped", "pending"]
+      register: any_lab_instance
+      when: existing_instance.instances | length == 0
+
+    - name: Get security group from sibling lab instance
+      set_fact:
+        sg_id: "{{ any_lab_instance.instances[0].security_groups[0].group_id }}"
+        subnet_id: "{{ any_lab_instance.instances[0].subnet_id }}"
+      when:
+        - existing_instance.instances | length == 0
+        - any_lab_instance.instances | length > 0
+
+    - name: Terminate existing Windows instance
+      amazon.aws.ec2_instance:
+        region: "{{ aws_region }}"
+        state: absent
+        filters:
+          "tag:Name": "{{ lab_name }}-windows2022"
+      when: existing_instance.instances | length > 0
+
+    - name: Wait for termination
+      pause:
+        seconds: 30
+      when: existing_instance.instances | length > 0
+
+    - name: Find Windows Server 2022 AMI
+      amazon.aws.ec2_ami_info:
+        region: "{{ aws_region }}"
+        owners:
+          - amazon
+        filters:
+          name: "Windows_Server-2022-English-Full-Base-*"
+          state: available
+      register: windows_ami
+
+    - name: Set AMI ID
+      set_fact:
+        ami_id: "{{ (windows_ami.images | sort(attribute='creation_date', reverse=true) | first).image_id }}"
+
+    - name: Display AMI
+      debug:
+        msg: "Using AMI: {{ ami_id }}"
+
+    - name: Create new Windows instance
+      amazon.aws.ec2_instance:
+        region: "{{ aws_region }}"
+        name: "{{ lab_name }}-windows2022"
+        key_name: "{{ key_name }}"
+        instance_type: "{{ instance_type }}"
+        image_id: "{{ ami_id }}"
+        security_group: "{{ sg_id }}"
+        vpc_subnet_id: "{{ subnet_id }}"
+        user_data: "{{ windows_userdata }}"
+        state: running
+        wait: yes
+        tags:
+          Name: "{{ lab_name }}-windows2022"
+          Project: "{{ lab_name }}"
+          Platform: windows2022
+          SSHUser: Administrator
+          OSType: windows
+          ManagedBy: AAP
+      register: new_instance
+
+    - name: Display new instance info
+      debug:
+        msg: |
+          New Windows Instance Created:
+          - Instance ID: {{ new_instance.instances[0].instance_id }}
+          - Public IP: {{ new_instance.instances[0].public_ip_address }}
+          - State: {{ new_instance.instances[0].state.name }}
+
+          WinRM will be available after Windows boot completes (~5 min)
+
+    - name: Wait for WinRM to become available
+      wait_for:
+        host: "{{ new_instance.instances[0].public_ip_address }}"
+        port: 5985
+        delay: 120
+        timeout: 600
+      register: winrm_wait
+      ignore_errors: yes
+
+    - name: WinRM status
+      debug:
+        msg: "{{ 'WinRM is available!' if not winrm_wait.failed else 'WinRM not yet available - may need more time' }}"
+
+    - name: Display connection info
+      debug:
+        msg: |
+          ==========================================
+          Windows Instance Ready
+          ==========================================
+          Instance ID: {{ new_instance.instances[0].instance_id }}
+          Public IP: {{ new_instance.instances[0].public_ip_address }}
+          User: Administrator
+
+          Update AAP inventory with new IP!
+          ==========================================

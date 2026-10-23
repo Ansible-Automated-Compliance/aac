@@ -1,0 +1,82 @@
+---
+# Generate podman systemd units for all OPA containers and any HAProxy containers.
+# Uses _aac_opa_expanded (set in containers.yml) for the full replica list.
+# Uses _aac_opa_scaled (set in haproxy.yml) for HAProxy containers.
+# Skipped when aac_opa_generate_systemd is false.
+
+# ── OPA replica containers ────────────────────────────────────────────────────
+
+- name: Generate systemd unit files for OPA containers
+  command: "podman generate systemd --name {{ item.name }} --files --new"
+  args:
+    chdir: /tmp
+  loop: "{{ _aac_opa_expanded }}"
+  loop_control:
+    label: "{{ item.name }}"
+  delegate_to: "{{ aac_host }}"
+  changed_when: false
+
+- name: Install OPA systemd unit files
+  command: "mv /tmp/container-{{ item.name }}.service /etc/systemd/system/"
+  loop: "{{ _aac_opa_expanded }}"
+  loop_control:
+    label: "{{ item.name }}"
+  delegate_to: "{{ aac_host }}"
+  become: true
+  ignore_errors: true
+
+# ── HAProxy containers (scaled types only) ───────────────────────────────────
+
+- name: Generate systemd unit files for HAProxy containers
+  command: "podman generate systemd --name haproxy-{{ item.name }} --files --new"
+  args:
+    chdir: /tmp
+  loop: "{{ _aac_opa_scaled | default([]) }}"
+  loop_control:
+    label: "haproxy-{{ item.name }}"
+  delegate_to: "{{ aac_host }}"
+  changed_when: false
+  when: (_aac_opa_scaled | default([])) | length > 0
+
+- name: Install HAProxy systemd unit files
+  command: "mv /tmp/container-haproxy-{{ item.name }}.service /etc/systemd/system/"
+  loop: "{{ _aac_opa_scaled | default([]) }}"
+  loop_control:
+    label: "haproxy-{{ item.name }}"
+  delegate_to: "{{ aac_host }}"
+  become: true
+  ignore_errors: true
+  when: (_aac_opa_scaled | default([])) | length > 0
+
+# ── Reload and enable all units ──────────────────────────────────────────────
+
+- name: Reload systemd daemon
+  systemd:
+    daemon_reload: yes
+  delegate_to: "{{ aac_host }}"
+  become: true
+
+- name: Enable and start OPA container services
+  systemd:
+    name: "container-{{ item.name }}.service"
+    enabled: yes
+    state: started
+  loop: "{{ _aac_opa_expanded }}"
+  loop_control:
+    label: "{{ item.name }}"
+  delegate_to: "{{ aac_host }}"
+  become: true
+  ignore_errors: true
+
+- name: Enable and start HAProxy container services
+  systemd:
+    name: "container-haproxy-{{ item.name }}.service"
+    enabled: yes
+    state: started
+  loop: "{{ _aac_opa_scaled | default([]) }}"
+  loop_control:
+    label: "haproxy-{{ item.name }}"
+  delegate_to: "{{ aac_host }}"
+  become: true
+  ignore_errors: true
+  when: (_aac_opa_scaled | default([])) | length > 0

@@ -1,0 +1,132 @@
+---
+# sync_template_registry_to_opa.yml — publish the live template id→name map to OPA
+#
+# The MCP governance policy (ai_governance/mcp) approves a job launch when the
+# target template is registered under a name beginning "AAC". That lookup reads
+# data.aac.templates, which the individual seed playbooks each populate for
+# their own group — so on any controller where those seeders have not run, the
+# registry is empty and EVERY launch falls through to the default-deny.
+#
+# That is the state the reference controller was in: data.aac.templates == {}
+# with 196 live templates. This playbook syncs the whole controller in one pass,
+# independent of which seeders have run.
+#
+# Why name-based rather than the legacy ID allowlist: template IDs are
+# reassigned on every reinstall, so a hardcoded list silently goes stale — the
+# committed allowlist tops out around id 167 while the estate now runs to 215.
+# Names are stable.
+#
+# Run after any template create/delete, and after a controller rebuild.
+#
+#   AAP job template: "AAC - Sync Template Registry to OPA"
+#
+#   ansible-playbook ansible/playbooks/sync_template_registry_to_opa.yml \
+#     -e aap_url=https://<aap-gateway-route> \
+#     -e aap_username=admin -e aap_password=... \
+#     -e opa_compliance_url=http://<opa-compliance-route>
+
+- name: Sync template registry to OPA
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - ../vars/site_config.yml
+
+  vars:
+    aap_validate_certs: false
+    # Only names matching this prefix are eligible for auto-approval by the
+    # policy. Kept as a variable so the contract is visible here rather than
+    # only in Rego.
+    registry_name_prefix: "AAC"
+
+  tasks:
+
+    - name: Assert we have credentials
+      ansible.builtin.assert:
+        that:
+          - aap_url | default('') | length > 0
+          - (aap_password | default('', true) | length > 0) or (aap_token | default('', true) | length > 0)
+        fail_msg: >-
+          Need aap_url plus either aap_password or aap_token to read the
+          template list.
+
+    - name: Fetch job templates
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "{{ aap_url }}/api/controller/v2/job_templates/?page_size=400"
+        method: GET
+        user: "{{ aap_username | default('admin') }}"
+        password: "{{ aap_password | default(omit) }}"
+        force_basic_auth: true
+        validate_certs: "{{ aap_validate_certs }}"
+        return_content: true
+      register: jt_resp
+      no_log: true
+
+    - name: Fetch workflow job templates
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "{{ aap_url }}/api/controller/v2/workflow_job_templates/?page_size=400"
+        method: GET
+        user: "{{ aap_username | default('admin') }}"
+        password: "{{ aap_password | default(omit) }}"
+        force_basic_auth: true
+        validate_certs: "{{ aap_validate_certs }}"
+        return_content: true
+      register: wf_resp
+      no_log: true
+
+    - name: Build the id→name maps
+      ansible.builtin.set_fact:
+        _jt_map: "{{ dict(jt_resp.json.results | map(attribute='id') | map('string') | zip(jt_resp.json.results | map(attribute='name'))) }}"
+        _wf_map: "{{ dict(wf_resp.json.results | map(attribute='id') | map('string') | zip(wf_resp.json.results | map(attribute='name'))) }}"
+
+    - name: Publish job templates to OPA
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "{{ opa_compliance_url }}/v1/data/aac/templates/controller"
+        method: PUT
+        body_format: json
+        body: "{{ _jt_map }}"
+        status_code: [200, 204]
+
+    - name: Publish workflow templates to OPA
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "{{ opa_compliance_url }}/v1/data/aac/templates/workflows"
+        method: PUT
+        body_format: json
+        body: "{{ _wf_map }}"
+        status_code: [200, 204]
+
+    - name: Read the registry back (prove it landed — a PUT returning 204 is not proof)
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "{{ opa_compliance_url }}/v1/data/aac/templates"
+        method: GET
+        return_content: true
+      register: readback
+
+    - name: Count what is now auto-approvable
+      ansible.builtin.set_fact:
+        _all_names: "{{ (_jt_map.values() | list) + (_wf_map.values() | list) }}"
+
+    - name: Summary
+      ansible.builtin.debug:
+        msg:
+          - "Template registry synced to {{ opa_compliance_url }}"
+          - "  job templates      : {{ _jt_map | length }}"
+          - "  workflow templates : {{ _wf_map | length }}"
+          - "  auto-approvable ('{{ registry_name_prefix }}' prefix): {{ _all_names | select('match', '^' ~ registry_name_prefix) | list | length }}"
+          - "  NOT auto-approvable (will default-deny on launch): {{ _all_names | reject('match', '^' ~ registry_name_prefix) | list | length }}"
+          - "  readback keys      : {{ readback.json.result.keys() | list if readback.json.result is defined else 'EMPTY — sync did not land' }}"
+
+    - name: Fail if the registry did not actually land
+      ansible.builtin.assert:
+        that:
+          - readback.json.result is defined
+          - readback.json.result | length > 0
+        fail_msg: >-
+          OPA accepted the PUT but data.aac.templates reads back empty. The
+          governance policy would default-deny every launch.

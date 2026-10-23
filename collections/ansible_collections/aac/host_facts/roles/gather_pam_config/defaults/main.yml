@@ -1,0 +1,4 @@
+---
+# gather_pam_config has no tunables today; the file exists so the role
+# matches the shape of the other ten and stays extensible without a
+# structural change.

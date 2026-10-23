@@ -1,0 +1,200 @@
+---
+# Simple CIS Rocky Linux 8 Compliance Assessment using OPA
+# Collects facts and validates against CIS Rocky Linux 8 benchmark
+
+- name: CIS Rocky Linux 8 Compliance Assessment
+  hosts: all
+  gather_facts: yes
+  become: yes
+
+  vars:
+    opa_server_url: "{{ opa_security_url }}"
+    policy_package: "cis_rocky_linux_8"
+    report_dir: "{{ playbook_dir }}/../../reports"
+    timestamp: "{{ ansible_date_time.iso8601_basic_short }}"
+
+  tasks:
+    - name: Ensure report directory exists
+      file:
+        path: "{{ report_dir }}"
+        state: directory
+        mode: '0755'
+      delegate_to: localhost
+      become: false  # delegated to the controller/EE: no sudo there
+      run_once: true
+
+    - name: Collect comprehensive system facts
+      setup:
+        gather_subset:
+          - all
+          - hardware
+          - network
+          - virtual
+
+    - name: Verify Rocky Linux 8
+      assert:
+        that:
+          - ansible_distribution == "Rocky" or ansible_distribution == "CentOS" or ansible_distribution == "OracleLinux"
+          - ansible_distribution_major_version == "8"
+        fail_msg: "This playbook is for Rocky Linux 8 systems only. Detected: {{ ansible_distribution }} {{ ansible_distribution_version }}"
+        success_msg: "Confirmed Rocky Linux 8 system: {{ ansible_distribution }} {{ ansible_distribution_version }}"
+
+    - name: Gather partition mount information
+      command: findmnt -J
+      register: findmnt_output
+      changed_when: false
+      failed_when: false
+
+    - name: Parse mount information
+      set_fact:
+        parsed_mounts: "{{ findmnt_output.stdout | from_json }}"
+      when: findmnt_output.rc == 0
+
+    - name: Gather modprobe configuration for disabled filesystems
+      shell: |
+        result="{"
+        for fs in cramfs squashfs udf; do
+          disabled="false"
+          if grep -q "install $fs /bin/true" /etc/modprobe.d/* 2>/dev/null; then
+            disabled="true"
+          fi
+          if [ "$result" != "{" ]; then
+            result="$result,"
+          fi
+          result="$result\"$fs\":$disabled"
+        done
+        result="$result}"
+        echo "$result"
+      register: filesystem_modules
+      changed_when: false
+      failed_when: false
+
+    - name: Check SELinux status
+      command: sestatus
+      register: selinux_status
+      changed_when: false
+      failed_when: false
+
+    - name: Check firewalld status
+      command: firewall-cmd --state
+      register: firewalld_status
+      changed_when: false
+      failed_when: false
+
+    - name: Gather SSH configuration
+      slurp:
+        src: /etc/ssh/sshd_config
+      register: sshd_config_content
+      failed_when: false
+
+    - name: Gather auditd configuration
+      slurp:
+        src: /etc/audit/auditd.conf
+      register: auditd_config_content
+      failed_when: false
+
+    - name: Build OPA input payload
+      set_fact:
+        opa_input:
+          ansible_facts:
+            ansible_hostname: "{{ ansible_hostname }}"
+            ansible_distribution: "{{ ansible_distribution }}"
+            ansible_distribution_version: "{{ ansible_distribution_version }}"
+            ansible_distribution_major_version: "{{ ansible_distribution_major_version }}"
+            ansible_os_family: "{{ ansible_os_family }}"
+            ansible_kernel: "{{ ansible_kernel }}"
+            ansible_architecture: "{{ ansible_architecture }}"
+            ansible_processor_cores: "{{ ansible_processor_cores }}"
+            ansible_memtotal_mb: "{{ ansible_memtotal_mb }}"
+            ansible_mounts: "{{ ansible_mounts }}"
+            ansible_interfaces: "{{ ansible_interfaces }}"
+            ansible_default_ipv4: "{{ ansible_default_ipv4 | default({}) }}"
+            ansible_selinux: "{{ ansible_selinux | default({}) }}"
+            ansible_service_mgr: "{{ ansible_service_mgr }}"
+          mounts: "{{ ansible_mounts }}"
+          disabled_filesystem_modules: "{{ filesystem_modules.stdout | from_json if filesystem_modules.rc == 0 else {} }}"
+          selinux_status: "{{ selinux_status.stdout_lines if selinux_status.rc == 0 else [] }}"
+          firewalld_status: "{{ firewalld_status.stdout if firewalld_status.rc == 0 else 'unknown' }}"
+
+    - name: Save facts to local file
+      copy:
+        content: "{{ opa_input | to_nice_json }}"
+        dest: "{{ report_dir }}/{{ inventory_hostname }}_rocky_linux_8_facts_{{ timestamp }}.json"
+      delegate_to: localhost
+      become: false  # delegated to the controller/EE: no sudo there
+
+    - name: Query OPA for compliance assessment
+      uri:
+        use_proxy: false
+        url: "{{ opa_server_url }}/v1/data/cis_rocky_linux_8/compliance_assessment"
+        method: POST
+        body_format: json
+        body:
+          input: "{{ opa_input }}"
+        return_content: yes
+        status_code: 200
+      register: opa_response
+      delegate_to: localhost
+      become: false  # delegated to the controller/EE: no sudo there
+      failed_when: false
+
+    - name: Refuse to fabricate a result when OPA did not answer
+      ansible.builtin.assert:
+        that:
+          - (opa_response.status | default(-1)) == 200
+          - opa_response.json.result is defined
+        fail_msg: >-
+          OPA did not return an evaluation (status
+          {{ opa_response.status | default('no connection') }} from
+          {{ opa_server_url }}). Refusing to continue: the previous behaviour
+          treated this as an empty result, which zero violations turned into a
+          perfect compliance_results row -- a 100% score fabricated from a
+          connection failure, stored as evidence and signed. No answer from the
+          policy engine means NO ASSESSMENT, never a clean one.
+
+    - name: Parse OPA response
+      set_fact:
+        compliance_result: "{{ opa_response.json.result }}"
+
+    - name: Generate compliance report
+      set_fact:
+        compliance_report:
+          assessment_metadata:
+            hostname: "{{ inventory_hostname }}"
+            ip_address: "{{ ansible_default_ipv4.address | default('N/A') }}"
+            assessment_time: "{{ ansible_date_time.iso8601 }}"
+            benchmark: "CIS Rocky Linux 8 Benchmark v2.0.0"
+            policy_package: "{{ policy_package }}"
+            opa_server: "{{ opa_server_url }}"
+          system_info:
+            distribution: "{{ ansible_distribution }}"
+            distribution_version: "{{ ansible_distribution_version }}"
+            kernel: "{{ ansible_kernel }}"
+            architecture: "{{ ansible_architecture }}"
+          compliance_summary: "{{ compliance_result.summary | default({}) }}"
+          section_compliance: "{{ compliance_result.section_compliance | default({}) }}"
+          violations: "{{ compliance_result.violations | default([]) }}"
+
+    - name: Save compliance report
+      copy:
+        content: "{{ compliance_report | to_nice_json }}"
+        dest: "{{ report_dir }}/{{ inventory_hostname }}_rocky_linux_8_compliance_report_{{ timestamp }}.json"
+      delegate_to: localhost
+      become: false  # delegated to the controller/EE: no sudo there
+
+    - name: Display compliance summary
+      debug:
+        msg:
+          - "========================================="
+          - "CIS Rocky Linux 8 Compliance Assessment Summary"
+          - "========================================="
+          - "Hostname: {{ inventory_hostname }}"
+          - "OS Version: {{ ansible_distribution }} {{ ansible_distribution_version }}"
+          - "Overall Status: {{ compliance_result.summary.overall_compliance | default('Unknown') }}"
+          - "Compliance: {{ compliance_result.summary.compliance_percentage | default(0) }}%"
+          - "Total Violations: {{ compliance_result.summary.total_violations | default(0) }}"
+          - "Risk Level: {{ compliance_result.summary.risk_level | default('Unknown') }}"
+          - "Critical Issues: {{ compliance_result.summary.critical_issues | default(0) }}"
+          - "High Issues: {{ compliance_result.summary.high_issues | default(0) }}"
+          - "Report saved to: {{ report_dir }}/{{ inventory_hostname }}_rocky_linux_8_compliance_report_{{ timestamp }}.json"
+          - "========================================="

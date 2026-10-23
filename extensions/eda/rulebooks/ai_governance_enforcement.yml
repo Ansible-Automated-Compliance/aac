@@ -1,0 +1,217 @@
+---
+# EDA Rulebook: AI Governance Enforcement
+#
+# Receives AI governance events from Claude Code, AI agents, and other
+# AI systems and triggers OPA-based governance decisions via AAP.
+#
+# Listens on port 5002 (port 5000 = compliance webhooks, 5001 = AMI events).
+#
+# Payload schema (all events):
+#   event_type        - one of the types below
+#   ai_system_id      - identifier of the AI system making the request
+#   trace_id          - unique request trace ID for audit
+#   risk_level        - low | medium | high | critical
+#   action            - the action being requested or taken
+#
+# AAP Job Template: "AAC_Sentinel_AIControls"
+#   Runs demos/comply/playbooks/aac_comply_ai_controls_demo.yml against the
+#   ai_governance policies. Those live on opa-ot, NOT opa-compliance
+#   (verified 2026-08-21) — the :8182 note below was wrong.
+#
+#   NOTE: this template has ask_variables_on_launch=false and the demo
+#   playbook runs a fixed set of scenarios, so the extra_vars below are
+#   INERT — the controller ignores them. They are kept so the payload
+#   contract stays visible for when a payload-driven template exists.
+#
+# FUTURE: Dedicated job templates for notification and escalation workflows
+#   will replace the catch-all Template 36 for non-action-request events.
+
+- name: AI Governance Enforcement
+  hosts: localhost
+  sources:
+    - name: ai_governance_webhook
+      ansible.eda.webhook:
+        host: 0.0.0.0
+        port: 5002
+
+  rules:
+
+    # ── AI action request — evaluate against OPA governance policy ─────────
+    # The primary enforcement rule. Any AI system requesting to take an action
+    # POSTs here; AAP evaluates it against the ai_governance Rego policy and
+    # returns ALLOW / DENY / PENDING_APPROVAL.
+    - name: Evaluate AI Action Request
+      condition: event.payload.event_type == "ai_action_request"
+      throttle:
+        once_within: 1 minutes
+        group_by_attributes:
+          - event.payload.ai_system_id
+          - event.payload.action
+      action:
+        run_job_template:
+          name: "AAC_Sentinel_AIControls"
+          organization: Default
+          job_args:
+            extra_vars:
+              ai_action: "{{ event.payload.action }}"
+              ai_system_id: "{{ event.payload.ai_system_id }}"
+              ai_system_role: "{{ event.payload.ai_system_role | default('ai_reader') }}"
+              target_environment: "{{ event.payload.environment | default('development') }}"
+              justification: "{{ event.payload.justification | default('') }}"
+              trace_id: "{{ event.payload.trace_id | default('unknown') }}"
+
+    # ── Critical AI governance decision — log and alert ───────────────────
+    # When OPA returns a critical-risk decision (DENY or PENDING_APPROVAL on
+    # a critical action), trigger Template 36 in audit mode to record the
+    # decision and notify the security team via AAP notification channels.
+    - name: Critical AI Governance Decision
+      condition: >
+        event.payload.event_type == "ai_governance_decision" and
+        event.payload.risk_level == "critical"
+      throttle:
+        once_within: 5 minutes
+        group_by_attributes:
+          - event.payload.ai_system_id
+          - event.payload.trace_id
+      action:
+        run_job_template:
+          name: "AAC_Sentinel_AIControls"
+          organization: Default
+          job_args:
+            extra_vars:
+              ai_action: "{{ event.payload.action }}"
+              ai_system_id: "{{ event.payload.ai_system_id }}"
+              governance_decision: "{{ event.payload.decision }}"
+              risk_level: "{{ event.payload.risk_level }}"
+              trace_id: "{{ event.payload.trace_id | default('unknown') }}"
+              audit_mode: true
+              priority: critical
+
+    # ── Approval timeout — escalate pending high/critical decisions ────────
+    # If a PENDING_APPROVAL request times out without a human decision,
+    # escalate via Template 36 which can be configured to notify approvers.
+    - name: Approval Timeout Escalation
+      condition: >
+        event.payload.event_type == "approval_timeout" and
+        event.payload.risk_level in ["high", "critical"]
+      throttle:
+        once_within: 10 minutes
+        group_by_attributes:
+          - event.payload.approval_request_id
+      action:
+        run_job_template:
+          name: "AAC_Sentinel_AIControls"
+          organization: Default
+          job_args:
+            extra_vars:
+              ai_action: "{{ event.payload.action }}"
+              ai_system_id: "{{ event.payload.ai_system_id }}"
+              approval_request_id: "{{ event.payload.approval_request_id | default('unknown') }}"
+              trace_id: "{{ event.payload.trace_id | default('unknown') }}"
+              risk_level: "{{ event.payload.risk_level }}"
+              hours_pending: "{{ event.payload.hours_pending | default(0) }}"
+              audit_mode: true
+              priority: high
+
+    # ── Denied action audit ────────────────────────────────────────────────
+    # Every OPA DENY decision is an audit event. Log all denied actions
+    # for compliance evidence (AI governance audit trail).
+    - name: Log Denied AI Action
+      condition: >
+        event.payload.event_type == "ai_governance_decision" and
+        event.payload.decision == "deny"
+      throttle:
+        once_within: 2 minutes
+        group_by_attributes:
+          - event.payload.trace_id
+      action:
+        run_job_template:
+          name: "AAC_Sentinel_AIControls"
+          organization: Default
+          job_args:
+            extra_vars:
+              ai_action: "{{ event.payload.action }}"
+              ai_system_id: "{{ event.payload.ai_system_id }}"
+              governance_decision: deny
+              deny_reasons: "{{ event.payload.deny_reasons | default([]) }}"
+              trace_id: "{{ event.payload.trace_id | default('unknown') }}"
+              audit_mode: true
+              priority: medium
+
+    # ── High-risk approval granted ─────────────────────────────────────────
+    # When a human approves a high/critical AI action, record the approval
+    # decision with the approver identity for the audit trail.
+    - name: High Risk Approval Granted
+      condition: >
+        event.payload.event_type == "approval_granted" and
+        event.payload.risk_level in ["high", "critical"]
+      throttle:
+        once_within: 2 minutes
+        group_by_attributes:
+          - event.payload.approval_request_id
+      action:
+        run_job_template:
+          name: "AAC_Sentinel_AIControls"
+          organization: Default
+          job_args:
+            extra_vars:
+              ai_action: "{{ event.payload.action }}"
+              ai_system_id: "{{ event.payload.ai_system_id }}"
+              governance_decision: approved
+              approval_request_id: "{{ event.payload.approval_request_id | default('unknown') }}"
+              approved_by: "{{ event.payload.approvers | default('unknown') }}"
+              trace_id: "{{ event.payload.trace_id | default('unknown') }}"
+              risk_level: "{{ event.payload.risk_level }}"
+              audit_mode: true
+              priority: medium
+
+    # ── Emergency access granted ───────────────────────────────────────────
+    # Emergency access bypasses normal approval flows. Every emergency grant
+    # is a critical audit event regardless of risk level.
+    - name: Emergency Access Alert
+      condition: event.payload.event_type == "emergency_access_granted"
+      throttle:
+        once_within: 5 minutes
+        group_by_attributes:
+          - event.payload.ai_system_id
+      action:
+        run_job_template:
+          name: "AAC_Sentinel_AIControls"
+          organization: Default
+          job_args:
+            extra_vars:
+              ai_action: emergency_access
+              ai_system_id: "{{ event.payload.ai_system_id }}"
+              governance_decision: emergency_granted
+              granted_by: "{{ event.payload.granted_by | default('unknown') }}"
+              reason: "{{ event.payload.reason | default('not provided') }}"
+              expires_at: "{{ event.payload.expires_at | default('unknown') }}"
+              trace_id: "{{ event.payload.trace_id | default('unknown') }}"
+              audit_mode: true
+              priority: critical
+
+    # ── Rate limit exceeded ────────────────────────────────────────────────
+    # An AI system exceeding its configured request rate may indicate
+    # runaway automation or abuse. Log via Template 36 audit mode.
+    - name: AI System Rate Limit Exceeded
+      condition: >
+        event.payload.event_type == "rate_limit_exceeded" and
+        event.payload.ai_system_id is defined and
+        event.payload.ai_system_id != ""
+      throttle:
+        once_within: 15 minutes
+        group_by_attributes:
+          - event.payload.ai_system_id
+      action:
+        run_job_template:
+          name: "AAC_Sentinel_AIControls"
+          organization: Default
+          job_args:
+            extra_vars:
+              ai_action: rate_limit_violation
+              ai_system_id: "{{ event.payload.ai_system_id }}"
+              current_rate: "{{ event.payload.current_rate | default(0) }}"
+              rate_limit: "{{ event.payload.rate_limit | default(0) }}"
+              window_minutes: "{{ event.payload.window_minutes | default(60) }}"
+              audit_mode: true
+              priority: high

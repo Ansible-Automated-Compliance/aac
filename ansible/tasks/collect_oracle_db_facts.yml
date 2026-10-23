@@ -1,0 +1,142 @@
+---
+# collect_oracle_db_facts.yml — DISA STIG Oracle Database 19c fact collection.
+#
+# Runs on the database host as the Oracle software owner (become_user
+# oracle_os_user). Two sources:
+#   1. SQL — ../playbooks/files/oracle_stig_collect.sql through `sqlplus / as
+#      sysdba` (OS authentication; no database password is handled here).
+#      Prints one `@@fact@@<json>` line per fact.
+#   2. OS — the files and permissions the STIG checks outside the database:
+#      listener.ora, sqlnet.ora, cman.ora, fips.ora, extproc.ora, lsnrctl
+#      status, ORACLE_HOME / diag / data / archive directory modes, the password
+#      file mode, the dba group in /etc/group.
+#
+# Requires: oracle_home, oracle_sid (or ORACLE_HOME/ORACLE_SID in the oracle
+#           user's environment via oracle_env_file), oracle_os_user (default
+#           oracle), become: yes in the calling play.
+# Sets:     oracle_raw  ({sql_raw, listener_ora, sqlnet_ora, cman_ora, fips_ora,
+#                         extproc_ora, lsnrctl_status, perms_raw, os_raw})
+#
+# Every task is read-only (changed_when: false) and never fails the play: a
+# missing file or a failing query leaves its raw value empty, the mapper derives
+# nothing from it, and the policy reports the control Open — never a pass.
+# PRIVACY: nothing here prints a password or a wallet. sqlnet.ora and
+# listener.ora are read whole (they hold no secrets by design); the password
+# file is stat'ed, never read.
+
+- name: Oracle — resolve ORACLE_HOME / ORACLE_SID
+  set_fact:
+    _ora_home: "{{ oracle_home | default(lookup('env', 'ORACLE_HOME'), true) }}"
+    _ora_sid: "{{ oracle_sid | default(lookup('env', 'ORACLE_SID'), true) }}"
+    _ora_user: "{{ oracle_os_user | default('oracle', true) }}"
+    _ora_env_file: "{{ oracle_env_file | default('', true) }}"
+
+# These values arrive from a survey or extra_vars and are interpolated into shell
+# commands below: refuse anything that is not a plain path / identifier / account
+# name, and quote every use. The diagnostic directory comes back from the
+# database (a DBA-settable parameter) and is quoted as well.
+- name: Oracle — refuse unsafe ORACLE_HOME / ORACLE_SID / owner / env file values
+  ansible.builtin.assert:
+    that:
+      - _ora_home is match('^/[A-Za-z0-9._/-]+$')
+      - _ora_sid is match('^[A-Za-z0-9_$#]{1,30}$')
+      - _ora_user is match('^[a-z_][a-z0-9_-]{0,31}$')
+      - _ora_env_file == '' or _ora_env_file is match('^/[A-Za-z0-9._/-]+$')
+    fail_msg: >-
+      oracle_home, oracle_sid, oracle_os_user and oracle_env_file must be plain
+      paths / identifiers (got home='{{ _ora_home }}', sid='{{ _ora_sid }}',
+      user='{{ _ora_user }}', env_file='{{ _ora_env_file }}').
+
+- name: Oracle — allocate a private temporary file for the script (concurrent runs never share one)
+  ansible.builtin.tempfile:
+    state: file
+    prefix: "aac_oracle_stig_"
+    suffix: ".sql"
+  register: _ora_tmp
+  changed_when: false
+
+- name: Oracle — stage the STIG collection script
+  copy:
+    src: "{{ playbook_dir }}/files/oracle_stig_collect.sql"
+    dest: "{{ _ora_tmp.path }}"
+    mode: "0644"
+  changed_when: false
+
+- name: Oracle — run the STIG queries as SYSDBA (OS authentication)
+  shell: |
+    export ORACLE_HOME={{ _ora_home | quote }} ORACLE_SID={{ _ora_sid | quote }} PATH={{ (_ora_home ~ '/bin') | quote }}:"$PATH" NLS_LANG=AMERICAN_AMERICA.AL32UTF8
+    {% if _ora_env_file %}. {{ _ora_env_file | quote }};{% endif %}
+    sqlplus -S -L / as sysdba @{{ _ora_tmp.path | quote }} 2>&1
+  become: yes
+  become_user: "{{ _ora_user }}"
+  register: ora_sql_raw
+  changed_when: false
+  failed_when: false
+  timeout: 300
+
+- name: Oracle — network configuration files and listener security
+  shell: |
+    export ORACLE_HOME={{ _ora_home | quote }} ORACLE_SID={{ _ora_sid | quote }} PATH={{ (_ora_home ~ '/bin') | quote }}:"$PATH"
+    TNS="${TNS_ADMIN:-$ORACLE_HOME/network/admin}"
+    echo "=== listener.ora ==="; cat "$TNS/listener.ora" 2>/dev/null || true
+    echo "=== sqlnet.ora ==="; cat "$TNS/sqlnet.ora" 2>/dev/null || true
+    echo "=== tnsnames.ora ==="; cat "$TNS/tnsnames.ora" 2>/dev/null || true
+    echo "=== cman.ora ==="; if [ -f "$TNS/cman.ora" ]; then echo "present:yes"; cat "$TNS/cman.ora"; else echo "present:no"; fi
+    echo "=== fips.ora ==="; cat "${FIPS_HOME:-$ORACLE_HOME/ldap/admin}/fips.ora" 2>/dev/null || echo "absent"
+    echo "=== extproc.ora ==="; cat "$ORACLE_HOME/hs/admin/extproc.ora" 2>/dev/null | grep -vE '^\s*#' || echo "absent"
+    echo "=== externaljob.ora ==="; grep -hE '^\s*(run_user|run_group)\s*=' "$ORACLE_HOME/rdbms/admin/externaljob.ora" 2>/dev/null || true
+    echo "=== lsnrctl ==="; for l in $(ps -eo args 2>/dev/null | awk '/[t]nslsnr/ {print $2}' | sort -u); do echo "listener:$l"; lsnrctl status "$l" 2>/dev/null | grep -iE '^\s*Security' || true; done
+    echo "=== extproc_binary ==="; ls -l "$ORACLE_HOME/bin/extproc" 2>/dev/null || echo "absent"
+  become: yes
+  become_user: "{{ _ora_user }}"
+  register: ora_net_raw
+  changed_when: false
+  failed_when: false
+
+- name: Oracle — directories named by the database (from the SQL output)
+  set_fact:
+    _ora_params_line: "{{ (ora_sql_raw.stdout | default('')) | regex_findall('(?m)^@@parameters@@(\\{.*\\})\\s*$') | first | default('{}') }}"
+    _ora_dir_lines: "{{ (ora_sql_raw.stdout | default('')) | regex_findall('(?m)^@@(?:datafile_dirs|archive_dests)@@(\\[.*\\])\\s*$') }}"
+
+- name: Oracle — resolve the diagnostic and data directories
+  set_fact:
+    _ora_diag_dir: "{{ ((_ora_params_line | from_json).diagnostic_dest | default('')) if _ora_params_line is match('^\\{') else '' }}"
+    _ora_dirs: "{{ _ora_dir_lines | map('from_json') | flatten | select | unique | list }}"
+
+- name: Oracle — directory and file modes the STIG checks
+  shell: |
+    echo "=== oracle_home ==="; OH={{ _ora_home | quote }}; SID={{ _ora_sid | quote }}; DIAG={{ _ora_diag_dir | quote }}; stat -c '%04a|%U|%G|%n' "$OH" 2>/dev/null || true
+    echo "=== password_file ==="; stat -c '%04a|%U|%G|%n' "$OH/dbs/orapw$SID" 2>/dev/null || echo "absent"
+    echo "=== diag ==="; [ -n "$DIAG" ] && stat -c '%04a|%U|%G|%n' "$DIAG/diag" 2>/dev/null || true
+    echo "=== dba_group ==="; grep -E '^dba:' /etc/group 2>/dev/null || true
+    echo "=== root_groups ==="; id -Gn root 2>/dev/null || true
+  become: yes
+  register: ora_perms_raw
+  changed_when: false
+  failed_when: false
+
+- name: Oracle — modes of the data, redo, control and archive directories named by the database
+  shell: |
+    for d in {{ _ora_dirs | map('quote') | join(' ') }}; do
+      stat -c '%04a|%U|%G|%n' "$d" 2>/dev/null || true
+    done
+  become: yes
+  register: ora_dirs_raw
+  changed_when: false
+  failed_when: false
+
+- name: Oracle — assemble raw facts
+  set_fact:
+    oracle_raw:
+      sql_raw: "{{ ora_sql_raw.stdout | default('') }}"
+      net_raw: "{{ ora_net_raw.stdout | default('') }}"
+      perms_raw: "{{ ora_perms_raw.stdout | default('') }}"
+      dirs_raw: "{{ ora_dirs_raw.stdout | default('') }}"
+      oracle_home: "{{ _ora_home }}"
+      oracle_sid: "{{ _ora_sid }}"
+
+- name: Oracle — remove the staged script
+  file:
+    path: "{{ _ora_tmp.path }}"
+    state: absent
+  changed_when: false

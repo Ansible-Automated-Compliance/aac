@@ -1,0 +1,225 @@
+---
+# EDA Rulebook: Webhook-Based Compliance Triggers
+#
+# Receives webhook events from external systems (CI/CD pipelines, SIEM,
+# vulnerability scanners, GitHub) and triggers the appropriate AAP job.
+#
+# Webhook sender must POST JSON to http://<eda-host>:5000 with at minimum:
+#   { "event_type": "<type>", ... }
+#
+# Framework Support: CIS RHEL 9, FISMA, NERC-CIP, SOC 2, PCI-DSS, NCSC CAF
+#
+# NOTE: GitHub → Sentinel enforcement is handled by sentinel_github_webhook.yml.
+#       This rulebook handles compliance-specific webhook events only.
+#
+# AAP Job Templates used:
+#   - "CIS RHEL 9 Assessment"              (ID 10)
+#   - "AAC - NERC CIP Compliance Report"   (ID 26)
+#   - "AAC - Load OPA Policies"            (ID 27)
+#   - "AAC - CAF Assessment and Store"     (ID 167)
+#
+# NOTE: group_by_attributes is not supported in ansible-rulebook 1.2.2.
+#       Throttle uses once_within only.
+
+- name: Webhook-Based Compliance Triggers
+  hosts: localhost
+  sources:
+    - name: webhook_listener
+      ansible.eda.webhook:
+        host: 0.0.0.0
+        port: 5000
+
+  rules:
+
+    # ── OPA policy repo updated ───────────────────────────────────────────
+    # A push to the compliance/policy GitHub repo means new or changed Rego
+    # policies. Reload all three OPA containers immediately so the next
+    # assessment uses the latest policies.
+    - name: Policy Repository Updated — Reload OPA
+      condition: >
+        event.payload.event_type == "policy_repo_push" and
+        event.payload.branch == "main"
+      throttle:
+        once_within: 2 minutes
+        group_by_attributes: []
+      action:
+        run_job_template:
+          name: "AAC - Load OPA Policies"
+          organization: Default
+          job_args:
+            extra_vars:
+              compliance_trigger: policy_repo_push
+              commit_sha: "{{ event.payload.commit_sha | default('unknown') }}"
+              pushed_by: "{{ event.payload.pusher | default('unknown') }}"
+
+    # ── Compliance drift (generic) ────────────────────────────────────────
+    # Fired by the CAF demo script and any external tool signalling drift.
+    # Routes to CAF assessment when framework=ncsc_caf, otherwise CIS RHEL 9.
+    - name: Compliance Drift — CAF Reassessment
+      condition: >
+        event.payload.event_type == "compliance_drift" and
+        event.payload.framework == "ncsc_caf"
+      throttle:
+        once_within: 2 minutes
+        group_by_attributes: []
+      action:
+        run_job_template:
+          name: "AAC - CAF Assessment and Store"
+          organization: Default
+          job_args:
+            extra_vars:
+              compliance_trigger: compliance_drift
+              reason: "{{ event.payload.reason | default('webhook triggered') }}"
+              triggered_by: "{{ event.payload.triggered_by | default('unknown') }}"
+
+    - name: Compliance Drift — CIS Reassessment
+      condition: >
+        event.payload.event_type == "compliance_drift" and
+        event.payload.framework != "ncsc_caf"
+      throttle:
+        once_within: 2 minutes
+        group_by_attributes: []
+      action:
+        run_job_template:
+          name: "CIS RHEL 9 Assessment"
+          organization: Default
+          job_args:
+            limit: "{{ event.payload.host | default('all') }}"
+            extra_vars:
+              compliance_trigger: compliance_drift
+              reason: "{{ event.payload.reason | default('webhook triggered') }}"
+
+    # ── IaC / Ansible deployment completed ───────────────────────────────
+    # After a CI/CD pipeline deploys infrastructure or configuration changes,
+    # run CIS RHEL 9 Assessment against the affected hosts to confirm the
+    # deployment didn't introduce compliance drift.
+    - name: Infrastructure Deployment Completed
+      condition: event.payload.event_type == "deployment"
+      throttle:
+        once_within: 15 minutes
+        group_by_attributes: []
+      action:
+        run_job_template:
+          name: "CIS RHEL 9 Assessment"
+          organization: Default
+          job_args:
+            limit: "{{ event.payload.hosts | default('all') }}"
+            extra_vars:
+              compliance_trigger: iac_deployment
+              deployment_id: "{{ event.payload.deployment_id | default('unknown') }}"
+              priority: high
+
+    # ── Critical vulnerability detected ──────────────────────────────────
+    # When a vulnerability scanner reports a critical or high CVE, immediately
+    # re-assess the affected hosts to capture current compliance state.
+    - name: Critical Vulnerability Detected
+      condition: >
+        event.payload.event_type == "vulnerability_detected" and
+        event.payload.severity in ["critical", "high"]
+      throttle:
+        once_within: 10 minutes
+        group_by_attributes: []
+      action:
+        run_job_template:
+          name: "CIS RHEL 9 Assessment"
+          organization: Default
+          job_args:
+            limit: "{{ event.payload.hosts | default('all') }}"
+            extra_vars:
+              compliance_trigger: vulnerability_detected
+              cve_id: "{{ event.payload.cve_id | default('unknown') }}"
+              severity: "{{ event.payload.severity }}"
+              priority: critical
+
+    # ── Security scan completed ───────────────────────────────────────────
+    - name: Security Scan Completed with Findings
+      condition: >
+        event.payload.event_type == "security_scan_complete" and
+        event.payload.severity in ["critical", "high"]
+      throttle:
+        once_within: 15 minutes
+        group_by_attributes: []
+      action:
+        run_job_template:
+          name: "CIS RHEL 9 Assessment"
+          organization: Default
+          job_args:
+            limit: "{{ event.payload.hosts | default('all') }}"
+            extra_vars:
+              compliance_trigger: security_scan_findings
+              scan_id: "{{ event.payload.scan_id | default('unknown') }}"
+              severity: "{{ event.payload.severity }}"
+              priority: high
+
+    # ── Config drift reported by external SIEM ────────────────────────────
+    - name: External Config Drift Reported
+      condition: event.payload.event_type == "config_drift"
+      throttle:
+        once_within: 10 minutes
+        group_by_attributes: []
+      action:
+        run_job_template:
+          name: "CIS RHEL 9 Assessment"
+          organization: Default
+          job_args:
+            limit: "{{ event.payload.hosts | default('all') }}"
+            extra_vars:
+              compliance_trigger: external_config_drift
+              drift_type: "{{ event.payload.drift_type | default('unknown') }}"
+              priority: high
+
+    # ── Incident response triggered ───────────────────────────────────────
+    - name: Incident Response — CIS Assessment
+      condition: >
+        event.payload.event_type == "incident" and
+        event.payload.severity in ["critical", "high"]
+      throttle:
+        once_within: 10 minutes
+        group_by_attributes: []
+      action:
+        run_job_template:
+          name: "CIS RHEL 9 Assessment"
+          organization: Default
+          job_args:
+            limit: "{{ event.payload.systems | default('all') }}"
+            extra_vars:
+              compliance_trigger: incident_response
+              incident_id: "{{ event.payload.incident_id | default('unknown') }}"
+              incident_type: "{{ event.payload.type | default('unknown') }}"
+              priority: critical
+
+    - name: Incident Response — NERC-CIP Report (Critical Infrastructure)
+      condition: >
+        event.payload.event_type == "incident" and
+        event.payload.severity == "critical" and
+        event.payload.critical_infrastructure == true
+      throttle:
+        once_within: 10 minutes
+        group_by_attributes: []
+      action:
+        run_job_template:
+          name: "AAC - NERC CIP Compliance Report"
+          organization: Default
+          job_args:
+            extra_vars:
+              compliance_trigger: incident_response_cip
+              incident_id: "{{ event.payload.incident_id | default('unknown') }}"
+              priority: critical
+
+    # ── Manual compliance check requested ────────────────────────────────
+    - name: Manual Compliance Check Requested
+      condition: event.payload.event_type == "manual_check"
+      throttle:
+        once_within: 5 minutes
+        group_by_attributes: []
+      action:
+        run_job_template:
+          name: "CIS RHEL 9 Assessment"
+          organization: Default
+          job_args:
+            limit: "{{ event.payload.hosts | default('all') }}"
+            extra_vars:
+              compliance_trigger: manual_request
+              requested_by: "{{ event.payload.requested_by | default('unknown') }}"
+              reason: "{{ event.payload.reason | default('not provided') }}"
+              priority: medium

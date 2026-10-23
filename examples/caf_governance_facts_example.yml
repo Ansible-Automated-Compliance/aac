@@ -1,0 +1,80 @@
+---
+# NCSC CAF 4.0 — Phase 2 Governance Facts
+#
+# Deploy to: /etc/aac/caf_governance_facts.yml on each assessed host
+# Maintained by: Security Team
+# Review frequency: At least annually (more often after significant changes)
+#
+# This file declares the organisation's security posture for the
+# partially-automatable CAF Contributing Outcomes. It serves as:
+#   - Machine-readable input to OPA policy evaluation
+#   - Audit evidence (version-controlled with signed commits)
+#   - Living record reviewed and attested by the CISO / security lead
+#
+# Each field maps directly to an OPA policy check. Dates should be kept
+# current — stale values will cause COs to regress to "not_achieved".
+
+# ---------------------------------------------------------------------------
+# A3.a — Asset Management
+# ---------------------------------------------------------------------------
+asset_management:
+  cmdb_exists: true                    # Formal CMDB / asset register is in place
+  coverage_pct: 97                     # % of NIS-scope assets in the register
+  last_audit_days: 14                  # Days since last reconciliation of register vs estate
+  automated_discovery: true            # Automated network discovery runs regularly
+  critical_assets_classified: true     # Essential-function assets labelled in CMDB
+
+# ---------------------------------------------------------------------------
+# B5.a — Resilience Preparation (BC/DR Plans)
+# ---------------------------------------------------------------------------
+resilience:
+  bc_dr_plan:
+    exists: true                       # Documented BC/DR plan exists
+    last_review_days: 90               # Days since last plan review
+    covers_essential_functions: true   # Plan explicitly covers all essential functions
+    tested_days: 180                   # Days since last BC/DR test or exercise
+    rto_rpo_defined: true              # RTO and RPO objectives are documented
+
+# ---------------------------------------------------------------------------
+# C1.d — Triage of Alerts
+# C1.f — Threat Intelligence
+# ---------------------------------------------------------------------------
+security_monitoring:
+  alert_triage:
+    process_documented: true           # Triage SOP is written and accessible to analysts
+    mean_triage_hours: 2               # Mean time from alert to initial triage (hours)
+    ticketing_integrated: true         # Alerts flow automatically into ticketing system
+    triage_sla_defined: true           # Response time SLAs are defined by severity
+
+  threat_intel:
+    feeds_configured: true             # Threat intelligence feeds are active
+    feed_count: 3                      # Number of distinct TI feeds (NCSC, ISAC, commercial)
+    last_update_hours: 6               # Hours since most recent TI feed update
+    analyst_reviewed: true             # An analyst reviews new intelligence regularly
+    integrated_with_siem: true         # TI IoCs are pushed to SIEM for automated detection
+
+# ---------------------------------------------------------------------------
+# D1.a — Response Planning
+# D1.b — Response Capability
+# D1.c — Testing and Exercising
+# ---------------------------------------------------------------------------
+incident_response:
+  plan:
+    exists: true                       # Documented IR plan exists
+    last_review_days: 45               # Days since last IR plan review
+    covers_nis_incidents: true         # Plan explicitly covers NIS-qualifying incidents
+    communications_documented: true    # Comms / stakeholder notification paths documented
+    roles_defined: true                # Roles and responsibilities clearly defined
+
+  capability:
+    soc_available: true                # SOC or equivalent capability exists
+    soc_hours: "24x7"                  # SOC coverage: "24x7" | "business_hours" | "on_call"
+    ir_retainer_exists: true           # Active IR retainer with a qualified 3rd party
+    response_time_sla_hours: 4         # Contractual/internal SLA for initial response
+    escalation_paths_defined: true     # Escalation paths to leadership and NCSC documented
+
+  exercises:
+    last_exercise_days: 120            # Days since most recent IR exercise (any type)
+    tabletop_conducted: true           # A tabletop exercise has been run in the past year
+    functional_exercise_days: 200      # Days since last functional (live-play) exercise
+    post_exercise_actions_tracked: true  # Lessons learned and actions tracked to closure

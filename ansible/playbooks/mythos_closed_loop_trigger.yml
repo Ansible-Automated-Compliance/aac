@@ -1,0 +1,208 @@
+---
+# AAC - Mythos Closed-Loop Trigger
+#
+# The self-trigger that closes the Mythos patch loop: refresh the portal's
+# per-tenant CVE detection (catalog built from the customer's own estate,
+# matched against the feeds), and when there is something to fix, LAUNCH the
+# governed Automation Orchestrator workflow — which then reasons, lets the
+# policy engine decide, and pauses for human approval.
+#
+# Designed to run on an AAP Schedule so detection -> governed remediation
+# happens with no customer action. The governed workflow still stops at the
+# approval gate; this only removes the manual "launch" step.
+#
+# Secrets arrive as extra_vars from a custom AAP credential
+# ("AAC - Mythos Closed-Loop Secrets"):
+#   portal_admin_token, portal_tenant_token_id, portal_tenant_token,
+#   ao_username, ao_password
+#
+# Reachability note: when the portal and the AAP execution environment run in
+# different clusters, address the portal by its resolvable service address with
+# a Host header (edge routes route on Host). Every environment-specific value
+# below is a REQUIRED variable with no default — supply them from the job
+# template's extra_vars / survey / inventory so nothing environment-specific is
+# committed to the repo (portal_addr, portal_host, ao_url, tenant_id,
+# mythos_workflow_id, target_host).
+- name: AAC - Mythos Closed-Loop Trigger
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    # Behavioural defaults only — everything site-specific is supplied at launch.
+    dry_run: "yes"
+    # TLS verification defaults CLOSED (true). These calls carry bearer
+    # credentials; a forged endpoint must not be able to harvest them. A lab
+    # with self-signed CRC edge certs overrides these to false explicitly in the
+    # job template's extra_vars — a documented, per-environment exception, never
+    # the shipped default.
+    validate_portal_certs: true
+    validate_ao_certs: true
+    # The synchronous re-match (?wait=true) blocks for the whole run. A
+    # production-sized catalog can exceed ansible.builtin.uri's 30s default and
+    # fail the trigger even though the portal completes — set a generous,
+    # env-tunable ceiling aligned with the portal's synchronous SLA.
+    match_wait_timeout: 600
+  tasks:
+    - name: Assert required configuration and secrets are supplied
+      ansible.builtin.assert:
+        that:
+          - portal_addr | default('') | length > 0
+          - portal_host | default('') | length > 0
+          - ao_url | default('') | length > 0
+          - tenant_id | default('') | length > 0
+          - mythos_workflow_id | default('') | length > 0
+          - target_host | default('') | length > 0
+          - portal_admin_token | default('') | length > 0
+          - portal_tenant_token | default('') | length > 0
+          - portal_tenant_token_id | default('') | length > 0
+          - ao_username | default('') | length > 0
+          - ao_password | default('') | length > 0
+        fail_msg: >-
+          Missing configuration or secrets. Supply the environment values
+          (portal_addr, portal_host, ao_url, tenant_id, mythos_workflow_id,
+          target_host) as job-template extra_vars, and attach the
+          "AAC - Mythos Closed-Loop Secrets" credential (injects
+          portal_admin_token, portal_tenant_token[_id], ao_username, ao_password).
+
+    # Refresh the portal's detection SYNCHRONOUSLY and get a definitive
+    # completion marker. `?wait=true` runs the re-match inline and returns its
+    # summary {status, candidates_seen, rows_added}; the manifest read that
+    # follows is therefore guaranteed fresh. This replaces the old
+    # async(202) + matched_at watermark-poll heuristic entirely — no clock or
+    # tenant-match-state assumptions, and a genuine ZERO-match run is confirmed
+    # (status=success, rows=0) rather than guessed. Portable to any environment.
+    - name: Refresh portal detection and confirm completion (synchronous)
+      ansible.builtin.uri:
+        url: "https://{{ portal_addr }}/api/admin/v1/tenants/{{ tenant_id }}/matches/run?wait=true"
+        method: POST
+        headers:
+          Host: "{{ portal_host }}"
+          Authorization: "Bearer {{ portal_admin_token }}"
+        validate_certs: "{{ validate_portal_certs }}"
+        # This call blocks for the full re-match; override uri's 30s default so a
+        # large production catalog does not fail the trigger mid-run.
+        timeout: "{{ match_wait_timeout | int }}"
+        status_code: 200
+      register: _rematch
+      no_log: true
+
+    # Fail closed unless the portal explicitly reported the re-match succeeded.
+    # A 'failed'/unknown status means the manifest that follows could be stale —
+    # do not act on it.
+    - name: Fail closed if the re-match did not complete successfully
+      ansible.builtin.fail:
+        msg: >-
+          The portal re-match did not report success
+          (status={{ _rematch.json.status | default('unknown') }}). Refusing to
+          act on a possibly stale manifest. Check the portal feed runner / matcher.
+      when: (_rematch.json.status | default('')) != 'success'
+
+    - name: Read the tenant patch manifest
+      ansible.builtin.uri:
+        url: "https://{{ portal_addr }}/api/portal/v1/tenants/{{ tenant_id }}/patches"
+        method: GET
+        headers:
+          Host: "{{ portal_host }}"
+          Authorization: "Bearer {{ portal_tenant_token }}"
+          X-Token-Id: "{{ portal_tenant_token_id }}"
+        validate_certs: "{{ validate_portal_certs }}"
+        return_content: true
+      register: _manifest
+      no_log: true
+
+    # Fail closed on a malformed manifest instead of treating a missing/changed
+    # shape as "nothing to remediate" (same posture as pull_patch_worklist.yml).
+    - name: Verify the response parsed as the expected manifest
+      ansible.builtin.assert:
+        that:
+          - _manifest.json is defined
+          - _manifest.json['items'] is defined
+          # A real JSON array: iterable, but NOT a string and NOT a mapping —
+          # so {"items": {}} or {"items": "x"} fails closed rather than passing
+          # as an empty/odd shape that would look like "nothing to remediate".
+          - _manifest.json['items'] is iterable
+          - _manifest.json['items'] is not string
+          - _manifest.json['items'] is not mapping
+        fail_msg: >-
+          The portal returned HTTP 200 but the body was not a patch manifest
+          (expected JSON with an 'items' array). Not treating this as a clean
+          run — check that portal_addr/portal_host reach the API (not a proxy or
+          login page) and that the token carries the 'remediation' scope.
+
+    - name: Establish how many fixable exposures the portal found
+      ansible.builtin.set_fact:
+        # Count the array we actually received, not the server's `count` field.
+        patch_count: "{{ _manifest.json['items'] | length }}"
+        # Keep ONLY entries that are a single, well-formed CVE token. A blank,
+        # missing, non-string, or MULTI-VALUE id (e.g. "CVE-a,CVE-b") is dropped
+        # here — the workflow splits cve_ids on commas, so a delimiter-bearing
+        # item would silently widen the launch beyond that manifest entry. The
+        # equality guard below then fails closed on any dropped/malformed id.
+        patch_cves: "{{ _manifest.json['items'] | map(attribute='cve_id', default='') | select('string') | map('trim') | select('match', '^CVE-[0-9]{4}-[0-9]+$') | list }}"
+
+    - name: Report detection
+      ansible.builtin.debug:
+        msg: >-
+          Portal detection for tenant {{ tenant_id }}:
+          {{ patch_count }} fixable exposure(s){{ ' — ' ~ (patch_cves | join(', ')) if patch_count | int > 0 else '' }}.
+
+    # The synchronous re-match already confirmed completion, so a zero-count
+    # manifest is definitively a clean estate — end cleanly.
+    - name: Nothing to remediate — end cleanly
+      ansible.builtin.meta: end_play
+      when: patch_count | int == 0
+
+    # Every exposure must contribute exactly one valid CVE token. If the counts
+    # disagree, the manifest carried blank/missing/malformed/multi-value ids and
+    # the scope would be empty or partial — either remediates beyond the gate.
+    - name: Refuse to launch with an empty or partial CVE scope
+      ansible.builtin.fail:
+        msg: >-
+          Extracted {{ patch_cves | length }} valid CVE id(s) but the portal
+          reported {{ patch_count }} exposure(s). A blank, missing, or malformed
+          id would send an empty or partial scope — and an empty scope is read
+          as "all known CVEs". Refusing to launch.
+      when: patch_cves | length != patch_count | int
+
+    - name: Authenticate to Automation Orchestrator
+      ansible.builtin.uri:
+        url: "{{ ao_url }}/api/v1/auth/login"
+        method: POST
+        body_format: json
+        body:
+          username: "{{ ao_username }}"
+          password: "{{ ao_password }}"
+        validate_certs: "{{ validate_ao_certs }}"
+        status_code: 200
+      register: _ao_login
+      no_log: true
+
+    - name: Launch the governed patch workflow
+      ansible.builtin.uri:
+        url: "{{ ao_url }}/api/v1/executions"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ _ao_login.json.access_token }}"
+        body_format: json
+        body:
+          workflow_id: "{{ mythos_workflow_id }}"
+          trigger_node_id: "trigger_patch"
+          use_published: true
+          input_data:
+            target_hostname: "{{ target_host }}"
+            # Scope the run to exactly the CVEs the portal gate found — never ""
+            # (which the workflow expands to all known CVEs).
+            cve_ids: "{{ patch_cves | join(',') }}"
+            dry_run: "{{ dry_run }}"
+        validate_certs: "{{ validate_ao_certs }}"
+        status_code: [200, 201]
+      register: _ao_exec
+      no_log: true
+
+    - name: Report the governed launch
+      ansible.builtin.debug:
+        msg: >-
+          Governed remediation LAUNCHED (portal-detected, no customer action):
+          execution {{ _ao_exec.json.id | default('?') }} targeting {{ target_host }}
+          for {{ patch_count }} exposure(s). It will reason, let the policy engine
+          decide the route, and PAUSE at the human approval gate per policy.

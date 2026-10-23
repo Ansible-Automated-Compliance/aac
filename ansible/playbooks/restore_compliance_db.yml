@@ -1,0 +1,94 @@
+---
+# restore_compliance_db.yml
+#
+# Restores the AAC compliance PostgreSQL database from a pg_dump backup file.
+#
+# ⚠️  This DROPS and recreates the compliance database. All current data
+#     will be replaced with the contents of the backup. Run with care.
+#
+# Survey variables (required):
+#   backup_file   — full path to the .sql or .sql.gz dump file on the controller host
+#                   e.g. ~/aac-backups/2026-04-22_020000/compliance_db.sql.gz
+#
+# Survey variables (optional):
+#   pg_db         — database name (default: compliance)
+#   pg_user       — PostgreSQL superuser (default: postgres)
+#
+# AAP Job Template: AAC_Infra_RestoreDatabase
+
+- name: Restore AAC compliance database from backup
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - [ "../vars/vault_secrets.yml", "../vars/empty_fallback.yml" ]
+    - ../vars/site_config.yml
+
+  vars:
+    pg_db:    "compliance"
+    pg_user:  "postgres"
+    aap_user: "{{ aap_ssh_user }}"
+
+  pre_tasks:
+
+    - name: Verify backup_file variable is set
+      assert:
+        that:
+          - backup_file is defined
+          - backup_file | length > 0
+        fail_msg: "backup_file survey variable is required (full path to .sql or .sql.gz)"
+
+    - name: Verify backup file exists on controller host
+      stat:
+        path: "{{ backup_file }}"
+      delegate_to: "{{ aac_ssh_delegate }}"
+      register: backup_stat
+
+    - name: Assert backup file is present
+      assert:
+        that: backup_stat.stat.exists
+        fail_msg: "Backup file not found: {{ backup_file }}"
+
+  tasks:
+
+    - name: Drop and recreate compliance database
+      community.postgresql.postgresql_db:
+        name:  "{{ pg_db }}"
+        state: absent
+        login_user: "{{ pg_user }}"
+        login_password: "{{ compliance_db_password }}"
+        login_host: "127.0.0.1"
+      delegate_to: "{{ aac_ssh_delegate }}"
+
+    - name: Create fresh compliance database
+      community.postgresql.postgresql_db:
+        name:  "{{ pg_db }}"
+        state: present
+        login_user: "{{ pg_user }}"
+        login_password: "{{ compliance_db_password }}"
+        login_host: "127.0.0.1"
+      delegate_to: "{{ aac_ssh_delegate }}"
+
+    - name: Restore from compressed backup (gz)
+      shell: >
+        gunzip -c {{ backup_file }} |
+        PGPASSWORD="{{ compliance_db_password }}"
+        psql -U {{ pg_user }} -h 127.0.0.1 {{ pg_db }}
+      delegate_to: "{{ aac_ssh_delegate }}"
+      when: backup_file | regex_search('\.gz$')
+      no_log: true
+      register: restore_gz
+
+    - name: Restore from plain SQL backup
+      shell: >
+        PGPASSWORD="{{ compliance_db_password }}"
+        psql -U {{ pg_user }} -h 127.0.0.1 {{ pg_db }} < {{ backup_file }}
+      delegate_to: "{{ aac_ssh_delegate }}"
+      when: not (backup_file | regex_search('\.gz$'))
+      no_log: true
+      register: restore_sql
+
+    - name: Confirm restore succeeded
+      debug:
+        msg: "Database {{ pg_db }} restored from {{ backup_file }}"

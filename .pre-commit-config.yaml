@@ -1,0 +1,16 @@
+# Pre-commit secret scanning — the free "push protection" equivalent for private
+# repos (which need paid GitHub Advanced Security for native push protection).
+#
+# One-time setup per clone:
+#   pip install pre-commit        # or: brew install pre-commit
+#   pre-commit install
+#
+# Then every `git commit` is scanned by gitleaks and blocked if a secret is found.
+repos:
+  - repo: https://github.com/gitleaks/gitleaks
+    # Pinned to the v8.30.1 release COMMIT (not the mutable tag) so a retag can't
+    # change code executed in every developer clone.
+    rev: 83d9cd684c87d95d656c1458ef04895a7f1cbd8e # v8.30.1
+    hooks:
+      - id: gitleaks
+        args: ["--config", ".gitleaks.toml"]

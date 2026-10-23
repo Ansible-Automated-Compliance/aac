@@ -1,0 +1,22 @@
+# aac-m365-ee bindep — system packages for THIS EE only.
+#
+# History: this file originally carried python3-devel/postgresql entries
+# copy-pasted from the compliance EE (their comments referenced
+# push_db_backup / seed_rhpds, which never run in this EE). bindep was
+# also inert until dependencies.system was declared (v1.0.1), so the
+# VERIFIED v1.0.0 image provably built and passed its gates without any
+# of them — and psycopg2-binary is a prebuilt wheel needing no postgres
+# headers. Removed rather than genericized: don't install what the image
+# demonstrably doesn't need.
+
+gcc [compile]
+
+# Native-build deps for python packages that link against libsystemd
+# (systemd-python and friends need the headers plus pkg-config at pip
+# install time). System packages, so they live here, not requirements.txt.
+# Both platform spellings: platform:rpm covers the Fedora-based creator-ee
+# base (and any EL rebuild); dpkg names cover Debian/Ubuntu-based builds.
+systemd-devel [platform:rpm]
+pkgconf-pkg-config [platform:rpm]
+libsystemd-dev [platform:dpkg]
+pkg-config [platform:dpkg]

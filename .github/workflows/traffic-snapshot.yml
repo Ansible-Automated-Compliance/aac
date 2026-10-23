@@ -1,0 +1,56 @@
+name: GitHub traffic snapshot
+
+# GitHub's traffic API retains only 14 days, and the blog cadence is
+# weekly (Fridays) — so this captures a daily snapshot for the three AAC
+# repos and accumulates permanent history on the `traffic-data` branch
+# (unprotected; main's protection rules don't apply there).
+#
+# Requires the TRAFFIC_PAT repository secret: a token with push access
+# to rego_policy_libraries, compliance, and AAC_Customer_Portal (the
+# traffic API requires push access even for read).
+
+on:
+  schedule:
+    - cron: "17 6 * * *"   # daily 06:17 UTC — after GitHub's day rollover
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  snapshot:
+    # DELIBERATELY GitHub-hosted: this job injects TRAFFIC_PAT (push
+    # access to several repos). Secret-bearing scheduled jobs must not
+    # share a persistent runner pool with PR-executed code — a planted
+    # same-uid process could read a later job's environment. Runs
+    # 1×/day; the hosted-minutes cost is negligible.
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out main (script)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          path: repo
+
+      - name: Check out traffic-data (history)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: traffic-data
+          path: data
+
+      - name: Snapshot traffic
+        env:
+          TRAFFIC_PAT: ${{ secrets.TRAFFIC_PAT }}
+        run: python3 repo/scripts/snapshot_github_traffic.py --data-dir data
+
+      - name: Commit and push history
+        run: |
+          cd data
+          git config user.name "aac-traffic-bot"
+          git config user.email "actions@github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "no changes"
+          else
+            git commit -m "traffic snapshot $(date -u +%F)"
+            git push origin traffic-data
+          fi

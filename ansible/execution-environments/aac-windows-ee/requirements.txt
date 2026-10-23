@@ -1,0 +1,9 @@
+psycopg2-binary>=2.9.13
+jmespath>=1.1.0
+# WinRM transport — EEs are Linux containers; Windows targets are reached
+# over WinRM, so these are required even though no Windows base image is used.
+pywinrm>=0.5.0
+requests-credssp>=2.0.0
+# amazon.aws runtime dependency (aws_recreate_windows.yml)
+boto3>=1.43.114
+botocore>=1.43.114

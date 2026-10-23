@@ -1,0 +1,129 @@
+---
+# remediate_ocp_nerc_cip.yml — CIP-010 R3 drift remediation for OpenShift (GATED)
+#
+# Mirrors the Golden-Image enforcement pattern (Check -> Remediate -> Notify) for
+# the OpenShift Compliance Operator ocp4-nerc-cip findings. Node 2 of the
+# "AAC - NERC-CIP Drift Enforcement" workflow (after the drift check).
+#
+# ── SAFETY GATE ───────────────────────────────────────────────────────────────
+# `apply_remediations` defaults to FALSE. With the gate CLOSED this is a DRY-RUN:
+# it enumerates the pending ComplianceRemediations, stores a remediation PLAN to
+# compliance_results (system-of-record), and changes NOTHING on the cluster.
+#
+# Only `apply_remediations=true` patches each ComplianceRemediation to `apply:true`,
+# which the Compliance Operator renders as a MachineConfig. On a single-node CRC
+# that REBOOTS the whole cluster — so keep the gate closed for scheduled runs and
+# open it only for a deliberate, supervised remediation window.
+#
+# AAP Job Template: "AAC - Remediate OCP NERC-CIP Drift (gated)"
+# Credentials: OpenShift In-Cluster (aac-demo-runner), Ansible Vault
+# EE: AAC Compliance EE — REQUIRES kubernetes.core, declared in the EE build
+#     inputs (ansible/execution-environments/aac-compliance-ee/requirements.yml).
+#     The OpenShift
+#     objects here are read and written with kubernetes.core.k8s / k8s_info.
+#     redhat.openshift is NOT required and must not be reintroduced as a
+#     project-sync requirement: see collections/README.md.
+
+- name: Remediate OpenShift ocp4-nerc-cip drift (gated by apply_remediations)
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - [ "../vars/vault_secrets.yml", "../vars/empty_fallback.yml" ]
+    - ../vars/site_config.yml   # provides pg_host (and opa_*_url) for this environment
+
+  vars:
+    ocp_scan_name: "ocp4-nerc-cip"
+    ocp_compliance_ns: "openshift-compliance"
+    cluster_name: "{{ ocp_cluster_name | default('crc') }}"
+    change_ticket: "{{ remediation_change_ticket | default('') }}"
+    # ── SAFETY GATE — default CLOSED (dry-run) ──
+    apply_remediations: false
+
+  tasks:
+    - name: Read ComplianceRemediations for the scan
+      kubernetes.core.k8s_info:
+        api_version: compliance.openshift.io/v1alpha1
+        kind: ComplianceRemediation
+        namespace: "{{ ocp_compliance_ns }}"
+        label_selectors:
+          - "compliance.openshift.io/scan-name={{ ocp_scan_name }}"
+      register: rem_raw
+
+    - name: Build remediation plan (pending vs already-applied)
+      ansible.builtin.set_fact:
+        pending: >-
+          {{ rem_raw.resources
+             | rejectattr('status.applicationState', 'equalto', 'Applied')
+             | map(attribute='metadata.name') | list }}
+        applied_already: >-
+          {{ rem_raw.resources
+             | selectattr('status.applicationState', 'equalto', 'Applied')
+             | map(attribute='metadata.name') | list }}
+
+    - name: Report the remediation plan / action
+      ansible.builtin.debug:
+        msg:
+          - "OpenShift NERC-CIP remediation (ocp4-nerc-cip) — apply_remediations={{ apply_remediations | bool }}"
+          - "Pending remediations ({{ pending | length }}): {{ pending }}"
+          - "Already applied ({{ applied_already | length }}): {{ applied_already }}"
+          - "Change ticket: {{ change_ticket if change_ticket else '(none — CIP-010 R1.2 authorization required before apply)' }}"
+          - >-
+            {{
+              'DRY-RUN — gate CLOSED, nothing changed. Set apply_remediations=true (with a change ticket) to apply. WARNING: applying writes MachineConfig and REBOOTS the single-node CRC cluster.'
+              if not (apply_remediations | bool)
+              else 'APPLYING — patching ' ~ (pending | length) ~ ' remediation(s) to apply:true. MachineConfig render will REBOOT the node.'
+            }}
+
+    - name: Refuse to apply without a change ticket (CIP-010 R1.2 authorization)
+      ansible.builtin.assert:
+        that: change_ticket | length > 0
+        fail_msg: >-
+          apply_remediations=true requires remediation_change_ticket
+          (CIP-010 R1.2 change authorization). Aborting apply.
+      when: apply_remediations | bool
+
+    # ── GATED APPLY — only runs when the gate is explicitly opened ──
+    - name: Apply pending remediations (patch ComplianceRemediation apply=true)
+      kubernetes.core.k8s:
+        state: patched
+        api_version: compliance.openshift.io/v1alpha1
+        kind: ComplianceRemediation
+        namespace: "{{ ocp_compliance_ns }}"
+        name: "{{ item }}"
+        definition:
+          spec:
+            apply: true
+      loop: "{{ pending }}"
+      loop_control:
+        label: "{{ item }}"
+      when: apply_remediations | bool
+
+    - name: Store remediation plan/action to AAC PostgreSQL (system-of-record)
+      ansible.builtin.include_role:
+        name: aac_store_results
+      vars:
+        aac_result_policy_name: "OpenShift CIP-010 Remediation — ocp4-nerc-cip"
+        aac_result_framework: "nerc_cip_ocp"
+        aac_result_policy_version: "{{ ocp_scan_name }}"
+        aac_result_hostname: "{{ cluster_name }}"
+        aac_result_pg_host: "{{ pg_host }}"
+        aac_result_pg_password: "{{ compliance_db_password }}"
+        aac_result_total_controls: "{{ (pending | length) + (applied_already | length) }}"
+        aac_result_failed_controls: "{{ pending | length }}"
+        aac_result_passed_controls: "{{ applied_already | length }}"
+        aac_result_compliance_pct: >-
+          {{ ((applied_already | length)
+              / ([ (pending | length) + (applied_already | length), 1 ] | max) * 100) | round(2) }}
+        aac_result_compliant: "{{ (pending | length) == 0 }}"
+        aac_result_violations: >-
+          {{ pending | map('regex_replace', '^(.*)$', 'PENDING remediation: \1') | list }}
+        aac_result_metadata:
+          source: "openshift-compliance-operator"
+          integration: "ACS->AAC (CO ocp4-nerc-cip remediation)"
+          action: "{{ 'applied' if (apply_remediations | bool) else 'dry-run (gate closed)' }}"
+          apply_remediations: "{{ apply_remediations | bool }}"
+          change_ticket: "{{ change_ticket }}"
+          pending: "{{ pending }}"
+          applied_already: "{{ applied_already }}"

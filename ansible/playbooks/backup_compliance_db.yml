@@ -1,0 +1,64 @@
+---
+# backup_compliance_db.yml
+#
+# Backs up the AAC compliance PostgreSQL database and Ansible Vault secrets
+# to ~/aac-backups on the AAP controller host.
+#
+# Run BEFORE any schema migration, credential rotation, or major change.
+# OPA policies do not need backup — git is their source of truth.
+#
+# What is backed up:
+#   - PostgreSQL compliance DB (pg_dump → compressed SQL)
+#   - ansible/vars/vault_secrets.yml (encrypted copy)
+#
+# Backup destination: ~/aac-backups/<YYYY-MM-DD_HHMMSS>/
+#
+# Survey variables (all optional):
+#   backup_dest   — override backup dir (default: ~/aac-backups)
+#   skip_postgres — set to true to skip DB dump (default: false)
+#   skip_vault    — set to true to skip vault backup (default: false)
+#
+# AAP Job Template: AAC_Infra_BackupDatabase
+
+- name: Backup AAC compliance database and vault
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - [ "../vars/vault_secrets.yml", "../vars/empty_fallback.yml" ]
+    - ../vars/site_config.yml
+
+  vars:
+    backup_dest:    "~/aac-backups"
+    skip_postgres:  false
+    skip_vault:     false
+    aap_user:       "{{ aap_ssh_user }}"
+    project_dir:    "/home/{{ aap_user }}/aap/controller/data/projects/_11__compliance_automation"
+
+  tasks:
+
+    - name: Build backup.sh arguments
+      set_fact:
+        backup_args: >-
+          --dest {{ backup_dest }}
+          {{ '--skip-postgres' if skip_postgres | bool else '' }}
+          {{ '--skip-vault'    if skip_vault    | bool else '' }}
+
+    - name: Run backup.sh on controller host
+      shell: "bash {{ project_dir }}/scripts/backup.sh {{ backup_args }}"
+      delegate_to: "{{ aac_ssh_delegate }}"
+      become: true
+      become_user: "{{ aap_user }}"
+      register: backup_result
+      changed_when: false
+
+    - name: Backup output
+      debug:
+        msg: "{{ backup_result.stdout_lines }}"
+
+    - name: Confirm backup succeeded
+      assert:
+        that: backup_result.rc == 0
+        fail_msg: "Backup failed — check output above"
+        success_msg: "Backup complete → {{ backup_dest }}"

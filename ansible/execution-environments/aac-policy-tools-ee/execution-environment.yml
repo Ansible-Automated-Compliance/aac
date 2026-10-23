@@ -1,0 +1,76 @@
+---
+# AAC Policy-Tools Execution Environment
+#
+# Dedicated EE for external CLI-driven state-assessment integrations:
+#   - trivy     (Apache-2.0)  K8s/Dockerfile/IaC/cloud misconfig
+#   - kubescape (Apache-2.0)  NSA-CISA K8s Hardening, MITRE ATT&CK
+#
+# Used by:
+#   ansible/playbooks/trivy_assess_artifact.yml
+#   ansible/playbooks/kubescape_assess.yml
+#   aac-demos repo: demos/external_policy_libraries/run_demo.yml
+#
+# NOT used by:
+#   AAC's core demos (CIS, NERC-CIP, AMI, DS, Sentinel, Tech Debt,
+#   Golden Image, etc.) — those run on aac-compliance-ee.
+#
+# Why a separate EE? AAC measures STATE in several different domains
+# (host config, K8s, AI governance, smart-meter, IaC, …). Each domain
+# pulls in its own set of CLI tools. Bundling all of them into one
+# EE bloats the image and ties update cadence together. Splitting by
+# domain keeps each EE small + independently versioned.
+#
+# ── Multi-arch ────────────────────────────────────────────────────────
+# This Containerfile builds CORRECTLY on either linux/amd64 or
+# linux/arm64. The RUN step below detects $(uname -m) and selects the
+# matching trivy + kubescape upstream release asset.
+#
+# Build & publish:
+#   1. Build on an amd64 host → push tag :vX.Y.Z-amd64
+#      (use ansible/playbooks/build_policy_tools_ee.yml — auto-detects)
+#   2. Build on an arm64 host → push tag :vX.Y.Z-arm64
+#   3. Combine into a multi-arch manifest at :vX.Y.Z + :latest
+#      (use ansible/playbooks/build_policy_tools_ee_manifest.yml)
+#
+# Image: quay.io/rh-ee-tcoulter/aac-policy-tools-ee:vX.Y.Z (multi-arch)
+
+version: 3
+
+images:
+  base_image:
+    name: quay.io/ansible/creator-ee:v24.2.0
+
+dependencies:
+  galaxy: requirements.yml
+  python: requirements.txt
+  ansible_core:
+    package_pip: ansible-core>=2.15.0
+  ansible_runner:
+    package_pip: ansible-runner>=2.3.0
+
+options:
+  package_manager_path: /usr/bin/microdnf
+
+additional_build_steps:
+  append_final:
+    # Trivy CLI (Apache-2.0)  + Kubescape CLI (Apache-2.0)
+    # Single RUN: detects host arch via uname -m and selects the matching
+    # upstream release asset. Pinned to specific versions; bump via PR.
+    - |
+      RUN ARCH=$(uname -m); \
+          case "$ARCH" in \
+            x86_64)  TRIVY_PKG="64bit";  KUBESCAPE_BIN="kubescape-ubuntu-latest" ;; \
+            aarch64) TRIVY_PKG="ARM64";  KUBESCAPE_BIN="kubescape-arm64-ubuntu-latest" ;; \
+            *) echo "Unsupported arch: $ARCH"; exit 1 ;; \
+          esac && \
+          curl -fsSLo /tmp/trivy.tar.gz \
+            "https://github.com/aquasecurity/trivy/releases/download/v0.69.3/trivy_0.69.3_Linux-${TRIVY_PKG}.tar.gz" && \
+          cd /tmp && tar -xzf trivy.tar.gz trivy && \
+          mv trivy /usr/local/bin/trivy && \
+          chmod +x /usr/local/bin/trivy && \
+          rm /tmp/trivy.tar.gz && \
+          curl -fsSLo /usr/local/bin/kubescape \
+            "https://github.com/kubescape/kubescape/releases/download/v3.0.40/${KUBESCAPE_BIN}" && \
+          chmod +x /usr/local/bin/kubescape && \
+          trivy --version && \
+          kubescape version 2>&1 | head -3 || true

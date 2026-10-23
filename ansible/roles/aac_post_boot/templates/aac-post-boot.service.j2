@@ -1,0 +1,21 @@
+[Unit]
+Description=AAC post-boot recovery (podman cleanup, CRC start, dashboard refresh)
+Documentation=file://{{ aac_post_boot_bin }}
+# Not Before=aap-mcp.service: the script restarts aap-mcp itself, early, so MCP
+# recovers in seconds rather than waiting on the multi-minute crc start.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart={{ aac_post_boot_bin }}
+# crc start alone can take 5+ minutes; the AAP wait is bounded inside the script.
+TimeoutStartSec={{ aac_post_boot_timeout_sec }}
+# A failed recovery must not mask the next boot's attempt.
+Restart=no
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

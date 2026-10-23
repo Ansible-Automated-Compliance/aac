@@ -1,0 +1,59 @@
+---
+# AAC EDA Rulebook Activations — RHPDS Configuration
+#
+# Three activations covering the demo scenarios:
+#
+#   golden_image_enforcement  — webhook on :5004; triggers AAC_GoldenImage_Enforcement workflow
+#   sentinel_github_webhook   — webhook on :5003; triggers Sentinel Comply templates
+#   compliance_webhook_events — webhook on :5000; triggers CIS/NERC/CAF assessments
+#
+# All activations use the AAC Compliance EE and run in always-on mode.
+# Port map mirrors the EDA webhook port map documented in CLAUDE.md.
+
+eda_rulebook_activations:
+
+  # ── Golden Image Enforcement ────────────────────────────────────────────────
+  # Triggered by demo_introduce_drift.yml POST after modifying config files.
+  # Fires AAC_GoldenImage_Enforcement workflow: check → rollback → helpdesk.
+
+  - name: Golden Image Enforcement
+    description: "Drift webhook :5004 → AAC_GoldenImage_Enforcement workflow"
+    organization: "{{ aac_organization }}"
+    project: Compliance Automation EDA
+    rulebook: extensions/eda/rulebooks/golden_image_enforcement.yml
+    decision_environment: "{{ aac_decision_environment | default('Default Decision Environment') }}"
+    credentials:
+      - AAC Controller Credential
+    enabled: true
+    restart_policy: always
+
+  # ── Sentinel / Comply GitHub Webhook ───────────────────────────────────────
+  # Listens for GitHub push events (real or simulated by demo script).
+  # Routes to AAC_Comply_AnsibleDeny or AAC_Comply_TerraformDeny.
+
+  - name: Sentinel GitHub Webhook
+    description: "GitHub push webhook :5003 → Sentinel Ansible/Terraform validation"
+    organization: "{{ aac_organization }}"
+    project: Compliance Automation EDA
+    rulebook: extensions/eda/rulebooks/sentinel_github_webhook.yml
+    decision_environment: "{{ aac_decision_environment | default('Default Decision Environment') }}"
+    credentials:
+      - AAC Controller Credential
+    enabled: true
+    restart_policy: always
+
+  # ── Compliance Webhook Events ───────────────────────────────────────────────
+  # Receives compliance events from external systems (CI/CD, SIEM, scanners).
+  # Routes: policy_repo_push → LoadOPAPolicies, ncsc_caf drift → CAF assessment,
+  #         incident critical_infrastructure → NERC-CIP report, etc.
+
+  - name: Compliance Webhook Events
+    description: "Compliance event webhook :5000 → CIS / NERC-CIP / CAF templates"
+    organization: "{{ aac_organization }}"
+    project: Compliance Automation EDA
+    rulebook: extensions/eda/rulebooks/compliance_webhook_events.yml
+    decision_environment: "{{ aac_decision_environment | default('Default Decision Environment') }}"
+    credentials:
+      - AAC Controller Credential
+    enabled: true
+    restart_policy: always

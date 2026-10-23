@@ -1,0 +1,349 @@
+name: Ansible Validation
+
+# Why this exists
+# ---------------
+# Until 2026-08-28 nothing in CI looked at a playbook. The policy library had
+# 492 tests and three workflows; the 221 playbooks a customer actually installs
+# and runs had none.
+#
+# The cost was not theoretical. `enhanced_cis_fact_collection.yml` — named in
+# CLAUDE.md as the fact-collection entry point — sat in main unable to parse.
+# `ansible-playbook --syntax-check` exited 4 on it. Two `shell:` values whose
+# awk programs contain ': ' were read by YAML as mappings. It was found by hand
+# while cleaning up something else, not by a gate.
+#
+# Three checks, cheapest first. Each one has already caught a real defect in
+# this repository.
+#
+# Always-run, self-skipping design (2026-09-29)
+# ---------------------------------------------
+# "Validate Ansible content" is a REQUIRED status check on main. A required
+# check that is path-filtered never reports on a PR that doesn't touch those
+# paths, and GitHub classic protection treats a required check that never
+# reports as permanently unsatisfied — so every non-ansible PR (dependabot
+# bumps, docs, .github changes) became unmergeable the moment enforce_admins
+# was turned on. To keep the gate real AND unblock unrelated PRs, the job now
+# runs on EVERY pull request, detects whether ansible-relevant paths actually
+# changed, and:
+#   • changed  → runs the full validation below (the real gate, unchanged);
+#   • unchanged → passes immediately (nothing to validate).
+# The check therefore always reports, stays enforced for ansible changes, and
+# never blocks a PR that has no ansible content to validate. Runs on a
+# GitHub-hosted runner so availability never gates merges — every step is
+# static analysis (YAML/syntax/jinja/hygiene via a downloaded OPA binary) and
+# needs no lab access.
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'ansible/**'
+      - 'extensions/**'
+      - 'collections/**'
+      - '.github/workflows/ansible-validation.yml'
+  # No paths filter on pull_request: the job must report on every PR so the
+  # required check is always satisfiable. Relevance is decided at runtime by
+  # the "Detect ansible-relevant changes" step below.
+  pull_request:
+    branches: [ main ]
+
+env:
+  PYTHON_VERSION: '3.11'
+
+jobs:
+  validate:
+    name: Validate Ansible content
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          submodules: recursive   # the hygiene policy lives in policies/
+          fetch-depth: 0          # need history to diff a PR against its base
+
+      # Decide whether this PR actually touches ansible content. On push the
+      # workflow is already path-filtered to ansible-relevant paths, so it is
+      # always relevant there. On pull_request, diff the base against the head:
+      # if nothing under ansible/, extensions/, or collections/ changed, the
+      # validation has nothing to check and the job passes without running it.
+      - name: Detect ansible-relevant changes
+        id: detect
+        shell: bash
+        env:
+          # Passed through the environment, not interpolated into the script.
+          # Both are commit SHAs (not user-controlled free text), but this is
+          # the injection-safe pattern for any ${{ github.event.* }} value.
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            files="$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")"
+            if printf '%s\n' "$files" | grep -E '^(ansible/|extensions/|collections/)' >/dev/null; then
+              echo "changed=true"  >> "$GITHUB_OUTPUT"
+              echo "Ansible-relevant changes detected — running full validation."
+            else
+              echo "changed=false" >> "$GITHUB_OUTPUT"
+              echo "No ansible/, extensions/, or collections/ changes in this PR —"
+              echo "nothing for the ansible gate to validate. Passing."
+            fi
+          else
+            # push events are already path-filtered to ansible-relevant paths
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Python
+        if: steps.detect.outputs.changed == 'true'
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install ansible-core
+        if: steps.detect.outputs.changed == 'true'
+        run: |
+          python -m pip install --upgrade pip
+          pip install "ansible-core>=2.16" pyyaml
+
+      - name: Install OPA
+        if: steps.detect.outputs.changed == 'true'
+        run: |
+          # $RUNNER_TEMP, not /usr/local/bin: self-hosted runners don't
+          # run as root, and hosted runners honor GITHUB_PATH the same way.
+          curl -sSL -o "$RUNNER_TEMP/opa" \
+            https://openpolicyagent.org/downloads/v1.10.0/opa_linux_amd64_static
+          chmod +x "$RUNNER_TEMP/opa"
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/opa" version
+
+      # ── 1. YAML parses at all ─────────────────────────────────────────────
+      # The cheapest check and the one that would have caught the broken
+      # fact-collection playbook. Runs over every YAML file, not just plays,
+      # because vars files and rulebooks break the same way.
+      - name: YAML parses
+        if: steps.detect.outputs.changed == 'true'
+        run: |
+          python - <<'PY'
+          import pathlib, sys, yaml
+
+          roots = ['ansible', 'extensions', 'collections']
+          bad = []
+          count = 0
+          for root in roots:
+              p = pathlib.Path(root)
+              if not p.exists():
+                  continue
+              for f in sorted(list(p.rglob('*.yml')) + list(p.rglob('*.yaml'))):
+                  count += 1
+                  try:
+                      # safe_load_all, not safe_load: Kubernetes manifests and
+                      # some vars files are legitimately multi-document. Using
+                      # safe_load flags those as broken when they are not.
+                      list(yaml.safe_load_all(f.read_text(encoding='utf-8')))
+                  except Exception as exc:
+                      bad.append((f, str(exc).splitlines()[0]))
+
+          print(f"parsed {count} YAML files")
+          if bad:
+              print(f"\nFAIL: {len(bad)} file(s) do not parse\n")
+              for f, e in bad:
+                  print(f"  {f}\n      {e}")
+              print("\nA common cause: an unquoted shell/command value containing ': ',")
+              print("which YAML reads as a mapping. Use a block scalar:")
+              print("    shell: |")
+              print("      awk -F: '...' /etc/passwd")
+              sys.exit(1)
+          print("OK: all YAML parses")
+          PY
+
+      # ── 2. Ansible itself accepts the playbooks ───────────────────────────
+      # Stricter than a YAML parse: catches malformed play structure that is
+      # still valid YAML. Collection-resolution errors are tolerated because
+      # the collections are supplied by the execution environment at runtime,
+      # not by this checkout — failing on those would make the gate useless.
+      - name: Playbooks pass ansible syntax-check
+        if: steps.detect.outputs.changed == 'true'
+        shell: bash +e {0}
+        run: |
+          # NOTE: `bash +e` deliberately. The runner default is `bash -e`, which
+          # combined with pipefail kills this step the moment a grep inside the
+          # failure branch matches nothing — so the first failing playbook ended
+          # the run before it could report which one it was. Learned the hard
+          # way on this workflow's own first execution.
+          fails=0
+          checked=0
+          skipped=0
+          failed_list=""
+          taskfiles=""
+          for f in ansible/playbooks/*.yml; do
+            [ -e "$f" ] || continue
+            checked=$((checked + 1))
+            # A file in playbooks/ that has no `hosts:` at the top level is a
+            # TASK file, not a playbook — included by a real play elsewhere.
+            # Syntax-checking it as a playbook is meaningless. Report the
+            # misfiling, do not fail the build on it: they work fine where
+            # they are used, and moving them means updating every includer.
+            # One line deliberately: a multi-line `python -c` inside this block
+            # scalar carries the YAML indentation into the source, raising
+            # IndentationError. That made python exit non-zero for EVERY file,
+            # classifying all 221 as task files and passing the whole step
+            # without running ansible-playbook once. A gate that passes while
+            # checking nothing is worse than one that fails.
+            if ! python -c "import sys,yaml; d=yaml.safe_load(open('$f')); sys.exit(0 if isinstance(d,list) and any(isinstance(p,dict) and ('hosts' in p or any(str(k).endswith('import_playbook') for k in p)) for p in d) else 1)" 2>/dev/null; then
+              taskfiles="$taskfiles $f"
+              continue
+            fi
+            out="$(ansible-playbook --syntax-check "$f" 2>&1)"
+            rc=$?
+            [ $rc -eq 0 ] && continue
+            # Collections come from the execution environment at runtime, not
+            # from this checkout. Failing on their absence would make the gate
+            # noise, and a noisy gate gets switched off.
+            if printf '%s' "$out" | grep -qiE "couldn't resolve module|Could not find|module_utils|is not installed|Unable to retrieve file contents"; then
+              skipped=$((skipped + 1))
+              continue
+            fi
+            fails=$((fails + 1))
+            failed_list="$failed_list $f"
+            echo "::error file=$f::ansible syntax-check failed"
+            echo "--- $f"
+            printf '%s' "$out" | grep -iE "^ERROR|Syntax Error|line [0-9]+, column|The error appears" | head -4 | sed 's/^/      /'
+          done
+          echo
+          syntax_checked=$((checked - $(printf '%s' "$taskfiles" | wc -w)))
+          echo "checked $checked files — $syntax_checked syntax-checked, $fails failed, $skipped skipped (missing collections)"
+
+          # Tripwire. If almost everything classifies as a task file, the
+          # classifier is broken, not the repo — that exact bug shipped once and
+          # passed the whole step in 2.7s without running ansible-playbook at
+          # all. A gate must fail loudly rather than pass vacuously.
+          if [ "$syntax_checked" -lt 100 ]; then
+            echo "FAIL: only $syntax_checked of $checked files were syntax-checked."
+            echo "Expected ~219. The task-file classifier is almost certainly broken;"
+            echo "this step would otherwise pass without having verified anything."
+            exit 1
+          fi
+          if [ -n "$taskfiles" ]; then
+            echo
+            echo "NOTE: these live in playbooks/ but are task files (no 'hosts:'),"
+            echo "included by a play elsewhere. Not a build failure; they belong in"
+            echo "ansible/tasks/ and moving them means updating their includers:"
+            for tf in $taskfiles; do echo "  $tf"; done
+          fi
+          if [ "$fails" -gt 0 ]; then
+            echo "FAIL:$failed_list"
+            exit 1
+          fi
+          echo "OK: all playbooks pass syntax-check"
+
+      # ── 3. Every Jinja expression lexes ───────────────────────────────────
+      # A template that cannot lex is a task that cannot run. ansible-lint
+      # detects this class but its failure mode is to CRASH -- the traceback
+      # replaces the report and every other finding is lost. Six unrenderable
+      # templates hid behind one such crash, two of them in fact-gathering
+      # roles that had therefore never produced facts.
+      #
+      # This has to parse the YAML rather than grep it: `\"` inside a
+      # double-quoted scalar is unescaped by YAML before Jinja sees it, and
+      # inside a block scalar it is not. Only the parsed value tells them
+      # apart, which is why the class survived several passes of grep.
+      - name: Every Jinja expression lexes
+        if: steps.detect.outputs.changed == 'true'
+        run: |
+          pip install jinja2 pyyaml >/dev/null
+          python scripts/check_jinja_renderable.py
+
+      # ── 4. Repository hygiene, evaluated as policy ────────────────────────
+      # Replaces a grep. The policy lives in the shared library
+      # (policies/enforcement/ansible/repo_hygiene.rego) and carries its own
+      # unit tests, so the gate is tested rather than merely written. It also
+      # sees structure: a hardcoded address in a connection parameter reports
+      # differently from one in an incidental string, which a text search
+      # Role include targets exist. Catches the class where a role's
+      # tasks/main.yml includes task files that were never written — three
+      # roles shipped broken this way for months because syntax-check and
+      # YAML parsing both pass; the failure only appears when the include
+      # executes at runtime.
+      - name: Role include targets exist
+        if: steps.detect.outputs.changed == 'true'
+        run: python3 scripts/check_role_include_targets.py
+
+      # EDA rulebooks dispatch by AAP template NAME; a renamed or
+      # never-seeded template makes a rulebook a silent no-op (event
+      # fires, nothing runs, nothing errors). Every referenced name must
+      # be defined somewhere outside extensions/eda/, or explicitly
+      # acknowledged in extensions/eda/rulebooks/known_unseeded.yml.
+      - name: EDA template references resolve
+        if: steps.detect.outputs.changed == 'true'
+        run: python3 scripts/check_eda_template_refs.py
+
+      # The core→demos boundary (restructure Phase 5): no core playbook
+      # may READ demos/ content at its own runtime. Job-template path
+      # strings are tolerated until the Phase 6 repo split — this gate is
+      # the machine-checkable proof that split is safe.
+      - name: Core never reads demos/ at runtime
+        if: steps.detect.outputs.changed == 'true'
+        run: python3 scripts/check_core_demo_boundary.py
+
+      # Endpoints (OPA/DB/Grafana) must come from site_config, never a literal
+      # baked into a playbook or role. A hardcoded in-cluster default silently
+      # targets an assumed address at a customer whose topology differs — the
+      # failure mode that surfaced as a connection reset hours into a customer run.
+      - name: No hardcoded in-cluster endpoints
+        if: steps.detect.outputs.changed == 'true'
+        run: python3 scripts/check_no_hardcoded_endpoints.py
+
+      # cannot distinguish.
+      #
+      # The same policy can gate job launch through AAP Policy as Code — one
+      # rule, two enforcement points.
+      - name: Repository hygiene policy
+        if: steps.detect.outputs.changed == 'true'
+        shell: bash +e {0}
+        run: |
+          POLICY=policies/enforcement/ansible/repo_hygiene.rego
+          if [ ! -f "$POLICY" ]; then
+            echo "FAIL: $POLICY not found — was the submodule checked out?"
+            exit 1
+          fi
+
+          python - <<'PY' > /tmp/hygiene.jsonl
+          import yaml, json, pathlib
+          for f in sorted(pathlib.Path('ansible/playbooks').glob('*.yml')):
+              try:
+                  d = yaml.safe_load(f.read_text(encoding='utf-8'))
+              except Exception:
+                  continue          # parse errors belong to step 1
+              if not isinstance(d, list):
+                  continue
+              if not any(isinstance(p, dict) and ('hosts' in p or any(str(k).endswith('import_playbook') for k in p)) for p in d):
+                  continue          # task file, not a playbook
+              print(json.dumps({"path": str(f), "plays": d}))
+          PY
+
+          evaluated=$(wc -l < /tmp/hygiene.jsonl | tr -d ' ')
+          echo "evaluating $evaluated playbooks against the hygiene policy"
+
+          # Tripwire, same reasoning as the syntax step: a gate that silently
+          # stops evaluating must fail, not pass.
+          if [ "$evaluated" -lt 100 ]; then
+            echo "FAIL: only $evaluated playbooks reached the policy — expected ~219."
+            echo "The input builder is broken; this step would otherwise pass vacuously."
+            exit 1
+          fi
+
+          violations=0
+          while IFS= read -r line; do
+            out=$(printf '%s' "$line" | opa eval -d "$POLICY" -I 'data.aac.repo.hygiene.violation' --format raw 2>/dev/null)
+            n=$(printf '%s' "$out" | python -c "import sys,json; print(len(json.load(sys.stdin)))" 2>/dev/null || echo 0)
+            [ "$n" -gt 0 ] 2>/dev/null || continue
+            violations=$((violations + n))
+            printf '%s' "$out" | python -c "import sys,json; [print('  ' + v) for v in json.load(sys.stdin)]"
+          done < /tmp/hygiene.jsonl
+
+          echo
+          if [ "$violations" -gt 0 ]; then
+            echo "FAIL: $violations hygiene violation(s)"
+            exit 1
+          fi
+          echo "OK: no hygiene violations across $evaluated playbooks"

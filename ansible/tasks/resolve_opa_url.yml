@@ -1,0 +1,39 @@
+---
+# resolve_opa_url.yml
+#
+# Resolves the correct OPA endpoint URL for a given framework by looking up
+# opa_framework_map (defined in site_config.yml), then mapping the bucket name
+# (security | compliance | ot) through opa_endpoints to get the actual URL.
+#
+# Usage:
+#   vars:
+#     framework: "nist_800_82"       # any key in opa_framework_map
+#   tasks:
+#     - include_tasks: ../tasks/resolve_opa_url.yml
+#     # opa_server_url is now set to the resolved endpoint
+#
+# Routing examples (from site_config.yml):
+#   cis_rhel9       → security  → http://<host>:8181
+#   iso27001        → compliance → http://<host>:8182
+#   dora            → compliance → http://<host>:8182
+#   nist_800_82     → ot        → http://<host>:8183
+#   nerc_cip        → ot        → http://<host>:8183
+#
+# Falls back to 'compliance' (:8182) for unknown frameworks.
+
+- name: Assert framework variable is defined and non-empty
+  fail:
+    msg: >-
+      resolve_opa_url.yml requires 'framework' to be a non-empty string.
+      Set it before calling include_tasks (e.g., vars: framework: "nist_800_82").
+  when: framework is not defined or (framework | default('', true)) == ""
+
+- name: "Resolve OPA endpoint for framework '{{ framework }}'"
+  set_fact:
+    _opa_bucket:    "{{ opa_framework_map[framework] | default('compliance') }}"
+    opa_server_url: "{{ opa_endpoints[opa_framework_map[framework] | default('compliance')] }}"
+
+- name: "OPA routing → {{ framework }} maps to '{{ _opa_bucket }}' ({{ opa_server_url }})"
+  debug:
+    msg: "{{ framework }} → {{ _opa_bucket }} → {{ opa_server_url }}"
+  when: resolve_opa_url_debug | default(false)

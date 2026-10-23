@@ -1,0 +1,267 @@
+---
+# Rebuild "AAC - Nightly Fact Collection" into the nightly LAB PIPELINE.
+#
+# Why: the lab-dependent nightly assessments (NERC CIP, AMI, Digital
+# Sovereignty, CAF, CIS full) used to blind-fire on their own schedules
+# with no lab-availability check — failing whenever they missed the fact
+# collection workflow's start/stop window (the ~14 chronically failing
+# nightlies in docs/reports/HANDOVER_AUDIT_2026-08-31.md). This seeder
+# folds them into the one workflow that already manages the lab window,
+# so assessments only run when the lab is provably up — and against
+# facts gathered minutes earlier, not the previous night's.
+#
+# TLS: verification defaults ON (fail closed). Environments with
+# self-signed controller certs (the lab CRC) pass
+# -e aap_validate_certs=false explicitly at launch.
+#
+# Resulting graph:
+#
+#   [Start Compliance Lab]
+#     ├─ success ─► [Gather Facts (All Systems)]   [Gather Network Facts]
+#     └─ failure ─► [Stop Compliance Lab]
+#   [Gather Facts]
+#     ├─ success ─► NERC CIP Report | AMI Audit | DS Assessment
+#     │             | CAF Assessment | CIS Full (nested workflow)
+#     └─ failure ─► [Stop Compliance Lab]
+#   each assessment ─ always ─► [Stop Compliance Lab]  (converge: ALL)
+#   each assessment ─ always ─► [Remediation Report]   (converge: ALL)
+#   [Gather Network Facts] ─ always ─► [Stop Compliance Lab]
+#
+# Stop Lab has all_parents_must_converge=true so the lab can never be
+# stopped while an assessment is still running; the failure edges mean
+# the lab is stopped even when start/facts fail (no leaked EC2 hours).
+#
+# The standalone schedules for those assessments are DISABLED (not
+# deleted — re-enable to roll back). Idempotent: full node rebuild on
+# every run; everything is resolved BY NAME (IDs drift across reinstalls
+# — see CLAUDE.md "launch templates by NAME, never by ID").
+
+- name: Seed nightly lab pipeline
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    # aap_url comes from site_config.yml on an operator machine, or as a
+    # launch-time extra_var when run from a job template (the project
+    # checkout has no site_config.yml — it is gitignored by design).
+    # The token comes from the "AAP Token (extra_vars)" credential
+    # (injects aap_token) or vault_secrets.yml on an operator machine.
+    # NOTE the play var is aap_api_token, never aap_token — a play var
+    # named aap_token self-references the credential injection and
+    # recursive-loops (mythos seeder lesson #1).
+    hdrs:
+      Authorization: "Bearer {{ aap_api_token }}"
+    wf_name: "AAC - Nightly Fact Collection"
+    jt_names:
+      start:   "AAC - Start Compliance Lab"
+      facts:   "AAC - Gather Facts (All Systems)"
+      net:     "AAC - Gather Network Facts"
+      stop:    "AAC - Stop Compliance Lab"
+      nerc:    "AAC - NERC CIP Compliance Report"
+      ami:     "AMI - Full Compliance Audit and Store"
+      ds:      "AAC - Digital Sovereignty Assessment"
+      caf:     "AAC - CAF Demo Assessment"
+      rem:     "AAC - Remediation Report"
+    nested_wf_name: "Friday CIS Compliance - Full Assessment"
+    disable_schedules:
+      - "Nightly CIS Full Assessment - 06:00 UTC"
+      - "Daily CAF Demo Assessment — 02:30 UTC"
+      - "Daily DS Assessment — 02:45 UTC"
+      - "NERC/AMI Nightly Audit"
+
+  tasks:
+    # ── config: tolerate the gitignored local vars files being absent ────
+    - name: Load optional local config (operator machine only)
+      ansible.builtin.include_vars: "{{ item }}"
+      with_first_found:
+        - files:
+            - "{{ playbook_dir }}/../vars/site_config.yml"
+          skip: true
+
+    - name: Load optional local secrets (operator machine only)
+      ansible.builtin.include_vars: "{{ item }}"
+      with_first_found:
+        - files:
+            - "{{ playbook_dir }}/../vars/vault_secrets.yml"
+          skip: true
+
+    - name: Resolve controller URL and token
+      ansible.builtin.set_fact:
+        api: "{{ aap_url | default('') }}/api/controller/v2"
+        aap_api_token: "{{ aap_token | default(vault_aap_local_mcp_token | default('', true), true) }}"
+
+    - name: Require controller URL and token
+      ansible.builtin.assert:
+        that:
+          - aap_url is defined and (aap_url | length > 0)
+          - aap_api_token | length > 0
+        fail_msg: >-
+          aap_url and an API token are required. From AAP: attach the
+          "AAP Token (extra_vars)" credential and launch with
+          -e aap_url=https://<gateway-host>. From an operator machine:
+          both come from ansible/vars/{site_config,vault_secrets}.yml.
+
+    # ── resolve everything by name, refuse ambiguity ─────────────────────
+    - name: Resolve job templates by name
+      uri:
+        use_proxy: false
+        url: "{{ api }}/job_templates/?name={{ item.value | urlencode }}"
+        headers: "{{ hdrs }}"
+        validate_certs: "{{ aap_validate_certs | default(true) | bool }}"
+      register: jt_lookup
+      loop: "{{ jt_names | dict2items }}"
+      failed_when: jt_lookup.json.count != 1
+
+    - name: Build template id map
+      set_fact:
+        jt: "{{ dict(jt_lookup.results | map(attribute='item.key')
+                 | zip(jt_lookup.results | map(attribute='json.results.0.id'))) }}"
+
+    - name: Resolve pipeline workflow and nested CIS workflow by name
+      uri:
+        use_proxy: false
+        url: "{{ api }}/workflow_job_templates/?name={{ item | urlencode }}"
+        headers: "{{ hdrs }}"
+        validate_certs: "{{ aap_validate_certs | default(true) | bool }}"
+      register: wf_lookup
+      loop:
+        - "{{ wf_name }}"
+        - "{{ nested_wf_name }}"
+      failed_when: wf_lookup.json.count != 1
+
+    - name: Set workflow ids
+      set_fact:
+        wf_id: "{{ wf_lookup.results[0].json.results[0].id }}"
+        cis_wf_id: "{{ wf_lookup.results[1].json.results[0].id }}"
+
+    # ── idempotent rebuild: wipe existing nodes ──────────────────────────
+    - name: Get existing workflow nodes
+      uri:
+        use_proxy: false
+        url: "{{ api }}/workflow_job_templates/{{ wf_id }}/workflow_nodes/?page_size=50"
+        headers: "{{ hdrs }}"
+        validate_certs: "{{ aap_validate_certs | default(true) | bool }}"
+      register: existing_nodes
+
+    - name: Delete existing nodes
+      uri:
+        use_proxy: false
+        url: "{{ api }}/workflow_job_template_nodes/{{ item.id }}/"
+        method: DELETE
+        headers: "{{ hdrs }}"
+        validate_certs: "{{ aap_validate_certs | default(true) | bool }}"
+        status_code: [200, 204]
+      loop: "{{ existing_nodes.json.results }}"
+      loop_control:
+        label: "{{ item.id }}"
+
+    # ── create nodes ─────────────────────────────────────────────────────
+    - name: Create workflow nodes
+      uri:
+        use_proxy: false
+        url: "{{ api }}/workflow_job_templates/{{ wf_id }}/workflow_nodes/"
+        method: POST
+        headers: "{{ hdrs }}"
+        validate_certs: "{{ aap_validate_certs | default(true) | bool }}"
+        body_format: json
+        # Template the WHOLE body as one expression — uri renders
+        # per-key templated values as strings and AAP 400s on "id": "5".
+        body: "{{ {'unified_job_template': item.ujt | int,
+                   'all_parents_must_converge': item.converge} }}"
+        status_code: [201]
+      register: made
+      loop:
+        - { key: start, ujt: "{{ jt.start }}", converge: false }
+        - { key: facts, ujt: "{{ jt.facts }}", converge: false }
+        - { key: net,   ujt: "{{ jt.net }}",   converge: false }
+        - { key: nerc,  ujt: "{{ jt.nerc }}",  converge: false }
+        - { key: ami,   ujt: "{{ jt.ami }}",   converge: false }
+        - { key: ds,    ujt: "{{ jt.ds }}",    converge: false }
+        - { key: caf,   ujt: "{{ jt.caf }}",   converge: false }
+        - { key: cis,   ujt: "{{ cis_wf_id }}", converge: false }
+        - { key: rem,   ujt: "{{ jt.rem }}",   converge: true }
+        # Three stop-node INSTANCES of the same JT. A converge-ALL node
+        # with failure-edge parents can NEVER fire on the success path
+        # (untriggered failure edges block convergence) — the maiden run
+        # (workflow job 3549, 2026-09-01) proved it by leaving the lab
+        # running. Failure paths get their own stop nodes instead.
+        - { key: stop,           ujt: "{{ jt.stop }}", converge: true }
+        - { key: stop_on_start_fail, ujt: "{{ jt.stop }}", converge: false }
+        - { key: stop_on_facts_fail, ujt: "{{ jt.stop }}", converge: false }
+      loop_control:
+        label: "{{ item.key }}"
+
+    - name: Build node id map
+      set_fact:
+        node: "{{ dict(made.results | map(attribute='item.key')
+                   | zip(made.results | map(attribute='json.id'))) }}"
+
+    # ── wire edges ───────────────────────────────────────────────────────
+    - name: Create edges
+      uri:
+        use_proxy: false
+        url: "{{ api }}/workflow_job_template_nodes/{{ node[item.parent] }}/{{ item.rel }}/"
+        method: POST
+        headers: "{{ hdrs }}"
+        validate_certs: "{{ aap_validate_certs | default(true) | bool }}"
+        body_format: json
+        body: "{{ {'id': node[item.child] | int} }}"
+        status_code: [204]
+      loop:
+        - { parent: start, rel: success_nodes, child: facts }
+        - { parent: start, rel: success_nodes, child: net }
+        - { parent: start, rel: failure_nodes, child: stop_on_start_fail }
+        - { parent: facts, rel: failure_nodes, child: stop_on_facts_fail }
+        - { parent: facts, rel: success_nodes, child: nerc }
+        - { parent: facts, rel: success_nodes, child: ami }
+        - { parent: facts, rel: success_nodes, child: ds }
+        - { parent: facts, rel: success_nodes, child: caf }
+        - { parent: facts, rel: success_nodes, child: cis }
+        - { parent: nerc,  rel: always_nodes,  child: stop }
+        - { parent: ami,   rel: always_nodes,  child: stop }
+        - { parent: ds,    rel: always_nodes,  child: stop }
+        - { parent: caf,   rel: always_nodes,  child: stop }
+        - { parent: cis,   rel: always_nodes,  child: stop }
+        - { parent: nerc,  rel: always_nodes,  child: rem }
+        - { parent: ami,   rel: always_nodes,  child: rem }
+        - { parent: ds,    rel: always_nodes,  child: rem }
+        - { parent: caf,   rel: always_nodes,  child: rem }
+        - { parent: cis,   rel: always_nodes,  child: rem }
+        - { parent: net,   rel: always_nodes,  child: stop }
+      loop_control:
+        label: "{{ item.parent }} -{{ item.rel }}-> {{ item.child }}"
+
+    # ── disable the now-redundant standalone schedules (rollback: re-enable)
+    - name: Look up standalone assessment schedules
+      uri:
+        use_proxy: false
+        url: "{{ api }}/schedules/?name={{ item | urlencode }}"
+        headers: "{{ hdrs }}"
+        validate_certs: "{{ aap_validate_certs | default(true) | bool }}"
+      register: sched_lookup
+      loop: "{{ disable_schedules }}"
+
+    - name: Disable standalone assessment schedules
+      uri:
+        use_proxy: false
+        url: "{{ api }}/schedules/{{ item.json.results[0].id }}/"
+        method: PATCH
+        headers: "{{ hdrs }}"
+        validate_certs: "{{ aap_validate_certs | default(true) | bool }}"
+        body_format: json
+        body: { enabled: false }
+      loop: "{{ sched_lookup.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+      when: item.json.count == 1 and item.json.results[0].enabled
+
+    - name: Summary
+      debug:
+        msg: >-
+          Pipeline rebuilt on workflow {{ wf_id }} ({{ wf_name }}):
+          start->facts->5 assessments->stop(converge-all, always-edge
+          parents only)+remediation report; failure paths stop the lab
+          via dedicated stop-node instances. {{ disable_schedules |
+          length }} standalone schedules disabled. The 02:00 UTC
+          schedule drives the whole nightly lab window.

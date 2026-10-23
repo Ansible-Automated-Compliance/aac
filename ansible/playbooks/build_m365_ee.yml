@@ -1,0 +1,252 @@
+---
+# build_m365_ee.yml — Build the AAC M365 Execution Environment
+#
+# aac-m365-ee carries PowerShell 7 plus the ExchangeOnlineManagement,
+# MicrosoftTeams and PnP.PowerShell modules. 67 of the CIS Microsoft 365
+# v7.0.0 benchmark's 160 recommendations can only be audited through
+# PowerShell — Microsoft ships no REST equivalent — so Graph alone caps
+# coverage at roughly 29 controls.
+#
+# It is a SEPARATE image from aac-compliance-ee on purpose: the PowerShell
+# modules add several hundred MB, and the compliance EE backs every AAC job
+# template. See ansible/execution-environments/aac-m365-ee/.
+#
+# Mirrors build_compliance_ee.yml: ansible-builder runs inside the EE to
+# generate the build context, then every podman command is delegated to the
+# physical host, which is where podman actually lives.
+#
+# The build MUST run on the linux/amd64 build host. It cannot run on an
+# aarch64 workstation — the PowerShell tarball this EE installs is
+# linux-x64 only.
+#
+# AAP Job Template: "AAC - Build M365 EE"
+# Credentials: Ansible Vault, AAC Build Host (aapuser1) machine credential
+
+- name: Build AAC M365 Execution Environment
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - [ "../vars/vault_secrets.yml", "../vars/empty_fallback.yml" ]
+    - ../vars/site_config.yml
+
+  vars:
+    # NOT aac_host. Post-CRC, aac_host is the AAP *gateway route*
+    # (for example aap-<namespace>.apps.<cluster-domain>), which does not accept SSH --
+    # delegating the podman build to it fails with "Permission denied
+    # (publickey)". This needs the PHYSICAL host that runs podman.
+    #
+    # Supplied per-environment (job template extra_vars or an inventory
+    # var) rather than committed, so no site-specific address lives in the
+    # repo. build_compliance_ee.yml still uses aac_host here and has the
+    # same latent failure.
+    # ee_build_host: <set via extra_vars / survey / inventory>
+    aap_host:      "{{ (ee_build_host | default('', true)) }}"
+    aap_user:      "{{ aap_ssh_user | default('aapuser1') }}"
+    ee_version:    "v1.0.0"
+    ee_image:      "quay.io/rh-ee-tcoulter/aac-m365-ee"
+    ee_build_dir:  "/tmp/aac-m365-ee-build"
+    ee_source_dir: "{{ playbook_dir }}/../execution-environments/aac-m365-ee"
+    push_to_registry: false
+
+  tasks:
+
+    - name: Require the physical build host to be supplied
+      ansible.builtin.assert:
+        that:
+          - (ee_build_host | default('', true)) | length > 0
+          - (ee_build_host | default('', true)) != aac_host
+        fail_msg: >-
+          ee_build_host must be set to the physical host that runs podman,
+          and must not be aac_host. Post-CRC aac_host is the AAP gateway
+          route, which does not accept SSH. Pass it as an extra_var on the
+          job template.
+        quiet: true
+
+    # ── Step 1: generate the build context ────────────────────────────
+    - name: Create EE build directory
+      ansible.builtin.file:
+        path: "{{ ee_build_dir }}"
+        state: directory
+        mode: '0755'
+
+    - name: Copy EE definition files into the build dir
+      ansible.builtin.copy:
+        src: "{{ ee_source_dir }}/{{ item }}"
+        dest: "{{ ee_build_dir }}/{{ item }}"
+        remote_src: true
+        mode: '0644'
+      loop:
+        - execution-environment.yml
+        - requirements.yml
+        - requirements.txt
+        - bindep.txt
+        - ansible.cfg
+
+    # pip falls back to a USER install here -- site-packages in the EE is
+    # not writeable -- so the entry point lands in ~/.local/bin, which is
+    # not on PATH. Resolve the real path rather than assuming either
+    # location; guarding on /usr/local/bin alone both fails to find it and
+    # never short-circuits, so it reinstalls on every run.
+    - name: Install ansible-builder in the EE
+      ansible.builtin.pip:
+        name: ansible-builder
+        extra_args: --user
+      changed_when: false
+
+    - name: Locate the ansible-builder entry point
+      ansible.builtin.shell: |
+        set -e
+        command -v ansible-builder || true
+        for c in "$HOME/.local/bin/ansible-builder" /runner/.local/bin/ansible-builder \
+                 /usr/local/bin/ansible-builder /usr/bin/ansible-builder; do
+          [ -x "$c" ] && echo "$c" && exit 0
+        done
+        exit 1
+      register: builder_path
+      changed_when: false
+
+    - name: Fail with a usable message if ansible-builder cannot be found
+      ansible.builtin.fail:
+        msg: >-
+          ansible-builder is installed but no entry point was found on PATH
+          or in the usual user-install locations. pip reported a user
+          install, so check ~/.local/bin inside the execution environment.
+      when: builder_path.stdout_lines | length == 0
+
+    # Do NOT override HOME here. ansible-builder was installed with --user,
+    # so its package lives in $HOME/.local/lib/... -- setting HOME=/root
+    # (as the older EE playbooks do, because they installed system-wide)
+    # leaves the entry-point script findable but the package unimportable:
+    #   ModuleNotFoundError: No module named 'ansible_builder'
+    - name: Generate the build context with ansible-builder
+      ansible.builtin.command: "{{ builder_path.stdout_lines[-1] }} create"
+      args:
+        chdir: "{{ ee_build_dir }}"
+        creates: "{{ ee_build_dir }}/context/Containerfile"
+
+    # ── Step 2: build on the host, where podman lives ─────────────────
+    # Direct SSH rather than the AAP receptor, matching build_compliance_ee.yml.
+    - name: Add the physical build host to the inventory
+      ansible.builtin.add_host:
+        name: aap_physical_host
+        ansible_host: "{{ aap_host }}"
+        ansible_user: "{{ aap_user }}"
+        ansible_connection: ssh
+        ansible_ssh_common_args: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+
+    - name: Ensure the build context directory exists on the host
+      ansible.builtin.file:
+        path: "{{ ee_build_dir }}/context"
+        state: directory
+        mode: '0755'
+      delegate_to: aap_physical_host
+
+    - name: Copy the build context to the host
+      ansible.builtin.copy:
+        src: "{{ ee_build_dir }}/context/"
+        dest: "{{ ee_build_dir }}/context/"
+        mode: preserve
+      delegate_to: aap_physical_host
+
+    - name: Confirm the build host is x86_64
+      # The EE installs the linux-x64 PowerShell tarball. On aarch64 the
+      # build succeeds and pwsh then fails at runtime, which is a far more
+      # expensive way to discover the same problem.
+      ansible.builtin.command: uname -m
+      register: build_arch
+      changed_when: false
+      delegate_to: aap_physical_host
+
+    - name: Fail early if the build host is not x86_64
+      ansible.builtin.fail:
+        msg: >-
+          Build host reports '{{ build_arch.stdout }}'. aac-m365-ee installs
+          the linux-x64 PowerShell runtime and must be built on x86_64.
+      when: build_arch.stdout != "x86_64"
+
+    - name: Build the M365 EE image with podman
+      ansible.builtin.shell: >
+        /usr/bin/podman build
+        -f {{ ee_build_dir }}/context/Containerfile
+        -t {{ ee_image }}:{{ ee_version }}
+        {{ ee_build_dir }}/context
+      args:
+        chdir: "{{ ee_build_dir }}"
+      register: ee_build
+      changed_when: true
+      delegate_to: aap_physical_host
+
+    # ── Step 3: verify the runtime is actually usable ─────────────────
+    # A green build is not evidence the EE can do its job. These checks
+    # assert the three things the M365 collectors depend on.
+
+    - name: Verify PowerShell runs in the image
+      ansible.builtin.shell: >
+        /usr/bin/podman run --rm {{ ee_image }}:{{ ee_version }}
+        pwsh -NoLogo -NoProfile -Command '$PSVersionTable.PSVersion.ToString()'
+      register: pwsh_verify
+      changed_when: false
+      delegate_to: aap_physical_host
+
+    # NOTE: these run through `shell:`, so the remote /bin/sh expands
+    # $variables before pwsh sees them -- the same trap that broke the EE
+    # build's own verification step ("-Name $_" became "-Name /bin/sh").
+    # Written without PowerShell variables so nothing survives to expand.
+    - name: Verify the M365 PowerShell modules are present
+      ansible.builtin.shell: >
+        /usr/bin/podman run --rm {{ ee_image }}:{{ ee_version }}
+        pwsh -NoLogo -NoProfile -Command
+        "Get-Module -ListAvailable -Name ExchangeOnlineManagement,MicrosoftTeams,PnP.PowerShell |
+        Select-Object Name,Version | Format-Table -HideTableHeaders |
+        Out-String | Write-Host"
+      register: modules_verify
+      changed_when: false
+      delegate_to: aap_physical_host
+
+    - name: Verify app-only certificate authentication is available
+      # Without these parameters nothing in this EE can run unattended,
+      # which is the entire reason the image exists.
+      ansible.builtin.shell: >
+        /usr/bin/podman run --rm {{ ee_image }}:{{ ee_version }}
+        pwsh -NoLogo -NoProfile -Command
+        "if ((Get-Command Connect-ExchangeOnline).Parameters.Keys -notcontains 'CertificateFilePath')
+        { Write-Error 'missing -CertificateFilePath'; exit 1 };
+        if ((Get-Command Connect-ExchangeOnline).Parameters.Keys -notcontains 'AppId')
+        { Write-Error 'missing -AppId'; exit 1 };
+        Write-Host 'app-only certificate auth: available'"
+      register: certauth_verify
+      changed_when: false
+      delegate_to: aap_physical_host
+
+    - name: Report what the image actually contains
+      ansible.builtin.debug:
+        msg:
+          - "image:      {{ ee_image }}:{{ ee_version }}"
+          - "PowerShell: {{ pwsh_verify.stdout | trim }}"
+          - "modules:    {{ modules_verify.stdout_lines | join(' | ') }}"
+          - "auth:       {{ certauth_verify.stdout | trim }}"
+
+    # ── Step 4: optional publish ──────────────────────────────────────
+    # Off by default. A local build is enough to register the EE against
+    # the controller on this host; pushing is a separate decision.
+    - name: Publish the image
+      when: push_to_registry | bool
+      delegate_to: aap_physical_host
+      block:
+        - name: Tag the image as latest
+          ansible.builtin.shell: >
+            /usr/bin/podman tag {{ ee_image }}:{{ ee_version }} {{ ee_image }}:latest
+
+        - name: Log in to the registry
+          ansible.builtin.shell: >
+            /usr/bin/podman login quay.io
+            -u {{ vault_quay_username }} -p {{ vault_quay_password }}
+          no_log: true
+
+        - name: Push the versioned tag
+          ansible.builtin.shell: "/usr/bin/podman push {{ ee_image }}:{{ ee_version }}"
+
+        - name: Push the latest tag
+          ansible.builtin.shell: "/usr/bin/podman push {{ ee_image }}:latest"

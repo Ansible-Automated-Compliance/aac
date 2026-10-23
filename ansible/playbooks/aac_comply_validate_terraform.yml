@@ -1,0 +1,151 @@
+---
+# Sentinel — Terraform Plan Validation
+#
+# Two entry points:
+#   1. Code check-in: triggered by EDA GitHub webhook when *.tf files are pushed.
+#      Fetches plan JSON from the PR commit, evaluates against OPA, posts
+#      GitHub commit status (success/failure) to gate the PR merge.
+#
+#   2. Runtime pre-flight: included by Terraform-execution job templates
+#      before `terraform apply`. Blocks execution if OPA denies the plan.
+#
+# AAP Survey variables:
+#   plan_source:          "file" | "github"            (default: file)
+#   plan_file:            path to tfplan.json           (used when plan_source=file)
+#   github_repo:          "owner/repo"                  (used when plan_source=github)
+#   github_sha:           commit SHA                    (used when plan_source=github)
+#   github_token:         GitHub API token              (default: from vault)
+#   sentinel_environment: "production"|"staging"|"development" (default: production)
+#
+# NOTE: variable is named 'sentinel_environment' (not 'environment') because
+# 'environment' is a reserved Ansible play keyword for shell environment variables.
+
+- name: Sentinel — Validate Terraform Plan
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - [ "../vars/vault_secrets.yml", "../vars/empty_fallback.yml" ]
+    - ../vars/site_config.yml
+
+  vars:
+    opa_url:       "{{ opa_compliance_url }}"
+    opa_endpoint:  "{{ opa_url }}/v1/data/sentinel/terraform/result"
+    plan_source:   "file"
+    plan_file:     "{{ playbook_dir }}/../../examples/aac_comply_terraform_plan.json"
+    # github_repo: <set via extra_vars / survey / inventory>
+    # github_sha: <set via extra_vars / survey / inventory>
+    github_token:  "{{ vault_github_pat | default('') }}"
+    sentinel_environment: "production"
+
+  tasks:
+    # -------------------------------------------------------------------------
+    # 1. Acquire the Terraform plan JSON
+    # -------------------------------------------------------------------------
+    - name: Load plan from local file
+      set_fact:
+        tf_plan: "{{ lookup('file', plan_file) | from_json }}"
+      when: plan_source == "file"
+
+    - name: Fetch plan JSON from GitHub (raw content at SHA)
+      uri:
+        url: "https://api.github.com/repos/{{ (github_repo | default('', true)) }}/contents/tfplan.json?ref={{ (github_sha | default('', true)) }}"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ github_token }}"
+          Accept: "application/vnd.github.v3.raw"
+        return_content: true
+        status_code: 200
+      register: github_plan_response
+      when: plan_source == "github"
+
+    - name: Parse plan from GitHub response
+      set_fact:
+        tf_plan: "{{ github_plan_response.content | from_json }}"
+      when: plan_source == "github"
+
+    # -------------------------------------------------------------------------
+    # 2. Evaluate against OPA
+    # -------------------------------------------------------------------------
+    - name: Evaluate Terraform plan against OPA Sentinel policy
+      uri:
+        use_proxy: false
+        url: "{{ opa_endpoint }}"
+        method: POST
+        body_format: json
+        body:
+          input: "{{ tf_plan }}"
+        return_content: true
+        status_code: 200
+        validate_certs: false
+      register: opa_response
+
+    - name: Extract Sentinel result
+      set_fact:
+        sentinel_result: "{{ opa_response.json.result }}"
+
+    # -------------------------------------------------------------------------
+    # 3. Report results
+    # -------------------------------------------------------------------------
+    - name: Show Sentinel evaluation results
+      debug:
+        msg:
+          - "=== Sentinel — Terraform Plan Evaluation ==="
+          - "Policy:          {{ sentinel_result.policy }}"
+          - "Decision:        {{ 'ALLOW ✅' if sentinel_result.allow else 'DENY ❌' }}"
+          - "Violations:      {{ sentinel_result.violation_count }}"
+          - "Environment:     {{ sentinel_environment }}"
+          - "Violations:"
+          - "{{ sentinel_result.violations | to_nice_yaml }}"
+
+    # -------------------------------------------------------------------------
+    # 4. Post GitHub commit status (code check-in entry point)
+    # -------------------------------------------------------------------------
+    - name: Post ALLOW status to GitHub
+      uri:
+        url: "https://api.github.com/repos/{{ (github_repo | default('', true)) }}/statuses/{{ (github_sha | default('', true)) }}"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ github_token }}"
+          Accept: "application/vnd.github.v3+json"
+        body_format: json
+        body:
+          state: "success"
+          context: "aac/sentinel-terraform"
+          description: "Sentinel: Terraform plan is policy-compliant"
+          target_url: "{{ aap_url }}"
+        status_code: 201
+      when:
+        - plan_source == "github"
+        - (github_sha | default('', true)) != ""
+        - sentinel_result.allow | bool
+
+    - name: Post DENY status to GitHub
+      uri:
+        url: "https://api.github.com/repos/{{ (github_repo | default('', true)) }}/statuses/{{ (github_sha | default('', true)) }}"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ github_token }}"
+          Accept: "application/vnd.github.v3+json"
+        body_format: json
+        body:
+          state: "failure"
+          context: "aac/sentinel-terraform"
+          description: "Sentinel: {{ sentinel_result.violation_count }} violation(s) — merge blocked"
+          target_url: "{{ aap_url }}"
+        status_code: 201
+      when:
+        - plan_source == "github"
+        - (github_sha | default('', true)) != ""
+        - not sentinel_result.allow | bool
+
+    # -------------------------------------------------------------------------
+    # 5. Enforce — fail the AAP job if denied (both entry points)
+    # -------------------------------------------------------------------------
+    - name: BLOCK — Sentinel policy violations found
+      fail:
+        msg: |
+          SENTINEL DENY: Terraform plan blocked by {{ sentinel_result.violation_count }} policy violation(s).
+          {{ sentinel_result.violations | to_nice_yaml }}
+      when: not sentinel_result.allow | bool

@@ -1,0 +1,106 @@
+---
+# Default variables for gather_network_config role
+
+# Expected kernel network parameters (CIS 3.1.x, 3.2.x, 3.3.x)
+expected_sysctl_parameters:
+  # CIS 3.1.1 - Ensure IP forwarding is disabled
+  net.ipv4.ip_forward:
+    value: 0
+    description: "Disable IPv4 forwarding (unless router)"
+  net.ipv6.conf.all.forwarding:
+    value: 0
+    description: "Disable IPv6 forwarding (unless router)"
+
+  # CIS 3.1.2 - Ensure packet redirect sending is disabled
+  net.ipv4.conf.all.send_redirects:
+    value: 0
+    description: "Disable sending ICMP redirects"
+  net.ipv4.conf.default.send_redirects:
+    value: 0
+    description: "Disable sending ICMP redirects (default)"
+
+  # CIS 3.2.1 - Ensure source routed packets are not accepted
+  net.ipv4.conf.all.accept_source_route:
+    value: 0
+    description: "Do not accept source routed packets (IPv4)"
+  net.ipv4.conf.default.accept_source_route:
+    value: 0
+    description: "Do not accept source routed packets (IPv4 default)"
+  net.ipv6.conf.all.accept_source_route:
+    value: 0
+    description: "Do not accept source routed packets (IPv6)"
+  net.ipv6.conf.default.accept_source_route:
+    value: 0
+    description: "Do not accept source routed packets (IPv6 default)"
+
+  # CIS 3.2.2 - Ensure ICMP redirects are not accepted
+  net.ipv4.conf.all.accept_redirects:
+    value: 0
+    description: "Do not accept ICMP redirects (IPv4)"
+  net.ipv4.conf.default.accept_redirects:
+    value: 0
+    description: "Do not accept ICMP redirects (IPv4 default)"
+  net.ipv6.conf.all.accept_redirects:
+    value: 0
+    description: "Do not accept ICMP redirects (IPv6)"
+  net.ipv6.conf.default.accept_redirects:
+    value: 0
+    description: "Do not accept ICMP redirects (IPv6 default)"
+
+  # CIS 3.2.3 - Ensure secure ICMP redirects are not accepted
+  net.ipv4.conf.all.secure_redirects:
+    value: 0
+    description: "Do not accept secure ICMP redirects"
+  net.ipv4.conf.default.secure_redirects:
+    value: 0
+    description: "Do not accept secure ICMP redirects (default)"
+
+  # CIS 3.2.4 - Ensure suspicious packets are logged
+  net.ipv4.conf.all.log_martians:
+    value: 1
+    description: "Log martian packets"
+  net.ipv4.conf.default.log_martians:
+    value: 1
+    description: "Log martian packets (default)"
+
+  # CIS 3.2.5 - Ensure broadcast ICMP requests are ignored
+  net.ipv4.icmp_echo_ignore_broadcasts:
+    value: 1
+    description: "Ignore broadcast ICMP echo requests"
+
+  # CIS 3.2.6 - Ensure bogus ICMP responses are ignored
+  net.ipv4.icmp_ignore_bogus_error_responses:
+    value: 1
+    description: "Ignore bogus ICMP error responses"
+
+  # CIS 3.2.7 - Ensure Reverse Path Filtering is enabled
+  net.ipv4.conf.all.rp_filter:
+    value: 1
+    description: "Enable reverse path filtering"
+  net.ipv4.conf.default.rp_filter:
+    value: 1
+    description: "Enable reverse path filtering (default)"
+
+  # CIS 3.2.8 - Ensure TCP SYN Cookies is enabled
+  net.ipv4.tcp_syncookies:
+    value: 1
+    description: "Enable TCP SYN cookies (SYN flood protection)"
+
+  # CIS 3.2.9 - Ensure IPv6 router advertisements are not accepted
+  net.ipv6.conf.all.accept_ra:
+    value: 0
+    description: "Do not accept IPv6 router advertisements"
+  net.ipv6.conf.default.accept_ra:
+    value: 0
+    description: "Do not accept IPv6 router advertisements (default)"
+
+# IPv6 status
+ipv6_disabled: false  # Set to true if IPv6 should be disabled
+
+# Network interfaces to check (empty = all)
+network_interfaces_to_check: []
+
+# Wireless interfaces (should not exist on servers)
+wireless_interface_prefixes:
+  - wlan
+  - wlp

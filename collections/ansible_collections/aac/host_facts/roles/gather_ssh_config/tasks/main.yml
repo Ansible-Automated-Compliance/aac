@@ -1,0 +1,183 @@
+---
+# tasks file for gather_ssh_config
+
+- name: Check if SSH server is installed
+  shell: rpm -q openssh-server
+  register: ssh_package_check
+  changed_when: false
+  failed_when: false
+
+- name: Set SSH package installed fact
+  set_fact:
+    ssh_package_installed: "{{ ssh_package_check.rc == 0 }}"
+
+- name: Read SSH configuration file
+  slurp:
+    src: "{{ sshd_config_file }}"
+  register: sshd_config_content
+  when: ssh_package_installed
+  failed_when: false
+
+- name: Parse SSH configuration
+  set_fact:
+    sshd_config_raw: "{{ sshd_config_content.content | b64decode }}"
+  when:
+    - ssh_package_installed
+    - sshd_config_content is defined
+    - sshd_config_content.content is defined
+
+- name: Extract SSH configuration parameters
+  shell: |
+    # Read sshd_config and extract key-value pairs
+    grep -v '^#' {{ sshd_config_file }} | grep -v '^$' | awk '{
+      if (NF >= 2) {
+        key = tolower($1)
+        value = ""
+        for (i=2; i<=NF; i++) {
+          if (i > 2) value = value " "
+          value = value $i
+        }
+        print key "=" value
+      }
+    }'
+  register: sshd_config_parsed
+  changed_when: false
+  when: ssh_package_installed
+
+- name: Convert SSH config to dictionary
+  set_fact:
+    ssh_config_dict: "{{ sshd_config_parsed.stdout_lines | map('split', '=') | items2dict }}"
+  when:
+    - ssh_package_installed
+    - sshd_config_parsed is defined
+
+- name: Get SSH host key files
+  find:
+    paths: "{{ ssh_host_keys_dir }}"
+    patterns: 'ssh_host_*_key*'
+  register: ssh_key_files
+  when: ssh_package_installed
+
+- name: Gather SSH host key permissions
+  stat:
+    path: "{{ item.path }}"
+  register: ssh_key_stats
+  loop: "{{ ssh_key_files.files }}"
+  when:
+    - ssh_package_installed
+    - ssh_key_files is defined
+
+- name: Process SSH host key information
+  set_fact:
+    ssh_host_keys: |
+      [
+        {% for item in ssh_key_stats.results %}
+        {
+          "path": "{{ item.stat.path }}",
+          "private": {{ 'true' if item.stat.path.endswith('_key') and not item.stat.path.endswith('_key.pub') else 'false' }},
+          "owner": "{{ item.stat.pw_name }}",
+          "group": "{{ item.stat.gr_name }}",
+          "mode": "{{ '%04o' | format(item.stat.mode) }}",
+          "permissions_octal": "{{ '%o' | format(item.stat.mode)[-3:] }}"
+        }{{ ',' if not loop.last else '' }}
+        {% endfor %}
+      ]
+  when:
+    - ssh_package_installed
+    - ssh_key_stats is defined
+
+- name: Get SSH configuration file permissions
+  stat:
+    path: "{{ sshd_config_file }}"
+  register: sshd_config_stat
+  when: ssh_package_installed
+
+- name: Check for weak ciphers
+  set_fact:
+    configured_ciphers: "{{ ssh_config_dict.ciphers.split(',') if 'ciphers' in ssh_config_dict else [] }}"
+    weak_ciphers_found: |
+      {{ ssh_config_dict.ciphers.split(',') | intersect(weak_ciphers) | list if 'ciphers' in ssh_config_dict else [] }}
+  when:
+    - ssh_package_installed
+    - ssh_config_dict is defined
+
+- name: Check for weak MACs
+  set_fact:
+    configured_macs: "{{ ssh_config_dict.macs.split(',') if 'macs' in ssh_config_dict else [] }}"
+    weak_macs_found: |
+      {{ ssh_config_dict.macs.split(',') | intersect(weak_macs) | list if 'macs' in ssh_config_dict else [] }}
+  when:
+    - ssh_package_installed
+    - ssh_config_dict is defined
+
+- name: Check for weak key exchange algorithms
+  set_fact:
+    configured_kex: "{{ ssh_config_dict.kexalgorithms.split(',') if 'kexalgorithms' in ssh_config_dict else [] }}"
+    weak_kex_found: |
+      {{ ssh_config_dict.kexalgorithms.split(',') | intersect(weak_kex) | list if 'kexalgorithms' in ssh_config_dict else [] }}
+  when:
+    - ssh_package_installed
+    - ssh_config_dict is defined
+
+- name: Check SSH service status
+  systemd:
+    name: sshd
+  register: sshd_service
+  when: ssh_package_installed
+
+- name: Set comprehensive SSH facts
+  set_fact:
+    host_ssh_facts:
+      package_installed: "{{ ssh_package_installed }}"
+      service_enabled: "{{ sshd_service.status.UnitFileState | default('unknown') if ssh_package_installed else 'N/A' }}"
+      service_running: "{{ sshd_service.status.ActiveState | default('unknown') if ssh_package_installed else 'N/A' }}"
+      config_file:
+        path: "{{ sshd_config_file }}"
+        owner: "{{ sshd_config_stat.stat.pw_name | default('unknown') }}"
+        group: "{{ sshd_config_stat.stat.gr_name | default('unknown') }}"
+        mode: "{{ '%04o' | format(sshd_config_stat.stat.mode) if sshd_config_stat.stat is defined else 'unknown' }}"
+        permissions_octal: "{{ '%o' | format(sshd_config_stat.stat.mode)[-3:] if sshd_config_stat.stat is defined else 'unknown' }}"
+      ssh_config: "{{ ssh_config_dict | default({}) }}"
+      ssh_host_keys: "{{ ssh_host_keys | default([]) }}"
+      ciphers:
+        configured: "{{ configured_ciphers | default([]) }}"
+        weak_found: "{{ weak_ciphers_found | default([]) }}"
+        using_weak: "{{ (weak_ciphers_found | default([]) | length > 0) }}"
+      macs:
+        configured: "{{ configured_macs | default([]) }}"
+        weak_found: "{{ weak_macs_found | default([]) }}"
+        using_weak: "{{ (weak_macs_found | default([]) | length > 0) }}"
+      kex_algorithms:
+        configured: "{{ configured_kex | default([]) }}"
+        weak_found: "{{ weak_kex_found | default([]) }}"
+        using_weak: "{{ (weak_kex_found | default([]) | length > 0) }}"
+      security_checks:
+        permit_root_login: "{{ ssh_config_dict.permitrootlogin | default('not set') }}"
+        password_authentication: "{{ ssh_config_dict.passwordauthentication | default('not set') }}"
+        permit_empty_passwords: "{{ ssh_config_dict.permitemptypasswords | default('not set') }}"
+        x11_forwarding: "{{ ssh_config_dict.x11forwarding | default('not set') }}"
+        use_pam: "{{ ssh_config_dict.usepam | default('not set') }}"
+        log_level: "{{ ssh_config_dict.loglevel | default('not set') }}"
+        max_auth_tries: "{{ ssh_config_dict.maxauthtries | default('not set') }}"
+        client_alive_interval: "{{ ssh_config_dict.clientaliveinterval | default('not set') }}"
+        client_alive_count_max: "{{ ssh_config_dict.clientalivecountmax | default('not set') }}"
+        login_grace_time: "{{ ssh_config_dict.logingracetime | default('not set') }}"
+        banner: "{{ ssh_config_dict.banner | default('not set') }}"
+        hostbased_authentication: "{{ ssh_config_dict.hostbasedauthentication | default('not set') }}"
+        ignore_rhosts: "{{ ssh_config_dict.ignorerhosts | default('not set') }}"
+        permit_user_environment: "{{ ssh_config_dict.permituserenvironment | default('not set') }}"
+        max_sessions: "{{ ssh_config_dict.maxsessions | default('not set') }}"
+        max_startups: "{{ ssh_config_dict.maxstartups | default('not set') }}"
+      collection_timestamp: "{{ ansible_date_time.iso8601 }}"
+
+- name: Display SSH facts summary
+  debug:
+    msg:
+      - "SSH package installed: {{ host_ssh_facts.package_installed }}"
+      - "SSH service enabled: {{ host_ssh_facts.service_enabled }}"
+      - "SSH service running: {{ host_ssh_facts.service_running }}"
+      - "PermitRootLogin: {{ host_ssh_facts.security_checks.permit_root_login }}"
+      - "Using weak ciphers: {{ host_ssh_facts.ciphers.using_weak }}"
+      - "Using weak MACs: {{ host_ssh_facts.macs.using_weak }}"
+      - "Using weak KEX: {{ host_ssh_facts.kex_algorithms.using_weak }}"
+  when: ssh_package_installed

@@ -1,0 +1,200 @@
+---
+# verify_evidence_chain.yml — prove the evidence store is append-only and unaltered
+#
+# Walks compliance_results in id order recomputing every hash link
+# (evidence_chain_verify(), installed by ansible/files/evidence_append_only.sql),
+# confirms the append-only triggers are present and enabled, confirms the
+# evidence writer role (if configured) cannot UPDATE/DELETE, and lists any
+# maintenance-path rewrites since the last run. Publishes the chain head as an
+# AAP job artifact (set_stats) so the anchor lives outside the database: an
+# auditor compares today's head against the one AAP recorded last week.
+#
+# Fails when: a link is broken (an unhashed row counts), any of the four guards is
+# missing or disabled, or the configured writer role is missing, superuser, can
+# rewrite evidence, or can insert into the maintenance log. A maintenance-path rewrite is reported, not failed — it is
+# logged by design — unless evidence_chain_fail_on_maintenance=true.
+#
+# AAP Job Template: "AAC - Verify Evidence Chain" (project: Compliance Automation
+# (main); credential: Ansible Vault). Schedule it daily; run it before an audit.
+#
+# Variables:
+#   evidence_chain_fail_on_maintenance   false   true = any logged rewrite fails the run
+#   evidence_chain_since_hours           24      window for the maintenance-log report
+
+- name: Verify the evidence chain
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    evidence_chain_fail_on_maintenance: false
+    evidence_chain_since_hours: 24
+    _writer: "{{ aac_evidence_writer_user | default('', true) }}"
+
+  tasks:
+
+    # site_config.yml / vault_secrets.yml are gitignored and absent from an AAP
+    # project checkout; there the connection comes from extra_vars and the
+    # Ansible Vault credential, as in generate_compliance_report_from_db.yml.
+    - name: Load optional local config (operator machine only)
+      ansible.builtin.include_vars: "{{ item }}"
+      with_first_found:
+        - files: ["{{ playbook_dir }}/../vars/site_config.yml"]
+          skip: true
+
+    - name: Load optional local secrets (operator machine only)
+      ansible.builtin.include_vars: "{{ item }}"
+      with_first_found:
+        - files:
+            - "{{ playbook_dir }}/../vars/vault_secrets.lab.yml"
+            - "{{ playbook_dir }}/../vars/vault_secrets.yml"
+          skip: true
+
+    - name: Resolve the connection
+      ansible.builtin.set_fact:
+        _pg:
+          login_host: "{{ pg_host | default(aac_host | default('', true), true) }}"
+          login_port: "{{ pg_port | default(5432) }}"
+          login_user: "{{ pg_user | default('postgres') }}"
+          login_password: "{{ pg_password | default(compliance_db_password | default('', true), true) }}"
+          db: "{{ pg_db | default('compliance') }}"
+      no_log: true
+
+    - name: Require a database host
+      ansible.builtin.assert:
+        that:
+          - _pg.login_host | length > 0
+        fail_msg: "pg_host is required (site_config.yml, or extra_vars from AAP). The password comes from pg_password / compliance_db_password; trust- or cert-authenticated installs may leave it empty."
+        quiet: true
+
+    - name: Walk the chain
+      community.postgresql.postgresql_query:
+        login_host: "{{ _pg.login_host }}"
+        login_port: "{{ _pg.login_port }}"
+        login_user: "{{ _pg.login_user }}"
+        login_password: "{{ _pg.login_password }}"
+        login_db: "{{ _pg.db }}"
+        query: "SELECT * FROM evidence_chain_verify()"
+      register: _chain
+
+    - name: Read the guard triggers
+      community.postgresql.postgresql_query:
+        login_host: "{{ _pg.login_host }}"
+        login_port: "{{ _pg.login_port }}"
+        login_user: "{{ _pg.login_user }}"
+        login_password: "{{ _pg.login_password }}"
+        login_db: "{{ _pg.db }}"
+        query: >-
+          SELECT c.relname AS table_name, t.tgname, t.tgenabled <> 'D' AS enabled
+          FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid
+          WHERE NOT t.tgisinternal
+            AND t.tgname IN ('trg_compliance_results_append_only',
+                             'trg_compliance_results_chain',
+                             'trg_compliance_certifications_append_only',
+                             'trg_evidence_log_append_only')
+          ORDER BY 1, 2
+      register: _guards
+
+    - name: Read the writer role's effective privileges (has_table_privilege covers PUBLIC and inherited grants)
+      community.postgresql.postgresql_query:
+        login_host: "{{ _pg.login_host }}"
+        login_port: "{{ _pg.login_port }}"
+        login_user: "{{ _pg.login_user }}"
+        login_password: "{{ _pg.login_password }}"
+        login_db: "{{ _pg.db }}"
+        query: >-
+          WITH r AS (SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = %(r)s) AS role_exists,
+                            COALESCE((SELECT rolsuper FROM pg_roles WHERE rolname = %(r)s), false) AS is_superuser)
+          SELECT r.role_exists, r.is_superuser,
+                 CASE WHEN r.role_exists THEN (
+                   SELECT bool_or(has_table_privilege(%(r)s, t, 'UPDATE')
+                               OR has_table_privilege(%(r)s, t, 'DELETE')
+                               OR has_table_privilege(%(r)s, t, 'TRUNCATE'))
+                     FROM unnest(ARRAY['compliance_results','compliance_certifications','evidence_maintenance_log']) AS t)
+                 ELSE NULL END AS can_rewrite,
+                 CASE WHEN r.role_exists THEN has_table_privilege(%(r)s, 'evidence_maintenance_log', 'INSERT')
+                 ELSE NULL END AS can_forge_log
+          FROM r
+        named_args:
+          r: "{{ _writer if (_writer | length > 0) else 'compliance_writer' }}"
+      register: _writer_q
+
+    - name: Read recent maintenance-path rewrites
+      community.postgresql.postgresql_query:
+        login_host: "{{ _pg.login_host }}"
+        login_port: "{{ _pg.login_port }}"
+        login_user: "{{ _pg.login_user }}"
+        login_password: "{{ _pg.login_password }}"
+        login_db: "{{ _pg.db }}"
+        query: >-
+          SELECT at, db_user, host(client_addr) AS client, operation, table_name, row_key, note
+          FROM evidence_maintenance_log
+          WHERE at > now() - (%s || ' hours')::interval
+          ORDER BY at DESC LIMIT 50
+        positional_args:
+          - "{{ evidence_chain_since_hours | int }}"
+      register: _maint
+
+    - name: Derive facts
+      ansible.builtin.set_fact:
+        _c: "{{ _chain.query_result[0] }}"
+        _guards_expected: 4
+        _guards_enabled: "{{ _guards.query_result | selectattr('enabled') | list | length }}"
+        _w: "{{ _writer_q.query_result[0] }}"
+        _writer_configured: "{{ _writer | length > 0 }}"
+        # Configured writer: must exist, must not be superuser, must not be able to
+        # rewrite evidence or forge the maintenance log. Not configured: reported,
+        # not failed (the install is still writing as pg_user — the note says so).
+        _writer_role_ok: >-
+          {{ (not (_writer | length > 0))
+             or ((_writer_q.query_result[0].role_exists | bool)
+                 and not (_writer_q.query_result[0].is_superuser | bool)
+                 and not (_writer_q.query_result[0].can_rewrite | default(true) | bool)
+                 and not (_writer_q.query_result[0].can_forge_log | default(true) | bool)) }}
+        _maint_count: "{{ _maint.query_result | length }}"
+        _writer_summary: >-
+          {{ ('configured as ' ~ _writer ~ (' (ROLE MISSING)' if not (_writer_q.query_result[0].role_exists | bool) else ''))
+             if (_writer | length > 0)
+             else ('NOT configured — evidence is stored as ' ~ _pg.login_user) }}
+
+    - name: Publish the chain head as a job artifact (the out-of-database anchor)
+      ansible.builtin.set_stats:
+        data:
+          evidence_chain_head_id: "{{ _c.head_id }}"
+          evidence_chain_head_hash: "{{ _c.head_hash }}"
+          evidence_chain_rows: "{{ _c.chained_rows }}"
+          evidence_chain_broken: "{{ _c.broken_rows }}"
+          evidence_chain_verified_at: "{{ lookup('pipe', 'date -u +%Y-%m-%dT%H:%M:%SZ') }}"
+
+    - name: "=== Evidence chain ==="
+      ansible.builtin.debug:
+        msg:
+          - "rows: {{ _c.total_rows }} total, {{ _c.chained_rows }} chained, {{ _c.unhashed_rows }} unhashed (each counts as a break)"
+          - "broken links: {{ _c.broken_rows }}{{ (' — first at id ' ~ _c.first_break_id) if _c.first_break_id else '' }}"
+          - "head: id {{ _c.head_id }} hash {{ _c.head_hash }}"
+          - "guards enabled: {{ _guards_enabled }} of {{ _guards_expected }} ({{ _guards.query_result | map(attribute='tgname') | join(', ') }})"
+          - "writer role: {{ _writer_summary }}; can rewrite: {{ _w.can_rewrite }}; can forge log: {{ _w.can_forge_log }}"
+          - "maintenance-path rewrites in the last {{ evidence_chain_since_hours }}h: {{ _maint_count }}"
+
+    - name: Maintenance-path rewrites (logged by design — review each one)
+      ansible.builtin.debug:
+        var: _maint.query_result
+      when: _maint_count | int > 0
+
+    - name: Verdict
+      ansible.builtin.assert:
+        that:
+          - _c.broken_rows | int == 0
+          - _c.guard_present | bool
+          - _guards_enabled | int == _guards_expected
+          - _writer_role_ok | bool
+          - (not (evidence_chain_fail_on_maintenance | bool)) or (_maint_count | int == 0)
+        fail_msg: >-
+          EVIDENCE CHAIN NOT VERIFIED —
+          broken links: {{ _c.broken_rows }} (first id {{ _c.first_break_id }});
+          guards enabled: {{ _guards_enabled }}/{{ _guards_expected }};
+          writer: {{ _writer_summary }}, can rewrite: {{ _w.can_rewrite }}, can forge log: {{ _w.can_forge_log }};
+          maintenance rewrites: {{ _maint_count }}.
+          A broken link means a row changed after it was written; evidence_maintenance_log
+          says who if it went through the sanctioned path. Treat anything else as tampering.
+        success_msg: "Evidence chain intact: {{ _c.chained_rows }} rows, head {{ _c.head_hash }}"

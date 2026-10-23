@@ -1,0 +1,221 @@
+---
+# NIST IR 7628 Rev 1 - Smart Grid Cybersecurity Assessment Input Data
+# Edit this file to reflect your organization's actual AMI compliance state
+# Load into OPA via the "AMI - NIST IR 7628 Assessment" job template
+
+organization: "Example Electric Utility"
+assessment_date: "2026-02-28"
+assessor: "AMI Security Team"
+ami_system: "AMI 2.0 Deployment - Region West"
+
+# =============================================================================
+# SG.AC - Access Control
+# =============================================================================
+access_control:
+  policy:
+    documented: true
+    approved: true
+    last_review_date: "2025-10-01T00:00:00Z"     # ~150 days ago — within 365
+
+  accounts:
+    formal_provisioning: true
+    formal_deprovisioning: true
+    periodic_review: true
+
+  enforcement:
+    default_deny: true
+    least_privilege: true
+    privilege_separation: true
+
+  sessions:
+    secure_tokens: true
+    timeout_minutes: 20
+    concurrent_sessions_limited: true
+
+  remote_access:
+    mfa_required: true
+    encrypted_channel: true
+    vpn_required: true
+
+# =============================================================================
+# SG.AU - Audit and Accountability
+# =============================================================================
+audit:
+  events_logged:
+    - "user_login"
+    - "user_logout"
+    - "failed_authentication"
+    - "data_access"
+    - "data_modification"
+    - "configuration_change"
+    - "privilege_escalation"
+    - "meter_tamper_alert"
+    - "firmware_update"
+
+  storage:
+    capacity_monitoring_enabled: true
+    alert_threshold_percent: 75
+    auto_archive_enabled: true
+    retention_days: 730          # 2 years
+    failure_alerting_enabled: true
+    failure_response_documented: true
+
+  protection:
+    encrypted: true
+    integrity_mechanism: "HMAC_SHA256"
+    write_protected: true
+
+  siem:
+    centralized_logging: true
+    real_time_alerting: true
+    correlation_enabled: true
+
+# =============================================================================
+# SG.IA - Identification and Authentication
+# =============================================================================
+identification_auth:
+  devices:
+    unique_identity_per_device: true
+    authentication_required: true
+    unauthenticated_devices_blocked: true
+    credential_inventory:
+      - device_id: "MTR-001"
+        last_key_rotation_date: "2025-12-15T00:00:00Z"    # ~75 days ago
+      - device_id: "MTR-002"
+        last_key_rotation_date: "2026-01-10T00:00:00Z"    # ~49 days ago
+      - device_id: "MTR-003"
+        last_key_rotation_date: "2025-11-20T00:00:00Z"    # ~100 days ago — OVER 90 days
+
+  pki:
+    certificate_authority_trusted: true
+    certificate_algorithm: "ECDSA-P256"
+    certificate_revocation_checking: true
+    device_certificates:
+      - device_id: "MTR-001"
+        expiry_date: "2027-03-01T00:00:00Z"     # > 30 days out — OK
+      - device_id: "MTR-002"
+        expiry_date: "2026-03-20T00:00:00Z"     # ~20 days out — WARNING
+      - device_id: "MTR-003"
+        expiry_date: "2026-06-01T00:00:00Z"     # > 30 days out — OK
+
+  cryptography:
+    fips_validated: true
+    validation_level: 2
+
+  mfa:
+    enabled: true
+    required_for_privileged: true
+    second_factor: "hardware_token"
+
+# =============================================================================
+# SG.SC - System and Communications Protection
+# =============================================================================
+system_comms:
+  policy:
+    documented: true
+    approved: true
+
+  network:
+    ot_it_segmented: true
+    ami_isolated_from_internet: true
+    firewall_between_zones: true
+
+  encryption:
+    tls_version: "TLS_1.3"
+    enabled_ciphers:
+      - "TLS_AES_256_GCM_SHA384"
+      - "TLS_AES_128_GCM_SHA256"
+      - "TLS_CHACHA20_POLY1305_SHA256"
+
+  rf_mesh:
+    encrypted: true
+    encryption_algorithm: "AES-128-CCM"
+
+  key_management:
+    hsm_used: true
+    key_escrow_policy_defined: true
+    master_key_rotation_days: 365
+
+  pki:
+    root_ca_offline: true
+    intermediate_ca_online: true
+    crl_or_ocsp_enabled: true
+
+  storage:
+    mdms_encrypted: true
+    encryption_algorithm: "AES-256"
+    key_management_integrated: true
+
+# =============================================================================
+# SG.CM - Configuration Management
+# =============================================================================
+config_management:
+  baseline:
+    documented: true
+    version_controlled: true
+    components_covered:
+      - "AMI_Head_End"
+      - "RF_Mesh_Network"
+      - "Meter_Firmware"
+      - "MDMS_Server"
+    last_review_date: "2025-09-01T00:00:00Z"    # ~180 days ago — within 365
+
+  change_control:
+    formal_process: true
+    approval_required: true
+    testing_required: true
+    rollback_capability: true
+
+  hardening:
+    unnecessary_services_disabled: true
+    default_passwords_changed: true
+    unnecessary_ports_closed: true
+    secure_protocols_only: true
+
+  least_functionality:
+    application_whitelisting: true
+    unnecessary_software_removed: true
+    firmware_locked: true
+
+  inventory:
+    components:
+      - "MTR-001"
+      - "MTR-002"
+      - "MTR-003"
+    last_updated: "2026-02-27T00:00:00Z"        # Yesterday — current
+
+# =============================================================================
+# SG.IR - Incident Response
+# =============================================================================
+incident_response:
+  policy:
+    documented: true
+    approved: true
+    ami_specific_procedures: true
+    last_review_date: "2026-01-15T00:00:00Z"    # ~44 days ago — within 365
+
+  training:
+    last_date: "2025-11-01T00:00:00Z"           # ~119 days ago — within 365
+    ami_scenarios_covered: true
+
+  testing:
+    last_test_date: "2025-08-15T00:00:00Z"      # ~197 days ago — within 365
+    type: "tabletop"
+
+  detection:
+    automated_alerting: true
+    tamper_detection_integrated: true
+    anomaly_detection_enabled: true
+
+  reporting:
+    internal_escalation_path_defined: true
+    external_reporting_contacts_current: true
+    reporting_timeframe_hours: 4               # 4 hours — well within 24-hour requirement
+
+  plan:
+    scenarios_covered:
+      - "mass_meter_compromise"
+      - "head_end_breach"
+      - "rf_network_jamming"
+      - "firmware_tampering"
+      - "data_exfiltration"

@@ -1,0 +1,154 @@
+---
+# linux_app_deps.yml — Collect APPLICATION-layer dependencies
+#
+# Closes an application-dependency collection gap identified in internal design review
+# §5d: every other collector here reads an OS package manager, so the estate
+# inventory has been 100% rpm/deb/Windows and 0% application dependencies.
+#
+# That single gap limits four things at once:
+#   - CVE matching        — most published CVEs are in application dependencies
+#   - OSV enrichment      — OSV is overwhelmingly a language-ecosystem database
+#   - Support status      — python3/nodejs/postgresql are already mapped with
+#                           nothing to populate them
+#   - SBOM / supply chain — an SBOM of OS packages is not what SSDF asks for
+#   - backport vendors    — they serve Java and Python first
+#
+# ── Cost control ─────────────────────────────────────────────────────────────
+# This runs across the whole estate, so every probe is bounded: search roots are
+# explicit (never `/`), depth and result counts are capped, and each command is
+# `failed_when: false` so a host with no Java (or no Python, or a locked-down
+# filesystem) degrades to an empty list rather than failing the play. Raise the
+# caps per environment via the aac_app_deps_* variables rather than editing here.
+
+- name: Python — installed distributions per interpreter
+  # importlib.metadata is stdlib from 3.8 and sees everything pip installed,
+  # including distributions pip itself would miss (system packages, wheels
+  # dropped in by other tooling). No pip invocation, no network, no writes.
+  ansible.builtin.shell: |
+    set -o pipefail
+    for py in {{ aac_app_deps_python_interpreters | join(' ') }}; do
+      command -v "$py" >/dev/null 2>&1 || continue
+      "$py" - <<'PYEOF' 2>/dev/null
+    import json
+    try:
+        from importlib.metadata import distributions
+    except Exception:
+        raise SystemExit(0)
+    seen = set()
+    for d in distributions():
+        try:
+            n = (d.metadata['Name'] or '').strip()
+            v = (d.version or '').strip()
+        except Exception:
+            continue
+        if n and v:
+            seen.add((n.lower(), v))
+    for n, v in sorted(seen):
+        print(json.dumps({"name": n, "version": v}))
+    PYEOF
+    done | sort -u | head -n {{ aac_app_deps_max_python }}
+  args:
+    executable: /bin/bash
+  register: aac_py_raw
+  changed_when: false
+  failed_when: false
+
+- name: Java — Maven coordinates embedded in deployed JARs
+  # A deployed JAR carries META-INF/maven/<groupId>/<artifactId>/pom.properties.
+  # Reading it gives true Maven coordinates without needing a build tool, a
+  # project checkout, or network access — which is what makes this work on a
+  # production host rather than a build agent.
+  ansible.builtin.shell: |
+    set -o pipefail
+    command -v unzip >/dev/null 2>&1 || exit 0
+    for root in {{ aac_app_deps_java_roots | join(' ') }}; do
+      [ -d "$root" ] || continue
+      find "$root" -maxdepth {{ aac_app_deps_find_depth }} -type f -name '*.jar' 2>/dev/null
+    done | head -n {{ aac_app_deps_max_jars }} | while read -r jar; do
+      unzip -p "$jar" 'META-INF/maven/*/*/pom.properties' 2>/dev/null \
+        | awk -F= '
+            /^groupId=/    {g=$2}
+            /^artifactId=/ {a=$2}
+            /^version=/    {v=$2}
+            END { if (g && a && v) printf "{\"group\":\"%s\",\"artifact\":\"%s\",\"version\":\"%s\"}\n", g, a, v }'
+    done | sort -u | head -n {{ aac_app_deps_max_java }}
+  args:
+    executable: /bin/bash
+  register: aac_java_raw
+  changed_when: false
+  failed_when: false
+
+- name: Node — installed packages under node_modules
+  # Not served by backport vendors today, but collected because OSV covers npm heavily
+  # and it costs one more bounded probe.
+  ansible.builtin.shell: |
+    set -o pipefail
+    for root in {{ aac_app_deps_node_roots | join(' ') }}; do
+      [ -d "$root" ] || continue
+      find "$root" -maxdepth {{ aac_app_deps_find_depth }} -type d -name node_modules 2>/dev/null
+    done | head -n {{ aac_app_deps_max_node_dirs }} | while read -r nm; do
+      find "$nm" -maxdepth 2 -name package.json 2>/dev/null | head -n 500 | while read -r pj; do
+        python3 - "$pj" <<'PYEOF' 2>/dev/null
+    import json, sys
+    try:
+        d = json.load(open(sys.argv[1]))
+        n, v = d.get("name"), d.get("version")
+        if n and v:
+            print(json.dumps({"name": n, "version": v}))
+    except Exception:
+        pass
+    PYEOF
+      done
+    done | sort -u | head -n {{ aac_app_deps_max_node }}
+  args:
+    executable: /bin/bash
+  register: aac_node_raw
+  changed_when: false
+  failed_when: false
+
+- name: Set application dependency facts
+  # Each entry carries a PURL. PURL is the canonical identity for application
+  # dependencies because it is what OSV, backport-vendor coordinates and every SBOM
+  # format speak natively — unlike CPE, which is unusable at the library level.
+  #
+  # `vendor` deliberately carries the NAMESPACE, not a copy of the name:
+  #   maven -> groupId   (org.springframework)
+  #   pypi  -> 'pypi'
+  #   npm   -> 'npm'
+  # The OS collector sets vendor = lower(package_name), a convention that does
+  # not survive Maven's groupId namespacing. Keeping the namespace here is what
+  # lets the existing (vendor, product, version) join stay meaningful.
+  ansible.builtin.set_fact:
+    aac_app_deps:
+      python: >-
+        {{ (aac_py_raw.stdout_lines | default([]))
+           | map('from_json') | list }}
+      java: >-
+        {{ (aac_java_raw.stdout_lines | default([]))
+           | map('from_json') | list }}
+      node: >-
+        {{ (aac_node_raw.stdout_lines | default([]))
+           | map('from_json') | list }}
+      counts:
+        python: "{{ aac_py_raw.stdout_lines | default([]) | length }}"
+        java: "{{ aac_java_raw.stdout_lines | default([]) | length }}"
+        node: "{{ aac_node_raw.stdout_lines | default([]) | length }}"
+      truncated:
+        python: "{{ (aac_py_raw.stdout_lines | default([]) | length) >= (aac_app_deps_max_python | int) }}"
+        java: "{{ (aac_java_raw.stdout_lines | default([]) | length) >= (aac_app_deps_max_java | int) }}"
+        node: "{{ (aac_node_raw.stdout_lines | default([]) | length) >= (aac_app_deps_max_node | int) }}"
+
+# Truncation must be visible. A silently capped inventory reads downstream as
+# "this host has no more dependencies", which would understate exposure — the
+# exact failure mode the lifecycle document warns about for silent caps.
+- name: Warn when a dependency probe hit its cap
+  ansible.builtin.debug:
+    msg: >-
+      {{ inventory_hostname }}: application dependency collection hit a cap
+      ({% for k, v in aac_app_deps.truncated.items() if v | bool %}{{ k }} {% endfor %}).
+      The inventory for this host is INCOMPLETE — raise aac_app_deps_max_* for
+      this environment before treating its exposure as fully assessed.
+  # `bool` is an Ansible FILTER, not a Jinja test — select('bool') fails at
+  # runtime with "Could not load bool". Convert with map('bool') and test for
+  # membership instead.
+  when: true in (aac_app_deps.truncated.values() | map('bool') | list)

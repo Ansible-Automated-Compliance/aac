@@ -1,0 +1,53 @@
+---
+# Default variables for gather_auditd_facts role
+
+# Directory where audit rules are stored
+audit_rules_dir: /etc/audit/rules.d
+
+# Main audit configuration file
+auditd_conf_file: /etc/audit/auditd.conf
+
+# Audit control files
+audit_rules_file: /etc/audit/audit.rules
+
+# Whether to check if running config matches on-disk config
+check_config_sync: true
+
+# Grub configuration file locations
+grub_defaults_file: /etc/default/grub
+grub_config_file: /boot/grub2/grub.cfg
+
+# Expected audit parameters
+required_audit_rules:
+  - name: sudoers_changes
+    pattern: "-w /etc/sudoers -p wa -k scope"
+  - name: user_emulation
+    pattern: "-a always,exit -F arch=b64 -C euid!=uid -F auid!=unset -S execve -k user_emulation"
+  - name: sudo_log
+    pattern: "-w /var/log/sudo.log -p wa -k sudo_log_file"
+  - name: time_change
+    pattern: "-a always,exit -F arch=b64 -S adjtimex,settimeofday,clock_settime -k time-change"
+  - name: system_locale
+    pattern: "-a always,exit -F arch=b64 -S sethostname,setdomainname -k system-locale"
+  - name: privileged_commands
+    pattern: "-a always,exit -F path=<PRIVILEGED_CMD> -F perm=x -F auid>=1000 -F auid!=unset -k privileged"
+  - name: unauthorized_access
+    pattern: "-a always,exit -F arch=b64 -S open,truncate,ftruncate,creat,openat -F exit=-EACCES -F auid>=1000 -F auid!=unset -k access"
+  - name: identity_changes
+    pattern: "-w /etc/group -p wa -k identity"
+  - name: perm_mod
+    pattern: "-a always,exit -F arch=b64 -S chmod,fchmod,fchmodat -F auid>=1000 -F auid!=unset -k perm_mod"
+  - name: mounts
+    pattern: "-a always,exit -F arch=b64 -S mount -F auid>=1000 -F auid!=unset -k mounts"
+  - name: session
+    pattern: "-w /var/run/utmp -p wa -k session"
+  - name: logins
+    pattern: "-w /var/log/lastlog -p wa -k logins"
+  - name: delete
+    pattern: "-a always,exit -F arch=b64 -S rename,unlink,unlinkat,renameat -F auid>=1000 -F auid!=unset -k delete"
+  - name: mac_policy
+    pattern: "-w /etc/selinux/ -p wa -k MAC-policy"
+  - name: modules
+    pattern: "-a always,exit -F arch=b64 -S init_module,delete_module -k modules"
+  - name: immutable
+    pattern: "-e 2"

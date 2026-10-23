@@ -1,0 +1,373 @@
+---
+# OPA Policy Deployment Playbook for AAP 2.6
+# Deploys and manages OPA policies across infrastructure
+
+- name: Deploy OPA Policies for Compliance Assessment
+  hosts: opa_servers
+  gather_facts: yes
+  become: yes
+  vars:
+    opa_version: "0.58.0"
+    opa_binary_url: "https://openpolicyagent.org/downloads/v{{ opa_version }}/opa_linux_amd64_static"
+    opa_user: "opa"
+    opa_group: "opa" 
+    opa_home: "/opt/opa"
+    opa_config_dir: "/etc/opa"
+    opa_data_dir: "/var/lib/opa"
+    opa_log_dir: "/var/log/opa"
+    opa_policies_repo: "{{ git_repo_url | default('https://github.com/ansible-automated-compliance/aac.git') }}"
+    opa_policies_branch: "{{ git_branch | default('main') }}"
+    opa_server_port: 8181
+    
+    database_config:
+      host: "{{ vault_db_host }}"
+      port: 5432
+      database: compliance
+      username: "{{ vault_db_user }}"
+      password: "{{ vault_db_password }}"
+
+  pre_tasks:
+    - name: Install required packages
+      package:
+        name:
+          - git
+          - curl
+          - systemd
+          - python3-psycopg2
+        state: present
+
+  tasks:
+    # ==========================================
+    # OPA SERVER INSTALLATION
+    # ==========================================
+
+    - name: Create OPA system user
+      user:
+        name: "{{ opa_user }}"
+        group: "{{ opa_group }}"
+        system: yes
+        home: "{{ opa_home }}"
+        shell: /bin/false
+        create_home: yes
+
+    - name: Create OPA directories
+      file:
+        path: "{{ item }}"
+        state: directory
+        owner: "{{ opa_user }}"
+        group: "{{ opa_group }}"
+        mode: '0755'
+      loop:
+        - "{{ opa_home }}"
+        - "{{ opa_config_dir }}"
+        - "{{ opa_data_dir }}"
+        - "{{ opa_log_dir }}"
+        - "{{ opa_home }}/policies"
+        - "{{ opa_home }}/bundles"
+
+    - name: Download OPA binary
+      get_url:
+        url: "{{ opa_binary_url }}"
+        dest: /usr/local/bin/opa
+        mode: '0755'
+        owner: root
+        group: root
+      register: opa_download
+
+    - name: Verify OPA installation
+      command: /usr/local/bin/opa version
+      register: opa_version_check
+      changed_when: false
+
+    # ==========================================
+    # OPA CONFIGURATION
+    # ==========================================
+
+    - name: Create OPA server configuration
+      template:
+        src: opa_config.yaml.j2
+        dest: "{{ opa_config_dir }}/config.yaml"
+        owner: "{{ opa_user }}"
+        group: "{{ opa_group }}"
+        mode: '0640'
+      notify:
+        - restart opa
+
+    - name: Create OPA systemd service
+      template:
+        src: opa.service.j2
+        dest: /etc/systemd/system/opa.service
+        mode: '0644'
+      notify:
+        - reload systemd
+        - restart opa
+
+    # ==========================================
+    # POLICY REPOSITORY MANAGEMENT
+    # ==========================================
+
+    - name: Clone compliance policies repository
+      git:
+        repo: "{{ opa_policies_repo }}"
+        dest: "{{ opa_home }}/compliance-repo"
+        version: "{{ opa_policies_branch }}"
+        force: yes
+      become_user: "{{ opa_user }}"
+      register: git_clone
+
+    - name: Sync CIS benchmark policies
+      synchronize:
+        src: "{{ opa_home }}/compliance-repo/policies/cis_benchmarks/"
+        dest: "{{ opa_home }}/policies/cis_benchmarks/"
+        delete: yes
+        owner: no
+        group: no
+      delegate_to: "{{ inventory_hostname }}"
+      become_user: "{{ opa_user }}"
+
+    - name: Sync other compliance policies
+      synchronize:
+        src: "{{ opa_home }}/compliance-repo/policies/{{ item }}/"
+        dest: "{{ opa_home }}/policies/{{ item }}/"
+        delete: yes
+        owner: no
+        group: no
+      delegate_to: "{{ inventory_hostname }}"
+      become_user: "{{ opa_user }}"
+      loop:
+        - nist
+        - soc2
+        - pci_dss
+        - iso27001
+      when: sync_all_policies | default(false) | bool
+
+    # ==========================================
+    # POLICY VALIDATION AND TESTING
+    # ==========================================
+
+    - name: Validate OPA policies syntax
+      shell: |
+        find {{ opa_home }}/policies -name "*.rego" -exec /usr/local/bin/opa fmt --diff {} \;
+      register: opa_syntax_check
+      failed_when: opa_syntax_check.rc != 0
+      become_user: "{{ opa_user }}"
+
+    - name: Run OPA policy tests
+      shell: |
+        /usr/local/bin/opa test {{ opa_home }}/compliance-repo/tests/
+      register: opa_test_results
+      become_user: "{{ opa_user }}"
+      when: run_tests | default(true) | bool
+
+    - name: Display test results
+      debug:
+        var: opa_test_results.stdout_lines
+      when: opa_test_results is defined
+
+    # ==========================================
+    # DATABASE INTEGRATION
+    # ==========================================
+
+    - name: Register OPA policies in database
+      postgresql_query:
+        login_host: "{{ database_config.host }}"
+        login_user: "{{ database_config.username }}"
+        login_password: "{{ database_config.password }}"
+        login_db: "{{ database_config.database }}"
+        query: |
+          INSERT INTO cis_policies (framework_id, policy_name, platform, version, file_path, package_name)
+          VALUES (
+            (SELECT id FROM compliance_frameworks WHERE name = 'CIS'),
+            %(policy_name)s,
+            %(platform)s,
+            %(version)s,
+            %(file_path)s,
+            %(package_name)s
+          )
+          ON CONFLICT (platform, version) DO UPDATE SET
+            file_path = EXCLUDED.file_path,
+            package_name = EXCLUDED.package_name,
+            updated_at = CURRENT_TIMESTAMP
+        named_args:
+          policy_name: "{{ item.name }}"
+          platform: "{{ item.platform }}"
+          version: "{{ item.version }}"
+          file_path: "{{ item.path }}"
+          package_name: "{{ item.package }}"
+      loop: "{{ discovered_policies }}"
+      delegate_to: localhost
+      become: false  # delegated to the controller/EE: no sudo there
+      vars:
+        discovered_policies:
+          - { name: "CIS RHEL 8", platform: "rhel8", version: "1.0", path: "cis_benchmarks/rhel_8/cis_rhel_8.rego", package: "cis_rhel_8" }
+          - { name: "CIS RHEL 9", platform: "rhel9", version: "1.0", path: "cis_benchmarks/rhel_9/cis_rhel_9.rego", package: "cis_rhel_9" }
+          - { name: "CIS Ubuntu 20.04", platform: "ubuntu2004", version: "1.0", path: "cis_benchmarks/ubuntu_20_04_lts/cis_ubuntu_20_04.rego", package: "cis_ubuntu_20_04" }
+          - { name: "CIS Windows Server 2022", platform: "windows2022", version: "1.0", path: "cis_benchmarks/windows_server_2022/cis_windows_server_2022.rego", package: "cis_windows_server_2022" }
+          - { name: "CIS VMware vCenter 8.0", platform: "vcenter8", version: "1.0", path: "cis_benchmarks/vmware/vcenter/cis_vcenter_8.rego", package: "cis_vcenter_8" }
+          - { name: "CIS VMware ESXi 8.0", platform: "esxi8", version: "1.0", path: "cis_benchmarks/vmware/esxi/cis_esxi_8.rego", package: "cis_esxi_8" }
+
+    # ==========================================
+    # OPA SERVER STARTUP AND MONITORING
+    # ==========================================
+
+    - name: Start and enable OPA service
+      systemd:
+        name: opa
+        state: started
+        enabled: yes
+        daemon_reload: yes
+
+    - name: Wait for OPA server to be ready
+      uri:
+        use_proxy: false
+        url: "http://localhost:{{ opa_server_port }}/health"
+        method: GET
+        status_code: 200
+      register: opa_health_check
+      until: opa_health_check.status == 200
+      retries: 30
+      delay: 2
+
+    - name: Test OPA API endpoint
+      uri:
+        use_proxy: false
+        url: "http://localhost:{{ opa_server_port }}/v1/policies"
+        method: GET
+        return_content: yes
+      register: opa_api_test
+
+    - name: Upload policies via OPA API
+      uri:
+        use_proxy: false
+        url: "http://localhost:{{ opa_server_port }}/v1/policies/{{ item.package }}"
+        method: PUT
+        body: "{{ lookup('file', opa_home + '/policies/' + item.path) }}"
+        headers:
+          Content-Type: "text/plain"
+        status_code: 200
+      loop: "{{ discovered_policies }}"
+      when: deploy_via_api | default(false) | bool
+
+  handlers:
+    - name: reload systemd
+      systemd:
+        daemon_reload: yes
+
+    - name: restart opa
+      systemd:
+        name: opa
+        state: restarted
+
+# ==========================================
+# POLICY BUNDLE MANAGEMENT PLAY
+# ==========================================
+
+- name: Create and Deploy OPA Policy Bundles
+  hosts: opa_servers[0]  # Run on primary OPA server only
+  become: yes
+  vars:
+    bundle_server_url: "{{ opa_bundle_server | default('http://localhost:8080') }}"
+    bundle_name: "compliance-policies"
+    
+  tasks:
+    - name: Create policy bundle structure
+      file:
+        path: "{{ opa_home }}/bundles/{{ bundle_name }}/{{ item }}"
+        state: directory
+        owner: "{{ opa_user }}"
+        group: "{{ opa_group }}"
+        mode: '0755'
+      loop:
+        - policies
+        - data
+
+    - name: Copy policies to bundle
+      copy:
+        src: "{{ opa_home }}/policies/"
+        dest: "{{ opa_home }}/bundles/{{ bundle_name }}/policies/"
+        remote_src: yes
+        owner: "{{ opa_user }}"
+        group: "{{ opa_group }}"
+
+    - name: Create bundle manifest
+      template:
+        src: bundle_manifest.json.j2
+        dest: "{{ opa_home }}/bundles/{{ bundle_name }}/manifest.json"
+        owner: "{{ opa_user }}"
+        group: "{{ opa_group }}"
+        mode: '0644'
+
+    - name: Build OPA bundle
+      shell: |
+        cd {{ opa_home }}/bundles
+        tar -czf {{ bundle_name }}.tar.gz {{ bundle_name }}/
+      become_user: "{{ opa_user }}"
+
+    - name: Upload bundle to bundle server
+      uri:
+        use_proxy: false
+        url: "{{ bundle_server_url }}/bundles/{{ bundle_name }}.tar.gz"
+        method: PUT
+        src: "{{ opa_home }}/bundles/{{ bundle_name }}.tar.gz"
+        headers:
+          Content-Type: "application/gzip"
+      when: bundle_server_url != "http://localhost:8080"
+
+# ==========================================
+# MONITORING AND HEALTH CHECKS
+# ==========================================
+
+- name: Configure OPA Monitoring
+  hosts: opa_servers
+  become: yes
+  tasks:
+    - name: Create OPA health check script
+      template:
+        src: opa_healthcheck.sh.j2
+        dest: /usr/local/bin/opa_healthcheck.sh
+        mode: '0755'
+
+    - name: Setup OPA monitoring cron job
+      cron:
+        name: "OPA Health Check"
+        minute: "*/5"
+        job: "/usr/local/bin/opa_healthcheck.sh >> {{ opa_log_dir }}/health.log 2>&1"
+        user: "{{ opa_user }}"
+
+    - name: Configure log rotation for OPA
+      template:
+        src: opa_logrotate.j2
+        dest: /etc/logrotate.d/opa
+        mode: '0644'
+
+  post_tasks:
+    - name: Display OPA deployment summary
+      debug:
+        msg: |
+          OPA Policy Deployment Summary:
+          - OPA Version: {{ opa_version }}
+          - Server Port: {{ opa_server_port }}
+          - Policies Path: {{ opa_home }}/policies
+          - Service Status: {{ ansible_facts.services['opa'].state | default('unknown') }}
+          - Health Check: {{ opa_health_check.status | default('unknown') }}
+          - Policies Deployed: {{ discovered_policies | length }}
+          
+    - name: Verify OPA policy evaluation
+      uri:
+        use_proxy: false
+        url: "http://localhost:{{ opa_server_port }}/v1/data/cis_rhel_8/compliant"
+        method: POST
+        body_format: json
+        body:
+          input:
+            system:
+              type: "linux"
+              distribution: "rhel"
+              version: "8"
+        status_code: 200
+      register: policy_test
+      ignore_errors: yes
+
+    - name: Show policy test result
+      debug:
+        msg: "Policy evaluation test: {{ 'PASSED' if policy_test.status == 200 else 'FAILED' }}"

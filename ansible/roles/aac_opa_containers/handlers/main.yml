@@ -1,0 +1,55 @@
+---
+# Restart handlers for OPA containers and HAProxy load balancers.
+# Notify these from tasks that update policy files on the host.
+
+- name: restart_opa_security
+  command: "podman restart opa-security"
+  delegate_to: "{{ aac_host }}"
+
+- name: restart_opa_compliance
+  command: "podman restart opa-compliance"
+  delegate_to: "{{ aac_host }}"
+
+- name: restart_opa_ot
+  command: "podman restart opa-ot"
+  delegate_to: "{{ aac_host }}"
+
+# Restart all replicas for a scaled type — use when policy files are updated.
+# These notify all replica instances; HAProxy will take them out of rotation
+# briefly during restart and route traffic to healthy backends automatically.
+
+- name: restart_opa_security_replicas
+  shell: |
+    for c in $(podman ps --format '{% raw %}{{.Names}}{% endraw %}' | grep '^opa-security-'); do
+      podman restart "$c"
+    done
+  delegate_to: "{{ aac_host }}"
+
+- name: restart_opa_compliance_replicas
+  shell: |
+    for c in $(podman ps --format '{% raw %}{{.Names}}{% endraw %}' | grep '^opa-compliance-'); do
+      podman restart "$c"
+    done
+  delegate_to: "{{ aac_host }}"
+
+- name: restart_opa_ot_replicas
+  shell: |
+    for c in $(podman ps --format '{% raw %}{{.Names}}{% endraw %}' | grep '^opa-ot-'); do
+      podman restart "$c"
+    done
+  delegate_to: "{{ aac_host }}"
+
+- name: restart_haproxy_security
+  command: "podman restart haproxy-opa-security"
+  delegate_to: "{{ aac_host }}"
+  ignore_errors: true
+
+- name: restart_haproxy_compliance
+  command: "podman restart haproxy-opa-compliance"
+  delegate_to: "{{ aac_host }}"
+  ignore_errors: true
+
+- name: restart_haproxy_ot
+  command: "podman restart haproxy-opa-ot"
+  delegate_to: "{{ aac_host }}"
+  ignore_errors: true

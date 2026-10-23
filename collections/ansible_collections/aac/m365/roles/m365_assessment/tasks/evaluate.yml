@@ -1,0 +1,42 @@
+---
+# One POST to the orchestrator rather than nine to the section endpoints:
+# the orchestrator already aggregates, and it is the only place that
+# reports coverage honestly (controls_evaluated out of 160, plus the
+# controls with no collector path at all).
+
+- name: Evaluate the tenant against CIS M365 v7.0.0
+  ansible.builtin.uri:
+    url: "{{ m365_opa_url }}/v1/data/{{ m365_opa_package }}/main/compliance_report"
+    method: POST
+    body_format: json
+    body:
+      input: "{{ m365_facts }}"
+    return_content: true
+    status_code: [200]
+  register: m365_opa_response
+
+- name: Extract the compliance report
+  ansible.builtin.set_fact:
+    m365_report: "{{ m365_opa_response.json.result | default({}) }}"
+
+# An empty result is the failure mode this whole library exists to
+# prevent: one undefined field collapses the report to {} and the caller
+# stores a meaningless row while the job stays green.
+- name: Fail if OPA returned an empty report
+  ansible.builtin.fail:
+    msg: >-
+      OPA returned an empty result for
+      {{ m365_opa_package }}/main/compliance_report. That means a rule is
+      undefined rather than that the tenant is clean -- check that the
+      policy bundle is loaded and that every report field is defaulted.
+  when: m365_report | length == 0
+
+- name: Fail if the assessment was incomplete and that was configured to be fatal
+  ansible.builtin.fail:
+    msg: >-
+      {{ m365_report.controls_evaluated }} of
+      {{ m365_report.benchmark_total_controls }} controls were evaluated and
+      m365_fail_on_incomplete is set.
+  when:
+    - m365_fail_on_incomplete | bool
+    - m365_report.controls_evaluated | int < m365_report.benchmark_total_controls | int

@@ -1,0 +1,513 @@
+---
+# tasks file for gather_service_config
+
+# =============================================================================
+# CIS 1.1.23 - DISABLE AUTOMOUNTING
+# =============================================================================
+
+- name: Check autofs service status
+  systemd:
+    name: autofs
+  register: autofs_service_status
+  failed_when: false
+
+- name: Parse autofs service state
+  set_fact:
+    autofs_status:
+      installed: "{{ autofs_service_status.status is defined }}"
+      active: "{{ autofs_service_status.status.ActiveState == 'active' if autofs_service_status.status is defined else false }}"
+      enabled: "{{ autofs_service_status.status.UnitFileState in ['enabled', 'enabled-runtime'] if autofs_service_status.status is defined else false }}"
+      compliant: "{{ autofs_service_status.status is not defined or (autofs_service_status.status.ActiveState != 'active' and autofs_service_status.status.UnitFileState not in ['enabled', 'enabled-runtime']) }}"
+
+# =============================================================================
+# CIS 2.1.1 - ENSURE TIME SYNCHRONIZATION IS IN USE
+# =============================================================================
+
+- name: Check which time sync service is installed
+  shell: rpm -q {{ item }}
+  loop: "{{ time_sync_services }}"
+  register: time_sync_packages_check
+  changed_when: false
+  failed_when: false
+
+- name: Parse time sync package status
+  set_fact:
+    time_sync_packages: |-
+      {% set packages = [] %}
+      {% for result in time_sync_packages_check.results %}
+        {% set _ = packages.append({
+          'package': result.item,
+          'installed': result.rc == 0,
+          'version': result.stdout if result.rc == 0 else 'not installed'
+        }) %}
+      {% endfor %}
+      {{ packages }}
+
+- name: Check time sync service status
+  systemd:
+    name: "{{ item }}"
+  loop: "{{ time_sync_services }}"
+  register: time_sync_services_status
+  failed_when: false
+
+- name: Parse time sync service status
+  set_fact:
+    time_sync_services_analysis: |-
+      {% set services = [] %}
+      {% for result in time_sync_services_status.results %}
+        {% if result.status is defined %}
+          {% set _ = services.append({
+            'service': result.item,
+            'active': result.status.ActiveState == 'active',
+            'enabled': result.status.UnitFileState in ['enabled', 'enabled-runtime'],
+            'state': result.status.ActiveState
+          }) %}
+        {% else %}
+          {% set _ = services.append({
+            'service': result.item,
+            'active': false,
+            'enabled': false,
+            'state': 'not found'
+          }) %}
+        {% endif %}
+      {% endfor %}
+      {{ services }}
+
+# =============================================================================
+# CIS 2.1.1.1 - ENSURE CHRONYD IS RUNNING AND ENABLED
+# =============================================================================
+
+- name: Check chrony package
+  shell: rpm -q chrony
+  register: chrony_package_check
+  changed_when: false
+  failed_when: false
+
+- name: Check chronyd service
+  systemd:
+    name: chronyd
+  register: chronyd_service_status
+  failed_when: false
+
+- name: Read chrony configuration
+  slurp:
+    src: "{{ chrony_config_file }}"
+  register: chrony_conf_content
+  failed_when: false
+
+- name: Parse chrony configuration
+  set_fact:
+    chrony_config: |-
+      {% set config = {'servers': [], 'pools': [], 'options': []} %}
+      {% if chrony_conf_content is succeeded %}
+        {% for line in (chrony_conf_content.content | b64decode).split('\n') %}
+          {% if line and not line.strip().startswith('#') %}
+            {% if line.strip().startswith('server ') %}
+              {% set server = line.strip().split()[1] %}
+              {% set _ = config.servers.append(server) %}
+            {% elif line.strip().startswith('pool ') %}
+              {% set pool = line.strip().split()[1] %}
+              {% set _ = config.pools.append(pool) %}
+            {% else %}
+              {% set _ = config.options.append(line.strip()) %}
+            {% endif %}
+          {% endif %}
+        {% endfor %}
+      {% endif %}
+      {{ config }}
+
+# =============================================================================
+# CIS 2.2.x - ENSURE SPECIAL PURPOSE SERVICES ARE NOT ENABLED
+# =============================================================================
+
+- name: Check unnecessary services status
+  systemd:
+    name: "{{ item }}"
+  loop: "{{ unnecessary_services }}"
+  register: unnecessary_services_check
+  failed_when: false
+
+- name: Analyze unnecessary services
+  set_fact:
+    unnecessary_services_analysis: |-
+      {% set services = [] %}
+      {% for result in unnecessary_services_check.results %}
+        {% if result.status is defined %}
+          {% set is_active = result.status.ActiveState == 'active' %}
+          {% set is_enabled = result.status.UnitFileState in ['enabled', 'enabled-runtime'] %}
+          {% set _ = services.append({
+            'service': result.item,
+            'found': true,
+            'active': is_active,
+            'enabled': is_enabled,
+            'state': result.status.ActiveState,
+            'unit_file_state': result.status.UnitFileState,
+            'compliant': not is_active and not is_enabled,
+            'risk_level': 'high' if is_active else ('medium' if is_enabled else 'low')
+          }) %}
+        {% else %}
+          {% set _ = services.append({
+            'service': result.item,
+            'found': false,
+            'active': false,
+            'enabled': false,
+            'compliant': true,
+            'risk_level': 'none'
+          }) %}
+        {% endif %}
+      {% endfor %}
+      {{ services }}
+
+# =============================================================================
+# CIS 2.2.12 - ENSURE HTTP SERVER IS NOT INSTALLED
+# =============================================================================
+
+- name: Check for web server packages
+  shell: rpm -q {{ item }}
+  loop:
+    - httpd
+    - nginx
+  register: webserver_packages_check
+  changed_when: false
+  failed_when: false
+
+- name: Parse web server package status
+  set_fact:
+    webserver_packages: |-
+      {% set packages = [] %}
+      {% for result in webserver_packages_check.results %}
+        {% set _ = packages.append({
+          'package': result.item,
+          'installed': result.rc == 0,
+          'version': result.stdout if result.rc == 0 else 'not installed',
+          'compliant': result.rc != 0
+        }) %}
+      {% endfor %}
+      {{ packages }}
+
+# =============================================================================
+# CIS 2.3.x - ENSURE SERVICE CLIENTS ARE NOT INSTALLED
+# =============================================================================
+
+- name: Check for unnecessary client packages
+  shell: rpm -q {{ item }}
+  loop: "{{ unnecessary_client_packages }}"
+  register: client_packages_check
+  changed_when: false
+  failed_when: false
+
+- name: Parse client package status
+  set_fact:
+    client_packages_analysis: |-
+      {% set packages = [] %}
+      {% for result in client_packages_check.results %}
+        {% set _ = packages.append({
+          'package': result.item,
+          'installed': result.rc == 0,
+          'version': result.stdout if result.rc == 0 else 'not installed',
+          'compliant': result.rc != 0,
+          'severity': 'high' if result.rc == 0 else 'none'
+        }) %}
+      {% endfor %}
+      {{ packages }}
+
+# =============================================================================
+# X11 PACKAGES CHECK (Server Systems)
+# =============================================================================
+
+- name: Check for X11 packages
+  shell: rpm -q {{ item }}
+  loop: "{{ x11_packages }}"
+  register: x11_packages_check
+  changed_when: false
+  failed_when: false
+
+- name: Parse X11 package status
+  set_fact:
+    x11_packages_status: |-
+      {% set packages = [] %}
+      {% for result in x11_packages_check.results %}
+        {% set _ = packages.append({
+          'package': result.item,
+          'installed': result.rc == 0,
+          'version': result.stdout if result.rc == 0 else 'not installed'
+        }) %}
+      {% endfor %}
+      {{ packages }}
+
+# =============================================================================
+# MAIL TRANSFER AGENT (MTA) CONFIGURATION
+# =============================================================================
+
+- name: Check for MTA packages
+  shell: rpm -q {{ item }}
+  loop:
+    - postfix
+    - sendmail
+    - exim
+  register: mta_packages_check
+  changed_when: false
+  failed_when: false
+
+- name: Parse MTA package status
+  set_fact:
+    mta_packages: |-
+      {% set packages = [] %}
+      {% for result in mta_packages_check.results %}
+        {% set _ = packages.append({
+          'package': result.item,
+          'installed': result.rc == 0,
+          'version': result.stdout if result.rc == 0 else 'not installed'
+        }) %}
+      {% endfor %}
+      {{ packages }}
+
+- name: Check MTA service status
+  systemd:
+    name: "{{ item }}"
+  loop:
+    - postfix
+    - sendmail
+  register: mta_services_check
+  failed_when: false
+
+- name: Parse MTA service status
+  set_fact:
+    mta_services: |-
+      {% set services = [] %}
+      {% for result in mta_services_check.results %}
+        {% if result.status is defined %}
+          {% set _ = services.append({
+            'service': result.item,
+            'active': result.status.ActiveState == 'active',
+            'enabled': result.status.UnitFileState in ['enabled', 'enabled-runtime'],
+            'state': result.status.ActiveState
+          }) %}
+        {% else %}
+          {% set _ = services.append({
+            'service': result.item,
+            'active': false,
+            'enabled': false,
+            'state': 'not found'
+          }) %}
+        {% endif %}
+      {% endfor %}
+      {{ services }}
+
+# =============================================================================
+# ENABLED SERVICES INVENTORY
+# =============================================================================
+
+- name: Get list of all enabled services
+  shell: systemctl list-unit-files --type=service --state=enabled --no-pager --no-legend | awk '{print $1}'
+  register: all_enabled_services_raw
+  changed_when: false
+  failed_when: false
+
+- name: Parse enabled services
+  set_fact:
+    all_enabled_services:
+      services: "{{ all_enabled_services_raw.stdout_lines }}"
+      count: "{{ all_enabled_services_raw.stdout_lines | length }}"
+
+# =============================================================================
+# ACTIVE SERVICES INVENTORY
+# =============================================================================
+
+- name: Get list of all active services
+  shell: systemctl list-units --type=service --state=active --no-pager --no-legend | awk '{print $1}'
+  register: all_active_services_raw
+  changed_when: false
+  failed_when: false
+
+- name: Parse active services
+  set_fact:
+    all_active_services:
+      services: "{{ all_active_services_raw.stdout_lines }}"
+      count: "{{ all_active_services_raw.stdout_lines | length }}"
+
+# =============================================================================
+# COMPREHENSIVE SERVICE CONFIGURATION FACTS ASSEMBLY
+# =============================================================================
+
+- name: Set comprehensive service configuration facts
+  set_fact:
+    host_service_facts:
+      autofs:
+        installed: "{{ autofs_status.installed }}"
+        active: "{{ autofs_status.active }}"
+        enabled: "{{ autofs_status.enabled }}"
+        compliant: "{{ autofs_status.compliant }}"
+      time_synchronization:
+        packages: "{{ time_sync_packages }}"
+        services: "{{ time_sync_services_analysis }}"
+        active_service: >-
+          {{
+            (time_sync_services_analysis | selectattr('active', 'equalto', true) | list | first).service
+            if (time_sync_services_analysis | selectattr('active', 'equalto', true) | list | length > 0)
+            else 'none'
+          }}
+        has_active_service: >-
+          {{
+            (time_sync_services_analysis | selectattr('active', 'equalto', true) | list | length) > 0
+          }}
+        compliant: >-
+          {{
+            (time_sync_services_analysis | selectattr('active', 'equalto', true) | list | length) == 1 and
+            (time_sync_services_analysis | selectattr('enabled', 'equalto', true) | list | length) == 1
+          }}
+      chronyd:
+        installed: "{{ chrony_package_check.rc == 0 }}"
+        version: "{{ chrony_package_check.stdout if chrony_package_check.rc == 0 else 'not installed' }}"
+        service_active: "{{ chronyd_service_status.status.ActiveState == 'active' if chronyd_service_status.status is defined else false }}"
+        service_enabled: "{{ chronyd_service_status.status.UnitFileState in ['enabled', 'enabled-runtime'] if chronyd_service_status.status is defined else false }}"
+        config: "{{ chrony_config }}"
+        servers_configured: "{{ chrony_config.servers | length }}"
+        pools_configured: "{{ chrony_config.pools | length }}"
+        has_time_sources: "{{ (chrony_config.servers | length + chrony_config.pools | length) > 0 }}"
+        compliant: >-
+          {{
+            chrony_package_check.rc == 0 and
+            chronyd_service_status.status.ActiveState == 'active' if chronyd_service_status.status is defined else false and
+            (chrony_config.servers | length + chrony_config.pools | length) > 0
+          }}
+      unnecessary_services:
+        analysis: "{{ unnecessary_services_analysis }}"
+        total_checked: "{{ unnecessary_services | length }}"
+        found_active: >-
+          {{
+            unnecessary_services_analysis | selectattr('active', 'equalto', true) | list | length
+          }}
+        found_enabled: >-
+          {{
+            unnecessary_services_analysis | selectattr('enabled', 'equalto', true) | list | length
+          }}
+        non_compliant: >-
+          {{
+            unnecessary_services_analysis | selectattr('compliant', 'equalto', false) | list
+          }}
+        non_compliant_count: >-
+          {{
+            unnecessary_services_analysis | selectattr('compliant', 'equalto', false) | list | length
+          }}
+        all_compliant: >-
+          {{
+            (unnecessary_services_analysis | selectattr('compliant', 'equalto', false) | list | length) == 0
+          }}
+      webserver:
+        packages: "{{ webserver_packages }}"
+        any_installed: >-
+          {{
+            (webserver_packages | selectattr('installed', 'equalto', true) | list | length) > 0
+          }}
+        compliant: >-
+          {{
+            (webserver_packages | selectattr('installed', 'equalto', true) | list | length) == 0
+          }}
+      client_packages:
+        analysis: "{{ client_packages_analysis }}"
+        any_installed: >-
+          {{
+            (client_packages_analysis | selectattr('installed', 'equalto', true) | list | length) > 0
+          }}
+        installed_packages: >-
+          {{
+            client_packages_analysis | selectattr('installed', 'equalto', true) | list
+          }}
+        compliant: >-
+          {{
+            (client_packages_analysis | selectattr('installed', 'equalto', true) | list | length) == 0
+          }}
+      x11:
+        packages: "{{ x11_packages_status }}"
+        any_installed: >-
+          {{
+            (x11_packages_status | selectattr('installed', 'equalto', true) | list | length) > 0
+          }}
+        compliant: >-
+          {{
+            (x11_packages_status | selectattr('installed', 'equalto', true) | list | length) == 0
+          }}
+      mta:
+        packages: "{{ mta_packages }}"
+        services: "{{ mta_services }}"
+        active_mta: >-
+          {{
+            (mta_services | selectattr('active', 'equalto', true) | list | first).service
+            if (mta_services | selectattr('active', 'equalto', true) | list | length > 0)
+            else 'none'
+          }}
+        has_mta: >-
+          {{
+            (mta_packages | selectattr('installed', 'equalto', true) | list | length) > 0
+          }}
+      all_services:
+        enabled: "{{ all_enabled_services }}"
+        active: "{{ all_active_services }}"
+      compliance_checks:
+        autofs_disabled: "{{ autofs_status.compliant }}"
+        time_sync_configured: >-
+          {{
+            (time_sync_services_analysis | selectattr('active', 'equalto', true) | list | length) == 1
+          }}
+        chronyd_running: >-
+          {{
+            chronyd_service_status.status.ActiveState == 'active' if chronyd_service_status.status is defined else false
+          }}
+        chronyd_has_servers: "{{ (chrony_config.servers | length + chrony_config.pools | length) > 0 }}"
+        no_unnecessary_services: >-
+          {{
+            (unnecessary_services_analysis | selectattr('compliant', 'equalto', false) | list | length) == 0
+          }}
+        no_webserver: >-
+          {{
+            (webserver_packages | selectattr('installed', 'equalto', true) | list | length) == 0
+          }}
+        no_client_packages: >-
+          {{
+            (client_packages_analysis | selectattr('installed', 'equalto', true) | list | length) == 0
+          }}
+        no_x11: >-
+          {{
+            (x11_packages_status | selectattr('installed', 'equalto', true) | list | length) == 0
+          }}
+      collection_timestamp: "{{ ansible_date_time.iso8601 }}"
+
+- name: Display service configuration summary
+  debug:
+    msg:
+      - "=========================================="
+      - "Service Configuration Facts"
+      - "=========================================="
+      - "Time Synchronization:"
+      - "  Active Service: {{ host_service_facts.time_synchronization.active_service }}"
+      - "  Compliant: {{ host_service_facts.time_synchronization.compliant }}"
+      - ""
+      - "chronyd:"
+      - "  Installed: {{ host_service_facts.chronyd.installed }}"
+      - "  Active: {{ host_service_facts.chronyd.service_active }}"
+      - "  Enabled: {{ host_service_facts.chronyd.service_enabled }}"
+      - "  Servers: {{ host_service_facts.chronyd.servers_configured }}"
+      - "  Pools: {{ host_service_facts.chronyd.pools_configured }}"
+      - ""
+      - "Unnecessary Services:"
+      - "  Total Checked: {{ host_service_facts.unnecessary_services.total_checked }}"
+      - "  Found Active: {{ host_service_facts.unnecessary_services.found_active }}"
+      - "  Found Enabled: {{ host_service_facts.unnecessary_services.found_enabled }}"
+      - "  Non-Compliant: {{ host_service_facts.unnecessary_services.non_compliant_count }}"
+      - ""
+      - "Package Compliance:"
+      - "  Web Server Installed: {{ host_service_facts.webserver.any_installed }}"
+      - "  Client Packages Installed: {{ host_service_facts.client_packages.any_installed }}"
+      - "  X11 Installed: {{ host_service_facts.x11.any_installed }}"
+      - ""
+      - "All Services:"
+      - "  Enabled: {{ host_service_facts.all_services.enabled.count }}"
+      - "  Active: {{ host_service_facts.all_services.active.count }}"
+      - ""
+      - "Compliance Summary:"
+      - "  autofs Disabled: {{ host_service_facts.compliance_checks.autofs_disabled }}"
+      - "  Time Sync: {{ host_service_facts.compliance_checks.time_sync_configured }}"
+      - "  No Unnecessary Services: {{ host_service_facts.compliance_checks.no_unnecessary_services }}"
+      - "  No Web Server: {{ host_service_facts.compliance_checks.no_webserver }}"
+      - "=========================================="

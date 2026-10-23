@@ -1,0 +1,148 @@
+{
+  "organization": {
+    "name": "Electric Utility Company",
+    "entity_type": "transmission_operator",
+    "nerc_registration": "TOP-001",
+    "assessment_date": "2025-01-06T10:00:00Z"
+  },
+  "bes_cyber_systems": [
+    {
+      "system_id": "BCS-001",
+      "system_name": "Energy Management System",
+      "impact_categorization": "high",
+      "functional_obligations": ["real_time_operations", "transmission_planning"],
+      "cyber_assets": [
+        {
+          "asset_id": "CA-001",
+          "asset_name": "EMS Server Primary",
+          "asset_type": "server",
+          "operating_system": "Windows Server 2019",
+          "network_accessible": true
+        }
+      ]
+    },
+    {
+      "system_id": "BCS-002",
+      "system_name": "Substation Control System",
+      "impact_categorization": "invalid_category",
+      "functional_obligations": ["protection_systems", "monitoring"],
+      "cyber_assets": [
+        {
+          "asset_id": "CA-003",
+          "asset_name": "SCADA HMI",
+          "asset_type": "workstation",
+          "operating_system": "Windows 10",
+          "network_accessible": true
+        }
+      ]
+    }
+  ],
+  "categorization_documentation": {
+    "criteria_defined": false,
+    "methodology_documented": true,
+    "rationale_provided": false
+  },
+  "cybersecurity_organization": {
+    "senior_manager": {
+      "designated": false,
+      "name": "John Smith",
+      "title": "Chief Information Security Officer",
+      "authority_documented": false,
+      "responsibilities_defined": true
+    },
+    "policies": {
+      "documented": true,
+      "approved": false
+    },
+    "information_sharing_plan": {
+      "documented": true,
+      "contacts_current": true
+    },
+    "delegated_authority": {
+      "documented": true,
+      "current": true
+    }
+  },
+  "personnel": [
+    {
+      "person_id": "P-001",
+      "name": "Alice Johnson",
+      "access_level": "authorized_electronic_access",
+      "employment_status": "active",
+      "risk_assessment": {
+        "completed": false,
+        "completion_date": "2023-03-01T09:00:00Z"
+      },
+      "cybersecurity_training": {
+        "completed": false,
+        "completion_date": "2024-06-01T09:00:00Z"
+      }
+    }
+  ],
+  "personnel_changes": [],
+  "electronic_security_perimeters": {
+    "BCS-001": {
+      "documented": false,
+      "boundary_defined": false,
+      "electronic_access_points_identified": true,
+      "monitoring": {
+        "enabled": true,
+        "logging_enabled": true,
+        "alerting_configured": true
+      }
+    }
+  },
+  "electronic_access_points": [
+    {
+      "eap_id": "EAP-001",
+      "system_id": "BCS-001",
+      "access_control": {
+        "enabled": false,
+        "authentication_required": true,
+        "authorization_verified": true
+      },
+      "monitoring": {
+        "enabled": false
+      },
+      "logging": {
+        "enabled": true
+      }
+    }
+  ],
+  "remote_access_sessions": [],
+  "physical_security_perimeters": {
+    "BCS-001": {
+      "boundary_defined": false,
+      "access_points_identified": true,
+      "controls_documented": false
+    }
+  },
+  "physical_access_controls": [
+    {
+      "control_id": "PAC-001",
+      "location": "Control Center Main",
+      "authentication_required": false,
+      "authorization_verified": false,
+      "monitoring_enabled": false,
+      "logging_enabled": true,
+      "visitor_escort_required": true
+    }
+  ],
+  "physical_locations": [
+    {
+      "location_id": "LOC-001",
+      "location_name": "Primary Control Center",
+      "monitoring": {
+        "enabled": true,
+        "recording_enabled": true,
+        "retention_adequate": true
+      }
+    }
+  ],
+  "visitor_control_program": {
+    "documented": true,
+    "escort_procedures": true,
+    "access_logging": true,
+    "identification_required": true
+  }
+}

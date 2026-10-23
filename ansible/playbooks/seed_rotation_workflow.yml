@@ -1,0 +1,355 @@
+---
+# seed_rotation_workflow.yml — Create AAC Credential Rotation Workflow in AAP
+#
+# Creates 7 job templates and one workflow template with full survey,
+# connecting all steps in the correct order with success/failure paths.
+#
+# Run once after initial AAC deployment, or to re-create the workflow.
+# AAP Job Template: "AAC - Seed Rotation Workflow"
+
+- name: Create AAC Credential Rotation Workflow
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - [ "../vars/vault_secrets.yml", "../vars/empty_fallback.yml" ]
+    - ../vars/site_config.yml
+
+  vars:
+    # These IDs are resolved by name-based lookup tasks below
+    aap_project_id:   "{{ resolved_project_id | default(omit) }}"
+    aap_inv_id:       "{{ resolved_inventory_id | default(omit) }}"
+    aap_ee_id:        "{{ resolved_ee_id | default(omit) }}"
+    aap_vault_cred:   "{{ resolved_vault_cred_id | default(omit) }}"
+    aap_machine_cred: "{{ resolved_machine_cred_id | default(omit) }}"
+
+  tasks:
+    - name: Resolve AAP object IDs by name
+      block:
+        - name: Look up project
+          uri:
+            use_proxy: false
+            url: "{{ aap_url }}/api/controller/v2/projects/?name={{ aap_project_name | urlencode }}"
+            headers: { Authorization: "Bearer {{ lookup('env', 'CONTROLLER_OAUTH_TOKEN') }}" }
+            validate_certs: false
+          register: _proj
+        - name: Look up inventory
+          uri:
+            use_proxy: false
+            url: "{{ aap_url }}/api/controller/v2/inventories/?name={{ aap_inventory_name | urlencode }}"
+            headers: { Authorization: "Bearer {{ lookup('env', 'CONTROLLER_OAUTH_TOKEN') }}" }
+            validate_certs: false
+          register: _inv
+        - name: Look up EE
+          uri:
+            use_proxy: false
+            url: "{{ aap_url }}/api/controller/v2/execution_environments/?name={{ aap_ee_name | urlencode }}"
+            headers: { Authorization: "Bearer {{ lookup('env', 'CONTROLLER_OAUTH_TOKEN') }}" }
+            validate_certs: false
+          register: _ee
+        - name: Look up vault credential
+          uri:
+            use_proxy: false
+            url: "{{ aap_url }}/api/controller/v2/credentials/?name={{ aap_vault_credential_name | urlencode }}"
+            headers: { Authorization: "Bearer {{ lookup('env', 'CONTROLLER_OAUTH_TOKEN') }}" }
+            validate_certs: false
+          register: _vault
+        - name: Look up machine credential
+          uri:
+            use_proxy: false
+            url: "{{ aap_url }}/api/controller/v2/credentials/?name={{ aap_ssh_credential_name | urlencode }}"
+            headers: { Authorization: "Bearer {{ lookup('env', 'CONTROLLER_OAUTH_TOKEN') }}" }
+            validate_certs: false
+          register: _machine
+        - name: Set resolved IDs
+          set_fact:
+            resolved_project_id:     "{{ _proj.json.results[0].id }}"
+            resolved_inventory_id:   "{{ _inv.json.results[0].id }}"
+            resolved_ee_id:          "{{ _ee.json.results[0].id }}"
+            resolved_vault_cred_id:  "{{ _vault.json.results[0].id }}"
+            resolved_machine_cred_id: "{{ _machine.json.results[0].id }}"
+
+    # =========================================================================
+    # JOB TEMPLATES
+    # =========================================================================
+    - name: Create job templates
+      uri:
+        use_proxy: false
+        url: "{{ aap_url }}/api/controller/v2/job_templates/"
+        method: POST
+        body_format: json
+        body: "{{ item }}"
+        headers:
+          Authorization: "Basic {{ (aap_admin_user + ':' + aap_admin_password) | b64encode }}"
+        status_code: [200, 201]
+        validate_certs: false
+      loop:
+
+        - name: "AAC - Rotation: Pre-Backup"
+          description: "Step 1: Backup vault before rotation begins"
+          job_type: run
+          inventory: "{{ aap_inv_id }}"
+          project: "{{ aap_project_id }}"
+          playbook: "ansible/playbooks/rotation_pre_backup.yml"
+          execution_environment: "{{ aap_ee_id }}"
+          become_enabled: true
+          ask_variables_on_launch: false
+
+        - name: "AAC - Rotation: MCP Token"
+          description: "Step 2: Rotate AAP MCP Bearer token (Claude Code)"
+          job_type: run
+          inventory: "{{ aap_inv_id }}"
+          project: "{{ aap_project_id }}"
+          playbook: "ansible/playbooks/rotation_mcp_token.yml"
+          execution_environment: "{{ aap_ee_id }}"
+          become_enabled: true
+          ask_variables_on_launch: false
+
+        - name: "AAC - Rotation: PostgreSQL Password"
+          description: "Step 3: Rotate PostgreSQL compliance DB password"
+          job_type: run
+          inventory: "{{ aap_inv_id }}"
+          project: "{{ aap_project_id }}"
+          playbook: "ansible/playbooks/rotation_postgres.yml"
+          execution_environment: "{{ aap_ee_id }}"
+          become_enabled: false
+          ask_variables_on_launch: false
+
+        - name: "AAC - Rotation: Grafana Password"
+          description: "Step 4: Rotate Grafana admin password"
+          job_type: run
+          inventory: "{{ aap_inv_id }}"
+          project: "{{ aap_project_id }}"
+          playbook: "ansible/playbooks/rotation_grafana.yml"
+          execution_environment: "{{ aap_ee_id }}"
+          become_enabled: false
+          ask_variables_on_launch: false
+
+        - name: "AAC - Rotation: Update Vault"
+          description: "Step 5: Update Ansible Vault with new credentials and commit to git"
+          job_type: run
+          inventory: "{{ aap_inv_id }}"
+          project: "{{ aap_project_id }}"
+          playbook: "ansible/playbooks/rotation_update_vault.yml"
+          execution_environment: "{{ aap_ee_id }}"
+          become_enabled: false
+          ask_variables_on_launch: false
+
+        - name: "AAC - Rotation: Validate"
+          description: "Step 6: Validate all rotated credentials work correctly"
+          job_type: run
+          inventory: "{{ aap_inv_id }}"
+          project: "{{ aap_project_id }}"
+          playbook: "ansible/playbooks/rotation_validate.yml"
+          execution_environment: "{{ aap_ee_id }}"
+          become_enabled: false
+          ask_variables_on_launch: false
+
+        - name: "AAC - Rotation: Post-Backup"
+          description: "Step 7: Final backup, validation, and secure temp cleanup"
+          job_type: run
+          inventory: "{{ aap_inv_id }}"
+          project: "{{ aap_project_id }}"
+          playbook: "ansible/playbooks/rotation_post_backup.yml"
+          execution_environment: "{{ aap_ee_id }}"
+          become_enabled: true
+          ask_variables_on_launch: false
+
+      register: jt_results
+      no_log: false
+
+    - name: Collect job template IDs by name
+      set_fact:
+        jt_ids: >-
+          {{
+            jt_ids | default({}) | combine({
+              item.json.name: item.json.id
+            })
+          }}
+      loop: "{{ jt_results.results }}"
+
+    # =========================================================================
+    # ATTACH CREDENTIALS to each job template
+    # =========================================================================
+    - name: Attach Vault credential to all job templates
+      uri:
+        use_proxy: false
+        url: "{{ aap_url }}/api/controller/v2/job_templates/{{ item.value }}/credentials/"
+        method: POST
+        body_format: json
+        body:
+          id: "{{ aap_vault_cred | int }}"
+        headers:
+          Authorization: "Basic {{ (aap_admin_user + ':' + aap_admin_password) | b64encode }}"
+        status_code: [200, 204]
+        validate_certs: false
+      loop: "{{ jt_ids | dict2items }}"
+      ignore_errors: true
+
+    - name: Attach Machine credential to pre/post backup templates
+      uri:
+        use_proxy: false
+        url: "{{ aap_url }}/api/controller/v2/job_templates/{{ item }}/credentials/"
+        method: POST
+        body_format: json
+        body:
+          id: "{{ aap_machine_cred | int }}"
+        headers:
+          Authorization: "Basic {{ (aap_admin_user + ':' + aap_admin_password) | b64encode }}"
+        status_code: [200, 204]
+        validate_certs: false
+      loop:
+        - "{{ jt_ids['AAC - Rotation: Pre-Backup'] }}"
+        - "{{ jt_ids['AAC - Rotation: MCP Token'] }}"
+        - "{{ jt_ids['AAC - Rotation: Post-Backup'] }}"
+      ignore_errors: true
+
+    # =========================================================================
+    # WORKFLOW TEMPLATE
+    # =========================================================================
+    - name: Create workflow template
+      uri:
+        use_proxy: false
+        url: "{{ aap_url }}/api/controller/v2/workflow_job_templates/"
+        method: POST
+        body_format: json
+        body:
+          name: "AAC - Rotate Credentials"
+          description: >-
+            Rotates AAC credentials (MCP token, PostgreSQL, Grafana).
+            Includes pre-rotation backup, validation, vault update, git commit, and post-rotation backup.
+          organization: 1
+          ask_variables_on_launch: true
+          survey_enabled: true
+        headers:
+          Authorization: "Basic {{ (aap_admin_user + ':' + aap_admin_password) | b64encode }}"
+        status_code: [200, 201]
+        validate_certs: false
+      register: wf_result
+
+    - name: Store workflow template ID
+      set_fact:
+        wf_id: "{{ wf_result.json.id }}"
+
+    # =========================================================================
+    # SURVEY
+    # =========================================================================
+    - name: Create workflow survey
+      uri:
+        use_proxy: false
+        url: "{{ aap_url }}/api/controller/v2/workflow_job_templates/{{ wf_id }}/survey_spec/"
+        method: POST
+        body_format: json
+        body:
+          name: "Credential Rotation Survey"
+          description: "Select which credentials to rotate"
+          spec:
+            - question_name: "Rotate MCP Token?"
+              question_description: "Rotate the AAP Bearer token used by the Claude Code MCP server"
+              variable: rotate_mcp_token
+              type: multiplechoice
+              choices: "yes\nno"
+              default: "no"
+              required: true
+
+            - question_name: "Rotate PostgreSQL Password?"
+              question_description: "Rotate the compliance database password"
+              variable: rotate_postgres
+              type: multiplechoice
+              choices: "yes\nno"
+              default: "no"
+              required: true
+
+            - question_name: "Rotate Grafana Password?"
+              question_description: "Rotate the Grafana admin dashboard password"
+              variable: rotate_grafana
+              type: multiplechoice
+              choices: "yes\nno"
+              default: "no"
+              required: true
+
+            - question_name: "AAP Admin Password"
+              question_description: "Required for creating the new MCP token"
+              variable: aap_admin_password
+              type: password
+              default: ""
+              required: true
+        headers:
+          Authorization: "Basic {{ (aap_admin_user + ':' + aap_admin_password) | b64encode }}"
+        status_code: 200
+        validate_certs: false
+
+    # =========================================================================
+    # WORKFLOW NODES — create in sequence
+    # Pre-Backup → MCP → PostgreSQL → Grafana → Update Vault → Validate → Post-Backup
+    # =========================================================================
+    - name: Create workflow nodes
+      uri:
+        use_proxy: false
+        url: "{{ aap_url }}/api/controller/v2/workflow_job_templates/{{ wf_id }}/workflow_nodes/"
+        method: POST
+        body_format: json
+        body:
+          unified_job_template: "{{ item }}"
+          all_parents_must_converge: false
+        headers:
+          Authorization: "Basic {{ (aap_admin_user + ':' + aap_admin_password) | b64encode }}"
+        status_code: [200, 201]
+        validate_certs: false
+      loop:
+        - "{{ jt_ids['AAC - Rotation: Pre-Backup'] }}"
+        - "{{ jt_ids['AAC - Rotation: MCP Token'] }}"
+        - "{{ jt_ids['AAC - Rotation: PostgreSQL Password'] }}"
+        - "{{ jt_ids['AAC - Rotation: Grafana Password'] }}"
+        - "{{ jt_ids['AAC - Rotation: Update Vault'] }}"
+        - "{{ jt_ids['AAC - Rotation: Validate'] }}"
+        - "{{ jt_ids['AAC - Rotation: Post-Backup'] }}"
+      register: node_results
+
+    - name: Store node IDs
+      set_fact:
+        node_ids: "{{ node_results.results | map(attribute='json') | map(attribute='id') | list }}"
+
+    # =========================================================================
+    # CONNECT NODES with success links
+    # =========================================================================
+    - name: Connect workflow nodes (success path)
+      uri:
+        use_proxy: false
+        url: "{{ aap_url }}/api/controller/v2/workflow_job_template_nodes/{{ node_ids[item.0] }}/success_nodes/"
+        method: POST
+        body_format: json
+        body:
+          id: "{{ node_ids[item.1] }}"
+        headers:
+          Authorization: "Basic {{ (aap_admin_user + ':' + aap_admin_password) | b64encode }}"
+        status_code: [200, 204]
+        validate_certs: false
+      loop:
+        - [0, 1]   # Pre-Backup → MCP Token
+        - [1, 2]   # MCP Token → PostgreSQL
+        - [2, 3]   # PostgreSQL → Grafana
+        - [3, 4]   # Grafana → Update Vault
+        - [4, 5]   # Update Vault → Validate
+        - [5, 6]   # Validate → Post-Backup
+
+    - name: Workflow created successfully
+      debug:
+        msg:
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "  AAC - Rotate Credentials workflow created"
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "  Workflow ID: {{ wf_id }}"
+          - ""
+          - "  Nodes (in order):"
+          - "  1. AAC - Rotation: Pre-Backup      (ID: {{ node_ids[0] }})"
+          - "  2. AAC - Rotation: MCP Token        (ID: {{ node_ids[1] }})"
+          - "  3. AAC - Rotation: PostgreSQL Password (ID: {{ node_ids[2] }})"
+          - "  4. AAC - Rotation: Grafana Password (ID: {{ node_ids[3] }})"
+          - "  5. AAC - Rotation: Update Vault     (ID: {{ node_ids[4] }})"
+          - "  6. AAC - Rotation: Validate         (ID: {{ node_ids[5] }})"
+          - "  7. AAC - Rotation: Post-Backup      (ID: {{ node_ids[6] }})"
+          - ""
+          - "  Launch from AAP UI: Resources → Templates → AAC - Rotate Credentials"
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

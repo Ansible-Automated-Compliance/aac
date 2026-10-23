@@ -1,0 +1,40 @@
+{
+  "host_key": "web-01.lab.local",
+  "hostname": "web-01.lab.local",
+  "ip_address": "192.0.2.71",
+  "found": true,
+  "generated_at": "2026-07-21T12:00:00Z",
+  "max_age_seconds": 86400,
+  "frameworks": {
+    "cis_rhel9": {
+      "framework": "cis_rhel9",
+      "compliant": true,
+      "compliance_percentage": 94.67,
+      "passed_controls": 320,
+      "failed_controls": 18,
+      "total_controls": 338,
+      "violation_count": 18,
+      "evaluation_timestamp": "2026-07-21T02:00:00Z",
+      "age_seconds": 36000,
+      "stale": false
+    },
+    "stig_rhel9": {
+      "framework": "stig_rhel9",
+      "compliant": false,
+      "compliance_percentage": 71.0,
+      "passed_controls": 213,
+      "failed_controls": 87,
+      "total_controls": 300,
+      "violation_count": 87,
+      "evaluation_timestamp": "2026-07-20T02:00:00Z",
+      "age_seconds": 122400,
+      "stale": true
+    }
+  },
+  "summary": {
+    "framework_count": 2,
+    "worst_compliance_percentage": 71.0,
+    "all_compliant": false,
+    "any_stale": true
+  }
+}

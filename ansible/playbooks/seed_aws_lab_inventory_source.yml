@@ -1,0 +1,129 @@
+---
+# Seed the "AWS Compliance Lab (EC2)" inventory source (create or update by name).
+#
+# Until 2026-10-16 this source existed only on the lab controller. Its
+# update_cache_timeout was 300 s, and that broke the nightly AWS assessments
+# for two weeks without anyone noticing: launching "AAC - Start Compliance Lab"
+# syncs this source as a launch dependency while the instances are still
+# stopped, so every host got its PRIVATE address as ansible_host; the gather
+# and the assessments a minute later reused that cached sync, and none of the
+# private addresses are routable from the controller. update_cache_timeout: 0
+# makes every launch re-sync, after the instances have their public addresses.
+#
+# Inputs: aap_url, aap_token (AAP Token (extra_vars) credential inside AAP);
+#         the inventory and the AWS credential are resolved by name.
+
+- name: Seed the AWS lab EC2 inventory source
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    source_name: "AWS Compliance Lab (EC2)"
+    inventory_name: "Compliance Infrastructure"
+    aws_credential_name: "AWS Compliance Lab"
+    _api: >-
+      {{ ((lookup('env', 'CONTROLLER_HOST') | default(lookup('env', 'AWX_HOST'), true))
+          if (lookup('env', 'JOB_ID') | length > 0) else (aap_url | default('')))
+         | regex_replace('/+$', '') }}/api/controller/v2
+    _headers:
+      Authorization: "Bearer {{ aap_token }}"
+      Content-Type: application/json
+    source_body:
+      name: "{{ source_name }}"
+      source: ec2
+      update_on_launch: true
+      # 0, never a cache: the sync that matters runs AFTER the instances start.
+      update_cache_timeout: 0
+      overwrite: false
+      overwrite_vars: false
+      verbosity: 1
+      source_vars: |
+        ---
+        regions:
+          - us-east-1
+        # Name hosts by their Name tag so inventory identity survives stop/start.
+        # Keying on the AWS-assigned private DNS name would mint a new host on every
+        # restart — the same defect the fact collector had.
+        hostnames:
+          - tag:Name
+        filters:
+          tag:Project: compliance-lab
+          instance-state-name:
+            - running
+            - stopped
+        compose:
+          # Public IP while running; private is a placeholder while stopped and is
+          # replaced on the next sync (update_on_launch refreshes before each job).
+          ansible_host: public_ip_address | default(private_ip_address, true)
+          # The instances tag their own login account, so the connection user comes
+          # from AWS rather than being hand-set per host.
+          ansible_user: tags['SSHUser'] | default('ec2-user')
+          aac_aws_instance_id: instance_id
+          aac_on_aws: true
+          aac_aws_region: placement.region
+        keyed_groups:
+          - key: tags['OSType'] | default('unknown')
+            prefix: os
+          - key: tags['Platform'] | default('unknown')
+            prefix: platform
+
+  tasks:
+    - name: Require a controller URL and a token
+      ansible.builtin.assert:
+        that:
+          - _api is match('^https?://[A-Za-z0-9.-]+(:[0-9]+)?/api/controller/v2$')
+          - aap_token | default('', true) | length > 0
+
+    - name: Resolve the inventory and the credential by name
+      ansible.builtin.uri:
+        url: "{{ _api }}/{{ item.endpoint }}/?name={{ item.name | urlencode }}"
+        headers: "{{ _headers }}"
+        validate_certs: false
+      loop:
+        - {key: inventory, endpoint: inventories, name: "{{ inventory_name }}"}
+        - {key: credential, endpoint: credentials, name: "{{ aws_credential_name }}"}
+      loop_control:
+        label: "{{ item.key }}"
+      register: _lookup
+
+    - name: Require the inventory and the credential
+      ansible.builtin.assert:
+        that:
+          - _lookup.results[0].json.count | int == 1
+          - _lookup.results[1].json.count | int == 1
+        fail_msg: "inventory '{{ inventory_name }}' and credential '{{ aws_credential_name }}' must each resolve to exactly one object"
+
+    # Source names are unique within an inventory, not across the controller, so
+    # the existing source is looked up INSIDE the resolved inventory: a
+    # same-named source in another inventory must never be the one patched.
+    - name: Look for the source in that inventory
+      ansible.builtin.uri:
+        url: "{{ _api }}/inventories/{{ _lookup.results[0].json.results[0].id | int }}/inventory_sources/?name={{ source_name | urlencode }}"
+        headers: "{{ _headers }}"
+        validate_certs: false
+      register: _existing_src
+
+    - name: Require at most one match
+      ansible.builtin.assert:
+        that: _existing_src.json.count | int <= 1
+        fail_msg: "inventory '{{ inventory_name }}' has {{ _existing_src.json.count }} sources named '{{ source_name }}'"
+
+    - name: Create or update the source
+      ansible.builtin.uri:
+        url: >-
+          {{ _api }}/inventory_sources/{{ ((_existing_src.json.results[0].id | int) ~ '/')
+            if (_existing_src.json.count | int) == 1 else '' }}
+        method: "{{ 'PATCH' if (_existing_src.json.count | int) == 1 else 'POST' }}"
+        headers: "{{ _headers }}"
+        validate_certs: false
+        body_format: json
+        body: >-
+          {{ source_body | combine({'inventory': (_lookup.results[0].json.results[0].id | int),
+                                     'credential': (_lookup.results[1].json.results[0].id | int)}) }}
+        status_code: [200, 201]
+      register: _src
+
+    - name: Seeded
+      ansible.builtin.debug:
+        msg: "{{ source_name }} → inventory source {{ _src.json.id }} (update_on_launch, cache 0)"

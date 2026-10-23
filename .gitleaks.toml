@@ -1,0 +1,25 @@
+# gitleaks config for pre-emptive secret scanning.
+# Extends gitleaks' default rules.
+#
+# The allowlist is deliberately CONSERVATIVE. We suppress only values that
+# self-identify as fixtures (via stopwords on the matched secret). We do NOT
+# exclude whole directories (e.g. tests/) or use broad keyword regexes — either
+# of those would hide a REAL secret committed under an allowlisted path and
+# defeat the pre-commit gate. Residual test-fixture noise in the weekly REPORT is
+# acceptable (a human triages); silently hiding real secrets is not.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Obvious fixtures/placeholders only, matched by stopword on the secret value"
+stopwords = [
+  "example",
+  "sample",
+  "dummy",
+  "fake",
+  "placeholder",
+  "changeme",
+  "change-me",
+  "redacted",
+  "notreal",
+]

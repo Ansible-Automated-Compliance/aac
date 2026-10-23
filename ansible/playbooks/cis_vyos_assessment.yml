@@ -1,0 +1,179 @@
+---
+# cis_vyos_assessment.yml — CIS VyOS Router Hardening Assessment
+#
+# Runs on aap-controller-ssh and SSHes to the VyOS container via sshpass
+# (avoids EE needing sshpass for direct connections).
+# Collects `show configuration json`, evaluates via OPA, stores to PostgreSQL.
+#
+# AAP Job Template: "CIS VyOS Assessment"
+# Credentials: AAC Build Host (aapuser1) (ID 9) + Ansible Vault (ID 8)
+# EE: AAC Compliance EE
+# Inventory: Compliance Infrastructure, limit: aap-controller-ssh
+
+- name: CIS VyOS Router Compliance Assessment
+  hosts: aap-controller-ssh
+  gather_facts: false
+
+  vars_files:
+    - [ "../vars/vault_secrets.yml", "../vars/empty_fallback.yml" ]
+    - ../vars/site_config.yml
+
+  vars:
+    opa_server_url:      "{{ opa_security_url }}"
+    policy_package:      "cis_vyos"
+    report_dir:          "/tmp/compliance_assessments"
+    timestamp:           "{{ lookup('pipe','date +%Y%m%dT%H%M%S') }}"
+    cis_total_controls:  20
+    # VyOS container — the assessment play runs on the AAC host (aap-controller-ssh),
+    # which owns the rootless-podman container, so config is read via `podman exec`.
+    # (Post-CRC the EE runs as OpenShift pods; the old `sshpass … vbash run show
+    #  configuration json` path is unreachable and the vyos-build image has no vbash.)
+    vyos_container_name: "vyos-router-01"
+    vyos_config_path:    "/opt/vyatta/etc/config/config.json"
+    vyos_hostname:       "vyos-router-01"
+
+  tasks:
+
+    - name: Ensure report directory exists
+      file:
+        path: "{{ report_dir }}"
+        state: directory
+        mode: '0755'
+
+    # ── Collect VyOS config via podman exec ───────────────────────────────────
+    # Play runs on the AAC host, which owns the container. `show configuration json`
+    # is served from the baked config.json (the vyos-build image has no op-mode CLI).
+
+    - name: Collect VyOS configuration JSON from container
+      shell: >
+        podman exec {{ vyos_container_name }} cat {{ vyos_config_path }}
+      register: vyos_config_raw
+      changed_when: false
+      failed_when: false
+
+    # ── Parse and Build OPA Input ─────────────────────────────────────────────
+
+    - name: Parse VyOS configuration JSON
+      set_fact:
+        vyos_config: "{{ vyos_config_raw.stdout | from_json if (vyos_config_raw.rc | default(1)) == 0 and (vyos_config_raw.stdout | trim) != '' else {} }}"
+
+    - name: Fail loudly if no VyOS config was collected
+      fail:
+        msg: >-
+          VyOS config collection from container '{{ vyos_container_name }}' returned nothing
+          (rc={{ vyos_config_raw.rc | default('n/a') }}). Assessment aborted rather than
+          storing a misleading 0% result. Redeploy the container (template "Deploy VyOS
+          Container") and confirm {{ vyos_config_path }} exists.
+      when: vyos_config == {}
+
+    - name: Extract version string
+      set_fact:
+        vyos_version_str: "{{ vyos_config.version | default('VyOS unknown') }}"
+
+    - name: Build OPA input
+      set_fact:
+        opa_input:
+          system:     "{{ vyos_config.system     | default({}) }}"
+          service:    "{{ vyos_config.service     | default({}) }}"
+          firewall:   "{{ vyos_config.firewall    | default({}) }}"
+          interfaces: "{{ vyos_config.interfaces  | default({}) }}"
+          protocols:  "{{ vyos_config.protocols   | default({}) }}"
+          policy:     "{{ vyos_config.policy      | default({}) }}"
+          version:    "{{ vyos_version_str }}"
+          platform:   "vyos"
+          hostname:   "{{ vyos_hostname }}"
+
+    - name: Save facts JSON
+      copy:
+        content: "{{ opa_input | to_nice_json }}"
+        dest: "{{ report_dir }}/{{ vyos_hostname }}_vyos_facts_{{ timestamp }}.json"
+
+    # ── OPA Evaluation ─────────────────────────────────────────────────────────
+
+    # Runs in the EE (delegate_to: localhost) so the in-cluster OPA service name
+    # (opa_security_url) resolves. Config collection above runs on the host, where
+    # the container lives; the OPA/DB tasks must run where cluster DNS resolves.
+    - name: Query OPA — CIS VyOS
+      uri:
+        use_proxy: false
+        url: "{{ opa_server_url }}/v1/data/{{ policy_package }}/compliance_assessment"
+        method: POST
+        body_format: json
+        body:
+          input: "{{ opa_input }}"
+        return_content: true
+        status_code: 200
+        validate_certs: false
+      register: opa_response
+      delegate_to: localhost
+      failed_when: false
+
+    - name: Fail loudly if OPA did not return a scored result
+      fail:
+        msg: >-
+          OPA query to {{ opa_server_url }}/v1/data/{{ policy_package }} did not return
+          a result (status={{ opa_response.status | default('n/a') }}). Aborting rather
+          than storing a misleading 0%. Check the OPA service is reachable and cis_vyos
+          is loaded.
+      when: >-
+        (opa_response.status | default(0)) != 200
+        or (opa_response.json.result | default(None)) is none
+
+    - name: Parse OPA response
+      set_fact:
+        compliance_result: "{{ opa_response.json.result }}"
+
+    - name: Normalise violations list
+      set_fact:
+        cis_violations: >-
+          {%- set viols = [] -%}
+          {%- for v in (compliance_result.violations | default([])) -%}
+            {%- if v is mapping -%}
+              {%- set _ = viols.append(v) -%}
+            {%- else -%}
+              {%- set _ = viols.append({'message': v | string, 'severity': 'high', 'control_id': ''}) -%}
+            {%- endif -%}
+          {%- endfor -%}
+          {{ viols }}
+
+    # ── Store to PostgreSQL ────────────────────────────────────────────────────
+
+    - name: Store results to PostgreSQL
+      include_role:
+        name: aac_store_results
+      vars:
+        aac_result_policy_name:    "CIS VyOS Router"
+        aac_result_framework:      "cis_vyos"
+        aac_result_policy_version: "CIS VyOS Hardening Benchmark v1.0.0"
+        aac_result_total_controls: >-
+          {{ compliance_result.summary.total_controls | default(cis_total_controls) | int }}
+        aac_result_violations:     "{{ cis_violations }}"
+        aac_result_compliance_pct: >-
+          {{ compliance_result.summary.compliance_percentage | default(0) | float }}
+        aac_result_metadata:
+          hostname:           "{{ vyos_hostname }}"
+          ip_address:         "{{ aac_host }}"
+          version:            "{{ vyos_version_str }}"
+          platform:           "vyos"
+          device_type:        "router"
+          collection_method:  "podman exec {{ vyos_container_name }} cat {{ vyos_config_path }}"
+          assessment_time:    "{{ lookup('pipe','date -u +%Y-%m-%dT%H:%M:%SZ') }}"
+          section_compliance: "{{ compliance_result.section_compliance | default({}) }}"
+          opa_server:         "{{ opa_server_url }}"
+
+    # ── Summary ────────────────────────────────────────────────────────────────
+
+    - name: Compliance assessment complete
+      debug:
+        msg:
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "  CIS VyOS Router Assessment"
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "  Host       : {{ vyos_hostname }} (container {{ vyos_container_name }})"
+          - "  Version    : {{ vyos_version_str }}"
+          - "  Status     : {{ compliance_result.summary.overall_compliance | default('N/A') }}"
+          - "  Compliance : {{ compliance_result.summary.compliance_percentage | default(0) }}%"
+          - "  Violations : {{ cis_violations | length }}"
+          - "  DB         : stored to compliance_results"
+          - "  Report     : {{ report_dir }}/{{ vyos_hostname }}_vyos_facts_{{ timestamp }}.json"
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

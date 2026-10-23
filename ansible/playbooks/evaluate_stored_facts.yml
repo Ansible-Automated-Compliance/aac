@@ -1,0 +1,353 @@
+---
+# evaluate_stored_facts.yml — Phase 1 policy evaluation from stored facts
+#
+# Reads fact snapshots from compliance_facts (PostgreSQL), evaluates them
+# against OPA policies, stores results in compliance_results, and upserts
+# remediation_status. No SSH to managed hosts required.
+#
+# This enables:
+#   - Re-evaluation after policy version update (no re-scan)
+#   - Evaluate same facts against multiple frameworks instantly
+#   - Historical re-assessment ("would this host pass CMMC Level 2 last month?")
+#   - Cross-framework gap analysis without downtime on managed systems
+#
+# AAP Job Template: "AAC - Evaluate Stored Facts"
+# Credentials: Ansible Vault
+# EE: AAC Compliance EE
+# Survey:
+#   target_hostname  — specific hostname or "all" (default: all)
+#   target_policy    — policy name or "all" (default: all)
+#   facts_snapshot   — "latest" or ISO date YYYY-MM-DD (default: latest)
+
+- name: Evaluate stored facts against compliance policies
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - [ "../vars/vault_secrets.yml", "../vars/empty_fallback.yml" ]
+    - ../vars/site_config.yml
+
+  vars:
+    pg_password: "{{ compliance_db_password }}"
+    # target_hostname: <set via extra_vars / survey / inventory>   # default 'all'
+    # target_policy: <set via extra_vars / survey / inventory>   # default 'all'
+    # facts_snapshot: <set via extra_vars / survey / inventory>   # default 'latest'
+
+    # ── Policy registry ───────────────────────────────────────────────────────
+    # Maps policy_name → OPA endpoint, version string, total controls,
+    # and the os_distributions / os_version_prefix that match host_facts rows.
+    # Add new policies here — no playbook changes needed elsewhere.
+    opa_policy_registry:
+      "CIS RHEL 9":
+        opa_url: "{{ opa_security_url }}/v1/data/cis_rhel9/main/compliance_report"
+        policy_version: "CIS Red Hat Enterprise Linux 9 Benchmark v3.0.0"
+        # benchmark size; the report's total_controls (in scope for the
+        # profile, level1_server by default) is what is stored
+        total_controls: 352
+        os_distributions: ["RedHat", "Rocky", "AlmaLinux"]
+        os_version_prefix: "9"
+      "CIS RHEL 9 (Fedora)":
+        opa_url: "{{ opa_security_url }}/v1/data/cis_rhel9/main/compliance_report"
+        policy_version: "CIS Red Hat Enterprise Linux 9 Benchmark v3.0.0"
+        # benchmark size; the report's total_controls (in scope for the
+        # profile, level1_server by default) is what is stored
+        total_controls: 352
+        os_distributions: ["Fedora"]
+        os_version_prefix: ""
+      "CIS Ubuntu 22.04":
+        opa_url: "{{ opa_security_url }}/v1/data/cis_ubuntu_22_04/main/compliance_report"
+        policy_version: "CIS Ubuntu Linux 22.04 LTS Benchmark v2.0.0"
+        total_controls: 228
+        os_distributions: ["Ubuntu"]
+        os_version_prefix: "22"
+      "CIS Amazon Linux 2023":
+        opa_url: "{{ opa_security_url }}/v1/data/cis_amazon_linux_2023/main/compliance_report"
+        policy_version: "CIS Amazon Linux 2023 Benchmark v1.0.0"
+        total_controls: 200
+        os_distributions: ["Amazon"]
+        os_version_prefix: "2023"
+      "CIS Windows Server 2022":
+        opa_url: "{{ opa_security_url }}/v1/data/cis_windows_server_2022/main/compliance_report"
+        policy_version: "CIS Microsoft Windows Server 2022 Benchmark v5.1.0"
+        # benchmark size; the report's total_controls (in scope for the
+        # host's profile) is what is stored
+        total_controls: 408
+        os_distributions: ["Windows"]
+        os_version_prefix: "2022"
+
+  tasks:
+
+    # ── Step 1: Determine which hosts to evaluate ─────────────────────────────
+
+    - name: Query hosts with stored facts
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port | default(5433) }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: |
+          -- compliance_facts columns are `facts` (JSONB) and `collected_at`
+          -- (see aac_compliance_db/tasks/schema.yml and the INSERT in
+          -- collect_all_facts.yml). This query used to name facts_data /
+          -- collection_timestamp, which do not exist, so the stored-facts path
+          -- failed on its first SELECT (found 2026-10-12). Aliases keep the
+          -- downstream matrix keys unchanged.
+          SELECT DISTINCT ON (hostname)
+            id                                                             AS facts_id,
+            hostname,
+            facts->'ansible_facts'->>'os_family'                          AS os_family,
+            facts->'ansible_facts'->>'distribution'                       AS os_distribution,
+            facts->'ansible_facts'->>'distribution_version'               AS os_version,
+            collected_at                                                   AS collection_timestamp,
+            facts                                                          AS facts_data
+          FROM compliance_facts
+          WHERE true
+          {% if (target_hostname | default('all', true)) != 'all' %}
+          AND hostname = %s
+          {% endif %}
+          {% if (facts_snapshot | default('latest', true)) != 'latest' %}
+          AND collected_at::date = %s::date
+          {% endif %}
+          ORDER BY hostname, collected_at DESC
+        positional_args: >-
+          {%- set args = [] -%}
+          {%- if (target_hostname | default('all', true)) != 'all' -%}{{ args.append((target_hostname | default('all', true))) or '' }}{%- endif -%}
+          {%- if (facts_snapshot | default('latest', true)) != 'latest' -%}{{ args.append((facts_snapshot | default('latest', true))) or '' }}{%- endif -%}
+          {{ args }}
+      register: hosts_query
+
+    - name: Fail if no stored facts found
+      fail:
+        msg: >
+          No stored facts found for hostname='{{ (target_hostname | default('all', true)) }}' snapshot='{{ (facts_snapshot | default('latest', true)) }}'.
+          Run 'AAC - Collect Facts' first to gather and store host facts.
+      when: hosts_query.query_result | length == 0
+
+    - name: Report hosts to evaluate
+      debug:
+        msg: "Evaluating {{ hosts_query.query_result | length }} host(s): {{ hosts_query.query_result | map(attribute='hostname') | list | join(', ') }}"
+
+    # ── Step 2: Determine which policies to evaluate ──────────────────────────
+
+    - name: Build evaluation matrix (host × policy)
+      set_fact:
+        eval_matrix: >-
+          {%- set matrix = [] -%}
+          {%- for host_row in hosts_query.query_result -%}
+            {%- for policy_name, policy_cfg in opa_policy_registry.items() -%}
+              {%- if (target_policy | default('all', true)) == 'all' or (target_policy | default('all', true)) == policy_name -%}
+                {%- set dist_match = host_row.os_distribution in policy_cfg.os_distributions -%}
+                {%- set ver_match  = policy_cfg.os_version_prefix == '' or ((host_row.os_version | default('')) | string is match('^' + policy_cfg.os_version_prefix)) -%}
+                {%- if (dist_match and ver_match) or (target_policy | default('all', true)) != 'all' -%}
+                  {{- matrix.append({
+                    'hostname':        host_row.hostname,
+                    'os_distribution': host_row.os_distribution,
+                    'os_version':      host_row.os_version,
+                    'facts_id':        host_row.facts_id,
+                    'facts_data':      host_row.facts_data,
+                    'policy_name':     policy_name,
+                    'policy_cfg':      policy_cfg
+                  }) or '' -}}
+                {%- endif -%}
+              {%- endif -%}
+            {%- endfor -%}
+          {%- endfor -%}
+          {{ matrix }}
+
+    - name: Report evaluation matrix
+      debug:
+        msg: "Evaluation matrix: {{ eval_matrix | length }} host+policy combination(s)"
+
+    # ── Step 3: Build OPA input from stored facts_data ────────────────────────
+    # The mapper is shared with cis_rhel9_assessment.yml
+    # (../tasks/cis_linux_build_opa_input.yml): one collector, one mapper, one
+    # payload shape. It emits only sections backed by collected facts; the
+    # policy reports the rest as NOT ASSESSED.
+
+    - name: Reset evaluation inputs
+      set_fact:
+        eval_inputs: []
+
+    - name: Build OPA input for each host+policy combination (shared mapper)
+      include_tasks: ../tasks/cis_linux_build_opa_input.yml
+      loop: "{{ eval_matrix }}"
+      loop_control:
+        loop_var: m
+        label: "{{ m.hostname }} × {{ m.policy_name }}"
+      vars:
+        facts_data: "{{ m.facts_data }}"
+        opa_hostname: "{{ m.hostname }}"
+
+    # ── Evaluate at the gated /main/compliance_report endpoint ───────────────
+    # The report carries total / passed / failed / percentage computed by the
+    # policy (unassessed sections count as failed). Nothing is computed here.
+
+    - name: Evaluate each host+policy combination against OPA
+      uri:
+        use_proxy: false
+        url: "{{ item.m.policy_cfg.opa_url }}"
+        method: POST
+        body_format: json
+        body:
+          input: "{{ item.input }}"
+        status_code: [200]
+        timeout: 30
+      loop: "{{ eval_inputs }}"
+      loop_control:
+        label: "{{ item.m.hostname }} × {{ item.m.policy_name }}"
+      register: opa_responses
+      failed_when: false
+
+    - name: Report combinations OPA did not evaluate (fail closed — nothing stored for them)
+      debug:
+        msg: "NO ASSESSMENT for {{ item.item.m.hostname }} × {{ item.item.m.policy_name }}: OPA status {{ item.status | default('no connection') }} — no result row written"
+      loop: "{{ opa_responses.results }}"
+      loop_control:
+        label: "{{ item.item.m.hostname }} × {{ item.item.m.policy_name }}"
+      when: (item.status | default(-1)) != 200 or (item.json.result.total_controls is not defined)
+
+    # ── Step 4: Store results in compliance_results ───────────────────────────
+
+    - name: Store evaluation results to compliance_results
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port | default(5433) }}"
+        # evidence write: the least-privilege writer when configured (docs/EVIDENCE_IMMUTABILITY.md)
+        login_user: "{{ aac_evidence_writer_user | default(pg_user, true) }}"
+        login_password: >-
+          {{ compliance_writer_password
+             if (aac_evidence_writer_user | default('', true) | length > 0)
+             else (pg_password) }}
+        login_db: "{{ pg_db }}"
+        query: |
+          INSERT INTO compliance_results
+            (facts_id, framework, policy_name, policy_version,
+             total_controls, passed_controls, failed_controls,
+             compliance_percentage, violations, metadata)
+          VALUES (%s::bigint, %s, %s, %s, %s::integer, %s::integer, %s::integer,
+                  %s::numeric, %s::jsonb, %s::jsonb)
+          RETURNING id
+        positional_args:
+          - "{{ item.item.m.facts_id }}"
+          # framework is NOT NULL. Omitting it made every insert here fail at
+          # runtime; the policy registry key is the framework identifier.
+          - "{{ item.item.m.policy_name }}"
+          - "{{ item.item.m.policy_name }}"
+          - "{{ item.json.result.benchmark | default(item.item.m.policy_cfg.policy_version) }}"
+          # Figures come from the policy's report; total_controls is the
+          # distinct-ID basis the policy set evaluates (controls_basis), not the
+          # published benchmark headline, and unassessed sections count as failed.
+          - "{{ item.json.result.total_controls | int }}"
+          - "{{ item.json.result.passed_controls | default(0) | int }}"
+          - "{{ item.json.result.failed_controls | default(item.json.result.violations | default([]) | length) | int }}"
+          - "{{ item.json.result.compliance_percentage | default(0) | float }}"
+          - "{{ item.json.result.violations | default([]) | to_json }}"
+          - "{{ {'hostname': item.item.m.hostname, 'os_distribution': item.item.m.os_distribution, 'os_version': item.item.m.os_version, 'facts_id': item.item.m.facts_id, 'evaluation_source': 'stored_facts', 'evaluation_endpoint': 'main/compliance_report', 'opa_url': item.item.m.policy_cfg.opa_url, 'controls_basis': item.json.result.controls_basis | default(''), 'assessment_coverage_percentage': item.json.result.assessment_coverage_percentage | default(0), 'sections_not_assessed': item.json.result.sections_not_assessed | default([])} | to_json }}"
+      loop: "{{ opa_responses.results }}"
+      loop_control:
+        label: "{{ item.item.m.hostname }} × {{ item.item.m.policy_name }}"
+      when: (item.status | default(-1)) == 200 and (item.json.result.total_controls is defined)
+      register: result_inserts
+
+    # ── Step 5: Upsert remediation_status ─────────────────────────────────────
+    # Status transition rules (enforced in SQL CASE):
+    #   accepted_risk → unchanged (human decision, sticky)
+    #   violations = 0 → resolved  (auto)
+    #   was resolved, now violations > 0 → open  (regression detected)
+    #   policy_version changed → needs_reassessment  (auto)
+    #   otherwise → preserve current status (e.g. in_progress stays in_progress)
+
+    - name: Upsert remediation_status for each result
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port | default(5433) }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: |
+          INSERT INTO remediation_status
+            (hostname, policy_name, policy_version, latest_result_id,
+             status, violation_count, first_detected, last_assessed)
+          VALUES (
+            %s, %s, %s, %s,
+            CASE WHEN %s::integer = 0 THEN 'resolved' ELSE 'open' END,
+            %s::integer,
+            now(), now()
+          )
+          ON CONFLICT (hostname, policy_name) DO UPDATE SET
+            policy_version   = EXCLUDED.policy_version,
+            latest_result_id = EXCLUDED.latest_result_id,
+            violation_count  = EXCLUDED.violation_count,
+            last_assessed    = now(),
+            status = CASE
+              WHEN remediation_status.status = 'accepted_risk'
+                THEN 'accepted_risk'
+              WHEN EXCLUDED.violation_count = 0
+                THEN 'resolved'
+              WHEN remediation_status.status = 'resolved'
+                AND EXCLUDED.violation_count > 0
+                THEN 'open'
+              WHEN remediation_status.policy_version IS DISTINCT FROM EXCLUDED.policy_version
+                AND remediation_status.status NOT IN ('in_progress', 'accepted_risk')
+                THEN 'needs_reassessment'
+              ELSE remediation_status.status
+            END,
+            resolved_at = CASE
+              WHEN EXCLUDED.violation_count = 0 AND remediation_status.resolved_at IS NULL
+                THEN now()
+              WHEN EXCLUDED.violation_count > 0
+                THEN NULL
+              ELSE remediation_status.resolved_at
+            END,
+            updated_at = now()
+        positional_args:
+          - "{{ item.item.item.m.hostname }}"
+          - "{{ item.item.item.m.policy_name }}"
+          - "{{ item.item.item.m.policy_cfg.policy_version }}"
+          - "{{ (item.query_result[0].id | default(None)) }}"
+          - "{{ item.item.json.result.violations | default([]) | length }}"
+          - "{{ item.item.json.result.violations | default([]) | length }}"
+      loop: "{{ result_inserts.results }}"
+      loop_control:
+        label: "{{ item.item.item.m.hostname }} × {{ item.item.item.m.policy_name }}"
+      when: item.query_result is defined
+      ignore_errors: true
+
+    # ── Step 6: Summary ───────────────────────────────────────────────────────
+
+    - name: Query updated remediation_status for report
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port | default(5433) }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: |
+          SELECT
+            rs.hostname,
+            rs.policy_name,
+            rs.status,
+            rs.violation_count,
+            rs.last_assessed::date AS assessed_date,
+            rs.owner,
+            rs.due_date
+          FROM remediation_status rs
+          WHERE rs.hostname = ANY(%s::text[])
+          ORDER BY rs.hostname, rs.policy_name
+        positional_args:
+          - "{{ hosts_query.query_result | map(attribute='hostname') | list }}"
+      register: status_summary
+      ignore_errors: true
+
+    - name: Evaluation complete
+      debug:
+        msg: |
+          ✅ Evaluation complete — {{ eval_matrix | length }} host+policy combination(s)
+
+          {% for row in (status_summary.query_result | default([])) %}
+          {{ '%-35s' | format(row.hostname) }}  {{ '%-30s' | format(row.policy_name) }}  {{ '%-20s' | format(row.status) }}  violations={{ row.violation_count }}
+          {% endfor %}
+
+          Run 'AAC - Remediation Report' for full detail with owner/due-date tracking.

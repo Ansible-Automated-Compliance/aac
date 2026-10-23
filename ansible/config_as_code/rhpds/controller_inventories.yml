@@ -1,0 +1,7 @@
+---
+# AAC Inventories
+
+controller_inventories:
+  - name: Compliance Infrastructure
+    description: "Hosts for AAC compliance assessments and demo workloads"
+    organization: "{{ aac_organization }}"

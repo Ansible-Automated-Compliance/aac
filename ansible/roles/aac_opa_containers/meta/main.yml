@@ -1,0 +1,22 @@
+---
+galaxy_info:
+  author: Tim Coulter & Claude
+  description: Deploy and manage the three purpose-specific OPA containers for Ansible Automated Compliance (AAC)
+  company: Compliance Automation
+  license: Apache-2.0
+  min_ansible_version: 2.14
+  platforms:
+    - name: EL
+      versions:
+        - 8
+        - 9
+  galaxy_tags:
+    - aac
+    - compliance
+    - opa
+    - openpolicyagent
+    - containers
+    - podman
+    - infrastructure
+
+dependencies: []

@@ -1,0 +1,40 @@
+---
+# linux_services.yml — Collect service state inventory
+
+- name: Gather service facts
+  service_facts:
+  failed_when: false
+
+- name: Get enabled services at boot
+  shell: |
+    systemctl list-unit-files --type=service --state=enabled \
+      --no-pager --no-legend 2>/dev/null | awk '{print $1}' || echo ""
+  register: enabled_services_raw
+  changed_when: false
+  failed_when: false
+
+- name: Check for unnecessary/risky services
+  shell: |
+    for svc in telnet rsh rlogin rexec tftp xinetd nis yp-tools \
+               talk ntalk chargen daytime echo discard avahi-daemon \
+               cups nfs-server rpcbind bluetooth; do
+      if systemctl is-active "$svc" &>/dev/null; then
+        echo "ACTIVE:$svc"
+      elif systemctl is-enabled "$svc" &>/dev/null; then
+        echo "ENABLED:$svc"
+      fi
+    done
+  register: risky_services_raw
+  changed_when: false
+  failed_when: false
+
+- name: Set service facts
+  set_fact:
+    aac_services:
+      all:             "{{ ansible_facts.services | default({}) }}"
+      enabled_at_boot: "{{ enabled_services_raw.stdout_lines | default([]) }}"
+      risky_services:  "{{ risky_services_raw.stdout_lines | default([]) }}"
+      service_manager: "{{ ansible_service_mgr | default('unknown') }}"
+      running_count: >-
+        {{ (ansible_facts.services | default({}) | dict2items
+            | selectattr('value.state', 'equalto', 'running') | list | length) }}

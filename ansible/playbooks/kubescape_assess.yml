@@ -1,0 +1,239 @@
+---
+# Kubescape State Assessment
+#
+# Measures the STATE of K8s manifests / a connected K8s cluster against
+# the Kubescape regolibrary (Apache-2.0). Runs the `kubescape` CLI as the
+# evaluation engine (the policies use Kubescape's runtime that loads
+# the all-in-one armo_builtins package; not portable to vanilla OPA's
+# REST API), parses JSON output, and records results in compliance_results
+# for historical state trending.
+#
+# What's measured (state, not activities):
+#   - K8s manifest file or directory: the declared spec of resources
+#   - Connected cluster (--cluster): current state of the live API state
+#     (NOTE: this is still STATE, not activity — kubescape reads what
+#      resources currently exist, not who deployed them or when)
+#
+# What's NOT measured: deploy events, audit log streams, admission
+# decisions, runtime telemetry.
+#
+# Framework coverage (--framework flag):
+#   nsa             — NSA-CISA Kubernetes Hardening Guide
+#   mitre           — MITRE ATT&CK mapping
+#   allcontrols     — All Kubescape controls (default)
+#   armobest        — ARMO Best Practices
+#   cis-v1.10.0     — CIS Kubernetes Benchmark v1.10.0
+#   WorkloadScan    — Workload-only subset
+#
+# ── Variables ────────────────────────────────────────────────────────
+#   target_path     Path to manifest file/dir to scan. Either this OR
+#                   target_cluster must be set.
+#   target_cluster  true|false — scan the live cluster (current kubectl
+#                   context). Default false.
+#   framework       Framework name (see list above). Default: allcontrols
+#   target_label    Human label for results (used as hostname column).
+#                   Default: basename(target_path) or cluster name.
+#   record_to_db    true|false. Default true.
+#
+# ── AAP Job Template ─────────────────────────────────────────────────
+#   "AAC - Kubescape Assessment"
+#   Inventory: Compliance Infrastructure, limit: localhost
+#   EE: AAC Compliance EE v1.2.2+  (needs kubescape binary)
+
+- name: Kubescape state assessment
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - ../vars/site_config.yml
+
+  vars:
+    # target_path: <set via extra_vars / survey / inventory>
+    target_cluster: false
+    framework: "allcontrols"
+    # target_label: <set via extra_vars / survey / inventory>
+    record_to_db: true
+    pg_port: "{{ compliance_db_port | default(5432) }}"
+    pg_user: "{{ compliance_db_user | default('postgres') }}"
+    pg_password: "{{ compliance_db_password | mandatory }}"
+    pg_db: "{{ compliance_db_name | default('compliance') }}"
+
+  tasks:
+    - name: Fail if neither target_path nor target_cluster specified
+      ansible.builtin.fail:
+        msg: "Set target_path=<manifest path> OR target_cluster=true"
+      when: (target_path | default('', true)) | length == 0 and not (target_cluster | bool)
+
+    - name: Verify target_path exists (when scanning files)
+      ansible.builtin.stat:
+        path: "{{ (target_path | default('', true)) }}"
+      register: target_stat
+      when: (target_path | default('', true)) | length > 0
+
+    - name: Fail if target_path missing
+      ansible.builtin.fail:
+        msg: "target_path does not exist: {{ (target_path | default('', true)) }}"
+      when:
+        - (target_path | default('', true)) | length > 0
+        - not target_stat.stat.exists
+
+    - name: Derive target_label
+      ansible.builtin.set_fact:
+        target_label: >-
+          {{ ((target_path | default('', true)) | basename)
+             if (target_path | default('', true)) | length > 0
+             else 'cluster:' + (lookup('env', 'KUBECONTEXT') | default('current', true)) }}
+      when: (target_label | default('', true)) | length == 0
+
+    - name: Set json output path (one-shot)
+      ansible.builtin.set_fact:
+        json_out: "/tmp/kubescape_result_{{ lookup('pipe', 'date +%s%N') }}.json"
+
+    - name: Get kubescape version
+      ansible.builtin.command:
+        cmd: kubescape version
+      register: ks_version_raw
+      changed_when: false
+
+    - name: Banner
+      ansible.builtin.debug:
+        msg:
+          - "════════════════════════════════════════════════════════════"
+          - "  Kubescape state assessment"
+          - "════════════════════════════════════════════════════════════"
+          - "  Target:    {{ (target_path | default('', true)) if (target_path | default('', true)) | length > 0 else '(live cluster)' }}"
+          - "  Framework: {{ framework }}"
+          - "  Label:     {{ (target_label | default('', true)) }}"
+
+    - name: Run kubescape on file/directory
+      ansible.builtin.command:
+        argv:
+          - kubescape
+          - scan
+          - "framework"
+          - "{{ framework }}"
+          - "--format"
+          - "json"
+          - "--output"
+          - "{{ json_out }}"
+          - "{{ (target_path | default('', true)) }}"
+      register: ks_run
+      changed_when: false
+      failed_when: false   # kubescape exits 1 when findings present; we parse JSON regardless
+      when: (target_path | default('', true)) | length > 0
+
+    - name: Run kubescape against live cluster
+      ansible.builtin.command:
+        argv:
+          - kubescape
+          - scan
+          - "framework"
+          - "{{ framework }}"
+          - "--format"
+          - "json"
+          - "--output"
+          - "{{ json_out }}"
+      register: ks_cluster_run
+      changed_when: false
+      failed_when: false
+      when: target_cluster | bool
+
+    - name: Read kubescape JSON
+      ansible.builtin.set_fact:
+        ks_report: "{{ lookup('file', json_out) | from_json }}"
+
+    - name: Extract control results (state per control)
+      ansible.builtin.set_fact:
+        ks_controls: "{{ ks_report.summaryDetails.controls | default({}) }}"
+        ks_compliance_score: "{{ ks_report.summaryDetails.complianceScore | default(0) }}"
+
+    - name: Bucket controls by status
+      ansible.builtin.set_fact:
+        controls_failed_list: >-
+          {%- set out = [] -%}
+          {%- for cid, c in ks_controls.items() -%}
+            {%- if c.status == 'failed' -%}
+              {%- set _ = out.append({
+                'control_id': cid,
+                'name': c.name,
+                'score_factor': c.scoreFactor | default(0),
+                'category': c.category.name | default('?'),
+                'failed_resources': c.ResourceCounters.failedResources | default(0),
+                'passed_resources': c.ResourceCounters.passedResources | default(0),
+              }) -%}
+            {%- endif -%}
+          {%- endfor -%}
+          {{ out }}
+        controls_passed: "{{ ks_controls | dict2items | selectattr('value.status', 'equalto', 'passed') | list | length }}"
+        controls_skipped: "{{ ks_controls | dict2items | selectattr('value.status', 'equalto', 'skipped') | list | length }}"
+        controls_total: "{{ ks_controls | length }}"
+
+    - name: Compute booleans
+      ansible.builtin.set_fact:
+        controls_failed_count: "{{ controls_failed_list | length }}"
+        compliant: "{{ (controls_failed_list | length) == 0 }}"
+
+    - name: Print state summary
+      ansible.builtin.debug:
+        msg:
+          - ""
+          - "  Artifact state: {{ (target_label | default('', true)) }}"
+          - "  ──────────────────────────────────"
+          - "  Framework:     {{ framework }}"
+          - "  Controls evaluated: {{ controls_total }}"
+          - "  PASSED:  {{ controls_passed }}"
+          - "  FAILED:  {{ controls_failed_count }}"
+          - "  SKIPPED: {{ controls_skipped }}"
+          - "  Kubescape compliance score: {{ (ks_compliance_score | float) | round(1) }}%"
+          - "  ({{ '✓ COMPLIANT' if compliant else '✗ NON-COMPLIANT' }})"
+          - ""
+          - "  Top 5 FAIL controls (by score factor):"
+          - "{% for c in (controls_failed_list | sort(attribute='score_factor', reverse=True))[:5] %}    [SF={{ c.score_factor }}] {{ c.control_id }} {{ c.name | truncate(70, end='') }}  ({{ c.failed_resources }} resource(s) failed)\n{% endfor %}"
+
+    - name: Record assessment to PostgreSQL
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port }}"
+        # evidence write: the least-privilege writer when configured (docs/EVIDENCE_IMMUTABILITY.md)
+        login_user: "{{ aac_evidence_writer_user | default(pg_user, true) }}"
+        login_password: >-
+          {{ compliance_writer_password
+             if (aac_evidence_writer_user | default('', true) | length > 0)
+             else (pg_password) }}
+        login_db: "{{ pg_db }}"
+        query: |
+          INSERT INTO compliance_results
+            (hostname, framework, policy_name, policy_version, compliant,
+             total_controls, passed_controls, failed_controls,
+             compliance_percentage, violations, metadata)
+          VALUES (%s, %s, %s, %s, %s,
+                  %s, %s, %s, %s,
+                  %s::jsonb, %s::jsonb)
+        positional_args:
+          - "{{ (target_label | default('', true)) }}"
+          - "kubescape_{{ framework }}"
+          - "kubescape regolibrary"
+          - "{{ ks_version_raw.stdout | regex_search('v[0-9.]+') | default('?') }}"
+          - "{{ compliant }}"
+          - "{{ controls_total }}"
+          - "{{ controls_passed }}"
+          - "{{ controls_failed_count }}"
+          - "{{ (ks_compliance_score | float) | round(1) }}"
+          - "{{ controls_failed_list | to_json }}"
+          - >-
+            {{ {
+              'target_path': (target_path | default('', true)),
+              'target_cluster': target_cluster,
+              'framework': framework,
+              'controls_skipped': controls_skipped | int,
+              'tool': 'kubescape',
+              'tool_version': ks_version_raw.stdout | regex_search('v[0-9.]+') | default('?'),
+              'evaluation_engine': 'kubescape CLI (Apache-2.0)',
+            } | to_json }}
+      when: record_to_db | bool
+
+    - name: Clean up temp JSON
+      ansible.builtin.file:
+        path: "{{ json_out }}"
+        state: absent

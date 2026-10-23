@@ -1,0 +1,183 @@
+---
+# =============================================================================
+# seed_pqc_readiness_template.yml
+#
+# Creates (or refreshes) the "AAC - PQC Readiness Assessment" job template.
+# Idempotent — safe to re-run. Objects are resolved by NAME; ids drift between
+# installs.
+#
+# Prerequisites on the controller: the `pqc` loader key loaded on
+# opa-compliance ("AAC - Load OPA Policies"), `pqc: compliance` in
+# opa_framework_map (site_config.yml or extra_vars), the Linux hosts in the
+# inventory with the machine credential below. Set the LIMIT at launch
+# (ask_limit_on_launch): the assessment is host-reaching and would otherwise
+# run on the whole inventory.
+#
+# TLS: controller certificates are verified by default; a lab with a self-signed
+# route sets aap_validate_certs: false in site_config.yml (never in the tree).
+#
+# Run via AAP Job Template: "AAC - Seed PQC Readiness Template"
+# Credentials: Ansible Vault   EE: AAC Compliance EE   Inventory: Compliance Infrastructure, limit: localhost
+# =============================================================================
+
+- name: Seed the PQC Readiness assessment job template
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    aap_api: "{{ aap_url }}/api/controller/v2"
+    aap_api_token: "{{ aap_token_override | default(aap_token | default('', true), true) }}"
+
+    project_name: "Compliance Automation"
+    inventory_name: "Compliance Infrastructure"
+    ee_name: "AAC Compliance EE"
+    vault_credential_name: "Ansible Vault"
+    machine_credential_name: "Compliance SSH Credential"
+
+    pqc_template:
+      name: "AAC - PQC Readiness Assessment"
+      playbook: "ansible/playbooks/pqc_readiness_assessment.yml"
+      description: "PQC Readiness (EO 14412 / OMB M-26-15, NIST IR 8547, FIPS 203/204/205, CNSA 2.0) — collect the host crypto inventory, add the site's attestations, evaluate at OPA, store (fail-closed)"
+
+    pqc_survey:
+      name: "PQC Readiness Assessment"
+      description: "What to read on the host; the program attestations come from ansible/vars/pqc_attestations.yml or extra_vars"
+      spec:
+        - question_name: "Local TLS ports to probe for the negotiated key-exchange group (space-separated; only ports that are listening are probed)"
+          variable: "pqc_tls_probe_ports_csv"
+          type: "text"
+          required: false
+          default: "443 636 6443 8443 9443"
+        - question_name: "Extra certificate directories to read (space-separated; /etc/pki/tls/certs is always read)"
+          variable: "pqc_extra_cert_dirs_csv"
+          type: "text"
+          required: false
+          default: ""
+
+  tasks:
+    - name: Load optional local config
+      ansible.builtin.include_vars: "{{ item }}"
+      with_first_found:
+        - files: ["{{ playbook_dir }}/../vars/site_config.yml", "{{ playbook_dir }}/../vars/vault_secrets.yml"]
+          skip: true
+      no_log: true
+
+    - name: Fail early without an AAP URL
+      ansible.builtin.fail:
+        msg: "aap_url is not set. Provide it in site_config.yml or as an extra_var."
+      when: (aap_url | default('', true)) | length == 0
+
+    - name: Fail early without an AAP token
+      ansible.builtin.fail:
+        msg: "aap_token is not set. Provide it in vault_secrets.yml, or pass aap_token_override as an extra_var."
+      when: aap_api_token | length == 0
+
+    - name: Look up dependencies by name
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "{{ aap_api }}/{{ item.path }}/?name={{ item.name | urlencode }}"
+        method: GET
+        headers: { Authorization: "Bearer {{ aap_api_token }}" }
+        validate_certs: "{{ aap_validate_certs | default(true) | bool }}"
+        status_code: 200
+      loop:
+        - { key: "project",    path: "projects",               name: "{{ project_name }}" }
+        - { key: "inventory",  path: "inventories",            name: "{{ inventory_name }}" }
+        - { key: "ee",         path: "execution_environments", name: "{{ ee_name }}" }
+        - { key: "credential", path: "credentials",            name: "{{ vault_credential_name }}" }
+        - { key: "machine",    path: "credentials",            name: "{{ machine_credential_name }}" }
+      loop_control:
+        label: "{{ item.key }} = {{ item.name }}"
+      register: deps
+
+    - name: Build a dependency id map
+      ansible.builtin.set_fact:
+        dep_ids: "{{ dep_ids | default({}) | combine({item.item.key: (item.json.results[0].id if item.json.count > 0 else none)}) }}"
+      loop: "{{ deps.results }}"
+      loop_control:
+        label: "{{ item.item.key }}"
+
+    - name: Fail when a dependency is missing
+      ansible.builtin.fail:
+        msg: "Could not resolve {{ item }} by name on this controller."
+      loop: "{{ dep_ids | dict2items | selectattr('value', 'none') | map(attribute='key') | list }}"
+
+    - name: Look up the job template
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "{{ aap_api }}/job_templates/?name={{ pqc_template.name | urlencode }}"
+        method: GET
+        headers: { Authorization: "Bearer {{ aap_api_token }}" }
+        validate_certs: "{{ aap_validate_certs | default(true) | bool }}"
+        status_code: 200
+      register: jt_lookup
+
+    - name: Create or update the job template
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "{{ aap_api }}/job_templates/{{ (jt_lookup.json.results[0].id ~ '/') if jt_lookup.json.count > 0 else '' }}"
+        method: "{{ 'PATCH' if jt_lookup.json.count > 0 else 'POST' }}"
+        headers: { Authorization: "Bearer {{ aap_api_token }}", Content-Type: "application/json" }
+        body_format: json
+        body:
+          name: "{{ pqc_template.name }}"
+          description: "{{ pqc_template.description }}"
+          job_type: "run"
+          project: "{{ dep_ids.project | int }}"
+          playbook: "{{ pqc_template.playbook }}"
+          inventory: "{{ dep_ids.inventory | int }}"
+          execution_environment: "{{ dep_ids.ee | int }}"
+          ask_variables_on_launch: true
+          ask_limit_on_launch: true
+          become_enabled: true
+          verbosity: 1
+          # the survey's space-separated strings become the lists the playbook reads
+          extra_vars: "{{ {'pqc_tls_probe_ports': '{{ (pqc_tls_probe_ports_csv | default(\"443 636 6443 8443 9443\")) | split }}', 'pqc_extra_cert_dirs': '{{ (pqc_extra_cert_dirs_csv | default(\"\")) | split }}'} | to_json }}"
+        validate_certs: "{{ aap_validate_certs | default(true) | bool }}"
+        status_code: [200, 201]
+      register: jt_write
+
+    - name: Resolve the template id
+      ansible.builtin.set_fact:
+        jt_id: "{{ jt_write.json.id }}"
+
+    - name: Attach the credentials (idempotent; AAP ignores an existing association)
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "{{ aap_api }}/job_templates/{{ jt_id }}/credentials/"
+        method: POST
+        headers: { Authorization: "Bearer {{ aap_api_token }}", Content-Type: "application/json" }
+        body_format: json
+        body: { id: "{{ item | int }}" }
+        validate_certs: "{{ aap_validate_certs | default(true) | bool }}"
+        status_code: [200, 201, 204, 400]
+      loop:
+        - "{{ dep_ids.credential }}"
+        - "{{ dep_ids.machine }}"
+
+    - name: Write the survey
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "{{ aap_api }}/job_templates/{{ jt_id }}/survey_spec/"
+        method: POST
+        headers: { Authorization: "Bearer {{ aap_api_token }}", Content-Type: "application/json" }
+        body_format: json
+        body: "{{ pqc_survey }}"
+        validate_certs: "{{ aap_validate_certs | default(true) | bool }}"
+        status_code: [200, 201]
+
+    - name: Enable the survey
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "{{ aap_api }}/job_templates/{{ jt_id }}/"
+        method: PATCH
+        headers: { Authorization: "Bearer {{ aap_api_token }}", Content-Type: "application/json" }
+        body_format: json
+        body: { survey_enabled: true }
+        validate_certs: "{{ aap_validate_certs | default(true) | bool }}"
+        status_code: 200
+
+    - name: Seeded
+      ansible.builtin.debug:
+        msg: "'{{ pqc_template.name }}' is job template {{ jt_id }}. Launch it with a LIMIT of the Linux hosts to assess; copy ansible/vars/pqc_attestations.yml.example to pqc_attestations.yml (or pass its keys as extra_vars) for the program attestations."

@@ -1,0 +1,39 @@
+---
+# AAC RHPDS Config-as-Code — Collection Requirements
+#
+# Install with:
+#   ansible-galaxy collection install -r ansible/config_as_code/rhpds/requirements.yml
+#
+# NOTE: ansible.controller from Galaxy is a metadata stub — it lists as installed
+# but its modules directory is empty. Use awx.awx instead (community equivalent,
+# identical modules, works from Galaxy without Automation Hub access).
+#
+# Or via AAP EE build (execution-environment.yml extra_build_steps) — the EE uses
+# ansible.controller from Automation Hub which is fully populated.
+
+collections:
+
+  # AAP configuration roles — idempotent CRUD for all AAP objects
+  # Provides the `dispatch` role used by rhpds_bootstrap.yml
+  - name: infra.aap_configuration
+    version: ">=4.2.0"
+
+  # AAP controller modules (used by infra.aap_configuration internally)
+  # awx.awx is the community version of ansible.controller — use this when
+  # running outside of an EE (direct ansible-playbook invocation).
+  - name: awx.awx
+    version: ">=24.0.0"
+
+  # EDA controller modules — for eda_credentials, eda_projects, eda_rulebook_activations
+  - name: ansible.eda
+    version: ">=2.0.0"
+
+  # AWS modules — required by provision_rhpds_demo_host.yml
+  # (ec2_instance, ec2_key, ec2_security_group, ec2_eip, etc.)
+  - name: amazon.aws
+    version: ">=8.0.0"
+
+  # PostgreSQL modules — required by seed/configure playbooks
+  # (postgresql_query, postgresql_db, etc.)
+  - name: community.postgresql
+    version: ">=3.0.0"

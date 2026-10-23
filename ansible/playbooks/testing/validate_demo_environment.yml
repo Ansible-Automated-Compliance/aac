@@ -1,0 +1,255 @@
+---
+# Validate OCP Demo Environment
+# Ensures all required components are in place and functioning
+#
+# Usage:
+#   ansible-playbook tests/validate_demo_environment.yml
+#
+# Or via AAP Job Template with extra_vars:
+#   aap_controller_url: https://aap-controller-aap.apps.<cluster>
+#   mcp_server_url: https://aap-mcp-server-aap-mcp.apps.<cluster>
+#   opa_server_url: https://opa-aap.apps.<cluster>
+
+- name: Validate OCP AAP Demo Environment
+  hosts: localhost
+  connection: local
+  gather_facts: yes
+
+  vars:
+    # Default URLs - override with extra_vars for your cluster
+    cluster_domain: "{{ lookup('env', 'CLUSTER_DOMAIN') | default(rhpds_cluster | default(undef(), true), true) | mandatory(msg='Set CLUSTER_DOMAIN, rhpds_cluster, or cluster_domain') }}"
+    aap_controller_url: "https://aap-controller-aap.apps.{{ cluster_domain }}"
+    aap_gateway_url: "https://aap-aap.apps.{{ cluster_domain }}"
+    mcp_server_url: "https://aap-mcp-server-aap-mcp.apps.{{ cluster_domain }}"
+    opa_server_url: "https://opa-aap.apps.{{ cluster_domain }}"
+
+    # Test results collection
+    test_results: []
+    tests_passed: 0
+    tests_failed: 0
+
+  tasks:
+    # =========================================
+    # Test 1: AAP Controller Accessibility
+    # =========================================
+    - name: "Test 1: Check AAP Controller is accessible"
+      uri:
+        use_proxy: false
+        url: "{{ aap_controller_url }}/api/controller/v2/ping/"
+        method: GET
+        validate_certs: no
+        status_code: [200, 401, 403]
+        timeout: 10
+      register: aap_controller_check
+      ignore_errors: yes
+
+    - name: Record AAP Controller test result
+      set_fact:
+        test_results: "{{ test_results + [{'name': 'AAP Controller Accessible', 'status': 'PASS' if aap_controller_check.status is defined else 'FAIL', 'details': aap_controller_url}] }}"
+        tests_passed: "{{ tests_passed | int + 1 if aap_controller_check.status is defined else tests_passed | int }}"
+        tests_failed: "{{ tests_failed | int + 1 if aap_controller_check.status is not defined else tests_failed | int }}"
+
+    # =========================================
+    # Test 2: AAP Gateway Accessibility
+    # =========================================
+    - name: "Test 2: Check AAP Gateway is accessible"
+      uri:
+        use_proxy: false
+        url: "{{ aap_gateway_url }}"
+        method: GET
+        validate_certs: no
+        status_code: [200, 301, 302, 401, 403]
+        timeout: 10
+      register: aap_gateway_check
+      ignore_errors: yes
+
+    - name: Record AAP Gateway test result
+      set_fact:
+        test_results: "{{ test_results + [{'name': 'AAP Gateway Accessible', 'status': 'PASS' if aap_gateway_check.status is defined else 'FAIL', 'details': aap_gateway_url}] }}"
+        tests_passed: "{{ tests_passed | int + 1 if aap_gateway_check.status is defined else tests_passed | int }}"
+        tests_failed: "{{ tests_failed | int + 1 if aap_gateway_check.status is not defined else tests_failed | int }}"
+
+    # =========================================
+    # Test 3: MCP Server Health
+    # =========================================
+    - name: "Test 3: Check MCP Server health endpoint"
+      uri:
+        use_proxy: false
+        url: "{{ mcp_server_url }}/health"
+        method: GET
+        validate_certs: no
+        status_code: 200
+        timeout: 10
+      register: mcp_health_check
+      ignore_errors: yes
+
+    - name: Record MCP Server health test result
+      set_fact:
+        test_results: "{{ test_results + [{'name': 'MCP Server Health', 'status': 'PASS' if (mcp_health_check.status is defined and mcp_health_check.status == 200) else 'FAIL', 'details': mcp_server_url + '/health'}] }}"
+        tests_passed: "{{ tests_passed | int + 1 if (mcp_health_check.status is defined and mcp_health_check.status == 200) else tests_passed | int }}"
+        tests_failed: "{{ tests_failed | int + 1 if (mcp_health_check.status is not defined or mcp_health_check.status != 200) else tests_failed | int }}"
+
+    # =========================================
+    # Test 4: MCP Server Tools Available
+    # =========================================
+    - name: "Test 4: Check MCP Server tools endpoint"
+      uri:
+        use_proxy: false
+        url: "{{ mcp_server_url }}/mcp"
+        method: POST
+        validate_certs: no
+        body_format: json
+        body:
+          jsonrpc: "2.0"
+          id: 1
+          method: "tools/list"
+        status_code: 200
+        timeout: 10
+      register: mcp_tools_check
+      ignore_errors: yes
+
+    - name: Parse MCP tools response
+      set_fact:
+        mcp_tools_count: "{{ (mcp_tools_check.json.result.tools | default([])) | length }}"
+      when: mcp_tools_check.status is defined and mcp_tools_check.status == 200
+      ignore_errors: yes
+
+    - name: Record MCP Tools test result
+      set_fact:
+        test_results: "{{ test_results + [{'name': 'MCP Server Tools', 'status': 'PASS' if (mcp_tools_count | default(0) | int > 0) else 'FAIL', 'details': (mcp_tools_count | default(0)) | string + ' tools available'}] }}"
+        tests_passed: "{{ tests_passed | int + 1 if (mcp_tools_count | default(0) | int > 0) else tests_passed | int }}"
+        tests_failed: "{{ tests_failed | int + 1 if (mcp_tools_count | default(0) | int == 0) else tests_failed | int }}"
+
+    # =========================================
+    # Test 5: OPA Server Health
+    # =========================================
+    - name: "Test 5: Check OPA Server health"
+      uri:
+        use_proxy: false
+        url: "{{ opa_server_url }}/health"
+        method: GET
+        validate_certs: no
+        status_code: 200
+        timeout: 10
+      register: opa_health_check
+      ignore_errors: yes
+
+    - name: Record OPA Server health test result
+      set_fact:
+        test_results: "{{ test_results + [{'name': 'OPA Server Health', 'status': 'PASS' if (opa_health_check.status is defined and opa_health_check.status == 200) else 'FAIL', 'details': opa_server_url + '/health'}] }}"
+        tests_passed: "{{ tests_passed | int + 1 if (opa_health_check.status is defined and opa_health_check.status == 200) else tests_passed | int }}"
+        tests_failed: "{{ tests_failed | int + 1 if (opa_health_check.status is not defined or opa_health_check.status != 200) else tests_failed | int }}"
+
+    # =========================================
+    # Test 6: OPA Policies Loaded
+    # =========================================
+    - name: "Test 6: Check OPA policies loaded"
+      uri:
+        use_proxy: false
+        url: "{{ opa_server_url }}/v1/policies"
+        method: GET
+        validate_certs: no
+        status_code: 200
+        timeout: 10
+      register: opa_policies_check
+      ignore_errors: yes
+
+    - name: Parse OPA policies response
+      set_fact:
+        opa_policy_count: "{{ (opa_policies_check.json.result | default([])) | length }}"
+      when: opa_policies_check.status is defined and opa_policies_check.status == 200
+      ignore_errors: yes
+
+    - name: Record OPA Policies test result
+      set_fact:
+        test_results: "{{ test_results + [{'name': 'OPA Policies Loaded', 'status': 'PASS' if (opa_policy_count | default(0) | int > 0) else 'FAIL', 'details': (opa_policy_count | default(0)) | string + ' policies loaded'}] }}"
+        tests_passed: "{{ tests_passed | int + 1 if (opa_policy_count | default(0) | int > 0) else tests_passed | int }}"
+        tests_failed: "{{ tests_failed | int + 1 if (opa_policy_count | default(0) | int == 0) else tests_failed | int }}"
+
+    # =========================================
+    # Test 7: Required Playbooks Exist
+    # =========================================
+    - name: "Test 7: Check required playbooks exist"
+      stat:
+        path: "{{ item }}"
+      loop:
+        - "{{ playbook_dir }}/../cis_rhel9_assessment.yml"
+        - "{{ playbook_dir }}/../cis_benchmark_report.yml"
+        - "{{ playbook_dir }}/../opa-policy-deployment.yml"
+      register: playbook_checks
+      ignore_errors: yes
+
+    - name: Count existing playbooks
+      set_fact:
+        playbooks_exist: "{{ playbook_checks.results | selectattr('stat.exists', 'defined') | selectattr('stat.exists', 'equalto', true) | list | length }}"
+        playbooks_total: "{{ playbook_checks.results | length }}"
+
+    - name: Record Playbooks test result
+      set_fact:
+        test_results: "{{ test_results + [{'name': 'Required Playbooks', 'status': 'PASS' if (playbooks_exist | int == playbooks_total | int) else 'FAIL', 'details': playbooks_exist | string + '/' + playbooks_total | string + ' playbooks found'}] }}"
+        tests_passed: "{{ tests_passed | int + 1 if (playbooks_exist | int == playbooks_total | int) else tests_passed | int }}"
+        tests_failed: "{{ tests_failed | int + 1 if (playbooks_exist | int != playbooks_total | int) else tests_failed | int }}"
+
+    # =========================================
+    # Test 8: MCP Server Deployment (OpenShift)
+    # =========================================
+    - name: "Test 8: Check MCP namespace exists (if oc available)"
+      command: oc get namespace aap-mcp -o name
+      register: mcp_namespace_check
+      ignore_errors: yes
+      changed_when: false
+
+    - name: Record MCP Namespace test result
+      set_fact:
+        test_results: "{{ test_results + [{'name': 'MCP Namespace (aap-mcp)', 'status': 'PASS' if mcp_namespace_check.rc == 0 else 'SKIP', 'details': 'namespace/aap-mcp' if mcp_namespace_check.rc == 0 else 'oc not available or not logged in'}] }}"
+        tests_passed: "{{ tests_passed | int + 1 if mcp_namespace_check.rc == 0 else tests_passed | int }}"
+
+    # =========================================
+    # Test 9: MCP Server Pod Running
+    # =========================================
+    - name: "Test 9: Check MCP pod is running"
+      command: oc get pods -n aap-mcp -l app=aap-mcp-server -o jsonpath='{.items[0].status.phase}'
+      register: mcp_pod_check
+      ignore_errors: yes
+      changed_when: false
+
+    - name: Record MCP Pod test result
+      set_fact:
+        test_results: "{{ test_results + [{'name': 'MCP Pod Running', 'status': 'PASS' if (mcp_pod_check.rc == 0 and mcp_pod_check.stdout == 'Running') else 'SKIP', 'details': mcp_pod_check.stdout | default('N/A')}] }}"
+        tests_passed: "{{ tests_passed | int + 1 if (mcp_pod_check.rc == 0 and mcp_pod_check.stdout == 'Running') else tests_passed | int }}"
+
+    # =========================================
+    # Generate Test Report
+    # =========================================
+    - name: Display Test Results
+      debug:
+        msg: |
+
+          =====================================================
+          OCP AAP DEMO ENVIRONMENT VALIDATION REPORT
+          =====================================================
+          Timestamp: {{ ansible_date_time.iso8601 }}
+          Cluster: {{ cluster_domain }}
+
+          TEST RESULTS:
+          {% for test in test_results %}
+          [{{ test.status }}] {{ test.name }}
+                   └─ {{ test.details }}
+          {% endfor %}
+
+          =====================================================
+          SUMMARY: {{ tests_passed }}/{{ tests_passed | int + tests_failed | int }} tests passed
+          {% if tests_failed | int > 0 %}
+          ⚠️  {{ tests_failed }} test(s) failed - review details above
+          {% else %}
+          ✅ All tests passed - environment is ready!
+          {% endif %}
+          =====================================================
+
+    # =========================================
+    # Set Exit Status
+    # =========================================
+    - name: Fail if any tests failed
+      fail:
+        msg: "{{ tests_failed }} test(s) failed. Review the test report above."
+      when: tests_failed | int > 0 and (strict_mode | default(false) | bool)

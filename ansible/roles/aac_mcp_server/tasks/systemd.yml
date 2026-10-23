@@ -1,0 +1,68 @@
+---
+# Install a user-level systemd unit for the MCP container under aac_mcp_run_user.
+# Uses loginctl enable-linger so the unit starts at boot without a login session.
+
+- name: Enable systemd linger for {{ aac_mcp_run_user }}
+  command: "loginctl enable-linger {{ aac_mcp_run_user }}"
+  delegate_to: "{{ aac_host }}"
+  become: true
+  changed_when: true
+
+- name: Ensure user systemd directory exists
+  file:
+    path: "/home/{{ aac_mcp_run_user }}/.config/systemd/user"
+    state: directory
+    owner: "{{ aac_mcp_run_user }}"
+    group: "{{ aac_mcp_run_user }}"
+    mode: "0755"
+  delegate_to: "{{ aac_host }}"
+  become: true
+
+- name: Write MCP server systemd user unit
+  copy:
+    dest: "/home/{{ aac_mcp_run_user }}/.config/systemd/user/container-{{ aac_mcp_container_name }}.service"
+    owner: "{{ aac_mcp_run_user }}"
+    group: "{{ aac_mcp_run_user }}"
+    mode: "0644"
+    content: |
+      [Unit]
+      Description=AAP MCP Server (Claude Code Integration)
+      After=network-online.target
+      Wants=network-online.target
+
+      [Service]
+      Type=simple
+      Restart=always
+      RestartSec=10
+      EnvironmentFile={{ aac_mcp_app_dir }}/mcp.env
+      EnvironmentFile=-{{ aac_mcp_app_dir }}/mcp-decision-log.env
+      ExecStartPre=-/usr/bin/podman stop {{ aac_mcp_container_name }}
+      ExecStartPre=-/usr/bin/podman rm {{ aac_mcp_container_name }}
+      ExecStart=/usr/bin/podman run \
+        --name {{ aac_mcp_container_name }} \
+        --network {{ aac_mcp_network }} \
+        -v {{ aac_mcp_app_dir }}:/app:{{ aac_mcp_volume_opts }} \
+        -e AAP_GATEWAY_URL={{ aac_mcp_gateway_url }} \
+        -e AAP_SERVICE_URL={{ aac_mcp_controller_url }} \
+        -e CONTROLLER_OPENAPI_SPEC_URL={{ aac_mcp_openapi_spec_url }} \
+        -e OPA_URL={{ aac_mcp_opa_url }} \
+        -e OPA_GOVERNANCE_ENABLED={{ aac_mcp_opa_governance_enabled | lower }} \
+        -e MCP_AGENT_ID={{ (aac_mcp_agent_id | default('', true)) | quote }} \
+        ${DECISION_LOG_DSN:+-e DECISION_LOG_DSN=$DECISION_LOG_DSN} \
+        -e DECISION_LOG_REQUIRED={{ aac_mcp_decision_log_required | lower }} \
+        -e PYTHONPATH=/app \
+        -e HOST=0.0.0.0 \
+        -e PORT={{ aac_mcp_port }} \
+        ${AAP_TOKEN:+-e AAP_TOKEN=$AAP_TOKEN} \
+        {{ aac_mcp_image }} \
+        python {{ aac_mcp_entrypoint }}
+      ExecStop=/usr/bin/podman stop {{ aac_mcp_container_name }}
+
+      [Install]
+      WantedBy=default.target
+  delegate_to: "{{ aac_host }}"
+  become: true
+  notify: reload_and_enable_mcp_unit
+
+- name: Force handler flush (ensure unit is enabled before play ends)
+  meta: flush_handlers

@@ -1,0 +1,116 @@
+---
+# inventory_report.yml — parse and report the AAC inventory taxonomy
+#
+# Answers, for any inventory, without a hand-maintained list of anything:
+#   - what will be assessed, broken out by location, purpose and use
+#   - what is AAC product and therefore never assessed
+#   - what APIs exist, of what kind, at what URL
+#   - what is misfiled: ungrouped hosts, or hosts in both estate and product
+#
+# This is the "parse the inventory easily on installation" contract. Everything
+# below derives from the reserved group prefixes (loc_ / purpose_ / use_ /
+# product_ / api_), so adding a location or a purpose needs no change here.
+#
+# Run it against any inventory:
+#   AAP  — job template "AAC - Inventory Report"
+#   CLI  — ansible-playbook -i <inventory> ansible/playbooks/inventory_report.yml
+#
+# Read-only. Touches no host and no database.
+
+- name: Report the AAC inventory taxonomy
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - ../vars/site_config.yml
+
+  vars:
+    _loc:     "{{ groups | select('match', '^loc_')     | list | sort }}"
+    _purpose: "{{ groups | select('match', '^purpose_') | list | sort }}"
+    _use:     "{{ groups | select('match', '^use_')     | list | sort }}"
+    _product: "{{ groups | select('match', '^product_') | list | sort }}"
+    estate:   "{{ groups['managed_estate'] | default([]) }}"
+    product:  "{{ groups['aac_product']    | default([]) }}"
+    apis:     "{{ groups['api_endpoints']  | default([]) }}"
+
+  tasks:
+
+    - name: Estate summary
+      ansible.builtin.debug:
+        msg:
+          - "═══════════════════════════════════════════════════════════"
+          - " AAC INVENTORY REPORT"
+          - "═══════════════════════════════════════════════════════════"
+          - " managed_estate : {{ estate | length }} host(s) — assessed"
+          - " aac_product    : {{ product | length }} host(s) — operated, never assessed"
+          - " api_endpoints  : {{ apis | length }} endpoint(s)"
+          - ""
+          - " Dimensions discovered by prefix (no hardcoded list):"
+          - "   locations : {{ _loc | length }}  {{ _loc | join(', ') if _loc else '(none)' }}"
+          - "   purposes  : {{ _purpose | length }}  {{ _purpose | join(', ') if _purpose else '(none)' }}"
+          - "   uses      : {{ _use | length }}  {{ _use | join(', ') if _use else '(none)' }}"
+
+    - name: Managed estate by location
+      ansible.builtin.debug:
+        msg: "  {{ item }}: {{ groups[item] | default([]) | length }} — {{ (groups[item] | default([]))[:6] | join(', ') }}{{ ' …' if (groups[item] | default([]) | length) > 6 else '' }}"
+      loop: "{{ _loc }}"
+      loop_control: { label: "{{ item }}" }
+      when: _loc | length > 0
+
+    - name: Managed estate by purpose
+      ansible.builtin.debug:
+        msg: "  {{ item }}: {{ groups[item] | default([]) | length }} — {{ (groups[item] | default([]))[:6] | join(', ') }}{{ ' …' if (groups[item] | default([]) | length) > 6 else '' }}"
+      loop: "{{ _purpose }}"
+      loop_control: { label: "{{ item }}" }
+      when: _purpose | length > 0
+
+    - name: Managed estate by use
+      ansible.builtin.debug:
+        msg: "  {{ item }}: {{ groups[item] | default([]) | length }} — {{ (groups[item] | default([]))[:6] | join(', ') }}{{ ' …' if (groups[item] | default([]) | length) > 6 else '' }}"
+      loop: "{{ _use }}"
+      loop_control: { label: "{{ item }}" }
+      when: _use | length > 0
+
+    - name: AAC product components
+      ansible.builtin.debug:
+        msg: "  {{ item }}  component={{ hostvars[item].aac_component | default('?') }}  endpoint={{ hostvars[item].aac_endpoint | default('(unresolved)') }}"
+      loop: "{{ product | sort }}"
+      loop_control: { label: "{{ item }}" }
+      when: product | length > 0
+
+    - name: API endpoints
+      ansible.builtin.debug:
+        msg: "  {{ hostvars[item].aac_api_kind | default('?') }}{{ '/' ~ hostvars[item].aac_api_role if hostvars[item].aac_api_role is defined else '' }}  auth={{ hostvars[item].aac_api_auth | default('?') }}  {{ hostvars[item].aac_api_url | default('') if (hostvars[item].aac_api_url | default('')) | length > 0 else '(not configured in this profile)' }}"
+      loop: "{{ apis | sort }}"
+      loop_control: { label: "{{ item }}" }
+      when: apis | length > 0
+
+    # ── Hygiene checks ──────────────────────────────────────────────────────
+    # A host in neither estate nor product will be missed by assessment AND by
+    # install health checks — it is invisible rather than merely misfiled, so
+    # it is worth naming explicitly.
+    - name: Find hosts outside the taxonomy
+      ansible.builtin.set_fact:
+        _orphans: >-
+          {{ groups['all'] | default([])
+             | difference(estate) | difference(product) | difference(apis)
+             | reject('equalto', 'localhost') | list | sort }}
+        _both: "{{ estate | intersect(product) | sort }}"
+
+    - name: Hygiene
+      ansible.builtin.debug:
+        msg: >-
+          {{ '✅ every host is classified' if (_orphans | length == 0)
+             else '⚠️  ' ~ (_orphans | length) ~ ' host(s) in NO taxonomy group — invisible to both assessment and install checks: ' ~ (_orphans | join(', ')) }}
+
+    - name: Fail on hosts that are both estate and product
+      ansible.builtin.assert:
+        that: _both | length == 0
+        fail_msg: >-
+          {{ _both | join(', ') }} appear in BOTH managed_estate and
+          aac_product. These groups must stay disjoint — a product host that is
+          also an assessment target is how fact collection previously tried to
+          `become` on the AAP controller and silently discarded 19 days of
+          facts. Move each host to exactly one side.
+        success_msg: "✅ managed_estate and aac_product are disjoint"

@@ -1,0 +1,33 @@
+---
+# deploy_enforceauth_bridge.yml — Deploy the AAC Compliance-State API
+#
+# Stands up the read-only Compliance-State API on aac_host: builds the image from
+# integrations/enforceauth/app/, writes compliance-state.env with the read-only
+# compliance_reader password, runs the container on port 8090, and installs the
+# user-level systemd unit for aapuser1.
+#
+# This is the "state -> runtime authorization context" bridge for EnforceAuth:
+# AAC evaluates compliance STATE; EnforceAuth enforces at RUNTIME; this API lets
+# EnforceAuth's OPA read AAC state (http.send or bundle) when deciding whether an
+# identity (human or AI agent) may act on a host.
+#
+# AAP Job Template: "AAC - Deploy EnforceAuth Compliance-State API"
+# Credentials: Ansible Vault + SSH (aapuser1 machine credential)
+# EE: AAC Compliance EE
+# Inventory: localhost
+#
+# After this runs, verify:
+#   curl http://<aac_host>:8090/health
+#   curl http://<aac_host>:8090/v1/compliance/hosts/<hostname>
+
+- name: Deploy AAC Compliance-State API (EnforceAuth bridge)
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - ../vars/site_config.yml
+    - [ "../vars/vault_secrets.yml", "../vars/empty_fallback.yml" ]
+
+  roles:
+    - role: aac_enforceauth_bridge

@@ -1,0 +1,45 @@
+---
+# aac_opa_containers — entry point
+# Expects: aac_host (from site_config.yml) and aac_opa_containers list.
+
+- name: Ensure OPA policy directories exist
+  import_tasks: dirs.yml
+  tags: [aac_opa, aac_opa_dirs]
+
+- name: Pull image and deploy OPA containers
+  import_tasks: containers.yml
+  tags: [aac_opa, aac_opa_containers]
+
+- name: Deploy HAProxy for scaled container types (replicas > 1)
+  import_tasks: haproxy.yml
+  tags: [aac_opa, aac_opa_haproxy]
+
+- name: Wait for OPA containers to report healthy
+  import_tasks: healthcheck.yml
+  tags: [aac_opa, aac_opa_healthcheck]
+
+- name: Generate and enable systemd units for OPA containers
+  import_tasks: systemd.yml
+  when: aac_opa_generate_systemd | bool
+  tags: [aac_opa, aac_opa_systemd]
+
+- name: Print OPA deployment summary
+  debug:
+    msg: |
+      OPA Container Deployment Complete
+      ==================================
+      {% for c in aac_opa_containers %}
+      {{ c.name }}:
+        Canonical port: {{ c.port }}
+        Replicas:       {{ c.replicas | default(1) }}
+        {% if (c.replicas | default(1) | int) > 1 %}
+        Backends:       ports {{ c.backend_base_port }}–{{ c.backend_base_port + (c.replicas | int) - 1 }}
+        Load balancer:  haproxy-{{ c.name }} → {{ c.port }}
+        {% endif %}
+        URL:            http://{{ aac_host }}:{{ c.port }}
+        Purpose:        {{ c.description }}
+        Policies:       {{ aac_opa_policy_base_dir }}/{{ c.policy_subdir }}
+      {% endfor %}
+
+      Next: Run "AAC - Load OPA Policies" (Template 27) to load Rego files.
+  tags: [aac_opa]

@@ -1,0 +1,12 @@
+---
+# AAC Execution Environment
+# Built from: ansible/ee/aac-compliance-ee/
+# Published:  quay.io/rh-ee-tcoulter/aac-compliance-ee
+# Includes:   community.postgresql, Terraform 1.10.5, ansible-core 2.15+
+
+controller_execution_environments:
+  - name: AAC Compliance EE
+    description: "AAC custom EE — community.postgresql, Terraform, ansible-core 2.15+"
+    image: "quay.io/rh-ee-tcoulter/aac-compliance-ee:v1.2.0"
+    pull: missing
+    organization: "{{ aac_organization }}"

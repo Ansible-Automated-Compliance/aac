@@ -1,0 +1,228 @@
+---
+# seed_network_simulator_templates.yml — Create AAP templates for network simulators
+#
+# Creates:
+#   "AAC - Deploy Network Simulators"  — deploy Cisco/Juniper/PAN-OS/S3 containers
+#   "AAC - Gather Network Facts"       — collect facts → host_facts table
+#
+# AAP Job Template: "AAC - Seed Network Simulator Templates"
+
+- name: Seed Network Simulator Templates
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - ../vars/site_config.yml
+
+  vars:
+    aap_api: "{{ aap_url }}/api/controller/v2"
+    aap_headers:
+      Authorization: "Bearer {{ aap_token }}"
+      Content-Type: "application/json"
+
+  tasks:
+
+    # ── Resolve AAP object IDs ─────────────────────────────────────────────────
+    - name: Get localhost inventory ID
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/inventories/?name={{ aap_inventory_name | urlencode }}"
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+      register: inv_lookup
+
+    - name: Set inventory ID
+      set_fact:
+        inv_id: "{{ inv_lookup.json.results[0].id }}"
+
+    - name: Get project ID
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/projects/?name={{ aap_project_name | urlencode }}"
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+      register: proj_lookup
+
+    - name: Set project ID
+      set_fact:
+        proj_id: "{{ proj_lookup.json.results[0].id }}"
+
+    - name: Get EE ID
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/execution_environments/?name={{ aap_ee_name | urlencode }}"
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+      register: ee_lookup
+
+    - name: Set EE ID
+      set_fact:
+        ee_id: "{{ ee_lookup.json.results[0].id if ee_lookup.json.count > 0 else 6 }}"
+
+    - name: Get Vault credential ID
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/credentials/?name={{ aap_vault_credential_name | urlencode }}"
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+      register: vault_cred_lookup
+
+    - name: Set Vault credential ID
+      set_fact:
+        vault_cred_id: "{{ vault_cred_lookup.json.results[0].id }}"
+
+    # ── Template: AAC - Deploy Network Simulators ──────────────────────────────
+    - name: Check if Deploy Network Simulators exists
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/job_templates/?name=AAC+-+Deploy+Network+Simulators"
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+      register: deploy_existing
+
+    - name: Create 'AAC - Deploy Network Simulators' template
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/job_templates/"
+        method: POST
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+        body_format: json
+        body:
+          name: "AAC - Deploy Network Simulators"
+          description: >-
+            Deploy network/storage device simulators: Cisco IOS-XE (:8091),
+            Juniper Junos (:8092), Palo Alto PAN-OS (:8093), S3 storage (:8094).
+            Each has intentional CIS violations for demo impact. Agentless —
+            demonstrates AAC coverage that Tanium cannot provide.
+          job_type: run
+          inventory: 2
+          project: "{{ proj_id }}"
+          playbook: "ansible/playbooks/deploy_network_simulators.yml"
+          execution_environment: "{{ ee_id }}"
+          become_enabled: false
+        status_code: [200, 201]
+      register: deploy_created
+      when: deploy_existing.json.count == 0
+      failed_when: false
+
+    - name: Set Deploy template ID
+      set_fact:
+        deploy_jt_id: >-
+          {{ deploy_existing.json.results[0].id
+             if deploy_existing.json.count > 0
+             else deploy_created.json.id | default('') }}
+
+    - name: Attach Vault credential to Deploy template
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/job_templates/{{ deploy_jt_id }}/credentials/"
+        method: POST
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+        body_format: json
+        body:
+          id: "{{ vault_cred_id | int }}"
+        status_code: [200, 201, 204]
+      failed_when: false
+      when:
+        - deploy_existing.json.count == 0
+        - deploy_jt_id != ''
+
+    # ── Template: AAC - Gather Network Facts ──────────────────────────────────
+    - name: Check if Gather Network Facts exists
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/job_templates/?name=AAC+-+Gather+Network+Facts"
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+      register: gather_existing
+
+    - name: Create 'AAC - Gather Network Facts' template
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/job_templates/"
+        method: POST
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+        body_format: json
+        body:
+          name: "AAC - Gather Network Facts"
+          description: >-
+            Collect facts from network/storage simulators (Cisco, Juniper, Palo Alto, S3)
+            and store in host_facts table. Agentless — queries REST APIs. All CIS
+            assessments then read from host_facts, no connection to devices needed.
+          job_type: run
+          inventory: "{{ inv_id }}"
+          project: "{{ proj_id }}"
+          playbook: "ansible/playbooks/aac_gather_network_facts.yml"
+          execution_environment: "{{ ee_id }}"
+          become_enabled: false
+          ask_variables_on_launch: false
+          survey_enabled: true
+        status_code: [200, 201]
+      register: gather_created
+      when: gather_existing.json.count == 0
+      failed_when: false
+
+    - name: Set Gather Network Facts template ID
+      set_fact:
+        gather_jt_id: >-
+          {{ gather_existing.json.results[0].id
+             if gather_existing.json.count > 0
+             else gather_created.json.id | default('') }}
+
+    - name: Add survey to Gather Network Facts template
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/job_templates/{{ gather_jt_id }}/survey_spec/"
+        method: POST
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+        body_format: json
+        body:
+          name: "Network Facts Survey"
+          description: ""
+          spec:
+            - question_name: "Simulator Host"
+              question_description: "Host running network simulators (default: AAP controller)"
+              variable: network_sim_host
+              type: text
+              default: "{{ aac_host }}"
+              required: false
+        status_code: [200, 201]
+      failed_when: false
+      when: gather_existing.json.count == 0
+
+    - name: Attach Vault credential to Gather Network Facts template
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/job_templates/{{ gather_jt_id }}/credentials/"
+        method: POST
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+        body_format: json
+        body:
+          id: "{{ vault_cred_id | int }}"
+        status_code: [200, 201, 204]
+      failed_when: false
+      when:
+        - gather_existing.json.count == 0
+        - gather_jt_id != ''
+
+    # ── Summary ────────────────────────────────────────────────────────────────
+    - name: Seed summary
+      debug:
+        msg:
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "  AAC Network Simulators — Templates Created"
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "  Template {{ deploy_jt_id }}:  AAC - Deploy Network Simulators"
+          - "  Template {{ gather_jt_id }}:  AAC - Gather Network Facts"
+          - ""
+          - "  SETUP SEQUENCE:"
+          - "  1. Run 'AAC - Deploy Network Simulators'  (start containers)"
+          - "  2. Run 'AAC - Gather Network Facts'       (collect into host_facts)"
+          - "  3. Run any CIS network assessment         (reads host_facts, no SSH)"
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

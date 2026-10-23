@@ -1,0 +1,43 @@
+# Customer profile — copy this file to start a new one.
+#
+# Save as `customer_profiles/examples/<customer-name>.yml` for real
+# customers, or `customer_profiles/demos/<demo-name>.yml` for AAC demos.
+
+name: "<short customer name>"
+description: |
+  One short paragraph describing who this customer is, what they run,
+  and what they're trying to prove with AAC. Free-form; used by humans
+  scoping engagements, not consumed by tooling.
+
+# What the customer runs. Each entry MUST exist as a key in
+# customer_profiles/_tech_framework_map.yml under tech_to_frameworks.
+tech_stack:
+  - rhel_9
+  - windows_2022
+  - aws
+  - kubernetes
+  - ansible
+  - terraform
+
+# What the customer has to comply with. Each entry MUST exist as a
+# key in _tech_framework_map.yml under compliance_to_frameworks.
+compliance_goals:
+  - cis
+  - nist_800_53
+  - iso27001
+  - soc2
+
+# Optional: framework keys to force-load OR force-exclude regardless
+# of what tech / compliance derives. Use sparingly; the point of
+# profiles is declarative derivation.
+overrides:
+  add: []        # framework keys to add on top of derivation
+  remove: []     # framework keys to exclude even if derived
+
+# Optional: when this profile is exercised by a specific AAC demo,
+# list the OPA query paths the demo actually hits. Used by
+# validate_demo_bundle.py to confirm the trimmed bundle still
+# answers the demo's queries correctly.
+demo_validations:
+  - opa_url: "http://localhost:8181/v1/data/cis_rhel9/compliance_assessment"
+    expected_keys: [compliant, violations, total_controls]

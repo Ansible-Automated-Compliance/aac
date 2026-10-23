@@ -1,0 +1,85 @@
+---
+# CIS Microsoft 365 Foundations Benchmark v7.0.0 assessment.
+#
+# Collect -> evaluate -> persist, in that order, with the collection's
+# fail-closed contract preserved end to end: a source that could not be
+# read produces a violation saying so, never a silent pass.
+
+- name: Preflight — say which required value is blank before asserting
+  # A customer site hit the assertion below with "all variables set": the
+  # blank was m365_db_user arriving as "" from a survey question nobody
+  # remembered adding, while the message told them to set a different name.
+  # Print the emptiness (never the values) so the cause is on the first page.
+  ansible.builtin.debug:
+    msg:
+      - "m365_opa_url: {{ 'SET' if ((m365_opa_url | default('', true)) | trim | length) > 0 else 'BLANK' }}  (defaults to opa_security_url)"
+      - "m365_store_results: {{ m365_store_results | bool }}"
+      - "pg_host: {{ 'SET' if ((pg_host | default('', true)) | trim | length) > 0 else 'BLANK' }}"
+      - "m365_db_user: {{ 'SET' if ((m365_db_user | default('', true)) | trim | length) > 0 else 'BLANK — an override (survey question or extra_vars) is passing an empty string; remove it or give it a value' }}  (defaults to compliance_db_user, else postgres)"
+      - "m365_db_password: {{ 'SET' if ((m365_db_password | default('', true)) | trim | length) > 0 else 'BLANK' }}  (from compliance_db_password)"
+  tags: [m365, validate]
+
+- name: Preflight — required endpoints must be configured (no hardcoded fallback)
+  # Fail fast and loud BEFORE the (multi-minute) collection if the OPA URL — and
+  # the DB host, when persisting — are not configured. These used to carry a
+  # silent in-cluster default, which at a customer site quietly pointed the
+  # evaluation at an assumed address. Set opa_security_url (and pg_host) where
+  # THIS play reads its vars — playbooks/vars/m365_config.yml, or AAP job-template
+  # extra_vars/survey — NOT ansible/vars/site_config.yml, which this play does not load.
+  ansible.builtin.assert:
+    that:
+      - m365_opa_url is defined
+      - ((m365_opa_url | default('', true)) | trim | length) > 0
+      - (not (m365_store_results | bool)) or (pg_host is defined and ((pg_host | default('', true)) | trim | length) > 0)
+      - (not (m365_store_results | bool)) or ((m365_db_password | default('', true) | trim | length) > 0)
+      - (not (m365_store_results | bool)) or ((m365_db_user | default('', true) | trim | length) > 0)
+    fail_msg: >-
+      m365_opa_url must resolve to a real endpoint, and when m365_store_results
+      is true, pg_host, compliance_db_password and the DB user must all be
+      non-empty — the debug line just above says which one is BLANK.
+      The DB user is m365_db_user; it defaults to compliance_db_user when that
+      is set, else 'postgres'. It reads BLANK only when something overrides it
+      with an empty string — almost always an optional AAP survey question
+      named m365_db_user (or compliance_db_user) left unanswered with a blank
+      default, or an extra_vars entry set to "". Remove that question or give it
+      a value; the role fails closed here on purpose rather than silently
+      connecting as the 'postgres' superuser (#626). An EMPTY
+      compliance_db_password is the usual cause of "password authentication
+      failed" at the persist step. m365_opa_url defaults to opa_security_url
+      because cis_m365_v7 loads into the security OPA bucket. Set
+      opa_security_url, pg_host, compliance_db_password (and, if overriding,
+      compliance_db_user) where THIS play reads its vars: for a standalone run,
+      in playbooks/vars/m365_config.yml (copy playbooks/vars/m365_config.example.yml);
+      on AAP, as job-template extra_vars or survey answers. This play does NOT
+      read ansible/vars/site_config.yml.
+    success_msg: "Endpoints from config — OPA: {{ m365_opa_url }}"
+    quiet: true
+  tags: [m365, validate]
+
+- name: Validate the credentials the requested sections need
+  ansible.builtin.include_tasks: validate.yml
+  tags: [m365, validate]
+
+- name: Collect tenant state
+  ansible.builtin.include_tasks: collect.yml
+  tags: [m365, collect]
+
+- name: Evaluate against OPA
+  ansible.builtin.include_tasks: evaluate.yml
+  tags: [m365, evaluate]
+
+- name: Persist results
+  ansible.builtin.include_tasks: persist.yml
+  when: m365_store_results | bool
+  tags: [m365, persist]
+
+- name: Summarise the assessment
+  ansible.builtin.debug:
+    msg:
+      - "benchmark        : CIS Microsoft 365 Foundations v7.0.0"
+      - "controls evaluated: {{ m365_report.controls_evaluated | default('?') }} of {{ m365_report.benchmark_total_controls | default(160) }}"
+      - "coverage          : {{ m365_report.coverage_percentage | default('?') }}%"
+      - "violations        : {{ m365_report.violation_count | default('?') }}"
+      - "sections skipped  : {{ m365_skipped_sections | default([]) | join(', ') or 'none' }}"
+      - "NOTE: assessed_controls_compliant covers only the controls evaluated. It is not a benchmark verdict."
+  tags: [m365]

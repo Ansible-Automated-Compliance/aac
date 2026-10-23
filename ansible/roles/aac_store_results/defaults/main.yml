@@ -1,0 +1,74 @@
+---
+# aac_store_results/defaults/main.yml
+# Single authoritative INSERT for compliance_results.
+# Callers set aac_result_* vars; the role handles the SQL.
+
+# ── Required ──────────────────────────────────────────────────────────────────
+aac_result_policy_name:    ""        # e.g. "CIS RHEL 9"
+aac_result_policy_version: ""        # e.g. "CIS Red Hat Enterprise Linux 9 Benchmark v2.0.0"
+aac_result_total_controls: 0
+
+# ── Violations / scoring ──────────────────────────────────────────────────────
+aac_result_violations:       []      # list of violation dicts or strings
+
+# Derived from violations + total; override if your playbook computes differently
+aac_result_failed_controls:  "{{ aac_result_violations | length }}"
+aac_result_passed_controls:  "{{ [aac_result_total_controls | int - aac_result_failed_controls | int, 0] | max }}"
+aac_result_compliance_pct:   "{{ ((aac_result_passed_controls | int / ([aac_result_total_controls | int, 1] | max)) * 100) | round(2) }}"
+
+# ── Optional fields ───────────────────────────────────────────────────────────
+aac_result_facts_id:          null   # set to a compliance_facts.id FK when available
+aac_result_hostname:          ""     # hostname column (nullable, but set where known)
+aac_result_framework:         ""     # framework NOT NULL — required; falls back to metadata.framework
+aac_result_compliant:         false  # boolean compliant flag
+aac_result_metadata:          {}     # free-form JSONB (hostname, assessment_time, etc.)
+
+# ── DB connection (inherit from site_config vars; topology-agnostic) ─────────
+# Defaults match the AAP 2.7 / CRC in-cluster compliance-db Service. Callers
+# (playbooks running on lab-aap-CRC or mac-aap or RHPDS) set `pg_host` etc. via
+# site_config, or via the template's extra_vars at launch time.
+# No literal fallback. A hardcoded in-cluster default here is what silently sent a
+# customer's assessment at an assumed DB host (surfacing 3 hours later as a
+# connection reset in a customer PoC) instead of honoring the configured `pg_host`.
+# `mandatory` makes a missing host a clear configuration error at store time,
+# exactly as the password below does — set `pg_host` in site_config for this
+# environment.
+aac_result_pg_host:     "{{ pg_host | mandatory }}"
+aac_result_pg_port:     "{{ pg_port | default(5432) }}"
+# Evidence is stored as the least-privilege writer when site_config sets
+# aac_evidence_writer_user (INSERT + SELECT only; see docs/EVIDENCE_IMMUTABILITY.md);
+# otherwise as pg_user, the pre-existing behaviour.
+aac_result_pg_user:     "{{ aac_evidence_writer_user | default(pg_user | default('postgres'), true) }}"
+# No literal fallback. The previous chain ended in `default('compliance', true)`,
+# so a run with no credential configured did not stop — it authenticated with a
+# password baked into the repository. Either variable may supply it; neither
+# being set is a configuration error that must surface here rather than as a
+# confusing auth failure later.
+aac_result_pg_password: >-
+  {{ (compliance_writer_password | mandatory)
+     if (aac_evidence_writer_user | default('', true) | length > 0)
+     else (pg_password | default(compliance_db_password, true) | mandatory) }}
+aac_result_pg_db:       "{{ pg_db | default('compliance') }}"
+
+# ── Behaviour ─────────────────────────────────────────────────────────────────
+aac_result_delegate_to: localhost   # where the postgresql_query task runs
+
+# ── CAA chaining (see docs/strategy/AAC_CERTIFIABLE_AUDIT_ARTIFACT_SPEC.md) ────────────
+# When true, also write a compliance_certifications row after the compliance_results
+# INSERT. The CAA captures provenance (policy SHA, AAP job, input hash) and an
+# integrity signature so an auditor can verify the result offline.
+aac_caa_enabled:           false
+# These are passed through to aac_store_certification when aac_caa_enabled is true.
+aac_caa_result:            {}     # OPA decision document
+aac_caa_input:             {}     # OPA input that produced the result
+
+# ── Security exception waivers ────────────────────────────────────────────────
+# Before storing, ask OPA's exceptions module (policies/governance/exceptions,
+# entries from ansible/vars/waivers.yml) which violations carry an active
+# documented waiver. Waived findings are stored in metadata.waivers_applied,
+# never deleted; scoring counts them as passed. OPA unreachable or module not
+# loaded ⇒ nothing is waived — failure always reports more, not less.
+aac_waivers_enabled: true
+# No literal fallback — the OPA URL comes from site_config (opa_security_url).
+# Evaluated lazily, so this only surfaces when waivers are actually enabled.
+aac_waivers_opa_url: "{{ opa_security_url | mandatory }}"

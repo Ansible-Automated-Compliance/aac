@@ -1,0 +1,46 @@
+---
+# linux_pam.yml — Collect PAM and password policy facts
+
+- name: Get PAM password quality config
+  shell: cat /etc/security/pwquality.conf 2>/dev/null || echo ""
+  register: pwquality_raw
+  changed_when: false
+  failed_when: false
+
+- name: Get PAM auth/password stack
+  shell: |
+    echo "=== system-auth ===" && cat /etc/pam.d/system-auth 2>/dev/null || true
+    echo "=== password-auth ===" && cat /etc/pam.d/password-auth 2>/dev/null || true
+    echo "=== common-password ===" && cat /etc/pam.d/common-password 2>/dev/null || true
+    echo "=== common-auth ===" && cat /etc/pam.d/common-auth 2>/dev/null || true
+  register: pam_config_raw
+  changed_when: false
+  failed_when: false
+
+- name: Get account lockout config
+  shell: |
+    grep -rE "pam_faillock|pam_tally2|faillock" /etc/pam.d/ 2>/dev/null | grep -v "^#" || echo ""
+  register: lockout_raw
+  changed_when: false
+  failed_when: false
+
+- name: Get faillock settings
+  shell: cat /etc/security/faillock.conf 2>/dev/null || echo ""
+  register: faillock_conf_raw
+  changed_when: false
+  failed_when: false
+
+- name: Set PAM facts
+  set_fact:
+    aac_pam:
+      raw_config:       "{{ pam_config_raw.stdout | default('') }}"
+      pwquality_raw:    "{{ pwquality_raw.stdout | default('') }}"
+      lockout_raw:      "{{ lockout_raw.stdout | default('') }}"
+      faillock_conf:    "{{ faillock_conf_raw.stdout | default('') }}"
+      # Parse key settings
+      min_length: >-
+        {{ pwquality_raw.stdout | regex_search('minlen\s*=\s*(\d+)', '\1') | default([], true) | first | default('not_set') }}
+      min_class: >-
+        {{ pwquality_raw.stdout | regex_search('minclass\s*=\s*(\d+)', '\1') | default([], true) | first | default('not_set') }}
+      remember: >-
+        {{ pam_config_raw.stdout | regex_search('remember=(\d+)', '\1') | default([], true) | first | default('not_set') }}

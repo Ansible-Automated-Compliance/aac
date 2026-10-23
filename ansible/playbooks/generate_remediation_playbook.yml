@@ -1,0 +1,529 @@
+---
+# generate_remediation_playbook.yml — Generate targeted remediation tasks
+#
+# Reads the baseline diff for a host (by comparing baseline vs latest snapshot)
+# and produces a targeted Ansible playbook that restores each changed security
+# path to its baseline value.
+#
+# The generated playbook is stored in remediation_actions.generated_playbook
+# (JSONB) so it can be retrieved by 'AAC - Apply Remediation'.
+#
+# IMPORTANT: Generated tasks are restore-to-baseline actions — they replace
+# the current value with the baseline value. Review carefully before applying.
+# Always run 'AAC - Compare to Baseline' after applying to verify.
+#
+# Supported remediations (paths we can auto-remediate):
+#   sshd_config.*         → Replace /etc/ssh/sshd_config directive
+#   selinux_status.*      → Set SELinux mode
+#   auditd_config.*       → Replace /etc/audit/auditd.conf directive
+#   login_defs.*          → Replace /etc/login.defs directive
+#   pam_config.*          → Replace PAM config line
+#   kernel_modules_*      → Add kernel module to blacklist/modprobe.d
+#   world_writable_files  → chmod o-w the added files
+#   suid_sgid_files       → chmod a-s the added files
+#
+# Paths that require MANUAL review (generated as commented tasks):
+#   sudoers, audit_rules, firewall_rules, grub_config, passwd_entries,
+#   shadow_entries, group_entries, cron_config
+#
+# AAP Job Template: "AAC - Generate Remediation Playbook"
+# Credentials: Ansible Vault
+# EE: AAC Compliance EE
+# Survey:
+#   target_hostname  — hostname to remediate (required)
+#   remediation_label — label for this remediation run (required)
+#   include_low       — include low-severity changes (default: false)
+
+- name: Generate remediation playbook from baseline diff
+  hosts: localhost
+  connection: local
+  gather_facts: true
+
+  vars_files:
+    - [ "../vars/vault_secrets.yml", "../vars/empty_fallback.yml" ]
+    - ../vars/site_config.yml
+
+  vars:
+    pg_password:       "{{ compliance_db_password }}"
+    # include_low: <set via extra_vars / survey / inventory>   # default 'false'
+    # remediation_label: <set via extra_vars / survey / inventory>   # default 'auto-' + ansible_date_time.date
+
+  tasks:
+
+    - name: Validate required inputs
+      fail:
+        msg: "target_hostname is required."
+      when: target_hostname is not defined or target_hostname == ''
+
+    # ── Fetch baseline and latest snapshots ───────────────────────────────────
+
+    - name: Fetch baseline snapshot
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port | default(5433) }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: |
+          SELECT id, hostname, platform, collection_timestamp,
+                 baseline_label, facts_data
+          FROM compliance_facts
+          WHERE hostname    = %s
+            AND is_baseline = true
+          ORDER BY collection_timestamp DESC
+          LIMIT 1
+        positional_args:
+          - "{{ target_hostname }}"
+      register: baseline_result
+
+    - name: Fail if no baseline
+      fail:
+        msg: "No baseline set for '{{ target_hostname }}'. Run 'AAC - Set Baseline' first."
+      when: baseline_result.query_result | length == 0
+
+    - name: Fetch latest (non-baseline) snapshot
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port | default(5433) }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: |
+          SELECT id, hostname, collection_timestamp, facts_data
+          FROM compliance_facts
+          WHERE hostname    = %s
+            AND is_baseline = false
+          ORDER BY collection_timestamp DESC
+          LIMIT 1
+        positional_args:
+          - "{{ target_hostname }}"
+      register: current_result
+
+    - name: Fail if no current snapshot
+      fail:
+        msg: "No current snapshot for '{{ target_hostname }}'. Run 'AAC - Collect Facts' first."
+      when: current_result.query_result | length == 0
+
+    - name: Abort if current IS baseline
+      fail:
+        msg: "Latest snapshot IS the baseline — nothing to remediate."
+      when: current_result.query_result[0].id == baseline_result.query_result[0].id
+
+    # ── Write Python generator ────────────────────────────────────────────────
+
+    - name: Write remediation generator
+      copy:
+        dest: /tmp/aac_remediation_gen.py
+        mode: '0700'
+        content: |
+          #!/usr/bin/env python3
+          """
+          aac_remediation_gen.py — Generate remediation tasks from baseline diff.
+          Usage: python3 aac_remediation_gen.py <baseline.json> <current.json> \
+                         <hostname> <baseline_label> <include_low>
+          Output: JSON with generated_tasks and manual_review_tasks
+          """
+          import json, sys, re
+
+          baseline  = json.load(open(sys.argv[1]))
+          current   = json.load(open(sys.argv[2]))
+          hostname  = sys.argv[3]
+          blabel    = sys.argv[4]
+          incl_low  = sys.argv[5].lower() == 'true'
+
+          VOLATILE = {"collection_timestamp","schema_version","ansible_uptime_seconds",
+                      "ansible_date_time","ansible_memfree_mb","ansible_swapfree_mb"}
+
+          SEVERITY = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+
+          SEC_PATHS = {
+              "sshd_config":              "critical",
+              "pam_config":               "critical",
+              "sudoers":                  "critical",
+              "auditd_config":            "high",
+              "audit_rules":              "high",
+              "selinux_status":           "high",
+              "apparmor_status":          "high",
+              "firewall_rules":           "high",
+              "kernel_modules_blacklist": "high",
+              "grub_config":              "high",
+              "world_writable_files":     "medium",
+              "suid_sgid_files":          "medium",
+              "cron_config":              "medium",
+              "login_defs":               "medium",
+              "passwd_entries":           "medium",
+              "shadow_entries":           "medium",
+              "group_entries":            "medium",
+          }
+
+          # Paths we can auto-generate restore tasks for
+          AUTO_PATHS = {
+              "sshd_config",
+              "selinux_status",
+              "auditd_config",
+              "login_defs",
+              "pam_config",
+              "kernel_modules_blacklist",
+              "world_writable_files",
+              "suid_sgid_files",
+          }
+          # Paths that need manual review (generated as commented YAML)
+          MANUAL_PATHS = {
+              "sudoers", "audit_rules", "firewall_rules", "grub_config",
+              "passwd_entries", "shadow_entries", "group_entries", "cron_config",
+          }
+
+          def flatten(obj, prefix=""):
+              out = {}
+              if isinstance(obj, dict):
+                  for k, v in obj.items():
+                      nk = f"{prefix}.{k}" if prefix else k
+                      out.update(flatten(v, nk))
+              elif isinstance(obj, list):
+                  out[prefix] = json.dumps(obj, sort_keys=True)
+              else:
+                  out[prefix] = obj
+              return out
+
+          def sev_for(key):
+              top = key.split(".")[0]
+              return SEC_PATHS.get(top, "low")
+
+          def top_section(key):
+              return key.split(".")[0]
+
+          b_flat = flatten(baseline)
+          c_flat = flatten(current)
+          all_keys = set(b_flat) | set(c_flat)
+
+          diffs = []
+          for key in sorted(all_keys):
+              top = key.split(".")[0]
+              if top in VOLATILE or key.split(".")[-1] in VOLATILE:
+                  continue
+              b_val = b_flat.get(key)
+              c_val = c_flat.get(key)
+              if b_val == c_val:
+                  continue
+              sev = sev_for(key)
+              if sev == "low" and not incl_low:
+                  continue
+              diffs.append({
+                  "key": key, "section": top,
+                  "type": "added" if b_val is None else "removed" if c_val is None else "modified",
+                  "was": b_val, "now": c_val, "severity": sev,
+              })
+
+          diffs.sort(key=lambda x: (SEVERITY.get(x["severity"], 99), x["key"]))
+
+          auto_tasks   = []
+          manual_tasks = []
+          stats = {"total": len(diffs), "auto": 0, "manual": 0, "skipped": 0}
+
+          for d in diffs:
+              sec = d["section"]
+              key = d["key"]
+              sub = ".".join(key.split(".")[1:]) if "." in key else ""
+              was_val = d["was"]   # baseline value (restore target)
+              now_val = d["now"]   # current (wrong) value
+
+              # ── sshd_config — use lineinfile to restore directive ──
+              if sec == "sshd_config" and sub and was_val is not None:
+                  directive = sub.split(".")[-1] if "." in sub else sub
+                  auto_tasks.append({
+                      "name": f"Restore sshd_config: {directive} → {was_val}",
+                      "severity": d["severity"],
+                      "task": {
+                          "ansible.builtin.lineinfile": {
+                              "path": "/etc/ssh/sshd_config",
+                              "regexp": f"^\\s*#?\\s*{re.escape(directive)}\\s",
+                              "line": f"{directive} {was_val}",
+                              "state": "present",
+                          },
+                          "notify": "Restart sshd",
+                      }
+                  })
+                  stats["auto"] += 1
+
+              # ── login.defs — restore directive ──
+              elif sec == "login_defs" and sub and was_val is not None:
+                  directive = sub.split(".")[-1] if "." in sub else sub
+                  auto_tasks.append({
+                      "name": f"Restore login.defs: {directive} → {was_val}",
+                      "severity": d["severity"],
+                      "task": {
+                          "ansible.builtin.lineinfile": {
+                              "path": "/etc/login.defs",
+                              "regexp": f"^\\s*#?\\s*{re.escape(directive)}\\s",
+                              "line": f"{directive}    {was_val}",
+                              "state": "present",
+                          }
+                      }
+                  })
+                  stats["auto"] += 1
+
+              # ── auditd.conf — restore directive ──
+              elif sec == "auditd_config" and sub and was_val is not None:
+                  directive = sub.split(".")[-1] if "." in sub else sub
+                  auto_tasks.append({
+                      "name": f"Restore auditd.conf: {directive} → {was_val}",
+                      "severity": d["severity"],
+                      "task": {
+                          "ansible.builtin.lineinfile": {
+                              "path": "/etc/audit/auditd.conf",
+                              "regexp": f"^\\s*#?\\s*{re.escape(directive)}\\s*=",
+                              "line": f"{directive} = {was_val}",
+                              "state": "present",
+                          },
+                          "notify": "Restart auditd",
+                      }
+                  })
+                  stats["auto"] += 1
+
+              # ── SELinux — restore enforcing mode ──
+              elif sec == "selinux_status":
+                  if was_val and str(was_val).lower() in ("enforcing", "permissive", "disabled"):
+                      mode_map = {"enforcing": "enforcing", "permissive": "permissive", "disabled": "disabled"}
+                      auto_tasks.append({
+                          "name": f"Restore SELinux to baseline mode: {was_val}",
+                          "severity": d["severity"],
+                          "task": {
+                              "ansible.posix.selinux": {
+                                  "policy": "targeted",
+                                  "state": mode_map.get(str(was_val).lower(), "enforcing"),
+                              }
+                          }
+                      })
+                      stats["auto"] += 1
+                  else:
+                      stats["skipped"] += 1
+
+              # ── World-writable files added since baseline — remove write bit ──
+              elif sec == "world_writable_files" and d["type"] == "added" and was_val is None:
+                  # now_val is a JSON list of file paths that appeared
+                  try:
+                      files = json.loads(str(now_val)) if isinstance(now_val, str) else now_val
+                      if isinstance(files, list):
+                          for fpath in files[:20]:  # cap at 20 files
+                              auto_tasks.append({
+                                  "name": f"Remove world-write bit: {fpath}",
+                                  "severity": d["severity"],
+                                  "task": {
+                                      "ansible.builtin.file": {
+                                          "path": str(fpath),
+                                          "mode": "o-w",
+                                          "follow": True,
+                                      }
+                                  }
+                              })
+                              stats["auto"] += 1
+                      else:
+                          stats["skipped"] += 1
+                  except Exception:
+                      stats["skipped"] += 1
+
+              # ── SUID/SGID files added since baseline — remove setuid bit ──
+              elif sec == "suid_sgid_files" and d["type"] == "added" and was_val is None:
+                  try:
+                      files = json.loads(str(now_val)) if isinstance(now_val, str) else now_val
+                      if isinstance(files, list):
+                          for fpath in files[:20]:
+                              auto_tasks.append({
+                                  "name": f"Remove SUID/SGID bit: {fpath}",
+                                  "severity": d["severity"],
+                                  "task": {
+                                      "ansible.builtin.file": {
+                                          "path": str(fpath),
+                                          "mode": "a-s",
+                                          "follow": True,
+                                      }
+                                  }
+                              })
+                              stats["auto"] += 1
+                      else:
+                          stats["skipped"] += 1
+                  except Exception:
+                      stats["skipped"] += 1
+
+              # ── kernel module blacklist — restore entry ──
+              elif sec == "kernel_modules_blacklist" and was_val is not None:
+                  mod_name = sub.split(".")[-1] if "." in sub else sub
+                  auto_tasks.append({
+                      "name": f"Restore kernel module blacklist entry: {mod_name}",
+                      "severity": d["severity"],
+                      "task": {
+                          "ansible.builtin.lineinfile": {
+                              "path": f"/etc/modprobe.d/aac-baseline-{mod_name}.conf",
+                              "line": f"install {mod_name} /bin/true",
+                              "create": True,
+                              "mode": "0644",
+                          }
+                      }
+                  })
+                  stats["auto"] += 1
+
+              # ── Paths requiring manual review ──
+              elif sec in MANUAL_PATHS:
+                  manual_tasks.append({
+                      "path":     key,
+                      "section":  sec,
+                      "type":     d["type"],
+                      "severity": d["severity"],
+                      "was":      str(was_val)[:300] if was_val is not None else None,
+                      "now":      str(now_val)[:300] if now_val is not None else None,
+                      "reason":   f"Manual review required — {sec} changes affect sensitive system configuration",
+                  })
+                  stats["manual"] += 1
+
+              else:
+                  stats["skipped"] += 1
+
+          # Build the final playbook structure
+          handlers = [
+              {
+                  "name": "Restart sshd",
+                  "ansible.builtin.service": {"name": "sshd", "state": "restarted"},
+              },
+              {
+                  "name": "Restart auditd",
+                  "ansible.builtin.service": {"name": "auditd", "state": "restarted"},
+              },
+          ]
+
+          result = {
+              "hostname":        hostname,
+              "baseline_label":  blabel,
+              "generated_at":    "",  # filled by Ansible
+              "stats":           stats,
+              "auto_tasks":      auto_tasks,
+              "manual_tasks":    manual_tasks,
+              "handlers":        handlers,
+          }
+          print(json.dumps(result))
+
+    # ── Write facts and run generator ─────────────────────────────────────────
+
+    - name: Write baseline facts
+      copy:
+        dest: /tmp/aac_gen_baseline.json
+        content: "{{ baseline_result.query_result[0].facts_data | to_json }}"
+
+    - name: Write current facts
+      copy:
+        dest: /tmp/aac_gen_current.json
+        content: "{{ current_result.query_result[0].facts_data | to_json }}"
+
+    - name: Run remediation generator
+      command: >
+        python3 /tmp/aac_remediation_gen.py
+        /tmp/aac_gen_baseline.json
+        /tmp/aac_gen_current.json
+        "{{ target_hostname }}"
+        "{{ baseline_result.query_result[0].baseline_label }}"
+        "{{ (include_low | default('false', true)) }}"
+      register: gen_output
+      changed_when: false
+
+    - name: Parse generator output
+      set_fact:
+        gen_result: "{{ gen_output.stdout | from_json | combine({'generated_at': ansible_date_time.iso8601}) }}"
+
+    # ── Store generated playbook in remediation_actions ───────────────────────
+
+    - name: Store generated remediation plan
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port | default(5433) }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: |
+          INSERT INTO remediation_actions
+            (hostname, action_type,
+             facts_before_id, facts_after_id,
+             performed_by, notes,
+             generated_playbook)
+          VALUES
+            (%s, 'generate_playbook',
+             %s, %s,
+             'aap_admin',
+             %s,
+             %s::jsonb)
+          RETURNING id
+        positional_args:
+          - "{{ target_hostname }}"
+          - "{{ baseline_result.query_result[0].id }}"
+          - "{{ current_result.query_result[0].id }}"
+          - "Remediation plan: {{ (remediation_label | default('auto-' + ansible_date_time.date)) }} (baseline={{ baseline_result.query_result[0].baseline_label }}, {{ gen_result.stats.auto }} auto-tasks, {{ gen_result.stats.manual }} manual-review)"
+          - "{{ gen_result | to_json }}"
+      register: stored_action
+
+    # ── Print summary ─────────────────────────────────────────────────────────
+
+    - name: Print generation summary
+      debug:
+        msg: |
+          ══════════════════════════════════════════════════════════════════
+          AAC REMEDIATION PLAYBOOK GENERATED
+          ══════════════════════════════════════════════════════════════════
+          Host:              {{ target_hostname }}
+          Baseline:          {{ baseline_result.query_result[0].baseline_label }}
+          Label:             {{ (remediation_label | default('auto-' + ansible_date_time.date)) }}
+          Action ID:         {{ stored_action.query_result[0].id }}
+
+          ── Generation Summary ────────────────────────────────────────────
+          Total diff items:  {{ gen_result.stats.total }}
+          Auto-remediate:    {{ gen_result.stats.auto }}  ← will be applied by 'AAC - Apply Remediation'
+          Manual review:     {{ gen_result.stats.manual }} ← require human decision
+          Skipped:           {{ gen_result.stats.skipped }}
+
+          {% if gen_result.auto_tasks | length > 0 %}
+          ── Auto-Remediation Tasks ────────────────────────────────────────
+          {% for t in gen_result.auto_tasks %}
+          [{{ t.severity | upper }}] {{ t.name }}
+          {% endfor %}
+          {% endif %}
+
+          {% if gen_result.manual_tasks | length > 0 %}
+          ── Manual Review Required ────────────────────────────────────────
+          The following changes cannot be auto-remediated and require
+          security team review before any action is taken:
+
+          {% for t in gen_result.manual_tasks %}
+          [{{ t.severity | upper }}] {{ t.section }}
+            Path:   {{ t.path }}
+            Change: {{ t.type | upper }}
+            Was:    {{ t.was | default('(not set)') | truncate(100) }}
+            Now:    {{ t.now | default('(not set)') | truncate(100) }}
+            Reason: {{ t.reason }}
+
+          {% endfor %}
+          {% endif %}
+
+          ── Next Step ─────────────────────────────────────────────────────
+          {% if gen_result.stats.auto > 0 %}
+          Run 'AAC - Apply Remediation' with:
+            action_id   = {{ stored_action.query_result[0].id }}
+            dry_run     = true   (review first)
+          Then re-run with dry_run=false to apply.
+          {% else %}
+          No auto-remediation tasks generated.
+          {% if gen_result.stats.manual > 0 %}
+          Address the manual review items above with your security team.
+          {% else %}
+          All diff items were low-severity or unsupported paths.
+          Consider running with include_low=true for full coverage.
+          {% endif %}
+          {% endif %}
+          ══════════════════════════════════════════════════════════════════
+
+    # ── Cleanup ───────────────────────────────────────────────────────────────
+
+    - name: Clean up temp files
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /tmp/aac_remediation_gen.py
+        - /tmp/aac_gen_baseline.json
+        - /tmp/aac_gen_current.json

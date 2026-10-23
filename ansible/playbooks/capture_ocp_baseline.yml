@@ -1,0 +1,124 @@
+---
+# capture_ocp_baseline.yml — CIP-010 R1 configuration baseline for an OpenShift cluster
+#
+# Captures the AUTHORIZED cluster configuration state as a NERC-CIP CIP-010 baseline:
+#   1. the full ocp4-nerc-cip ComplianceCheckResult status map (per-check PASS/FAIL/MANUAL)
+#   2. a fingerprint (sha1 of .spec) of the security-relevant config objects
+#      (OAuth, APIServer, IngressController, image config, cluster-admin bindings)
+# and stores it in PostgreSQL `compliance_results` under framework
+# `nerc_cip_ocp_baseline` as AAC's system-of-record. `check_ocp_drift.yml` later
+# diffs the live cluster against the most recent baseline row.
+#
+# This is the cluster analogue of the host-based CIP-010 baseline (Template 116).
+#
+# AAP Job Template: "AAC - Capture OCP NERC-CIP Baseline (CIP-010)"
+# Credentials: OpenShift API bearer token (read compliancecheckresults + config), Ansible Vault
+# EE: AAC Compliance EE — REQUIRES kubernetes.core and community.postgresql, both
+#     declared in the EE build inputs
+#     (ansible/execution-environments/aac-compliance-ee/requirements.yml). redhat.openshift is NOT required — see collections/README.md.
+
+- name: Capture OpenShift CIP-010 configuration baseline
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - [ "../vars/vault_secrets.yml", "../vars/empty_fallback.yml" ]
+    - ../vars/site_config.yml
+
+  vars:
+    ocp_scan_name: "ocp4-nerc-cip"
+    ocp_compliance_ns: "openshift-compliance"
+    cluster_name: "{{ ocp_cluster_name | default('crc') }}"
+    change_ticket: "{{ baseline_change_ticket | default('') }}"
+    # Security-relevant config objects fingerprinted for the baseline (CIP-010 R1.1)
+    ocp_baseline_objects:
+      - {api_version: "config.openshift.io/v1", kind: "OAuth",             name: "cluster"}
+      - {api_version: "config.openshift.io/v1", kind: "APIServer",         name: "cluster"}
+      - {api_version: "config.openshift.io/v1", kind: "Image",             name: "cluster"}
+      - {api_version: "operator.openshift.io/v1", kind: "IngressController", name: "default", namespace: "openshift-ingress-operator"}
+    aac_result_pg_host: "{{ pg_host }}"
+
+  tasks:
+    - name: Read ocp4-nerc-cip ComplianceCheckResults
+      kubernetes.core.k8s_info:
+        api_version: compliance.openshift.io/v1alpha1
+        kind: ComplianceCheckResult
+        namespace: "{{ ocp_compliance_ns }}"
+        label_selectors:
+          - "compliance.openshift.io/scan-name={{ ocp_scan_name }}"
+        host: "{{ ocp_api_url | default(omit) }}"
+        api_key: "{{ ocp_api_token | default(omit) }}"
+        validate_certs: "{{ ocp_verify_ssl | default(false) | bool }}"
+      register: ccr_raw
+
+    - name: Fail if scan has no results
+      ansible.builtin.assert:
+        that: ccr_raw.resources | length > 0
+        fail_msg: "No ComplianceCheckResults for '{{ ocp_scan_name }}' — run the scan first."
+
+    - name: Build the per-check baseline status map (check_name -> STATUS)
+      ansible.builtin.set_fact:
+        baseline_checks: >-
+          {{ dict(ccr_raw.resources
+                  | map(attribute='metadata.name') | list
+                  | zip(ccr_raw.resources | map(attribute='status') | list)) }}
+
+    - name: Fingerprint each security-relevant config object (sha1 of .spec)
+      kubernetes.core.k8s_info:
+        api_version: "{{ item.api_version }}"
+        kind: "{{ item.kind }}"
+        name: "{{ item.name }}"
+        namespace: "{{ item.namespace | default(omit) }}"
+        host: "{{ ocp_api_url | default(omit) }}"
+        api_key: "{{ ocp_api_token | default(omit) }}"
+        validate_certs: "{{ ocp_verify_ssl | default(false) | bool }}"
+      loop: "{{ ocp_baseline_objects }}"
+      loop_control:
+        label: "{{ item.kind }}/{{ item.name }}"
+      register: baseline_obj_raw
+      failed_when: false   # an unreadable/absent object is skipped, not fatal (reader SA may be scoped differently)
+
+    - name: Reduce config objects to kind-name sha1-spec fingerprints
+      ansible.builtin.set_fact:
+        baseline_fingerprints: >-
+          {{ baseline_fingerprints | default({}) | combine({
+               (item.item.kind ~ '/' ~ item.item.name):
+                 ((item.resources[0].spec | default({})) | to_json | hash('sha1'))
+             }) }}
+      loop: "{{ baseline_obj_raw.results }}"
+      loop_control:
+        label: "{{ item.item.kind }}/{{ item.item.name }}"
+      when: not (item.failed | default(false)) and (item.resources | default([]) | length > 0)
+
+    - name: Summarize the baseline
+      ansible.builtin.debug:
+        msg:
+          - "CIP-010 baseline for cluster '{{ cluster_name }}'"
+          - "checks captured: {{ baseline_checks | length }} | PASS {{ baseline_checks.values() | select('equalto','PASS') | list | length }} · FAIL {{ baseline_checks.values() | select('equalto','FAIL') | list | length }} · MANUAL {{ baseline_checks.values() | select('equalto','MANUAL') | list | length }}"
+          - "config objects fingerprinted: {{ baseline_fingerprints | length }}"
+          - "change ticket: {{ change_ticket | default('(none — attestation baseline)') }}"
+
+    - name: Store the CIP-010 baseline snapshot (system-of-record)
+      ansible.builtin.include_role:
+        name: aac_store_results
+      vars:
+        aac_result_policy_name: "OpenShift CIP-010 Baseline — ocp4-nerc-cip"
+        aac_result_framework: "nerc_cip_ocp_baseline"
+        aac_result_policy_version: "{{ ocp_scan_name }}"
+        aac_result_hostname: "{{ cluster_name }}"
+        aac_result_total_controls: "{{ baseline_checks | length }}"
+        aac_result_failed_controls: "{{ baseline_checks.values() | select('equalto','FAIL') | list | length }}"
+        aac_result_passed_controls: "{{ baseline_checks.values() | select('equalto','PASS') | list | length }}"
+        aac_result_compliance_pct: "100.0"   # a baseline is authoritative-by-definition, not scored
+        aac_result_compliant: true
+        aac_result_violations: []
+        aac_result_pg_password: "{{ compliance_db_password }}"
+        aac_result_metadata:
+          record_type: "cip_010_baseline"
+          source: "openshift-compliance-operator"
+          scan: "{{ ocp_scan_name }}"
+          namespace: "{{ ocp_compliance_ns }}"
+          change_ticket: "{{ change_ticket }}"
+          baseline_checks: "{{ baseline_checks }}"
+          config_fingerprints: "{{ baseline_fingerprints | default({}) }}"

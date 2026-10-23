@@ -1,0 +1,130 @@
+---
+# collate_ocp_nerc_cip.yml — AAC collation for the ACS↔AAC NERC-CIP integration
+#
+# Reads OpenShift Compliance Operator `ocp4-nerc-cip` ComplianceCheckResults, maps
+# each check to its NERC-CIP control(s) via the on-CCR annotation
+# `control.compliance.openshift.io/NERC-CIP`, aggregates at CIP-control level, and
+# stores the result in PostgreSQL `compliance_results` as AAC's historical
+# system-of-record (framework = `nerc_cip_ocp`, distinct from host-based `nerc_cip`).
+# Each stored violation keeps the CCR name + uid as the auditor evidence back-ref.
+#
+# ACS↔AAC split: ACS drives/surfaces the CO scans (sensor); AAC collates + stores +
+# reports (system-of-record + audit engine).
+#
+# AAP Job Template: "AAC - Collate OCP NERC-CIP (Compliance Operator)"
+# Credentials: OpenShift API bearer token (read compliancecheckresults), Ansible Vault
+# EE: AAC Compliance EE — REQUIRES kubernetes.core, declared in the EE build
+#     inputs (ansible/execution-environments/aac-compliance-ee/requirements.yml).
+#     The
+#     ComplianceCheckResult objects here are read with kubernetes.core.k8s_info.
+#     redhat.openshift is NOT required — see collections/README.md.
+
+- name: Collate OpenShift Compliance Operator ocp4-nerc-cip results into AAC
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - [ "../vars/vault_secrets.yml", "../vars/empty_fallback.yml" ]
+    - ../vars/site_config.yml
+
+  vars:
+    ocp_scan_name: "ocp4-nerc-cip"
+    ocp_compliance_ns: "openshift-compliance"
+    cluster_name: "{{ ocp_cluster_name | default('crc') }}"
+    nerc_cip_annotation: "control.compliance.openshift.io/NERC-CIP"
+
+  tasks:
+    - name: Read ocp4-nerc-cip ComplianceCheckResults from the cluster
+      kubernetes.core.k8s_info:
+        api_version: compliance.openshift.io/v1alpha1
+        kind: ComplianceCheckResult
+        namespace: "{{ ocp_compliance_ns }}"
+        label_selectors:
+          - "compliance.openshift.io/scan-name={{ ocp_scan_name }}"
+        host: "{{ ocp_api_url | default(omit) }}"
+        api_key: "{{ ocp_api_token | default(omit) }}"
+        validate_certs: "{{ ocp_verify_ssl | default(false) | bool }}"
+      register: ccr_raw
+
+    - name: Fail if no results (scan not run / RBAC / wrong scan name)
+      ansible.builtin.assert:
+        that: ccr_raw.resources | length > 0
+        fail_msg: >-
+          No ComplianceCheckResults for scan '{{ ocp_scan_name }}' in
+          '{{ ocp_compliance_ns }}'. Run the scan and grant read RBAC.
+
+    - name: Normalize each CCR -> {name, uid, status, severity, cip_controls[]}
+      ansible.builtin.set_fact:
+        checks_norm: >-
+          {{ checks_norm | default([]) + [ {
+               'name': item.metadata.name,
+               'uid': item.metadata.uid,
+               'status': item.status,
+               'severity': item.severity | default('unknown'),
+               'cip_controls': (item.metadata.annotations[nerc_cip_annotation] | default('')).split(';')
+                                 | map('trim') | select() | list
+             } ] }}
+      loop: "{{ ccr_raw.resources }}"
+      loop_control:
+        label: "{{ item.metadata.name }}"
+
+    - name: Derive CIP-control-level aggregates + violations
+      ansible.builtin.set_fact:
+        all_controls: >-
+          {{ checks_norm | map(attribute='cip_controls') | flatten | unique | sort }}
+        failed_controls_set: >-
+          {{ checks_norm | selectattr('status', 'equalto', 'FAIL')
+             | map(attribute='cip_controls') | flatten | unique | sort }}
+        n_fail: "{{ checks_norm | selectattr('status','equalto','FAIL') | list | length }}"
+        n_pass: "{{ checks_norm | selectattr('status','equalto','PASS') | list | length }}"
+        n_manual: "{{ checks_norm | selectattr('status','equalto','MANUAL') | list | length }}"
+        n_unmapped: "{{ checks_norm | rejectattr('cip_controls') | list | length }}"
+
+    - name: Build violations (FAIL checks with CIP mapping + CCR back-reference)
+      ansible.builtin.set_fact:
+        ocp_violations: >-
+          {{ ocp_violations | default([]) + [ {
+               'control': (item.cip_controls | first | default('unmapped')),
+               'cip_controls': item.cip_controls,
+               'check': item.name,
+               'ccr_uid': item.uid,
+               'severity': item.severity,
+               'message': item.cip_controls | join(', ') ~ ' — FAIL: ' ~ item.name
+             } ] }}
+      loop: "{{ checks_norm | selectattr('status','equalto','FAIL') | list }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Summary (CIP-control level)
+      ansible.builtin.debug:
+        msg:
+          - "CCRs {{ checks_norm | length }} | FAIL {{ n_fail }} · PASS {{ n_pass }} · MANUAL {{ n_manual }}"
+          - "CIP controls touched {{ all_controls | length }} | with a failing check {{ failed_controls_set | length }}"
+          - "CIP-control compliance: {{ ((all_controls | length - failed_controls_set | length) / ([all_controls | length, 1] | max) * 100) | round(2) }}%"
+
+    - name: Store OCP NERC-CIP posture in AAC PostgreSQL (system-of-record; no CAA cert)
+      ansible.builtin.include_role:
+        name: aac_store_results
+      vars:
+        aac_result_policy_name: "OpenShift Compliance Operator — ocp4-nerc-cip"
+        aac_result_framework: "nerc_cip_ocp"
+        aac_result_policy_version: "{{ ocp_scan_name }}"
+        aac_result_hostname: "{{ cluster_name }}"
+        aac_result_pg_host: "{{ pg_host }}"
+        aac_result_pg_password: "{{ compliance_db_password }}"
+        aac_result_total_controls: "{{ all_controls | length }}"
+        aac_result_failed_controls: "{{ failed_controls_set | length }}"
+        aac_result_passed_controls: "{{ all_controls | length - failed_controls_set | length }}"
+        aac_result_compliance_pct: "{{ ((all_controls | length - failed_controls_set | length) / ([all_controls | length, 1] | max) * 100) | round(2) }}"
+        aac_result_compliant: "{{ (failed_controls_set | length) == 0 }}"
+        aac_result_violations: "{{ ocp_violations | default([]) }}"
+        aac_result_metadata:
+          source: "openshift-compliance-operator"
+          integration: "ACS->AAC (CO ocp4-nerc-cip)"
+          scan: "{{ ocp_scan_name }}"
+          namespace: "{{ ocp_compliance_ns }}"
+          ccr_total: "{{ checks_norm | length }}"
+          status_spread: { FAIL: "{{ n_fail }}", PASS: "{{ n_pass }}", MANUAL: "{{ n_manual }}" }
+          checks_without_cip_mapping: "{{ n_unmapped }}"
+          controls_failed: "{{ failed_controls_set }}"

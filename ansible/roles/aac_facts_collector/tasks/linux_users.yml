@@ -1,0 +1,73 @@
+---
+# linux_users.yml — Collect user, group, and privilege facts
+
+- name: Get local users
+  shell: |
+    awk -F: '{print $1"|"$3"|"$4"|"$6"|"$7}' /etc/passwd
+  register: passwd_raw
+  changed_when: false
+  failed_when: false
+
+- name: Get users with UID 0 (root equivalents)
+  shell: |
+    awk -F: '($3 == 0) {print $1}' /etc/passwd
+  register: uid0_users_raw
+  changed_when: false
+  failed_when: false
+
+- name: Get password aging policy
+  shell: |
+    grep -E "^PASS_MAX_DAYS|^PASS_MIN_DAYS|^PASS_WARN_AGE|^PASS_MIN_LEN" \
+      /etc/login.defs 2>/dev/null || echo ""
+  register: password_aging_raw
+  changed_when: false
+  failed_when: false
+
+- name: Get accounts with no password
+  shell: |
+    awk -F: '($2 == "" || $2 == "!!" || $2 == "!") {print $1}' /etc/shadow 2>/dev/null \
+      || echo ""
+  register: no_password_raw
+  changed_when: false
+  failed_when: false
+  become: true
+
+- name: Get sudo configuration
+  shell: |
+    cat /etc/sudoers 2>/dev/null || echo ""
+    for f in /etc/sudoers.d/*; do
+      [ -f "$f" ] && echo "=== $f ===" && cat "$f" 2>/dev/null
+    done
+  register: sudoers_raw
+  changed_when: false
+  failed_when: false
+
+- name: Get groups
+  shell: |
+    awk -F: '{print $1"|"$3"|"$4}' /etc/group
+  register: groups_raw
+  changed_when: false
+  failed_when: false
+
+- name: Get users with interactive login shells
+  shell: |
+    grep -v '/nologin\|/false\|/sync\|/halt\|/shutdown' /etc/passwd \
+      | awk -F: '($3 >= 1000) {print $1}' | sort
+  register: interactive_users_raw
+  changed_when: false
+  failed_when: false
+
+- name: Set user facts
+  set_fact:
+    aac_users:
+      passwd_raw:          "{{ passwd_raw.stdout | default('') }}"
+      uid0_users:          "{{ uid0_users_raw.stdout_lines | default([]) }}"
+      no_password_accounts: "{{ no_password_raw.stdout_lines | default([]) | select | list }}"
+      interactive_users:   "{{ interactive_users_raw.stdout_lines | default([]) }}"
+      sudoers_raw:         "{{ sudoers_raw.stdout | default('') }}"
+      groups_raw:          "{{ groups_raw.stdout | default('') }}"
+      password_policy:
+        raw: "{{ password_aging_raw.stdout | default('') }}"
+        max_days:  "{{ password_aging_raw.stdout | regex_search('PASS_MAX_DAYS\\s+(\\d+)', '\\1') | default([], true) | first | default('99999') }}"
+        min_days:  "{{ password_aging_raw.stdout | regex_search('PASS_MIN_DAYS\\s+(\\d+)', '\\1') | default([], true) | first | default('0') }}"
+        warn_age:  "{{ password_aging_raw.stdout | regex_search('PASS_WARN_AGE\\s+(\\d+)', '\\1') | default([], true) | first | default('0') }}"

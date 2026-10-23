@@ -1,0 +1,126 @@
+---
+# seed_demo_cve_fixture.yml — load the LABELLED, SYNTHETIC demo CVE fixture
+#
+# ansible/files/demo_cve_fixture.sql populates cve_events_received and
+# cve_vendor_remediations with invented CVE-2026-9xxxx ids, source='demo_seed',
+# so that "AAC - Identify Affected Components (catalog match)" has something to
+# match against on an install that has no CVE feed (a sales.demos pack-only
+# platform, a fresh lab). Nothing in it is real vulnerability data; the file
+# header says so at length.
+#
+# This playbook is the ONLY thing that applies that fixture. The database role
+# (aac_compliance_db, tasks/schema.yml) creates empty tables and never seeds
+# data — the sales.demos installer replays schema.yml as the application role,
+# and a production schema must not carry synthetic CVEs. Shipping the fixture
+# file in the pack puts it on disk; it does not load it. This does.
+#
+# Refuses to run unless confirm_demo_seed=true, so it cannot be launched by
+# accident against a database that holds real CVE deliveries.
+#
+# Remove the seed later with:
+#   DELETE FROM cve_events_received WHERE source='demo_seed';
+#   (cve_vendor_remediations cascades on the FK)
+#
+# AAP Job Template: "AAC - Seed Demo CVE Fixture"   (survey: confirm_demo_seed)
+# Credentials: Ansible Vault  ·  EE: AAC Compliance EE (community.postgresql)
+# Run before: "AAC - Identify Affected Components (catalog match)"
+
+- name: Seed the synthetic demo CVE fixture
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    pg_port: "{{ compliance_db_port | default(5432) }}"
+    pg_db: "compliance"
+    pg_user: "postgres"
+    pg_password: "{{ compliance_db_password }}"
+    fixture_path: "{{ playbook_dir }}/../files/demo_cve_fixture.sql"
+
+  tasks:
+    # site_config.yml and vault_secrets.yml are gitignored and absent from AAP
+    # project checkouts (and from the sales.demos pack); load them when present,
+    # otherwise every value arrives as an extra var, survey answer or credential.
+    - name: Load optional local config
+      ansible.builtin.include_vars: "{{ item }}"
+      with_first_found:
+        - files:
+            - "{{ playbook_dir }}/../vars/site_config.yml"
+          skip: true
+
+    - name: Load optional local secrets
+      ansible.builtin.include_vars: "{{ item }}"
+      with_first_found:
+        - files:
+            - "{{ playbook_dir }}/../vars/vault_secrets.yml"
+          skip: true
+
+    - name: Refuse to seed synthetic CVEs without an explicit confirmation
+      ansible.builtin.assert:
+        that:
+          - confirm_demo_seed | default(false) | bool
+        fail_msg: >-
+          This loads SYNTHETIC vulnerability data (CVE-2026-9xxxx, source='demo_seed')
+          into cve_events_received. Set confirm_demo_seed=true to proceed. Never run
+          it against a database that receives real CVE deliveries.
+        quiet: true
+
+    - name: Require the database connection to be configured
+      ansible.builtin.assert:
+        that:
+          - pg_host is defined
+          - pg_host | string | length > 0
+          - compliance_db_password is defined
+        fail_msg: >-
+          pg_host and compliance_db_password must be set — from ansible/vars/site_config.yml
+          and vault_secrets.yml on a workstation, or from extra_vars / a credential on AAP.
+        quiet: true
+      no_log: true
+
+    - name: Require the CVE cache schema (created by the aac_compliance_db role)
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: >-
+          SELECT to_regclass('public.cve_events_received') IS NOT NULL
+             AND to_regclass('public.cve_vendor_remediations') IS NOT NULL AS present
+      register: schema_check
+      failed_when: not (schema_check.query_result[0].present | bool)
+
+    - name: Apply the labelled demo fixture (idempotent, ON CONFLICT upserts)
+      community.postgresql.postgresql_script:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        path: "{{ fixture_path }}"
+
+    - name: Read back what was seeded
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: |
+          SELECT (SELECT count(*) FROM cve_events_received WHERE source = 'demo_seed')      AS demo_cves,
+                 (SELECT count(*) FROM cve_events_received WHERE source IS DISTINCT FROM 'demo_seed') AS other_cves,
+                 (SELECT count(*) FROM cve_vendor_remediations r
+                    JOIN cve_events_received c ON c.cve_id = r.cve_id
+                   WHERE c.source = 'demo_seed')                                             AS demo_remediations
+      register: seeded
+
+    - name: "=== Demo CVE fixture seeded ==="
+      ansible.builtin.debug:
+        msg:
+          - "Synthetic CVEs (source='demo_seed'): {{ seeded.query_result[0].demo_cves }}"
+          - "Vendor remediations for them:        {{ seeded.query_result[0].demo_remediations }}"
+          - "Other (non-demo) CVEs in the cache:   {{ seeded.query_result[0].other_cves }}"
+          - ""
+          - "THIS IS NOT REAL VULNERABILITY DATA. Remove with:"
+          - "  DELETE FROM cve_events_received WHERE source='demo_seed';"
+          - "Next: AAC - Identify Affected Components (catalog match)"

@@ -1,0 +1,40 @@
+namespace: aac
+name: m365
+version: 1.1.1
+
+readme: README.md
+
+authors:
+  - Ansible Automated Compliance (AAC) maintainers
+
+description: >
+  Microsoft 365 compliance assessment for AAC: fact-collection modules
+  plus the role that runs a complete CIS Microsoft 365 Foundations
+  Benchmark v7.0.0 assessment end to end.
+
+  State is collected from three authentication surfaces -- Microsoft
+  Graph, app-only-certificate PowerShell (Exchange, Teams, SharePoint,
+  Security & Compliance) and the Fabric admin API -- because no single
+  one reaches the whole benchmark. Every collector is fail-closed: a
+  source it could not read is recorded as unavailable so the evaluating
+  policy reports the control unevaluable rather than passing it.
+
+  Evaluated by the Rego under policies/benchmarks/cis/saas/m365_v7/.
+
+license:
+  - Apache-2.0
+
+tags:
+  - compliance
+  - cis
+  - microsoft365
+  - m365
+  - graph
+  - security
+
+dependencies: {}
+
+repository: https://github.com/ansible-automated-compliance/aac
+documentation: https://github.com/ansible-automated-compliance/aac/tree/main/collections/ansible_collections/aac/m365
+
+issues: https://github.com/ansible-automated-compliance/aac/issues

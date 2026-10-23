@@ -1,0 +1,10 @@
+FROM registry.access.redhat.com/ubi9/python-311:latest
+
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY compliance_exporter.py .
+
+EXPOSE 9101
+CMD ["python", "compliance_exporter.py"]

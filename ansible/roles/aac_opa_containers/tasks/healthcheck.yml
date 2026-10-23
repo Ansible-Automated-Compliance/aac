@@ -1,0 +1,16 @@
+---
+# Poll each OPA container's /health endpoint until it returns HTTP 200.
+
+- name: Wait for OPA containers to become healthy
+  uri:
+    use_proxy: false
+    url: "http://{{ aac_host }}:{{ item.port }}/health"
+    method: GET
+    status_code: 200
+  loop: "{{ aac_opa_containers }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: opa_health_check
+  until: opa_health_check is succeeded
+  retries: 12
+  delay: 5

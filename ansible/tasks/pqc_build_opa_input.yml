@@ -1,0 +1,126 @@
+---
+# pqc_build_opa_input.yml — map the collector's lines plus the site's
+# attestations into the input contract of frameworks/federal/pqc (input.pqc.*).
+#
+# Never fabricates. Every crypto_inventory row comes from a line the host
+# emitted; every boolean comes from pqc_attestations (the site's declaration,
+# absent until a named person makes it). An absent attestation is absent in
+# the input, so the policy reports it as a violation (fail-closed). Without
+# the collector's end:ok marker no crypto_inventory is emitted at all.
+#
+# Algorithm tokens are normalised to the single-token spellings the policy
+# classifies (frameworks/federal/pqc/pqc_main.rego: _vulnerable_prefixes,
+# _pqc_markers, _broken_hashes). Only renames, never reclassification:
+#   certificate RSA/EC/DSA keys   → RSA-<bits> / ECDSA-<curve> / DSA-<bits>
+#   SSH host keys                 → RSA-<bits> / ECDSA-P<bits> / ED25519 / DSA-<bits>
+#   sshd diffie-hellman-group*    → DH-group* (finite-field DH, which it is)
+#   everything else               → as the host printed it (spaces → '-')
+# A certificate or key the host could not parse becomes a collector note
+# (unparsable|cert|<path>), never a row with a made-up algorithm. OpenSSH's
+# sntrup761x25519 hybrid is left as printed: quantum-resistant but not a FIPS
+# PQC algorithm, so the policy classifies it as neither vulnerable nor
+# protected, which is the correct reading under NIST IR 8547.
+# Host-collected strings are copied, never evaluated (see tests/pqc_mapper/).
+#
+# Expects: pqc_raw (registered by collect_pqc_crypto_facts.yml), opa_hostname,
+# optional pqc_attestations / pqc_migration_planned_assets /
+# pqc_migration_planned_default (ansible/vars/pqc_attestations.yml).
+# Sets: opa_input
+
+- name: Build PQC OPA input from the collected cryptographic inventory (no fabricated values)
+  vars:
+    _lines: "{{ pqc_raw.stdout_lines | default([]) }}"
+    _ok: "{{ 'end:ok' in _lines }}"
+    _host: "{{ opa_hostname }}"
+    _att: "{{ pqc_attestations | default({}) }}"
+    _planned: "{{ pqc_migration_planned_assets | default([]) }}"
+    _planned_default: "{{ pqc_migration_planned_default | default(false) | bool }}"
+    # one row per algorithm the host actually uses, with the asset it is used by
+    _rows: >-
+      {%- set rows = [] -%}
+      {%- if _ok -%}
+      {%- for l in _lines if '|' in l -%}
+        {%- set p = l.split('|') -%}
+        {%- if p[0] == 'cert' and (p | length) >= 6 -%}
+          {%- set asset = _host ~ ':' ~ p[1] -%}
+          {%- set alg = p[2] -%}
+          {%- if alg == 'unparsable' or alg == '' -%}
+            {#- an unreadable certificate is a collector note (evidence missing), not an algorithm row -#}
+          {%- else -%}
+            {%- if alg == 'rsaEncryption' -%}{%- set tok = 'RSA-' ~ (p[3] if p[3] else 'unknown') -%}
+            {%- elif alg == 'id-ecPublicKey' -%}{%- set tok = 'ECDSA-' ~ (p[4] if p[4] else 'unknown') -%}
+            {%- elif alg == 'dsaEncryption' -%}{%- set tok = 'DSA-' ~ (p[3] if p[3] else 'unknown') -%}
+            {%- else -%}{%- set tok = alg | replace(' ', '-') -%}
+            {%- endif -%}
+            {%- set _ = rows.append({'asset': asset, 'algorithm': tok, 'usage': 'signature'}) -%}
+            {%- set sig = p[5] | lower -%}
+            {%- set h = 'MD5' if 'md5' in sig else ('SHA-1' if 'sha1' in sig else ('SHA-224' if 'sha224' in sig else ('SHA-256' if 'sha256' in sig else ('SHA-384' if 'sha384' in sig else ('SHA-512' if 'sha512' in sig else ''))))) -%}
+            {%- if h -%}{%- set _ = rows.append({'asset': asset, 'algorithm': h, 'usage': 'hashing'}) -%}{%- endif -%}
+          {%- endif -%}
+        {%- elif p[0] == 'sshkey' and (p | length) >= 4 -%}
+          {%- set asset = _host ~ ':' ~ p[1] -%}
+          {%- set typ = p[2] -%}
+          {%- if typ == 'unparsable' or typ == '' -%}
+            {#- unreadable host key: collector note, not a row -#}
+          {%- else -%}
+            {%- if typ == 'RSA' -%}{%- set tok = 'RSA-' ~ (p[3] if p[3] else 'unknown') -%}
+            {%- elif typ == 'ECDSA' -%}{%- set tok = 'ECDSA-P' ~ (p[3] if p[3] else 'unknown') -%}
+            {%- elif typ == 'DSA' -%}{%- set tok = 'DSA-' ~ (p[3] if p[3] else 'unknown') -%}
+            {%- else -%}{%- set tok = typ | replace(' ', '-') -%}
+            {%- endif -%}
+            {%- set _ = rows.append({'asset': asset, 'algorithm': tok, 'usage': 'signature'}) -%}
+          {%- endif -%}
+        {%- elif p[0] == 'kex' and (p | length) >= 2 and p[1] -%}
+          {%- set a = p[1] -%}
+          {%- set tok = ('DH-' ~ a[15:]) if (a | lower).startswith('diffie-hellman-') else a -%}
+          {%- set _ = rows.append({'asset': _host ~ ':sshd', 'algorithm': tok | replace(' ', '-'), 'usage': 'key_establishment'}) -%}
+        {%- elif p[0] == 'tls' and (p | length) >= 4 -%}
+          {%- set _ = rows.append({'asset': _host ~ ':tls:' ~ p[1], 'algorithm': (p[2] if p[2] else 'unknown') | replace(' ', '-'), 'usage': 'key_establishment'}) -%}
+        {%- endif -%}
+      {%- endfor -%}
+      {%- endif -%}
+      {{ rows }}
+    # the site's migration plan, per asset (true only when declared)
+    _inventory: >-
+      {%- set out = [] -%}
+      {%- for r in _rows -%}
+        {%- set planned = (r.asset in _planned) or (_planned_default | bool) -%}
+        {%- set _ = out.append(r | combine({'pqc_migration_planned': planned})) -%}
+      {%- endfor -%}
+      {{ out }}
+    _kv: >-
+      {%- set o = {} -%}
+      {%- for l in _lines if '|' in l -%}
+        {%- set p = l.split('|') -%}
+        {%- if p[0] in ['openssl', 'mlkem_available', 'crypto_policy', 'fips'] -%}{%- set _ = o.update({p[0]: p[1]}) -%}{%- endif -%}
+      {%- endfor -%}
+      {{ o }}
+    _notes: >-
+      {%- set n = [] -%}
+      {%- for l in _lines if '|' in l -%}
+        {%- set p = l.split('|') -%}
+        {%- if p[0] in ['missing_cmd', 'truncated', 'unsafe_name', 'sshd_t_unavailable'] -%}{%- set _ = n.append(l) -%}
+        {%- elif p[0] in ['cert', 'sshkey'] and (p | length) >= 3 and p[2] == 'unparsable' -%}{%- set _ = n.append('unparsable|' ~ p[0] ~ '|' ~ p[1]) -%}
+        {%- endif -%}
+      {%- endfor -%}
+      {{ n }}
+    _pqc_block: >-
+      {%- set b = {'crypto_inventory': _inventory} -%}
+      {%- if _att.profile is defined -%}{%- set _ = b.update({'profile': _att.profile}) -%}{%- endif -%}
+      {%- for k in ['inventory', 'agility', 'federal', 'nss'] -%}
+        {%- if _att[k] is defined and _att[k] is mapping -%}{%- set _ = b.update({k: _att[k]}) -%}{%- endif -%}
+      {%- endfor -%}
+      {{ b }}
+  set_fact:
+    opa_input:
+      pqc: "{{ _pqc_block }}"
+      system_info:
+        hostname: "{{ _host }}"
+        collector_ok: "{{ _ok | bool }}"
+        openssl_version: "{{ _kv.openssl | default('') }}"
+        mlkem_available: "{{ (_kv.mlkem_available | default('')) == 'yes' }}"
+        crypto_policy: "{{ _kv.crypto_policy | default('') }}"
+        fips_enabled: "{{ (_kv.fips | default('')) == '1' }}"
+        inventory_rows: "{{ _inventory | length }}"
+        collector_notes: "{{ _notes }}"
+        attested_by: "{{ pqc_attested_by | default('') }}"

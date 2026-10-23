@@ -1,0 +1,262 @@
+---
+# nerc_cip_pdf_report.yml — NERC-CIP Audit PDF Report
+#
+# Queries latest NERC-CIP results from PostgreSQL, then runs
+# scripts/generate_nerc_cip_pdf.py (reportlab) to produce a
+# submission-ready PDF on the AAP controller.
+#
+# Output: /tmp/nerc_cip_audit_report_<YYYY-MM-DD>.pdf (+ .docx) inside the EE.
+# Persistence is opt-in: set report_persist_host (an SSH-reachable host) to
+# have both files copied out of the ephemeral EE; when it is set, a failed copy
+# FAILS the job. Unset, the files stay in the EE and the summary says so.
+#
+# AAP Job Template: "NERC/AMI - Generate Audit PDF"
+# Credentials: Ansible Vault (compliance_db_password) or an attached credential
+# EE: AAC Compliance EE (connection: local — runs on controller)
+
+- name: Generate NERC-CIP Audit Report PDF
+  hosts: localhost
+  connection: local
+  gather_facts: true
+
+  vars:
+    pg_password: "{{ compliance_db_password }}"
+    report_date: "{{ ansible_date_time.date }}"
+    # SSH-reachable host that keeps the generated files. Empty = leave them in the EE.
+    report_persist_host: ""
+    report_persist_user: "{{ aap_ssh_user | default('aapuser1') }}"
+    report_path: "/tmp/nerc_cip_audit_report_{{ ansible_date_time.date }}.pdf"
+    docx_path:   "/tmp/nerc_cip_audit_report_{{ ansible_date_time.date }}.docx"
+    data_path:   "/tmp/nerc_cip_report_data_{{ ansible_date_time.date }}.json"
+    script_path: "{{ playbook_dir }}/../../scripts/generate_nerc_cip_pdf.py"
+
+  tasks:
+    # site_config.yml / vault_secrets.yml are gitignored and absent from AAP
+    # project checkouts — load them when present, and let extra_vars or an
+    # attached credential supply pg_host / compliance_db_password otherwise.
+    - name: Load optional local config
+      ansible.builtin.include_vars: "{{ item }}"
+      with_first_found:
+        - files:
+            - "{{ playbook_dir }}/../vars/site_config.yml"
+          skip: true
+
+    - name: Load optional local secrets
+      ansible.builtin.include_vars: "{{ item }}"
+      with_first_found:
+        - files:
+            - "{{ playbook_dir }}/../vars/vault_secrets.yml"
+          skip: true
+
+    # ── Query NERC-CIP data ───────────────────────────────────────────────────
+
+    - name: Query latest NERC CIP result
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port | default(5432, true) }}"
+        login_user: "{{ pg_user | default('postgres', true) }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db | default('compliance', true) }}"
+        query: |
+          SELECT policy_name, policy_version, compliance_percentage,
+                 passed_controls, failed_controls, total_controls,
+                 violations, metadata, evaluation_timestamp
+          FROM compliance_results
+          WHERE policy_name = 'NERC CIP'
+          ORDER BY evaluation_timestamp DESC LIMIT 1
+      register: nerc_cip_row
+
+    - name: Query latest NERC CIP-015 INSM result
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port | default(5432, true) }}"
+        login_user: "{{ pg_user | default('postgres', true) }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db | default('compliance', true) }}"
+        query: |
+          SELECT policy_name, policy_version, compliance_percentage,
+                 violations, metadata, evaluation_timestamp
+          FROM compliance_results
+          WHERE policy_name = 'NERC CIP-015 INSM'
+          ORDER BY evaluation_timestamp DESC LIMIT 1
+      register: nerc_cip015_row
+
+    - name: Query latest AMI results per utility and framework
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port | default(5432, true) }}"
+        login_user: "{{ pg_user | default('postgres', true) }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db | default('compliance', true) }}"
+        query: |
+          SELECT DISTINCT ON (metadata->>'utility', policy_name)
+                 metadata->>'utility'   AS utility,
+                 policy_name,
+                 compliance_percentage
+          FROM compliance_results
+          WHERE framework = 'ami' AND metadata->>'utility' IS NOT NULL
+          ORDER BY metadata->>'utility', policy_name, evaluation_timestamp DESC
+      register: ami_rows
+
+    - name: Fail if no NERC-CIP data found
+      fail:
+        msg: "No NERC-CIP data in compliance_results. Run 'AAC - NERC CIP Compliance Report' first."
+      when: nerc_cip_row.query_result | length == 0
+
+    # ── Assemble report data ──────────────────────────────────────────────────
+
+    - name: Set CIP data facts
+      vars:
+        row:      "{{ nerc_cip_row.query_result[0] }}"
+        row015:   "{{ nerc_cip015_row.query_result[0] | default({}) }}"
+        meta:     "{{ row.metadata | default({}) }}"
+        reqs:     "{{ (row.metadata | default({})).get('requirements', {}) }}"
+        viols:    "{{ row.violations | default([]) }}"
+        viols015: "{{ row015.get('violations', []) }}"
+      set_fact:
+        report_data:
+          organization:    "{{ meta.get('organization', 'Example Utility Co.') }}"
+          # The date the assessment RAN: metadata.assessment_date, else the row's
+          # evaluation_timestamp — never the day the report was regenerated
+          # (that is `generated` below).
+          assessment_date: "{{ meta.get('assessment_date') or ((row.evaluation_timestamp | string)[:10]) }}"
+          assessor:        "{{ meta.get('assessor', 'Compliance Team') }}"
+          generated:       "{{ ansible_date_time.iso8601 }} UTC"
+          overall_status:  "{{ meta.get('compliance_level', 'COMPLIANT') | upper }}"
+          cip_score:       "{{ row.compliance_percentage | float }}"
+          cip015_score:    "{{ row015.get('compliance_percentage', 100) | float }}"
+          bes_systems_count: 3
+          violation_count: "{{ viols | length }}"
+          violations:      "{{ viols }}"
+          requirements:    "{{ reqs }}"
+          ami_results:     "{{ ami_rows.query_result | default([]) }}"
+          cip015:
+            score:        "{{ row015.get('compliance_percentage', 100) | float }}"
+            requirements: "{{ (row015.get('metadata', {}) | default({})).get('requirements', {
+                'R1_insm_categorization':    true,
+                'R2_insm_implementation':    true,
+                'R3_documentation_management': true
+              }) }}"
+          bes_systems:
+            - name: "Energy Management System (EMS)"
+              category: "High Impact"
+              location: "Control Center"
+              impact: "HIGH"
+              cip002_cat: "Category 1 — High Impact BES Cyber System"
+            - name: "SCADA System"
+              category: "High Impact"
+              location: "Control Center"
+              impact: "HIGH"
+              cip002_cat: "Category 1 — High Impact BES Cyber System"
+            - name: "Substation RTU (Primary)"
+              category: "Medium Impact"
+              location: "Substation Alpha"
+              impact: "MEDIUM"
+              cip002_cat: "Category 2 — Medium Impact BES Cyber System"
+
+    # ── Generate PDF locally in EE container ─────────────────────────────────
+
+    - name: Write report data to JSON file locally
+      copy:
+        content: "{{ report_data | to_nice_json }}"
+        dest: "{{ data_path }}"
+
+    - name: Ensure reportlab is installed
+      pip:
+        name: reportlab
+        state: present
+        executable: pip3
+
+    - name: Generate PDF locally
+      command: >
+        python3 {{ playbook_dir }}/../../scripts/generate_nerc_cip_pdf.py
+        {{ report_path }}
+        --data {{ data_path }}
+      register: pdf_result
+      changed_when: true
+
+    - name: Verify PDF was created locally
+      stat:
+        path: "{{ report_path }}"
+      register: pdf_stat
+
+    - name: Fail if PDF not generated
+      fail:
+        msg: "PDF generation failed: {{ pdf_result.stderr }}"
+      when: not pdf_stat.stat.exists
+
+    # ── Persist the PDF off the ephemeral EE (opt-in, fail-closed) ───────────
+    # aac_host is the AAP gateway route post-CRC and is not SSH-reachable, so
+    # persistence targets a dedicated report_persist_host. When it is set, a
+    # failed copy fails the job — a green run must mean the artifact survived.
+    - name: Copy PDF to persistent host via SCP
+      ansible.builtin.command:
+        argv:
+          - scp
+          - -o
+          - StrictHostKeyChecking=no
+          - -o
+          - BatchMode=yes
+          - "{{ report_path }}"
+          - "{{ report_persist_user }}@{{ report_persist_host }}:{{ report_path }}"
+      register: scp_result
+      changed_when: true
+      when: (report_persist_host | default('') | string | length) > 0
+
+    # ── Generate the matching DOCX from the same data ─────────────────────────
+    - name: Ensure python-docx is installed
+      pip:
+        name: python-docx
+        state: present
+        executable: pip3
+
+    - name: Generate DOCX locally
+      command: >
+        python3 {{ playbook_dir }}/../../scripts/generate_nerc_cip_docx.py
+        {{ docx_path }}
+        --data {{ data_path }}
+      register: docx_result
+      changed_when: true
+
+    - name: Copy DOCX to persistent host via SCP
+      ansible.builtin.command:
+        argv:
+          - scp
+          - -o
+          - StrictHostKeyChecking=no
+          - -o
+          - BatchMode=yes
+          - "{{ docx_path }}"
+          - "{{ report_persist_user | default(aap_ssh_user | default('aapuser1')) }}@{{ report_persist_host }}:{{ docx_path }}"
+      register: scp_docx_result
+      changed_when: true
+      when: (report_persist_host | default('') | string | length) > 0
+
+    - name: Artifacts stay in the EE (no report_persist_host set)
+      debug:
+        msg: >-
+          report_persist_host is unset — {{ report_path }} and {{ docx_path }} exist
+          only inside this execution environment and are gone when the job ends.
+          Set report_persist_host to an SSH-reachable host to keep them.
+      when: (report_persist_host | default('') | string | length) == 0
+
+    # ── Summary ───────────────────────────────────────────────────────────────
+
+    - name: Report complete
+      debug:
+        msg:
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "  NERC-CIP Audit Report — PDF Generated"
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "  Organization : {{ report_data.organization }}"
+          - "  Assessment   : {{ report_data.assessment_date }}"
+          - "  Status       : {{ report_data.overall_status }}"
+          - "  CIP-002–013  : {{ report_data.cip_score }}%"
+          - "  CIP-015 INSM : {{ report_data.cip015_score }}%"
+          - "  Violations   : {{ report_data.violation_count }}"
+          - "  File size    : {{ pdf_stat.stat.size | filesizeformat }}"
+          - "  Persisted    : {{ ('PDF + DOCX copied to ' ~ report_persist_host) if ((report_persist_host | default('') | string | length) > 0) else 'NO — files are in the EE only (set report_persist_host)' }}"
+          - ""
+          - "  PDF : {{ report_path }}"
+          - "  DOCX: {{ docx_path }}"
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

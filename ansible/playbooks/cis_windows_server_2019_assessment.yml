@@ -1,0 +1,233 @@
+---
+# CIS Windows Server 2019 Compliance Assessment using OPA
+# Collects facts via WinRM and validates against CIS Windows Server 2019 benchmark
+
+- name: CIS Windows Server 2019 Compliance Assessment
+  hosts: all
+  gather_facts: yes
+
+  vars:
+    opa_server_url: "{{ opa_security_url }}"
+    policy_package: "cis_windows_server_2019"
+    report_dir: "{{ playbook_dir }}/../../reports"
+    timestamp: "{{ ansible_date_time.iso8601_basic_short }}"
+
+  tasks:
+    - name: Ensure report directory exists
+      file:
+        path: "{{ report_dir }}"
+        state: directory
+        mode: '0755'
+      delegate_to: localhost
+      run_once: true
+
+    - name: Verify Windows Server 2019
+      assert:
+        that:
+          - ansible_os_family == "Windows"
+          - ansible_distribution == "Microsoft Windows Server 2019 Datacenter" or
+            ansible_distribution == "Microsoft Windows Server 2019 Standard"
+        fail_msg: "This playbook is for Windows Server 2019 only. Detected: {{ ansible_distribution }}"
+        success_msg: "Confirmed Windows Server 2019: {{ ansible_distribution }}"
+
+    - name: Get password policy settings
+      win_shell: |
+        $policy = @{}
+        $policy['enforce_password_history'] = (Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\Netlogon\Parameters' -Name 'MaximumPasswordAge' -ErrorAction SilentlyContinue).MaximumPasswordAge
+        $policy['maximum_password_age'] = (net accounts | Select-String "Maximum password age").ToString().Split(':')[1].Trim()
+        $policy['minimum_password_age'] = (net accounts | Select-String "Minimum password age").ToString().Split(':')[1].Trim()
+        $policy['minimum_password_length'] = (net accounts | Select-String "Minimum password length").ToString().Split(':')[1].Trim()
+        $policy | ConvertTo-Json
+      register: password_policy_raw
+      failed_when: false
+
+    - name: Get account lockout policy
+      win_shell: |
+        $lockout = @{}
+        $lockout['account_lockout_duration'] = (net accounts | Select-String "Lockout duration").ToString().Split(':')[1].Trim()
+        $lockout['account_lockout_threshold'] = (net accounts | Select-String "Lockout threshold").ToString().Split(':')[1].Trim()
+        $lockout['reset_lockout_counter'] = (net accounts | Select-String "Lockout observation window").ToString().Split(':')[1].Trim()
+        $lockout | ConvertTo-Json
+      register: account_lockout_raw
+      failed_when: false
+
+    - name: Get Windows Defender status
+      win_shell: |
+        $defender = @{}
+        try {
+          $status = Get-MpComputerStatus
+          $defender['antivirus_enabled'] = $status.AntivirusEnabled
+          $defender['realtime_protection'] = $status.RealTimeProtectionEnabled
+          $defender['antispyware_enabled'] = $status.AntispywareEnabled
+        } catch {
+          $defender['error'] = $_.Exception.Message
+        }
+        $defender | ConvertTo-Json
+      register: windows_defender_raw
+      failed_when: false
+
+    - name: Get BitLocker status
+      win_shell: |
+        $bitlocker = @{}
+        try {
+          $volumes = Get-BitLockerVolume
+          $bitlocker['volumes'] = @()
+          foreach ($vol in $volumes) {
+            $bitlocker['volumes'] += @{
+              'MountPoint' = $vol.MountPoint
+              'ProtectionStatus' = $vol.ProtectionStatus.ToString()
+              'EncryptionPercentage' = $vol.EncryptionPercentage
+            }
+          }
+        } catch {
+          $bitlocker['error'] = $_.Exception.Message
+        }
+        $bitlocker | ConvertTo-Json
+      register: bitlocker_raw
+      failed_when: false
+
+    - name: Get Windows Firewall status
+      win_shell: |
+        $firewall = @{}
+        $profiles = Get-NetFirewallProfile
+        foreach ($profile in $profiles) {
+          $firewall[$profile.Name] = @{
+            'Enabled' = $profile.Enabled
+            'DefaultInboundAction' = $profile.DefaultInboundAction.ToString()
+            'DefaultOutboundAction' = $profile.DefaultOutboundAction.ToString()
+          }
+        }
+        $firewall | ConvertTo-Json
+      register: firewall_status_raw
+      failed_when: false
+
+    - name: Get audit policy settings
+      win_shell: |
+        $audit = @{}
+        # Get basic audit policy
+        $auditpol = auditpol /get /category:* 2>&1
+        $audit['audit_policy'] = $auditpol
+        $audit | ConvertTo-Json
+      register: audit_policy_raw
+      failed_when: false
+
+    - name: Get security event log configuration
+      win_shell: |
+        $eventlogs = @{}
+        $logs = @('Application', 'Security', 'System', 'Setup')
+        foreach ($log in $logs) {
+          $eventlog = Get-EventLog -LogName $log -Newest 1 -ErrorAction SilentlyContinue
+          if ($eventlog) {
+            $eventlogs[$log] = @{
+              'Exists' = $true
+              'MaxKilobytes' = (Get-EventLog -List | Where-Object {$_.Log -eq $log}).MaximumKilobytes
+            }
+          }
+        }
+        $eventlogs | ConvertTo-Json
+      register: event_log_config_raw
+      failed_when: false
+
+    - name: Build OPA input payload
+      set_fact:
+        opa_input:
+          ansible_facts:
+            ansible_hostname: "{{ ansible_hostname }}"
+            ansible_fqdn: "{{ ansible_fqdn }}"
+            ansible_domain: "{{ ansible_domain | default('') }}"
+            ansible_distribution: "{{ ansible_distribution }}"
+            ansible_os_family: "{{ ansible_os_family }}"
+            ansible_kernel: "{{ ansible_kernel }}"
+            ansible_architecture: "{{ ansible_architecture }}"
+            ansible_processor_cores: "{{ ansible_processor_cores }}"
+            ansible_memtotal_mb: "{{ ansible_memtotal_mb }}"
+            ansible_ip_addresses: "{{ ansible_ip_addresses }}"
+          password_policy: "{{ password_policy_raw.stdout | from_json if password_policy_raw.rc == 0 else {} }}"
+          account_lockout_policy: "{{ account_lockout_raw.stdout | from_json if account_lockout_raw.rc == 0 else {} }}"
+          windows_defender: "{{ windows_defender_raw.stdout | from_json if windows_defender_raw.rc == 0 else {} }}"
+          bitlocker: "{{ bitlocker_raw.stdout | from_json if bitlocker_raw.rc == 0 else {} }}"
+          firewall: "{{ firewall_status_raw.stdout | from_json if firewall_status_raw.rc == 0 else {} }}"
+          audit_policy: "{{ audit_policy_raw.stdout | from_json if audit_policy_raw.rc == 0 else {} }}"
+          event_logs: "{{ event_log_config_raw.stdout | from_json if event_log_config_raw.rc == 0 else {} }}"
+
+    - name: Save facts to local file
+      copy:
+        content: "{{ opa_input | to_nice_json }}"
+        dest: "{{ report_dir }}/{{ inventory_hostname }}_windows_2019_facts_{{ timestamp }}.json"
+      delegate_to: localhost
+
+    - name: Query OPA for compliance assessment
+      uri:
+        use_proxy: false
+        url: "{{ opa_server_url }}/v1/data/cis_windows_server_2019/compliance_assessment"
+        method: POST
+        body_format: json
+        body:
+          input: "{{ opa_input }}"
+        return_content: yes
+        status_code: 200
+      register: opa_response
+      delegate_to: localhost
+      failed_when: false
+
+    - name: Refuse to fabricate a result when OPA did not answer
+      ansible.builtin.assert:
+        that:
+          - (opa_response.status | default(-1)) == 200
+          - opa_response.json.result is defined
+        fail_msg: >-
+          OPA did not return an evaluation (status
+          {{ opa_response.status | default('no connection') }} from
+          {{ opa_server_url }}). Refusing to continue: the previous behaviour
+          treated this as an empty result, which zero violations turned into a
+          perfect compliance_results row -- a 100% score fabricated from a
+          connection failure, stored as evidence and signed. No answer from the
+          policy engine means NO ASSESSMENT, never a clean one.
+
+    - name: Parse OPA response
+      set_fact:
+        compliance_result: "{{ opa_response.json.result }}"
+
+    - name: Generate compliance report
+      set_fact:
+        compliance_report:
+          assessment_metadata:
+            hostname: "{{ inventory_hostname }}"
+            fqdn: "{{ ansible_fqdn }}"
+            ip_address: "{{ ansible_ip_addresses[0] if ansible_ip_addresses else 'N/A' }}"
+            assessment_time: "{{ ansible_date_time.iso8601 }}"
+            benchmark: "CIS Microsoft Windows Server 2019 Benchmark v1.3.0"
+            policy_package: "{{ policy_package }}"
+            opa_server: "{{ opa_server_url }}"
+          system_info:
+            distribution: "{{ ansible_distribution }}"
+            os_family: "{{ ansible_os_family }}"
+            kernel: "{{ ansible_kernel }}"
+            architecture: "{{ ansible_architecture }}"
+            domain: "{{ ansible_domain | default('WORKGROUP') }}"
+          compliance_summary: "{{ compliance_result.summary | default({}) }}"
+          section_compliance: "{{ compliance_result.section_compliance | default({}) }}"
+          violations: "{{ compliance_result.violations | default([]) }}"
+
+    - name: Save compliance report
+      copy:
+        content: "{{ compliance_report | to_nice_json }}"
+        dest: "{{ report_dir }}/{{ inventory_hostname }}_windows_2019_compliance_report_{{ timestamp }}.json"
+      delegate_to: localhost
+
+    - name: Display compliance summary
+      debug:
+        msg:
+          - "========================================="
+          - "CIS Windows Server 2019 Compliance Summary"
+          - "========================================="
+          - "Hostname: {{ inventory_hostname }}"
+          - "OS: {{ ansible_distribution }}"
+          - "Overall Status: {{ compliance_result.summary.overall_compliance | default('Unknown') }}"
+          - "Compliance: {{ compliance_result.summary.compliance_percentage | default(0) }}%"
+          - "Total Violations: {{ compliance_result.summary.total_violations | default(0) }}"
+          - "Risk Level: {{ compliance_result.summary.risk_level | default('Unknown') }}"
+          - "Critical Issues: {{ compliance_result.summary.critical_issues | default(0) }}"
+          - "High Issues: {{ compliance_result.summary.high_issues | default(0) }}"
+          - "Report saved to: {{ report_dir }}/{{ inventory_hostname }}_windows_2019_compliance_report_{{ timestamp }}.json"
+          - "========================================="

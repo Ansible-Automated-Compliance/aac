@@ -1,0 +1,163 @@
+---
+# EDA Rulebook: NERC-CIP Event Monitoring (webhook variant)
+#
+# Receives CIP-relevant events via HTTP POST on port 5005 and triggers
+# the NERC-CIP Compliance Report via AAP job template.
+#
+# Designed for OpenShift EDA — activation pods cannot use file_watch or
+# journald to monitor BES Cyber System hosts directly. Run a small daemon
+# (or rsyslog forwarder) on each BES asset that POSTs events here:
+#
+#   POST http://<eda-host>:5005/  Content-Type: application/json
+#   {
+#     "event_kind": "file_change" | "service_state" | "auth",
+#     "path": "/etc/firewalld/zones/public.xml",
+#     "change_type": "modified",
+#     "service_unit": "firewalld.service",
+#     "message": "Stopped",
+#     "syslog_identifier": "sshd",
+#     "meta": {"host": "bes-asset-01"}
+#   }
+#
+# Standards covered:
+#   CIP-005 (ESP & Remote Access)  CIP-007 (Systems Security Management)
+#   CIP-010 (Configuration Management)  CIP-011 (Information Protection)
+#
+# AAP Job Template: "AAC - NERC CIP Compliance Report"
+
+- name: NERC-CIP BES Cyber System Event Monitoring
+  hosts: all
+  sources:
+    - name: cip_webhook
+      ansible.eda.webhook:
+        host: 0.0.0.0
+        port: 5005
+
+  rules:
+    # ── CIP-005: ESP boundary configuration changed ──────────────────────
+    - name: CIP-005 — ESP Boundary Configuration Changed
+      condition: >
+        event.payload.path is defined and
+        event.payload.path is search("/etc/firewalld/|/etc/sysconfig/iptables|/etc/hosts\\.(allow|deny)")
+      throttle:
+        once_within: 5 minutes
+        group_by_attributes:
+          - event.payload.meta.host
+          - event.payload.path
+      action:
+        run_job_template:
+          name: "AAC - NERC CIP Compliance Report"
+          organization: Default
+          job_args:
+            extra_vars:
+              compliance_trigger: cip_005_esp_change
+              changed_file: "{{ event.payload.path }}"
+              change_type: "{{ event.payload.change_type | default('modified') }}"
+              cip_standard: CIP-005
+              priority: critical
+
+    # ── CIP-005 R2: Remote access configuration changed ──────────────────
+    - name: CIP-005 R2 — Remote Access Configuration Changed
+      condition: >
+        event.payload.path is defined and
+        event.payload.path is search("/etc/ssh/|/etc/pam\\.d/sshd")
+      throttle:
+        once_within: 5 minutes
+        group_by_attributes:
+          - event.payload.meta.host
+      action:
+        run_job_template:
+          name: "AAC - NERC CIP Compliance Report"
+          organization: Default
+          job_args:
+            extra_vars:
+              compliance_trigger: cip_005_remote_access_change
+              changed_file: "{{ event.payload.path }}"
+              change_type: "{{ event.payload.change_type | default('modified') }}"
+              cip_standard: CIP-005-R2
+              priority: critical
+
+    # ── CIP-007 R1: Software / port change detected ──────────────────────
+    - name: CIP-007 R1 — Software Change Detected
+      condition: >
+        event.payload.path is defined and
+        event.payload.path is search("/var/lib/rpm/|/etc/yum\\.repos\\.d/|/etc/dnf/")
+      throttle:
+        once_within: 15 minutes
+        group_by_attributes:
+          - event.payload.meta.host
+      action:
+        run_job_template:
+          name: "AAC - NERC CIP Compliance Report"
+          organization: Default
+          job_args:
+            extra_vars:
+              compliance_trigger: cip_007_software_change
+              changed_file: "{{ event.payload.path }}"
+              change_type: "{{ event.payload.change_type | default('modified') }}"
+              cip_standard: CIP-007-R1
+              priority: high
+
+    # ── CIP-007 R3: Malware prevention configuration changed ──────────────
+    - name: CIP-007 R3 — Malware Prevention Configuration Changed
+      condition: >
+        event.payload.path is defined and
+        event.payload.path is search("/etc/clamd\\.d/|/etc/freshclam\\.conf")
+      throttle:
+        once_within: 10 minutes
+        group_by_attributes:
+          - event.payload.meta.host
+      action:
+        run_job_template:
+          name: "AAC - NERC CIP Compliance Report"
+          organization: Default
+          job_args:
+            extra_vars:
+              compliance_trigger: cip_007_malware_config_change
+              changed_file: "{{ event.payload.path }}"
+              change_type: "{{ event.payload.change_type | default('modified') }}"
+              cip_standard: CIP-007-R3
+              priority: high
+
+    # ── CIP-007: Service stopped/failed (firewall, auditd, etc.) ──────────
+    - name: CIP-007 — Critical Service Stopped or Failed
+      condition: >
+        event.payload.event_kind == "service_state" and
+        event.payload.service_unit is defined and
+        event.payload.service_unit is match("firewalld\\.service|auditd\\.service|clamd@.*\\.service") and
+        event.payload.message is match(".*[Ss]topped.*|.*[Ff]ailed.*|.*[Dd]eactivating.*")
+      throttle:
+        once_within: 5 minutes
+        group_by_attributes:
+          - event.payload.meta.host
+      action:
+        run_job_template:
+          name: "AAC - NERC CIP Compliance Report"
+          organization: Default
+          job_args:
+            extra_vars:
+              compliance_trigger: cip_007_service_stopped
+              service_unit: "{{ event.payload.service_unit }}"
+              event_message: "{{ event.payload.message }}"
+              cip_standard: CIP-007
+              priority: critical
+
+    # ── CIP-005 R2: SSH brute-force / unauthorized access attempt ─────────
+    - name: CIP-005 R2 — SSH Authentication Failure
+      condition: >
+        event.payload.syslog_identifier == "sshd" and
+        event.payload.message is match(".*Failed password.*|.*Invalid user.*|.*authentication failure.*")
+      throttle:
+        once_within: 5 minutes
+        group_by_attributes:
+          - event.payload.meta.host
+      action:
+        run_job_template:
+          name: "AAC - NERC CIP Compliance Report"
+          organization: Default
+          job_args:
+            extra_vars:
+              compliance_trigger: cip_005_ssh_auth_failure
+              event_message: "{{ event.payload.message }}"
+              cip_standard: CIP-005-R2
+              priority: high

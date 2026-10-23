@@ -1,0 +1,180 @@
+---
+# build_policy_tools_ee.yml — Build AAC Policy Tools Execution Environment
+#                              for the host's native architecture.
+#
+# Multi-arch workflow:
+#   1. Run this playbook on an amd64 host  → pushes :<ver>-amd64
+#   2. Run this playbook on an arm64 host  → pushes :<ver>-arm64
+#   3. Run build_policy_tools_ee_manifest.yml on either host  → combines
+#      the two arch-specific tags into a multi-arch manifest at
+#      :<ver> + :latest, so consumers (mac-aap arm64, lab-aap amd64)
+#      automatically pull the right binary.
+#
+# Why a separate manifest step rather than buildx-style multi-platform?
+#   The trivy + kubescape upstream releases are arch-specific binaries
+#   that download from different URLs (see the case statement in
+#   execution-environment.yml). Building natively on each host avoids
+#   qemu emulation entirely — faster builds and no Go-runtime memory
+#   model bugs (kubescape's lfstack panics under x86 emulation on arm64).
+#
+# Pre-reqs on the build host:
+#   - podman 4+
+#   - python3 + pip3 (to install ansible-builder if missing)
+#   - logged into quay.io (or set vault_quay_username + vault_quay_password)
+#
+# Variables (overridable):
+#   ee_version          : "v1.0.0"
+#   ee_image            : "quay.io/rh-ee-tcoulter/aac-policy-tools-ee"
+#   ee_build_dir        : "/tmp/aac-policy-tools-ee-build"
+#   push_to_registry    : true   (set false for local-only builds)
+
+- name: Build AAC Policy Tools EE (native arch)
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - ../vars/site_config.yml
+
+  vars:
+    ee_version:       "v1.0.0"
+    ee_image:         "quay.io/rh-ee-tcoulter/aac-policy-tools-ee"
+    ee_build_dir:     "/tmp/aac-policy-tools-ee-build"
+    ee_source_dir:    "{{ playbook_dir }}/../execution-environments/aac-policy-tools-ee"
+    push_to_registry: true
+
+  tasks:
+
+    # ── Step 0: detect host arch ─────────────────────────────────────────
+    - name: Detect host architecture
+      ansible.builtin.command:
+        cmd: uname -m
+      register: uname_out
+      changed_when: false
+
+    - name: Map uname to OCI arch label
+      ansible.builtin.set_fact:
+        oci_arch: >-
+          {{
+            {'x86_64':'amd64', 'amd64':'amd64',
+             'aarch64':'arm64', 'arm64':'arm64'}[uname_out.stdout]
+            | default('')
+          }}
+
+    - name: Fail on unsupported arch
+      ansible.builtin.fail:
+        msg: "Unsupported build host arch '{{ uname_out.stdout }}'. Run on x86_64/amd64 or aarch64/arm64."
+      when: oci_arch | length == 0
+
+    - name: Compute arch-specific image tag
+      ansible.builtin.set_fact:
+        ee_full_tag: "{{ ee_image }}:{{ ee_version }}-{{ oci_arch }}"
+
+    - name: Banner
+      ansible.builtin.debug:
+        msg:
+          - "═══════════════════════════════════════════════════════════"
+          - "  Building {{ ee_full_tag }}"
+          - "  Host arch: {{ uname_out.stdout }} ({{ oci_arch }})"
+          - "═══════════════════════════════════════════════════════════"
+
+    # ── Step 1: Generate Containerfile via ansible-builder ───────────────
+    - name: Prepare build dir
+      ansible.builtin.file:
+        path: "{{ ee_build_dir }}"
+        state: "{{ item }}"
+        mode: '0755'
+      loop: [absent, directory]
+
+    - name: Copy EE source files into build dir
+      ansible.builtin.copy:
+        src: "{{ ee_source_dir }}/{{ item }}"
+        dest: "{{ ee_build_dir }}/{{ item }}"
+      loop:
+        - execution-environment.yml
+        - requirements.yml
+        - requirements.txt
+        - bindep.txt
+        - ansible.cfg
+
+    - name: Locate ansible-builder
+      ansible.builtin.shell: |
+        command -v ansible-builder \
+          || command -v /usr/local/bin/ansible-builder \
+          || command -v ~/.local/bin/ansible-builder \
+          || (pip3 install --user --quiet ansible-builder && command -v ~/.local/bin/ansible-builder)
+      register: builder_path
+      changed_when: false
+
+    - name: Generate Containerfile
+      ansible.builtin.command:
+        cmd: "{{ builder_path.stdout_lines[0] }} create"
+        chdir: "{{ ee_build_dir }}"
+      changed_when: false
+
+    # ── Step 2: Build (native arch only — no cross-build) ────────────────
+    - name: Build EE image for native arch
+      ansible.builtin.command:
+        argv:
+          - podman
+          - build
+          - "--platform"
+          - "linux/{{ oci_arch }}"
+          - "-f"
+          - "{{ ee_build_dir }}/context/Containerfile"
+          - "-t"
+          - "{{ ee_full_tag }}"
+          - "{{ ee_build_dir }}/context"
+      register: build_result
+      changed_when: build_result.rc == 0
+
+    # ── Step 3: Verify both CLIs work in the freshly-built image ────────
+    - name: Verify trivy
+      ansible.builtin.command:
+        cmd: "podman run --rm {{ ee_full_tag }} trivy --version"
+      register: trivy_verify
+      changed_when: false
+
+    - name: Verify kubescape
+      ansible.builtin.command:
+        cmd: "podman run --rm {{ ee_full_tag }} kubescape version"
+      register: kubescape_verify
+      changed_when: false
+      failed_when: false   # kubescape exits non-zero on update-check; stdout is what matters
+
+    - name: Show tool versions
+      ansible.builtin.debug:
+        msg:
+          - "trivy:     {{ trivy_verify.stdout_lines[0] | default('?') }}"
+          - "kubescape: {{ (kubescape_verify.stdout_lines + kubescape_verify.stderr_lines) | join(' | ') | truncate(120) | default('?') }}"
+
+    # ── Step 4: Push to registry ─────────────────────────────────────────
+    - name: Login to quay.io (if credentials provided)
+      ansible.builtin.command:
+        argv:
+          - podman
+          - login
+          - quay.io
+          - "-u"
+          - "{{ vault_quay_username }}"
+          - "-p"
+          - "{{ vault_quay_password }}"
+      when:
+        - push_to_registry | bool
+        - vault_quay_username is defined
+        - vault_quay_password is defined
+      no_log: true
+
+    - name: Push arch-tagged image
+      ansible.builtin.command:
+        cmd: "podman push {{ ee_full_tag }}"
+      when: push_to_registry | bool
+
+    - name: Build complete
+      ansible.builtin.debug:
+        msg:
+          - "✅ Built + pushed: {{ ee_full_tag }}"
+          - ""
+          - "Next step (after building on the OTHER arch too):"
+          - "  ansible-playbook ansible/playbooks/build_policy_tools_ee_manifest.yml"
+          - "    -e ee_version={{ ee_version }}"

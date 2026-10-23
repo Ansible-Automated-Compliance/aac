@@ -1,0 +1,17 @@
+---
+# Poll the MCP server until it responds.
+# The root path returns 404 (expected for SSE server) — both 200 and 404 mean it's up.
+# The /sse endpoint requires an Authorization header — polling root is sufficient here.
+
+- name: Wait for MCP server to respond on port {{ aac_mcp_port }}
+  uri:
+    use_proxy: false
+    url: "http://{{ aac_host }}:{{ aac_mcp_port }}/"
+    method: GET
+    status_code: [200, 404]
+    timeout: 5
+    validate_certs: false
+  register: mcp_health
+  until: mcp_health.status in [200, 404]
+  retries: 12
+  delay: 5

@@ -1,0 +1,19 @@
+---
+# Collection set for AMI 2.0 device management.
+#
+#   community.postgresql  store AMI assessment results + CAA rows
+#   community.general     general-purpose helpers
+#   ansible.utils         ipaddr/json filters used by device fact parsing
+#   ansible.posix         file/mount primitives used by the AMI device playbooks
+#
+# Deliberately EXCLUDED: infra.aap_configuration, amazon.aws,
+# ansible.windows, community.windows — core concerns, unused by AMI flows.
+collections:
+  - name: community.postgresql
+    version: ">=3.0.0"
+  - name: community.general
+    version: ">=8.0.0"
+  - name: ansible.utils
+    version: ">=2.10.0"
+  - name: ansible.posix
+    version: ">=1.5.0"

@@ -1,0 +1,229 @@
+---
+# AAC - Compliance Findings Workbook (F4)
+#
+# The one report a control owner acts on and a manager reads, for ANY
+# framework: Summary, Findings (one row per control × subject with identity,
+# risk, remediation, owner, decision, delta, age, evidence pointer),
+# Unassessable (split by cause and by who acts), Decisions (the business
+# decisions file joined to live findings with expiry status), Delta (new /
+# fixed / regressed / still open vs the previous run) and Passed.
+#
+# Evidence, decisions and report are kept separate: evidence is the
+# append-only compliance_results table and is never edited; decisions live in
+# a small reviewed file (ansible/vars/decisions/<framework>.yml); the workbook
+# is the join of the two and is regenerated after every run. Column contract:
+# docs/operations/FINDINGS_WORKBOOK_CONTRACT.md.
+#
+# Framework-agnostic: identity from scripts/findings_extract.py, risk from
+# ansible/vars/risk/<framework>.yml, remediation from
+# ansible/vars/mitigation/<framework>.yml, catalog and coverage when the
+# framework ships them. The composition is scripts/findings_workbook.py
+# (unit-tested, standard library only — no new package in the EE). This
+# playbook owns only DB access and file plumbing. It reads the evidence store
+# and writes nothing to it. Runs wherever the evidence store is; assessment
+# data never leaves that environment.
+#
+# ── Variables ────────────────────────────────────────────────────────
+#   report_framework     framework key (REQUIRED, e.g. cis_m365_v7, cis_rhel9)
+#   report_subject       one subject (hostname/tenant) or '' for every subject
+#                        with rows in the window (default: '')
+#   report_lookback      days of history to read; the delta compares the two
+#                        newest runs per subject inside it (default: 90)
+#   report_output_dir    EE-local output directory (default: /tmp)
+#   report_basename      output file stem (default: findings_workbook-<fw>-<date>)
+#   report_decisions     decisions file (default: ../vars/decisions/<fw>.yml,
+#                        skipped when absent)
+#   report_catalog       control catalog JSON (default: per-framework lookup
+#                        below, skipped when absent)
+#   report_coverage      coverage buckets YAML (default:
+#                        ../vars/comparison/<fw>_coverage.yml, skipped when absent)
+#   report_benchmark_name / report_benchmark_version  labels for the header
+#   report_run_gap_minutes  rows on one subject closer than this are one run (30)
+#   report_expiring_days    decisions expiring within N days are flagged (30)
+#   report_publish_host / report_publish_user / report_publish_dir
+#                        optional scp publication of the outputs (same contract
+#                        as the other AAC report playbooks)
+#
+# ── AAP Job Template ─────────────────────────────────────────────────
+#   "AAC - Compliance Findings Workbook" — EE: AAC Compliance EE, hosts:
+#   localhost (reads PostgreSQL only). Survey: report_framework,
+#   report_subject, report_lookback, report_publish_host. Registered on the
+#   controller by ansible/playbooks/seed_report_templates.yml.
+
+- name: Findings workbook from the evidence store
+  hosts: localhost
+  connection: local
+  gather_facts: true
+  become: false
+
+  vars:
+    report_subject: ""
+    report_lookback: 90
+    report_output_dir: "/tmp"
+    report_run_gap_minutes: 30
+    report_expiring_days: 30
+    report_benchmark_name: ""
+    report_benchmark_version: ""
+    # Catalogs shipped with the policy library, by framework key. Frameworks
+    # without one still get a full workbook; the catalog only adds titles,
+    # levels, assessment type and the benchmark-wide unassessable rows.
+    report_catalog_by_framework:
+      cis_m365_v7: "{{ playbook_dir }}/../../policies/benchmarks/cis/saas/m365_v7/data/cis_m365_v7_index.json"
+    report_decisions: "{{ playbook_dir }}/../vars/decisions/{{ report_framework | default('') }}.yml"
+    report_coverage: "{{ playbook_dir }}/../vars/comparison/{{ report_framework | default('') }}_coverage.yml"
+    report_catalog: "{{ report_catalog_by_framework[report_framework | default('')] | default('') }}"
+    report_basename: "findings_workbook-{{ report_framework | default('') }}-{{ ansible_date_time.date }}"
+
+  tasks:
+    - name: Load site configuration when present
+      ansible.builtin.include_vars: "{{ item }}"
+      with_first_found:
+        - files: ["../vars/site_config.yml"]
+          skip: true
+
+    - name: Load vault secrets when present
+      ansible.builtin.include_vars: "{{ item }}"
+      with_first_found:
+        - files: ["../vars/vault_secrets.yml"]
+          skip: true
+
+    - name: Validate inputs
+      ansible.builtin.assert:
+        that:
+          - (report_framework | default('', true)) is match('^[A-Za-z0-9][A-Za-z0-9_-]*$')
+          - report_output_dir is match('^/[A-Za-z0-9/_.-]+$')
+          - "'..' not in report_output_dir"
+          - report_basename is match('^[A-Za-z0-9][A-Za-z0-9_.-]*$')
+        fail_msg: >-
+          report_framework is required and must be a safe key;
+          report_output_dir must be an absolute path without '..'.
+
+    - name: Load the framework risk config (fall back to the generic default)
+      ansible.builtin.include_vars:
+        file: "{{ item }}"
+        name: risk_config
+      with_first_found:
+        - files:
+            - "../vars/risk/{{ report_framework }}.yml"
+            - "../vars/risk/_default.yml"
+
+    - name: Load the framework mitigation catalog (fall back to the generic default)
+      ansible.builtin.include_vars:
+        file: "{{ item }}"
+        name: mitigation_catalog
+      with_first_found:
+        - files:
+            - "../vars/mitigation/{{ report_framework }}.yml"
+            - "../vars/mitigation/_default.yml"
+
+    - name: Load the decisions file when present
+      ansible.builtin.include_vars:
+        file: "{{ item }}"
+        name: decisions_file
+      with_first_found:
+        - files: ["{{ report_decisions }}"]
+          skip: true
+
+    - name: Load the coverage buckets when present
+      ansible.builtin.include_vars:
+        file: "{{ item }}"
+        name: coverage_file
+      with_first_found:
+        - files: ["{{ report_coverage }}"]
+          skip: true
+
+    - name: Load the control catalog when present
+      ansible.builtin.set_fact:
+        catalog_data: "{{ lookup('file', report_catalog) | from_json }}"
+      when:
+        - report_catalog | length > 0
+        - report_catalog is file
+
+    - name: Query every stored result for the framework inside the window
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host | mandatory }}"
+        login_port: "{{ pg_port | default(5432) }}"
+        login_user: "{{ pg_user | default('postgres') }}"
+        login_password: "{{ compliance_db_password }}"
+        login_db: "{{ pg_database | default('compliance') }}"
+        ssl_mode: "{{ pg_ssl_mode | default('prefer') }}"
+        query: |
+          SELECT id, hostname, framework, policy_name, policy_version,
+                 total_controls, passed_controls, failed_controls,
+                 violations, metadata, evaluation_timestamp
+          FROM compliance_results
+          WHERE framework = %(fw)s
+            AND hostname IS NOT NULL AND hostname <> ''
+            AND (%(subject)s = '' OR hostname = %(subject)s)
+            AND evaluation_timestamp >= NOW() - (%(days)s || ' days')::interval
+          ORDER BY hostname, evaluation_timestamp, id
+        named_args:
+          fw: "{{ report_framework }}"
+          subject: "{{ report_subject | default('', true) }}"
+          days: "{{ report_lookback | int | string }}"
+      register: results_query
+
+    - name: Refuse to render an empty workbook
+      ansible.builtin.assert:
+        that: results_query.query_result | length > 0
+        fail_msg: >-
+          No {{ report_framework }} rows in compliance_results within the last
+          {{ report_lookback }} days{{ (' for ' + report_subject) if report_subject | length > 0 else '' }}.
+          Run the assessment first — this playbook reports stored evidence,
+          it does not evaluate anything.
+
+    - name: Build the workbook (xlsx, csv per sheet, html, md, json)
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/../../scripts/findings_workbook.py"
+          - --out-dir
+          - "{{ report_output_dir }}"
+          - --basename
+          - "{{ report_basename }}"
+        stdin: >-
+          {{ {'framework': report_framework,
+              'rows': results_query.query_result,
+              'catalog': catalog_data | default({}),
+              'coverage': coverage_file | default({}),
+              'risk_config': risk_config,
+              'mitigation_catalog': mitigation_catalog,
+              'decisions': decisions_file | default({}),
+              'benchmark': {'name': report_benchmark_name, 'version': report_benchmark_version},
+              'run_gap_minutes': report_run_gap_minutes,
+              'expiring_days': report_expiring_days} | to_json }}
+      register: workbook_out
+      changed_when: true
+
+    - name: Bind the manifest
+      ansible.builtin.set_fact:
+        workbook: "{{ workbook_out.stdout | from_json }}"
+
+    - name: Publish outputs to persistent storage
+      when: report_publish_host | default('') | length > 0
+      ansible.builtin.command:
+        argv: >-
+          {{ ['scp', '-o', 'StrictHostKeyChecking=accept-new', '-o', 'BatchMode=yes']
+             + (workbook.files.values() | list)
+             + [(report_publish_user | default('aapuser1')) ~ '@' ~ report_publish_host ~ ':'
+                ~ (report_publish_dir | default('/var/tmp')) ~ '/'] }}
+      changed_when: true
+
+    - name: Warn when no persistent publication is configured
+      when: report_publish_host | default('') | length == 0
+      ansible.builtin.debug:
+        msg: >-
+          WARNING: outputs written only to the execution environment
+          ({{ report_output_dir }}) and will vanish when this job ends. Set
+          report_publish_host to copy them to persistent storage.
+
+    - name: Workbook summary
+      ansible.builtin.debug:
+        msg:
+          - "Findings workbook — {{ report_framework }} — {{ workbook.summary.subject_count }} subject(s)"
+          - "  {{ workbook.summary.verdict }}"
+          - "  passed {{ workbook.summary.passed }} / failed {{ workbook.summary.failed }} / waived {{ workbook.summary.waived }} / unassessable {{ workbook.summary.unassessable }} {{ workbook.summary.unassessable_by_reason }}"
+          - "  delta {{ workbook.summary.delta }}"
+          - "  decisions {{ workbook.summary.decisions }} — open findings undecided: {{ workbook.summary.undecided }}"
+          - "  xlsx: {{ workbook.files.xlsx }}"
+          - "  html: {{ workbook.files.html }}"

@@ -1,0 +1,136 @@
+---
+# grafana_dashboard_coverage.yml
+#
+# Verifies every Grafana dashboard is actually filled with data.
+#
+# For each dashboard, every panel's SQL is executed AS THE `compliance` role
+# (the same role the Grafana PostgreSQL datasource connects with) — a panel is
+# "filled" if its query returns >= 1 row, which is what Grafana needs to render
+# instead of "No data". Running as the datasource role (not a superuser) also
+# catches missing GRANTs, the exact bug that silently blanked the technical-debt
+# heatmap (PR #342).
+#
+# The heavy lifting (Grafana API + macro/variable normalisation + per-panel
+# query) lives in files/grafana_dashboard_coverage.py so it stays maintainable.
+#
+# Runs from the AAP EE — reaches Grafana + PostgreSQL over the in-cluster
+# service DNS. Fails the job if any panel is empty or errors (unless
+# fail_on_gap=false). Stores a summary row to compliance_results.
+#
+# Survey/extra_vars:
+#   grafana_url       — default http://grafana.aac.svc.cluster.local:3000
+#   fail_on_gap       — true (default) fails the job on any empty/error panel
+#   store_result      — true (default) writes a compliance_results row
+
+- name: Grafana Dashboard Data-Coverage Check
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  # grafana_url and pg_host come from site_config (per environment), never hardcoded.
+  vars_files:
+    - [ "../vars/vault_secrets.yml", "../vars/empty_fallback.yml" ]
+    - ../vars/site_config.yml
+
+  vars:
+    grafana_user:     "admin"
+    grafana_password: "{{ grafana_admin_password | mandatory }}"
+    pg_port:          5432
+    pg_user:          "compliance"
+    pg_db:            "compliance"
+    pg_password:      "{{ compliance_db_password | mandatory }}"
+    fail_on_gap:      true
+    store_result:     true
+
+  tasks:
+    - name: Run the dashboard coverage checker (as the compliance datasource role)
+      ansible.builtin.command:
+        cmd: "python3 {{ playbook_dir }}/files/grafana_dashboard_coverage.py"
+      environment:
+        GRAFANA_URL:      "{{ grafana_url }}"
+        GRAFANA_USER:     "{{ grafana_user }}"
+        GRAFANA_PASSWORD: "{{ grafana_password }}"
+        PGHOST:           "{{ pg_host }}"
+        PGPORT:           "{{ pg_port | string }}"
+        PGDATABASE:       "{{ pg_db }}"
+        PGUSER:           "{{ pg_user }}"
+        PGPASSWORD:       "{{ pg_password }}"
+      register: coverage_raw
+      changed_when: false
+      failed_when: coverage_raw.rc != 0
+
+    - name: Parse coverage report
+      ansible.builtin.set_fact:
+        coverage: "{{ coverage_raw.stdout | from_json }}"
+
+    - name: Per-dashboard summary
+      ansible.builtin.debug:
+        msg: >-
+          {{ '%-45s' | format(item.title) }}
+          filled={{ item.filled }} empty={{ item.empty }}
+          error={{ item.error }} skipped={{ item.skipped }}
+          {{ '✅' if item.ok else '❌' }}
+      loop: "{{ coverage.dashboards }}"
+      loop_control:
+        label: "{{ item.title }}"
+
+    - name: Detail any panels that are empty or errored
+      ansible.builtin.debug:
+        msg: "{{ item.0.title }} → [{{ item.1.status }}] {{ item.1.panel }} ({{ item.1.info }})"
+      loop: "{{ coverage.dashboards | subelements('issues') }}"
+      loop_control:
+        label: "{{ item.0.title }}"
+      when: coverage.dashboards | map(attribute='issues') | map('length') | sum > 0
+
+    - name: Overall verdict
+      ansible.builtin.debug:
+        msg:
+          - "═══════════════════════════════════════════════════════"
+          - "  GRAFANA DASHBOARD COVERAGE  →  {{ 'ALL FILLED ✅' if coverage.ok else 'GAPS FOUND ❌' }}"
+          - "═══════════════════════════════════════════════════════"
+          - "  Dashboards: {{ coverage.dashboards | length }}"
+          - "  Panels:     {{ coverage.totals.panels }}"
+          - "  Filled:     {{ coverage.totals.filled }}"
+          - "  Empty:      {{ coverage.totals.empty }}"
+          - "  Error:      {{ coverage.totals.error }}"
+          - "  Skipped:    {{ coverage.totals.skipped }} (unresolved template vars)"
+          - "═══════════════════════════════════════════════════════"
+
+    - name: Store coverage result to compliance_results
+      community.postgresql.postgresql_query:
+        login_host:     "{{ pg_host }}"
+        login_port:     "{{ pg_port }}"
+        # evidence write: the least-privilege writer when configured (docs/EVIDENCE_IMMUTABILITY.md)
+        login_user:     "{{ aac_evidence_writer_user | default(pg_user, true) }}"
+        login_password: >-
+          {{ compliance_writer_password
+             if (aac_evidence_writer_user | default('', true) | length > 0)
+             else (pg_password) }}
+        login_db:             "{{ pg_db }}"
+        query: |
+          INSERT INTO compliance_results
+            (hostname, framework, policy_name, policy_version, compliant,
+             total_controls, passed_controls, failed_controls,
+             compliance_percentage, violations, metadata)
+          VALUES
+            ('grafana', 'grafana_coverage', 'dashboard_data_coverage', 'v1', %s,
+             %s, %s, %s, %s, %s::jsonb, %s::jsonb)
+        positional_args:
+          - "{{ coverage.ok }}"
+          - "{{ coverage.totals.panels }}"
+          - "{{ coverage.totals.filled }}"
+          - "{{ coverage.totals.empty + coverage.totals.error }}"
+          - "{{ (100.0 * coverage.totals.filled / coverage.totals.panels) | round(2) if coverage.totals.panels > 0 else 0 }}"
+          - "{{ (coverage.dashboards | map(attribute='issues') | sum(start=[])) | to_json }}"
+          - "{{ {'dashboards': coverage.dashboards | length, 'totals': coverage.totals} | to_json }}"
+      when: store_result | bool
+
+    - name: Fail the job if any dashboard has an empty or errored panel
+      ansible.builtin.assert:
+        that:
+          - coverage.ok | bool
+        fail_msg: >-
+          {{ coverage.totals.empty }} empty + {{ coverage.totals.error }} errored panel(s)
+          across the Grafana dashboards — see the detail above.
+        success_msg: "All {{ coverage.totals.panels }} panels across {{ coverage.dashboards | length }} dashboards return data."
+      when: fail_on_gap | bool

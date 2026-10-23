@@ -1,0 +1,434 @@
+---
+# tasks file for gather_filesystem_config
+
+# =============================================================================
+# CIS 1.1.1.x - DISABLE UNCOMMON FILESYSTEM KERNEL MODULES
+# =============================================================================
+
+- name: Check if filesystem kernel modules are disabled
+  shell: |
+    if lsmod | grep -q "^{{ item }}"; then
+      echo "loaded"
+    elif modprobe -n -v {{ item }} 2>&1 | grep -q "install /bin/"; then
+      echo "disabled"
+    else
+      echo "not_disabled"
+    fi
+  loop: "{{ disabled_filesystems }}"
+  register: filesystem_modules_check
+  changed_when: false
+  failed_when: false
+
+- name: Build filesystem modules status
+  set_fact:
+    filesystem_modules_status: |
+      {% set modules = [] %}
+      {% for result in filesystem_modules_check.results %}
+        {% set module_status = {
+          'module': result.item,
+          'loaded': result.stdout == 'loaded',
+          'disabled': result.stdout == 'disabled',
+          'compliant': result.stdout == 'disabled'
+        } %}
+        {% set _ = modules.append(module_status) %}
+      {% endfor %}
+      {{ modules }}
+
+# =============================================================================
+# CIS 1.1.2.x - ENSURE SEPARATE PARTITIONS AND MOUNT OPTIONS
+# =============================================================================
+
+- name: Get all mounted filesystems
+  shell: findmnt -n -o TARGET,SOURCE,FSTYPE,OPTIONS | awk '{print $1"|"$2"|"$3"|"$4}'
+  register: mounted_filesystems_raw
+  changed_when: false
+
+- name: Parse mounted filesystems
+  set_fact:
+    mounted_filesystems: |
+      {% set mounts = [] %}
+      {% for line in mounted_filesystems_raw.stdout_lines %}
+        {% set parts = line.split('|') %}
+        {% if parts | length >= 4 %}
+          {% set mount = {
+            'mount_point': parts[0],
+            'device': parts[1],
+            'fstype': parts[2],
+            'options': parts[3].split(',')
+          } %}
+          {% set _ = mounts.append(mount) %}
+        {% endif %}
+      {% endfor %}
+      {{ mounts }}
+
+- name: Check for required separate partitions
+  set_fact:
+    partition_analysis: |
+      {% set analysis = [] %}
+      {% for required_mount in required_separate_partitions %}
+        {% set found = false %}
+        {% set mount_info = {} %}
+        {% for mount in mounted_filesystems %}
+          {% if mount.mount_point == required_mount %}
+            {% set found = true %}
+            {% set mount_info = mount %}
+          {% endif %}
+        {% endfor %}
+        {% set partition = {
+          'mount_point': required_mount,
+          'is_separate_partition': found,
+          'device': mount_info.device | default('N/A'),
+          'fstype': mount_info.fstype | default('N/A'),
+          'options': mount_info.options | default([]),
+          'required_options': required_mount_options.get(required_mount, []),
+          'missing_options': [],
+          'has_all_required_options': false,
+          'compliant': false
+        } %}
+        {% if found %}
+          {% set missing = [] %}
+          {% for req_opt in required_mount_options.get(required_mount, []) %}
+            {% if req_opt not in mount_info.options %}
+              {% set _ = missing.append(req_opt) %}
+            {% endif %}
+          {% endfor %}
+          {% set _ = partition.update({'missing_options': missing}) %}
+          {% set _ = partition.update({'has_all_required_options': missing | length == 0}) %}
+          {% set _ = partition.update({'compliant': missing | length == 0}) %}
+        {% endif %}
+        {% set _ = analysis.append(partition) %}
+      {% endfor %}
+      {{ analysis }}
+
+# =============================================================================
+# CIS 1.1.2.1.x - /tmp PARTITION
+# =============================================================================
+
+- name: Analyze /tmp partition
+  set_fact:
+    tmp_partition_facts: |
+      {% set tmp_mount = {} %}
+      {% for mount in mounted_filesystems %}
+        {% if mount.mount_point == '/tmp' %}
+          {% set tmp_mount = mount %}
+        {% endif %}
+      {% endfor %}
+      {% if tmp_mount %}
+        {
+          'exists': true,
+          'is_separate': true,
+          'device': '{{ tmp_mount.device }}',
+          'fstype': '{{ tmp_mount.fstype }}',
+          'options': {{ tmp_mount.options }},
+          'has_nodev': {{ 'nodev' in tmp_mount.options }},
+          'has_nosuid': {{ 'nosuid' in tmp_mount.options }},
+          'has_noexec': {{ 'noexec' in tmp_mount.options }},
+          'fully_compliant': {{ ('nodev' in tmp_mount.options and 'nosuid' in tmp_mount.options and 'noexec' in tmp_mount.options) }}
+        }
+      {% else %}
+        {
+          'exists': false,
+          'is_separate': false,
+          'fully_compliant': false
+        }
+      {% endif %}
+
+# =============================================================================
+# CIS 1.1.2.2.x - /dev/shm PARTITION
+# =============================================================================
+
+- name: Analyze /dev/shm partition
+  set_fact:
+    dev_shm_facts: |
+      {% set shm_mount = {} %}
+      {% for mount in mounted_filesystems %}
+        {% if mount.mount_point == '/dev/shm' %}
+          {% set shm_mount = mount %}
+        {% endif %}
+      {% endfor %}
+      {% if shm_mount %}
+        {
+          'exists': true,
+          'device': '{{ shm_mount.device }}',
+          'fstype': '{{ shm_mount.fstype }}',
+          'options': {{ shm_mount.options }},
+          'has_nodev': {{ 'nodev' in shm_mount.options }},
+          'has_nosuid': {{ 'nosuid' in shm_mount.options }},
+          'has_noexec': {{ 'noexec' in shm_mount.options }},
+          'fully_compliant': {{ ('nodev' in shm_mount.options and 'nosuid' in shm_mount.options and 'noexec' in shm_mount.options) }}
+        }
+      {% else %}
+        {
+          'exists': false,
+          'fully_compliant': false
+        }
+      {% endif %}
+
+# =============================================================================
+# WORLD-WRITABLE DIRECTORIES WITH STICKY BIT
+# =============================================================================
+
+- name: Check for world-writable directories without sticky bit
+  shell: |
+    df --local -P | awk '{if (NR!=1) print $6}' | xargs -I '{}' find '{}' -xdev -type d \
+    \( -perm -0002 -a ! -perm -1000 \) -print 2>/dev/null | head -20
+  register: world_writable_no_sticky
+  changed_when: false
+  failed_when: false
+
+- name: Check sticky bit on required directories
+  stat:
+    path: "{{ item }}"
+  loop: "{{ sticky_bit_required }}"
+  register: sticky_bit_checks
+  failed_when: false
+
+- name: Analyze sticky bit compliance
+  set_fact:
+    # `stat.mode` is an OCTAL STRING ("1777"), which is what makes the obvious
+    # spellings of this wrong. Three separate bugs lived here and the task could
+    # never render, so these facts were never collected at all:
+    #   - `&` is not a Jinja operator. There is no bitwise AND in Jinja.
+    #   - `mode | int` parses "1777" as decimal 1777, not octal.
+    #   - `'%04o' | format(mode)` formats a STRING as octal and raises.
+    # Reading the octal digits directly is both correct and legible: the last
+    # digit is other-perms, and the write bit within a digit is 2.
+    sticky_bit_analysis: |
+      {% set analysis = [] %}
+      {% for result in sticky_bit_checks.results %}
+        {% if result.stat.exists %}
+          {% set mode_str = result.stat.mode | string %}
+          {% set special = (mode_str[:-3] | int) if mode_str | length > 3 else 0 %}
+          {% set other = mode_str[-1] | int %}
+          {% set has_sticky = (special % 2) == 1 %}
+          {% set world_writable = (other % 4) >= 2 %}
+          {% set sticky_info = {
+            'directory': result.item,
+            'exists': true,
+            'mode': mode_str,
+            'has_sticky_bit': has_sticky,
+            'world_writable': world_writable,
+            'compliant': has_sticky or not world_writable
+          } %}
+          {% set _ = analysis.append(sticky_info) %}
+        {% else %}
+          {% set _ = analysis.append({
+            'directory': result.item,
+            'exists': false,
+            'compliant': true
+          }) %}
+        {% endif %}
+      {% endfor %}
+      {{ analysis }}
+
+# =============================================================================
+# USB STORAGE
+# =============================================================================
+
+- name: Check USB storage module status
+  shell: |
+    if lsmod | grep -q "^usb_storage"; then
+      echo "loaded"
+    elif modprobe -n -v usb_storage 2>&1 | grep -q "install /bin/"; then
+      echo "disabled"
+    else
+      echo "not_disabled"
+    fi
+  register: usb_storage_check
+  changed_when: false
+  failed_when: false
+
+# =============================================================================
+# /etc/fstab ANALYSIS
+# =============================================================================
+
+- name: Read /etc/fstab
+  slurp:
+    src: /etc/fstab
+  register: fstab_content
+  failed_when: false
+
+- name: Parse /etc/fstab entries
+  set_fact:
+    fstab_entries: |
+      {% set entries = [] %}
+      {% if fstab_content is succeeded %}
+        {% for line in (fstab_content.content | b64decode).split('\n') %}
+          {% if line and not line.startswith('#') and line.strip() %}
+            {% set parts = line.split() %}
+            {% if parts | length >= 4 %}
+              {% set entry = {
+                'device': parts[0],
+                'mount_point': parts[1],
+                'fstype': parts[2],
+                'options': parts[3].split(','),
+                'dump': parts[4] | default('0'),
+                'pass': parts[5] | default('0')
+              } %}
+              {% set _ = entries.append(entry) %}
+            {% endif %}
+          {% endif %}
+        {% endfor %}
+      {% endif %}
+      {{ entries }}
+
+# =============================================================================
+# REMOVABLE MEDIA
+# =============================================================================
+
+- name: Check for mounted removable media
+  shell: |
+    lsblk -o NAME,RM,MOUNTPOINT | awk '$2=="1" && $3!="" {print $1"|"$3}'
+  register: removable_media_check
+  changed_when: false
+  failed_when: false
+
+- name: Parse removable media
+  set_fact:
+    removable_media: |
+      {% set media = [] %}
+      {% if removable_media_check.stdout %}
+        {% for line in removable_media_check.stdout_lines %}
+          {% set parts = line.split('|') %}
+          {% if parts | length == 2 %}
+            {% set _ = media.append({
+              'device': parts[0],
+              'mount_point': parts[1]
+            }) %}
+          {% endif %}
+        {% endfor %}
+      {% endif %}
+      {{ media }}
+
+# =============================================================================
+# DISK USAGE AND CAPACITY
+# =============================================================================
+
+- name: Get filesystem disk usage
+  shell: df -h --output=target,size,used,avail,pcent | tail -n +2
+  register: disk_usage_raw
+  changed_when: false
+
+- name: Parse disk usage
+  set_fact:
+    disk_usage: |
+      {% set usage = [] %}
+      {% for line in disk_usage_raw.stdout_lines %}
+        {% set parts = line.split() %}
+        {% if parts | length >= 5 %}
+          {% set _ = usage.append({
+            'mount_point': parts[0],
+            'size': parts[1],
+            'used': parts[2],
+            'available': parts[3],
+            'percent_used': parts[4]
+          }) %}
+        {% endif %}
+      {% endfor %}
+      {{ usage }}
+
+# =============================================================================
+# COMPREHENSIVE FILESYSTEM FACTS ASSEMBLY
+# =============================================================================
+
+- name: Set comprehensive filesystem facts
+  set_fact:
+    host_filesystem_facts:
+      disabled_filesystem_modules:
+        modules: "{{ filesystem_modules_status }}"
+        all_compliant: >-
+          {{
+            filesystem_modules_status | selectattr('compliant', 'equalto', false) | list | length == 0
+          }}
+      separate_partitions:
+        required: "{{ required_separate_partitions }}"
+        analysis: "{{ partition_analysis }}"
+        all_present: >-
+          {{
+            partition_analysis | selectattr('is_separate_partition', 'equalto', false) | list | length == 0
+          }}
+        all_compliant: >-
+          {{
+            partition_analysis | selectattr('compliant', 'equalto', false) | list | length == 0
+          }}
+      mount_options:
+        tmp: "{{ tmp_partition_facts }}"
+        dev_shm: "{{ dev_shm_facts }}"
+      sticky_bit:
+        required_directories: "{{ sticky_bit_required }}"
+        analysis: "{{ sticky_bit_analysis }}"
+        world_writable_without_sticky: "{{ world_writable_no_sticky.stdout_lines }}"
+        all_compliant: >-
+          {{
+            sticky_bit_analysis | selectattr('compliant', 'equalto', false) | list | length == 0 and
+            world_writable_no_sticky.stdout_lines | length == 0
+          }}
+      usb_storage:
+        status: "{{ usb_storage_check.stdout }}"
+        loaded: "{{ usb_storage_check.stdout == 'loaded' }}"
+        disabled: "{{ usb_storage_check.stdout == 'disabled' }}"
+        compliant: "{{ usb_storage_check.stdout == 'disabled' or not usb_storage_disabled }}"
+      fstab:
+        entries: "{{ fstab_entries }}"
+        entry_count: "{{ fstab_entries | length }}"
+      removable_media:
+        mounted: "{{ removable_media }}"
+        count: "{{ removable_media | length }}"
+      disk_usage: "{{ disk_usage }}"
+      all_mounted_filesystems:
+        count: "{{ mounted_filesystems | length }}"
+        filesystems: "{{ mounted_filesystems }}"
+      compliance_checks:
+        all_fs_modules_disabled: >-
+          {{
+            filesystem_modules_status | selectattr('compliant', 'equalto', false) | list | length == 0
+          }}
+        all_required_partitions_present: >-
+          {{
+            partition_analysis | selectattr('is_separate_partition', 'equalto', false) | list | length == 0
+          }}
+        all_mount_options_correct: >-
+          {{
+            partition_analysis | selectattr('compliant', 'equalto', false) | list | length == 0
+          }}
+        tmp_partition_secure: "{{ tmp_partition_facts.fully_compliant | default(false) }}"
+        dev_shm_secure: "{{ dev_shm_facts.fully_compliant | default(false) }}"
+        sticky_bit_compliant: >-
+          {{
+            sticky_bit_analysis | selectattr('compliant', 'equalto', false) | list | length == 0 and
+            world_writable_no_sticky.stdout_lines | length == 0
+          }}
+        usb_storage_compliant: "{{ usb_storage_check.stdout == 'disabled' or not usb_storage_disabled }}"
+      collection_timestamp: "{{ ansible_date_time.iso8601 }}"
+
+- name: Display filesystem configuration summary
+  debug:
+    msg:
+      - "=========================================="
+      - "Filesystem Configuration Facts"
+      - "=========================================="
+      - "Disabled FS Modules: {{ filesystem_modules_status | selectattr('disabled', 'equalto', true) | list | length }}/{{ filesystem_modules_status | length }}"
+      - "Required Separate Partitions: {{ partition_analysis | selectattr('is_separate_partition', 'equalto', true) | list | length }}/{{ required_separate_partitions | length }}"
+      - "Partitions with Correct Options: {{ partition_analysis | selectattr('compliant', 'equalto', true) | list | length }}/{{ partition_analysis | length }}"
+      - ""
+      - "/tmp partition:"
+      - "  Separate: {{ tmp_partition_facts.is_separate | default(false) }}"
+      - "  nodev: {{ tmp_partition_facts.has_nodev | default(false) }}"
+      - "  nosuid: {{ tmp_partition_facts.has_nosuid | default(false) }}"
+      - "  noexec: {{ tmp_partition_facts.has_noexec | default(false) }}"
+      - ""
+      - "/dev/shm:"
+      - "  nodev: {{ dev_shm_facts.has_nodev | default(false) }}"
+      - "  nosuid: {{ dev_shm_facts.has_nosuid | default(false) }}"
+      - "  noexec: {{ dev_shm_facts.has_noexec | default(false) }}"
+      - ""
+      - "Sticky Bit Compliance: {{ host_filesystem_facts.sticky_bit.all_compliant }}"
+      - "USB Storage: {{ usb_storage_check.stdout }}"
+      - "World-writable without sticky: {{ world_writable_no_sticky.stdout_lines | length }} found"
+      - ""
+      - "Compliance Summary:"
+      - "  FS Modules: {{ host_filesystem_facts.compliance_checks.all_fs_modules_disabled }}"
+      - "  Partitions: {{ host_filesystem_facts.compliance_checks.all_required_partitions_present }}"
+      - "  Mount Options: {{ host_filesystem_facts.compliance_checks.all_mount_options_correct }}"
+      - "  Sticky Bit: {{ host_filesystem_facts.compliance_checks.sticky_bit_compliant }}"
+      - "=========================================="

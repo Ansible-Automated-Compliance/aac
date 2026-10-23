@@ -1,0 +1,64 @@
+name: Weekly Container / Dependency CVE Scan
+
+# Trivy scan of Containerfiles (misconfig) + Python deps (vulns) for the EEs.
+# Same posture as the security scan: pinned + checksum-verified binary, action
+# pinned by commit SHA, fails CLOSED on tool error, reports COUNTS ONLY.
+
+on:
+  schedule:
+    - cron: "0 14 * * 1" # Mondays 14:00 UTC (after the secret/hygiene scan)
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  TRIVY_VERSION: "0.74.0"
+  TRIVY_SHA256: "2ae6fe3ee734b7fdf11335663e18c75ea12dccc76062f09f164a3b0f8be4371a"
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install trivy (pinned + checksum-verified)
+        run: |
+          set -euo pipefail
+          url="https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          curl -fsSL "$url" -o trivy.tgz
+          echo "${TRIVY_SHA256}  trivy.tgz" | sha256sum -c -
+          tar -xzf trivy.tgz trivy
+          mkdir -p "$RUNNER_TEMP/bin" && mv trivy "$RUNNER_TEMP/bin/"
+          # GITHUB_PATH only reaches the NEXT steps; inside this one, call it by path.
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/bin/trivy" --version
+
+      - name: Trivy scan (Containerfile misconfig + dependency vulns; fails closed on tool error)
+        run: |
+          set -euo pipefail
+          if ! trivy config . --severity HIGH,CRITICAL --exit-code 0 \
+                --format json --output trivy-config.json; then
+            echo "::error::trivy config failed to run — failing closed."; exit 1
+          fi
+          if ! trivy fs . --scanners vuln --severity HIGH,CRITICAL --exit-code 0 \
+                --format json --output trivy-fs.json; then
+            echo "::error::trivy fs failed to run — failing closed."; exit 1
+          fi
+          echo "CFG_COUNT=$(jq '[.Results[]?.Misconfigurations[]?] | length' trivy-config.json)" >> "$GITHUB_ENV"
+          echo "VULN_COUNT=$(jq '[.Results[]?.Vulnerabilities[]?] | length' trivy-fs.json)" >> "$GITHUB_ENV"
+
+      - name: Report (counts only)
+        run: |
+          {
+            echo "# 🐳 Weekly Container / Dependency CVE Scan"
+            echo ""
+            echo "| Check | HIGH + CRITICAL |"
+            echo "|---|---|"
+            echo "| Container misconfig (trivy config) | ${CFG_COUNT:-?} |"
+            echo "| Dependency vulns (trivy fs) | ${VULN_COUNT:-?} |"
+            echo ""
+            echo "_Counts only. Run \`trivy config .\` and \`trivy fs . --scanners vuln\` locally for detail. Dependabot handles the fixes; this catches base-image + transitive HIGH/CRITICAL that manifests miss._"
+          } >> "$GITHUB_STEP_SUMMARY"

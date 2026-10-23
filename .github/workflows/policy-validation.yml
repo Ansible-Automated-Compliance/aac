@@ -1,0 +1,405 @@
+name: OPA Policy Validation
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'policies/**'
+      - 'tests/**'
+      - 'scripts/**'
+      - 'ansible/opa-routing/**'
+      - '.github/workflows/**'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'policies/**'
+      - 'tests/**'
+      - 'scripts/**'
+      - 'ansible/opa-routing/**'
+      - '.github/workflows/**'
+  schedule:
+    # Run daily at 6 AM UTC
+    - cron: '0 6 * * *'
+
+env:
+  OPA_VERSION: '1.10.0'
+  PYTHON_VERSION: '3.11'
+
+jobs:
+  setup-validation:
+    name: Setup Validation Environment
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      policy-count: ${{ steps.count.outputs.policies }}
+      test-count: ${{ steps.count.outputs.tests }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+
+      - name: Count policies and tests
+        id: count
+        run: |
+          POLICY_COUNT=$(find policies -name "*.rego" | wc -l)
+          TEST_COUNT=$(find tests -name "*.rego" | wc -l)
+          echo "policies=$POLICY_COUNT" >> $GITHUB_OUTPUT
+          echo "tests=$TEST_COUNT" >> $GITHUB_OUTPUT
+          echo "📊 Found $POLICY_COUNT policy files and $TEST_COUNT test files"
+
+  syntax-validation:
+    name: Validate Rego Syntax
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: setup-validation
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+
+      - name: Install OPA
+        run: |
+          curl -L -o "$RUNNER_TEMP/opa" https://github.com/open-policy-agent/opa/releases/download/v${{ env.OPA_VERSION }}/opa_linux_amd64_static
+          chmod +x "$RUNNER_TEMP/opa"
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/opa" version
+
+      - name: Validate Rego syntax
+        env:
+          POLICY_COUNT: ${{ needs.setup-validation.outputs.policy-count }}
+        run: |
+          echo "🔍 Validating Rego syntax for $POLICY_COUNT policy files..."
+          find policies -name "*.rego" -exec opa fmt --diff {} \;
+          find tests -name "*.rego" -exec opa fmt --diff {} \;
+
+      - name: Check for syntax errors
+        run: |
+          echo "📝 Checking for compilation errors..."
+          # --ignore converters: the library's converters/ tree ships JSON/YAML
+          # fixtures and dist files that are not OPA data (merge errors otherwise).
+          # --ignore ".github" prevents opa from trying to parse YAML files
+          # inside the policies submodule's own .github directory
+          opa build policies/ --ignore ".github" --ignore converters --output policy-bundle.tar.gz
+          echo "✅ All Rego files compile successfully"
+
+  policy-testing:
+    name: Run Policy Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: [setup-validation, syntax-validation]
+    strategy:
+      fail-fast: false
+      matrix:
+        test-suite:
+          - comprehensive_test_suite.rego
+          - unit_tests.rego
+          - integration_tests.rego
+          - performance_tests.rego
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+
+      - name: Install OPA
+        run: |
+          curl -L -o "$RUNNER_TEMP/opa" https://github.com/open-policy-agent/opa/releases/download/v${{ env.OPA_VERSION }}/opa_linux_amd64_static
+          chmod +x "$RUNNER_TEMP/opa"
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+
+      - name: Run test suite
+        env:
+          TEST_SUITE: ${{ matrix.test-suite }}
+        run: |
+          if [ -f "tests/$TEST_SUITE" ]; then
+            echo "🧪 Running $TEST_SUITE..."
+            # --timeout 60s: data-heavy performance_tests.rego cases
+            # (10k users, 1k modules, 1k iterations) routinely exceed
+            # opa's 5s default on ubuntu-latest 2-core runners.
+            # No --verbose: it keeps every test's trace and peaks ~12.8 GB on
+            # the full suite, past the self-hosted runner's 8 GB MemoryHigh,
+            # so trivial tests hit the 60s timeout. Failures still print.
+            opa test policies/ --ignore ".github" --ignore converters --ignore "*_test.rego" --ignore "test_*.rego" "tests/$TEST_SUITE" --timeout 60s
+          else
+            echo "⚠️  Test suite $TEST_SUITE not found, skipping..."
+          fi
+
+      - name: Generate test report
+        if: always()
+        continue-on-error: true
+        env:
+          TEST_SUITE: ${{ matrix.test-suite }}
+        run: |
+          if [ -f "tests/$TEST_SUITE" ]; then
+            opa test policies/ --ignore ".github" --ignore converters "tests/$TEST_SUITE" --format json > "test-results-$TEST_SUITE.json" || true
+          fi
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: test-results-${{ matrix.test-suite }}
+          path: test-results-*.json
+          if-no-files-found: ignore
+
+  policy-accuracy:
+    name: Validate Policy Accuracy
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: [setup-validation, syntax-validation]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+
+      - name: Setup Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install OPA
+        run: |
+          curl -L -o "$RUNNER_TEMP/opa" https://github.com/open-policy-agent/opa/releases/download/v${{ env.OPA_VERSION }}/opa_linux_amd64_static
+          chmod +x "$RUNNER_TEMP/opa"
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyyaml requests
+
+      - name: Run policy validation script
+        continue-on-error: true
+        run: |
+          python scripts/validate_policies.py --verbose --output validation-report.json || true
+
+      - name: Run accuracy checker
+        continue-on-error: true
+        run: |
+          python scripts/check_policy_accuracy.py --verbose --output accuracy-report.json || true
+
+      - name: Upload validation reports
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: validation-reports
+          path: |
+            validation-report.json
+            accuracy-report.json
+
+  security-analysis:
+    name: Security Policy Analysis
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [setup-validation, syntax-validation]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+
+      - name: Install OPA
+        run: |
+          curl -L -o "$RUNNER_TEMP/opa" https://github.com/open-policy-agent/opa/releases/download/v${{ env.OPA_VERSION }}/opa_linux_amd64_static
+          chmod +x "$RUNNER_TEMP/opa"
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+
+      - name: Check for security anti-patterns
+        continue-on-error: true
+        run: |
+          echo "🔒 Analyzing policies for security anti-patterns..."
+
+          # Check for policies that might allow overly permissive access (informational only)
+          if grep -r "allow.*true" policies/ --include="*.rego" | grep -v "input\." | grep -v "^[[:space:]]*#"; then
+            echo "⚠️  Found policies with unconditional allow rules (review recommended)"
+          fi
+
+          # Check for hardcoded secrets - look for actual string literals, not function/variable names
+          if grep -rE '(password|secret|api_key|access_key)\s*[:=]\s*"[^"]{8,}"' policies/ --include="*.rego" | grep -v "input\." | grep -v "^[[:space:]]*#"; then
+            echo "🚨 Found potential hardcoded credentials (review required)"
+            echo "Note: This may include false positives from test data or examples"
+          fi
+
+          # Check for policies without proper input validation (informational)
+          POLICIES_WITHOUT_VALIDATION=$(grep -L "input\." policies/**/*.rego 2>/dev/null | wc -l)
+          echo "📊 Found $POLICIES_WITHOUT_VALIDATION policies that may not validate input"
+
+      - name: Setup Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyyaml requests || true
+
+      - name: Analyze threshold compliance
+        continue-on-error: true
+        run: |
+          echo "📏 Checking security threshold compliance..."
+          python scripts/check_policy_accuracy.py --check thresholds --verbose || true
+
+  generate-reports:
+    name: Generate Comprehensive Reports
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [policy-testing, policy-accuracy, security-analysis, routing-policy-validation]
+    if: always()
+    permissions:
+      pull-requests: write
+      contents: read
+    steps:
+      - name: Fail the report if the routing-policy gate did not pass
+        # The summary below only inspects artifacts from the older jobs, so a red
+        # routing-policy-validation must be reflected here or the PR comment could
+        # read PASSED while that gate is failing.
+        if: needs.routing-policy-validation.result != 'success'
+        run: |
+          echo "routing-policy-validation did not succeed: ${{ needs.routing-policy-validation.result }}"
+          exit 1
+
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          path: artifacts/
+
+      - name: Setup Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Generate summary report
+        env:
+          GH_REPOSITORY: ${{ github.repository }}
+          GH_SHA: ${{ github.sha }}
+          GH_RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          python -c "
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+
+          date_str = subprocess.check_output(['date', '-u', '+%Y-%m-%dT%H:%M:%SZ']).decode().strip()
+
+          summary = {
+              'validation_date': date_str,
+              'repository': os.environ['GH_REPOSITORY'],
+              'commit': os.environ['GH_SHA'],
+              'workflow_run': os.environ['GH_RUN_NUMBER'],
+              'test_results': {},
+              'validation_status': 'unknown'
+          }
+
+          artifacts_dir = Path('artifacts')
+          if artifacts_dir.exists():
+              for artifact_dir in artifacts_dir.iterdir():
+                  if artifact_dir.is_dir():
+                      for file in artifact_dir.glob('*.json'):
+                          try:
+                              with open(file) as f:
+                                  data = json.load(f)
+                                  summary['test_results'][file.stem] = data
+                          except (json.JSONDecodeError, OSError):
+                              pass  # skip malformed/empty artifacts
+
+          # Determine overall status — only OPA test suites are blocking.
+          # validation-report and accuracy-report are advisory (formatting,
+          # missing tests, coverage gaps) and do not block CI.
+          all_passed = True
+          for key, report in summary['test_results'].items():
+              if key.startswith('test-results-'):
+                  # OPA test --format json output is a JSON array of test case objects.
+                  # A list means tests ran; check for any failed entries.
+                  # A dict at the top level means a summary object with a 'failures' key.
+                  if isinstance(report, list):
+                      if any(not r.get('pass', True) for r in report if isinstance(r, dict)):
+                          all_passed = False
+                  elif isinstance(report, dict):
+                      if report.get('failures', 0) > 0:
+                          all_passed = False
+
+          summary['validation_status'] = 'PASSED' if all_passed else 'FAILED'
+
+          with open('policy-validation-summary.json', 'w') as f:
+              json.dump(summary, f, indent=2)
+
+          print(f\"📊 Validation Status: {summary['validation_status']}\")
+          "
+
+      - name: Upload summary report
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: policy-validation-summary
+          path: policy-validation-summary.json
+
+      - name: Comment on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+        with:
+          script: |
+            const fs = require('fs');
+
+            if (fs.existsSync('policy-validation-summary.json')) {
+              const summary = JSON.parse(fs.readFileSync('policy-validation-summary.json', 'utf8'));
+
+              const status = summary.validation_status === 'PASSED' ? '✅' : '❌';
+              const comment = `## ${status} Policy Validation Results
+
+              **Status:** ${summary.validation_status}
+              **Commit:** ${summary.commit.substring(0, 7)}
+
+              ### Test Results Summary
+              ${Object.keys(summary.test_results).map(key => {
+                const result = summary.test_results[key];
+                let passed;
+                if (Array.isArray(result)) {
+                  passed = result.every(r => r.pass !== false);
+                } else if (result && typeof result === 'object') {
+                  passed = (result.failures || 0) === 0;
+                } else {
+                  passed = false;
+                }
+                return '- **' + key + '**: ' + (passed ? '✅ PASSED' : '❌ FAILED');
+              }).join('\n')}
+
+              For detailed reports, check the workflow artifacts.`;
+
+              github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: comment
+              });
+            }
+
+  routing-policy-validation:
+    name: Validate AO Routing Policies
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install OPA
+        run: |
+          curl -L -o "$RUNNER_TEMP/opa" https://github.com/open-policy-agent/opa/releases/download/v${{ env.OPA_VERSION }}/opa_linux_amd64_static
+          chmod +x "$RUNNER_TEMP/opa"
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/opa" version
+
+      - name: Check + test the opa-routing policies
+        run: |
+          echo "🔍 opa check ansible/opa-routing/policies/"
+          opa check ansible/opa-routing/policies/
+          echo "🧪 opa test ansible/opa-routing/policies/"
+          opa test ansible/opa-routing/policies/ -v

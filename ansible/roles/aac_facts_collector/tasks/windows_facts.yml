@@ -1,0 +1,57 @@
+---
+# windows_facts.yml — Collect Windows system facts
+
+- name: Get Windows installed software
+  win_shell: |
+    Get-ItemProperty HKLM:\Software\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\* |
+      Select-Object DisplayName, DisplayVersion, Publisher, InstallDate |
+      Where-Object { $_.DisplayName -ne $null } |
+      ConvertTo-Json -Compress
+  register: win_software_raw
+  changed_when: false
+  failed_when: false
+
+- name: Get Windows services
+  win_shell: |
+    Get-Service | Select-Object Name, DisplayName, Status, StartType |
+      ConvertTo-Json -Compress
+  register: win_services_raw
+  changed_when: false
+  failed_when: false
+
+- name: Get Windows local users
+  win_shell: |
+    Get-LocalUser | Select-Object Name, Enabled, PasswordRequired, LastLogon |
+      ConvertTo-Json -Compress
+  register: win_users_raw
+  changed_when: false
+  failed_when: false
+
+- name: Get Windows firewall state
+  win_shell: |
+    Get-NetFirewallProfile | Select-Object Name, Enabled, DefaultInboundAction |
+      ConvertTo-Json -Compress
+  register: win_firewall_raw
+  changed_when: false
+  failed_when: false
+
+- name: Get Windows audit policy
+  win_shell: auditpol /get /category:* /r 2>$null
+  register: win_audit_raw
+  changed_when: false
+  failed_when: false
+
+- name: Set Windows core facts
+  set_fact:
+    aac_packages:
+      installed_raw:   "{{ win_software_raw.stdout | default('[]') }}"
+      package_manager: "windows"
+    aac_services:
+      all_raw:         "{{ win_services_raw.stdout | default('[]') }}"
+    aac_users:
+      local_users_raw: "{{ win_users_raw.stdout | default('[]') }}"
+    aac_network:
+      firewall_raw:    "{{ win_firewall_raw.stdout | default('') }}"
+      interfaces:      "{{ ansible_interfaces | default([]) }}"
+    aac_audit:
+      policy_raw:      "{{ win_audit_raw.stdout | default('') }}"

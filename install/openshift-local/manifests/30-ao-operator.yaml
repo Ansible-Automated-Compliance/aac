@@ -1,0 +1,17 @@
+---
+# Automation Orchestrator operator from the Red Hat catalog. The operator is
+# cluster-scoped (AllNamespaces), so it subscribes in openshift-operators, which
+# already carries the global OperatorGroup on OpenShift Local.
+#   oc apply -f install/openshift-local/manifests/30-ao-operator.yaml
+# Wait for the ClusterServiceVersion to reach Succeeded before 50-ao.yaml.
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: automation-orchestrator-operator
+  namespace: openshift-operators
+spec:
+  name: automation-orchestrator-operator
+  channel: stable
+  source: redhat-operators
+  sourceNamespace: openshift-marketplace
+  installPlanApproval: Automatic

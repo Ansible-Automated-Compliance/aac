@@ -1,0 +1,157 @@
+---
+# rotation_update_vault.yml — Step 5 of AAC Credential Rotation Workflow
+#
+# Reads new credential values written by rotation steps (2-4) from the
+# secure temp directory, updates Ansible Vault, commits to git, and
+# triggers an AAP project sync.
+#
+# Temp files read (if present):
+#   /tmp/aac_cred_rotation/mcp_token.env
+#   /tmp/aac_cred_rotation/pg_password.env
+#   /tmp/aac_cred_rotation/grafana_password.env
+#
+# Part of workflow: "AAC - Rotate Credentials"
+
+- name: Update Vault and Commit to Git
+  hosts: localhost
+  connection: local
+  gather_facts: true
+
+  vars_files:
+    - ../vars/site_config.yml
+
+  vars:
+    # aap_host: <set via extra_vars / survey / inventory>   # default aac_host
+    aap_user:      "{{ aap_ssh_user }}"
+    aap_admin_user: "admin"
+    rotation_dir:  "/tmp/aac_cred_rotation"
+    project_dir:   "/home/{{ aap_user }}/aap/controller/data/projects/_11__compliance_automation"
+    vault_file:    "{{ project_dir }}/ansible/vars/vault_secrets.yml"
+    vault_pass:    "/home/{{ aap_user }}/.vault_pass"
+
+  tasks:
+
+    - name: Check which credentials were rotated
+      stat:
+        path: "{{ item }}"
+      register: rotation_files
+      loop:
+        - "{{ rotation_dir }}/mcp_token.env"
+        - "{{ rotation_dir }}/pg_password.env"
+        - "{{ rotation_dir }}/grafana_password.env"
+      delegate_to: "{{ (aap_host | default(aac_host)) }}"
+
+    - name: Set rotation flags from temp files
+      set_fact:
+        has_mcp_token:  "{{ rotation_files.results[0].stat.exists }}"
+        has_pg_password: "{{ rotation_files.results[1].stat.exists }}"
+        has_grafana_pw: "{{ rotation_files.results[2].stat.exists }}"
+
+    - name: Fail if no credentials were rotated
+      fail:
+        msg: "No rotation temp files found in {{ rotation_dir }} — nothing to update in vault"
+      when: not has_mcp_token and not has_pg_password and not has_grafana_pw
+
+    - name: Update vault with new credential values
+      shell: |
+        set -e
+        TMPDIR=$(mktemp -d)
+        chmod 700 "$TMPDIR"
+        PLAIN="$TMPDIR/vault_plain.yml"
+
+        # Decrypt vault to temp file
+        ansible-vault view "{{ vault_file }}" \
+          --vault-password-file "{{ vault_pass }}" > "$PLAIN"
+
+        # Update each rotated credential using Python
+        python3 - << 'PYEOF'
+        import re, os
+
+        rotation_dir = "{{ rotation_dir }}"
+        plain_file   = os.environ['PLAIN']
+
+        credential_map = {
+            'aap_token': 'mcp_token.env',
+            'compliance_db_password':    'pg_password.env',
+            'grafana_admin_password':    'grafana_password.env',
+        }
+
+        with open(plain_file, 'r') as f:
+            content = f.read()
+
+        updated = []
+        for vault_key, filename in credential_map.items():
+            filepath = os.path.join(rotation_dir, filename)
+            if os.path.exists(filepath):
+                with open(filepath, 'r') as f:
+                    new_value = f.read().strip()
+                content = re.sub(
+                    rf'^({re.escape(vault_key)}:\s*).*$',
+                    lambda m, v=new_value: f'{m.group(1)}{v}',
+                    content,
+                    flags=re.MULTILINE
+                )
+                updated.append(vault_key)
+
+        with open(plain_file, 'w') as f:
+            f.write(content)
+
+        print(f"Updated vault keys: {', '.join(updated)}")
+        PYEOF
+
+        # Re-encrypt vault in place
+        ansible-vault encrypt "$PLAIN" \
+          --vault-password-file "{{ vault_pass }}" \
+          --output "{{ vault_file }}"
+
+        # Secure cleanup of decrypted temp
+        rm -rf "$TMPDIR"
+      environment:
+        PLAIN: "$(mktemp)"
+      delegate_to: "{{ (aap_host | default(aac_host)) }}"
+      become: false
+      no_log: true
+      changed_when: true
+
+    - name: Verify vault is encrypted after update
+      shell: head -1 "{{ vault_file }}"
+      delegate_to: "{{ (aap_host | default(aac_host)) }}"
+      register: vault_header
+      changed_when: false
+
+    - name: Assert vault is encrypted
+      assert:
+        that: "'$ANSIBLE_VAULT' in vault_header.stdout"
+        fail_msg: "Vault file is NOT encrypted after update — critical error!"
+        success_msg: "Vault file is encrypted correctly"
+
+    - name: Commit updated vault to git
+      shell: |
+        set -e
+        cd "{{ project_dir }}"
+        git config user.email "aac-automation@{{ (aap_host | default(aac_host)) }}"
+        git config user.name "AAC Credential Rotation"
+        git add ansible/vars/vault_secrets.yml
+        git commit -m "Security: rotate credentials ({{ ansible_date_time.date }}) [ci skip]"
+        git push "https://{{ vault_github_pat }}@github.com/ansible-automated-compliance/aac.git" main
+      delegate_to: "{{ (aap_host | default(aac_host)) }}"
+      no_log: true
+      changed_when: true
+
+    - name: Trigger AAP project sync
+      uri:
+        use_proxy: false
+        url: "{{ aap_url }}/api/controller/v2/projects/11/update/"
+        method: POST
+        headers:
+          Authorization: "Basic {{ (aap_admin_user + ':' + aap_admin_password) | b64encode }}"
+        status_code: 202
+        validate_certs: false
+
+    - name: Vault update complete
+      debug:
+        msg:
+          - "✅ Ansible Vault updated with new credentials"
+          - "✅ Vault verified encrypted"
+          - "✅ Committed to git and pushed to GitHub"
+          - "✅ AAP project sync triggered"

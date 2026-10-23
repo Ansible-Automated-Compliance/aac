@@ -1,0 +1,48 @@
+---
+# ============================================================================
+# AAC install configuration (EXAMPLE)
+# ============================================================================
+# Copy to `install_config.yml`, choose an environment profile, and override any
+# environment-specific value. This is the SINGLE place an operator edits for a
+# new install — the standard playbooks (install / preflight / verify) read it.
+#
+#     cp install_config.example.yml install_config.yml
+#     $EDITOR install_config.yml
+#     ansible-playbook ansible/playbooks/install_preflight.yml    # or via AAP
+#
+# SECRETS NEVER GO HERE. They come from the profile's `secret_source`
+# (an AAP credential that injects them as extra_vars, or an Ansible Vault file
+# for CLI runs). See ansible/vars/profiles/<env>.yml.
+# ----------------------------------------------------------------------------
+
+# Which environment profile to load (ansible/vars/profiles/<env>.yml):
+#   lab       — lab-aap CRC / OpenShift Local
+#   macaap    — local CRC MicroShift
+#   rhpds     — ephemeral RHPDS OpenShift cluster
+#   customer  — customer-provided AAP + external DB
+#
+# DELIBERATELY not defaulted: the install is fail-closed on env_profile
+# (ansible/tasks/load_install_profile.yml). Shipping a default here would
+# silently point your run at someone else's environment. Uncomment ONE:
+# env_profile: customer
+# env_profile: lab
+
+# --- Optional overrides (the profile provides sensible defaults) ------------
+# Anything set here WINS over the profile. Leave commented to use the profile.
+#
+# opa_security_url:   "http://<opa-host>:8181"
+# opa_compliance_url: "http://<opa-host>:8182"
+# opa_ot_url:         "http://<opa-host>:8183"
+# grafana_url:        "https://<grafana-host>:3000"
+# mcp_url:            "http://<mcp-host>:8004"
+# pg_host:            "<db-host>"
+# pg_user:            "<db-owner>"
+# aap_url:            "https://<aap-host>"
+# ee_image:           "quay.io/rh-ee-tcoulter/aac-compliance-ee:v1.3.0"
+
+# --- RHPDS profile only -----------------------------------------------------
+# rhpds_cluster: "cluster-abc123.dynamic.redhatworkshops.io"
+
+# --- customer profile only --------------------------------------------------
+# pg_host: "db-host.example.com"              # EXTERNAL customer database
+# aap_url: "https://aap.example.com"

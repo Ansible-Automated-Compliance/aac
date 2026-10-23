@@ -1,0 +1,184 @@
+---
+# =============================================================================
+# AAC - Deploy MCP OPA Governance
+#
+# Adds OPA policy enforcement to the AAP MCP server.
+# Every tools/call from Claude Code is checked against OPA before execution.
+#
+# Two-layer enforcement:
+#   1. Tool list filtering  — blocked tools never appear in Claude's catalog
+#   2. Call-time OPA check  — job launches validated against approved template list
+#
+# To disable OPA governance (emergency bypass):
+#   Set extra var: opa_governance_enabled=false
+#
+# AAP Job Template: "AAC - Deploy MCP OPA Governance"
+# Credentials: Ansible Vault (ID 8), Compliance SSH Credential (ID 3)
+# Inventory: Compliance Infrastructure (ID 4), limit: aap-controller-ssh
+# =============================================================================
+
+- name: Deploy MCP OPA Governance
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    opa_governance_enabled: "true"
+    mcp_server_dir: "/opt/aap-mcp-server"
+    mcp_container_name: "aap-mcp"
+    mcp_port: "8004"
+
+  vars_files:
+    - [ "../vars/vault_secrets.yml", "../vars/empty_fallback.yml" ]
+    - ../vars/site_config.yml
+
+  tasks:
+
+    # ── Phase 1: Load OPA governance policy ──────────────────────────────────
+    - name: Load mcp_governance policy into opa-compliance
+      uri:
+        use_proxy: false
+        url: "{{ opa_compliance_url }}/v1/policies/mcp_governance"
+        method: PUT
+        src: "{{ playbook_dir }}/../../policies/governance/mcp/mcp_governance.rego"
+        headers:
+          Content-Type: "text/plain"
+        status_code: [200, 201]
+      changed_when: true
+
+    - name: Confirm mcp_governance policy loaded
+      debug:
+        msg: "✅ mcp_governance policy loaded into opa-compliance (:8182)"
+
+    # ── Phase 2: Smoke-test the policy ───────────────────────────────────────
+    - name: Test OPA policy — read-only tool (expect ALLOW)
+      uri:
+        use_proxy: false
+        url: "{{ opa_compliance_url }}/v1/data/ai_governance/mcp/response"
+        method: POST
+        body_format: json
+        body:
+          input:
+            tool: "api_job_templates_list"
+            arguments: {}
+            agent: "claude-code"
+        status_code: 200
+      register: opa_allow_test
+
+    - name: Show allow test result
+      debug:
+        msg: "Read-only test → {{ opa_allow_test.json.result.decision }} ({{ opa_allow_test.json.result.reason }})"
+
+    - name: Test OPA policy — delete tool (expect DENY)
+      uri:
+        use_proxy: false
+        url: "{{ opa_compliance_url }}/v1/data/ai_governance/mcp/response"
+        method: POST
+        body_format: json
+        body:
+          input:
+            tool: "api_credentials_delete"
+            arguments: {}
+            agent: "claude-code"
+        status_code: 200
+      register: opa_deny_test
+
+    - name: Show deny test result
+      debug:
+        msg: "Delete test → {{ opa_deny_test.json.result.decision }} ({{ opa_deny_test.json.result.reason }})"
+
+    - name: Fail if OPA tests did not return expected decisions
+      fail:
+        msg: "OPA policy tests failed — check opa-compliance policy load"
+      when: >
+        opa_allow_test.json.result.decision != "ALLOW" or
+        opa_deny_test.json.result.decision != "DENY"
+
+    # ── Phase 3: Deploy server_opa.py to MCP host ────────────────────────────
+    - name: Write server_opa.py to MCP server directory
+      copy:
+        src: "{{ playbook_dir }}/../../services/mcp-server/server_opa.py"
+        dest: "{{ mcp_server_dir }}/server_opa.py"
+        mode: "0644"
+      delegate_to: "{{ aac_ssh_delegate }}"
+
+    - name: Remove ungoverned bypass entrypoints from MCP server directory
+      file:
+        path: "{{ mcp_server_dir }}/{{ item }}"
+        state: absent
+      loop:
+        - server.py
+        - opa_middleware.py
+      delegate_to: "{{ aac_ssh_delegate }}"
+
+    # ── Phase 4: Restart container with OPA entrypoint ───────────────────────
+    - name: Stop existing aap-mcp container
+      shell: podman stop {{ mcp_container_name }} || true
+      delegate_to: "{{ aac_ssh_delegate }}"
+      changed_when: true
+
+    - name: Remove existing aap-mcp container
+      shell: podman rm {{ mcp_container_name }} || true
+      delegate_to: "{{ aac_ssh_delegate }}"
+      changed_when: true
+
+    - name: Start aap-mcp with OPA governance entrypoint
+      # Token is sourced from mcp.env at runtime — never embedded in the command.
+      # Use POSIX `. file` (dot-source) instead of `source` for sh compatibility.
+      shell: |
+        . {{ mcp_server_dir }}/mcp.env
+        podman run -d \
+          --name {{ mcp_container_name }} \
+          -p {{ mcp_port }}:{{ mcp_port }} \
+          --restart=always \
+          -v {{ mcp_server_dir }}:/app:rw \
+          -e AAP_GATEWAY_URL=https://host.containers.internal \
+          -e AAP_SERVICE_URL=https://host.containers.internal/api/controller/v2 \
+          -e CONTROLLER_OPENAPI_SPEC_URL=file:///app/aap-controller-api.json \
+          -e AAP_TOKEN=${AAP_TOKEN} \
+          -e PYTHONPATH=/app \
+          -e HOST=0.0.0.0 \
+          -e PORT={{ mcp_port }} \
+          -e OPA_URL=http://host.containers.internal:8182 \
+          -e OPA_GOVERNANCE_ENABLED={{ opa_governance_enabled }} \
+          {{ mcp_image }} \
+          python /app/server_opa.py
+      delegate_to: "{{ aac_ssh_delegate }}"
+      changed_when: true
+      no_log: true
+
+    # ── Phase 5: Health check ─────────────────────────────────────────────────
+    - name: Wait for MCP server to be ready
+      # Poll /health (non-streaming) rather than /sse to avoid SSE connection hanging.
+      # The server_opa.py entrypoint does not have a /health endpoint, so we rely on
+      # the root path returning 200 or 404 (FastAPI default) as the readiness signal.
+      uri:
+        use_proxy: false
+        url: "{{ mcp_url }}/"
+        status_code: [200, 404]
+      register: mcp_health
+      until: mcp_health.status in [200, 404]
+      retries: 12
+      delay: 5
+
+    # ── Summary ───────────────────────────────────────────────────────────────
+    - name: "=== MCP OPA Governance Deployed ==="
+      debug:
+        msg:
+          - ""
+          - "╔══════════════════════════════════════════════════════════╗"
+          - "║         MCP OPA Governance — Active                      ║"
+          - "╚══════════════════════════════════════════════════════════╝"
+          - ""
+          - "  OPA policy:     opa-compliance:8182/v1/policies/mcp_governance"
+          - "  MCP server:     {{ mcp_url }} (entrypoint: server_opa.py)"
+          - "  Governance:     OPA_GOVERNANCE_ENABLED={{ opa_governance_enabled }}"
+          - ""
+          - "  Enforcement rules:"
+          - "    ✅ Read-only ops   → ALLOW (no restriction)"
+          - "    ✅ Job launches    → ALLOW only for approved compliance templates"
+          - "    ✅ Demo scaffolds  → ALLOW with logging"
+          - "    ✅ Project sync    → ALLOW with logging"
+          - "    🚫 Delete/admin   → DENY always"
+          - "    🚫 Credential mgmt → DENY always"
+          - "    🚫 User/org admin  → DENY always"

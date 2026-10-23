@@ -1,0 +1,40 @@
+namespace: aac
+name: host_facts
+version: 2.0.0
+
+readme: README.md
+
+authors:
+  - Ansible Automated Compliance (AAC) maintainers
+
+description: >
+  Collect host configuration state as structured facts for policy
+  evaluation.
+  Eleven roles gather the areas a host-hardening assessment inspects — SSH,
+  auditd, PAM, filesystems, file permissions, firewalld, GRUB, logging,
+  network, services and user security — and emit each as a single
+  predictable host_<area>_facts dictionary. CIS Benchmarks, DISA STIGs and
+  NERC CIP evaluations all consume the same facts.
+  The roles gather only. They contain no policy logic and no opinion about
+  what a compliant value is, so the same facts can be evaluated by Open
+  Policy Agent, by a different policy engine, or by your own assertions.
+license:
+  - Apache-2.0
+
+tags:
+  - cis
+  - compliance
+  - security
+  - rhel
+  - hardening
+  - facts
+  - benchmark
+
+dependencies: {}
+
+repository: https://github.com/ansible-automated-compliance/aac
+documentation: https://github.com/ansible-automated-compliance/aac/tree/main/collections/ansible_collections/aac/host_facts
+issues: https://github.com/ansible-automated-compliance/aac/issues
+
+build_ignore:
+  - "*.tar.gz"

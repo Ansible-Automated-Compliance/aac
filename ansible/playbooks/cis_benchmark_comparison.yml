@@ -1,0 +1,466 @@
+---
+# AAC - CIS Benchmark Comparison
+#
+# Concords AAC's stored assessment results with a customer's MANUAL
+# benchmark assessment, per control: where both agree, where they differ,
+# and — critically — where AAC's declared coverage boundary means a
+# manual-only finding is a scope statement, not an AAC miss. Also emits a
+# flat per-control verdict CSV (the artifact a human team lines up against
+# their own worksheet), so it is useful even before any manual artifact
+# exists: run it with no manual input to hand the assessing team AAC's
+# side of the comparison.
+#
+# Benchmark-agnostic by design — the same playbook serves every CIS
+# benchmark the POC process moves through. Per benchmark it needs only the
+# generated coverage file (scripts/generate_benchmark_coverage.py) which is
+# derived from the policy library and committed. The deterministic
+# comparison core is scripts/benchmark_concordance.py (unit-tested; this
+# playbook owns only DB access, file plumbing, and rendering).
+#
+# Reads the evidence store only; evaluates nothing; writes nothing to the
+# database. Runs wherever the evidence store is: the AAC lab, or a customer
+# POC environment — assessment data never leaves that environment.
+#
+# ── Variables ────────────────────────────────────────────────────────
+#   comparison_framework      framework key (default: cis_m365_v7). Must
+#                             have ansible/vars/comparison/<key>_coverage.yml
+#   comparison_tenant         subject (hostname column). Default: the tenant
+#                             with the newest stored row — never mixes
+#                             tenants in one comparison.
+#   comparison_lookback       days of history to consider (default: 30)
+#   comparison_manual_csv     path to the manual-assessment CSV, readable in
+#                             the EE (e.g. placed in the project checkout)
+#   comparison_manual_csv_content
+#                             OR the CSV content pasted directly (survey
+#                             textarea) — takes precedence over the path
+#   comparison_manual_col_control / _result / _notes
+#                             column headers in the manual CSV (defaults:
+#                             control_id / result / notes; matched
+#                             case-insensitively)
+#   comparison_pass_values / comparison_fail_values
+#                             optional lists overriding which manual result
+#                             strings count as pass / fail
+#   comparison_crosswalk_csv / comparison_crosswalk_csv_content
+#                             optional id crosswalk (columns:
+#                             their_id,benchmark_id) when the manual
+#                             artifact uses another version's numbering
+#   comparison_output_dir     EE-local output directory (default: /tmp)
+#   report_publish_host / report_publish_user / report_publish_dir
+#                             optional scp publication of all outputs (same
+#                             contract as the violations report playbook)
+#
+# ── AAP Job Template ─────────────────────────────────────────────────
+#   "AAC - CIS Benchmark Comparison" — EE: AAC Compliance EE, hosts:
+#   localhost (reads PostgreSQL only). Survey: comparison_framework,
+#   comparison_tenant, comparison_manual_csv_content (textarea, optional).
+
+- name: Concord AAC results with a manual benchmark assessment
+  hosts: localhost
+  connection: local
+  gather_facts: true
+  become: false
+
+  vars:
+    comparison_framework: "cis_m365_v7"
+    # comparison_tenant: <set via extra_vars / survey / inventory>
+    comparison_lookback: 30
+    # comparison_manual_csv: <set via extra_vars / survey / inventory>
+    # comparison_manual_csv_content: <set via extra_vars / survey / inventory>
+    comparison_manual_col_control: "control_id"
+    comparison_manual_col_result: "result"
+    comparison_manual_col_notes: "notes"
+    comparison_pass_values: []
+    comparison_fail_values: []
+    # comparison_crosswalk_csv: <set via extra_vars / survey / inventory>
+    # comparison_crosswalk_csv_content: <set via extra_vars / survey / inventory>
+    comparison_output_dir: "/tmp"
+    comparison_coverage_file: "{{ playbook_dir }}/../vars/comparison/{{ comparison_framework }}_coverage.yml"
+    comparison_tag: "{{ comparison_framework }}-{{ ansible_date_time.date }}"
+    comparison_md_file: "{{ comparison_output_dir }}/benchmark_comparison-{{ comparison_tag }}.md"
+    comparison_html_file: "{{ comparison_output_dir }}/benchmark_comparison-{{ comparison_tag }}.html"
+
+  tasks:
+    - name: Load site configuration when present
+      ansible.builtin.include_vars: "{{ item }}"
+      with_first_found:
+        - files: ["../vars/site_config.yml"]
+          skip: true
+
+    - name: Load vault secrets when present
+      ansible.builtin.include_vars: "{{ item }}"
+      with_first_found:
+        - files: ["../vars/vault_secrets.yml"]
+          skip: true
+
+    - name: Validate comparison inputs
+      ansible.builtin.assert:
+        that:
+          - comparison_framework is match('^[A-Za-z0-9][A-Za-z0-9_-]*$')
+          - comparison_tag is match('^[A-Za-z0-9][A-Za-z0-9_.-]*$')
+          - comparison_output_dir is match('^/[A-Za-z0-9/_.-]+$')
+          - "'..' not in comparison_output_dir"
+        fail_msg: >-
+          comparison_framework and comparison_tag must contain only safe filename
+          characters, and comparison_output_dir must be an absolute path without '..'.
+
+    - name: Load the benchmark coverage file
+      ansible.builtin.include_vars:
+        file: "{{ comparison_coverage_file }}"
+        name: comparison_coverage
+      ignore_errors: true
+      register: coverage_load
+
+    - name: Refuse to run without a coverage file
+      ansible.builtin.assert:
+        that: coverage_load is not failed
+        fail_msg: >-
+          No coverage file for framework '{{ comparison_framework }}' at
+          {{ comparison_coverage_file }}. Generate one with
+          scripts/generate_benchmark_coverage.py — the comparison is
+          meaningless without a declared coverage boundary.
+
+    - name: Resolve the tenant when none supplied (never mix tenants)
+      when: (comparison_tenant | default('', true)) | length == 0
+      block:
+        - name: Find the tenant with the newest stored result
+          community.postgresql.postgresql_query:
+            login_host: "{{ pg_host | mandatory }}"
+            login_port: "{{ pg_port | default(5432) }}"
+            login_user: "{{ pg_user | default('postgres') }}"
+            login_password: "{{ compliance_db_password }}"
+            login_db: "{{ pg_database | default('compliance') }}"
+            ssl_mode: "{{ pg_ssl_mode | default('prefer') }}"
+            query: |
+              SELECT hostname FROM compliance_results
+              WHERE framework = %(fw)s
+                AND evaluation_timestamp >= NOW() - (%(days)s || ' days')::interval
+              ORDER BY evaluation_timestamp DESC LIMIT 1
+            named_args:
+              fw: "{{ comparison_framework }}"
+              days: "{{ comparison_lookback | int | string }}"
+          register: tenant_query
+
+        - name: Bind resolved tenant
+          ansible.builtin.set_fact:
+            comparison_tenant: "{{ (tenant_query.query_result | first | default({})).hostname | default('') }}"
+
+    - name: Refuse to compare without a tenant
+      ansible.builtin.assert:
+        that: (comparison_tenant | default('', true)) | length > 0
+        fail_msg: >-
+          No {{ comparison_framework }} rows in compliance_results within the
+          last {{ comparison_lookback }} days. Run the assessment first —
+          this playbook compares stored evidence, it does not evaluate
+          anything.
+
+    - name: Query latest stored result per section for the tenant
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host | mandatory }}"
+        login_port: "{{ pg_port | default(5432) }}"
+        login_user: "{{ pg_user | default('postgres') }}"
+        login_password: "{{ compliance_db_password }}"
+        login_db: "{{ pg_database | default('compliance') }}"
+        ssl_mode: "{{ pg_ssl_mode | default('prefer') }}"
+        query: |
+          SELECT DISTINCT ON (policy_name)
+            hostname, policy_name, violations, metadata,
+            evaluation_timestamp
+          FROM compliance_results
+          WHERE framework = %(fw)s
+            AND hostname = %(tenant)s
+            AND evaluation_timestamp >= NOW() - (%(days)s || ' days')::interval
+          ORDER BY policy_name, evaluation_timestamp DESC
+        named_args:
+          fw: "{{ comparison_framework }}"
+          tenant: "{{ (comparison_tenant | default('', true)) }}"
+          days: "{{ comparison_lookback | int | string }}"
+      register: results_query
+
+    - name: Write pasted manual CSV to a file
+      when: (comparison_manual_csv_content | default('', true)) | length > 0
+      ansible.builtin.copy:
+        dest: "{{ comparison_output_dir }}/manual_assessment_input.csv"
+        content: "{{ (comparison_manual_csv_content | default('', true)) }}"
+        mode: "0600"
+
+    - name: Write pasted crosswalk CSV to a file
+      when: (comparison_crosswalk_csv_content | default('', true)) | length > 0
+      ansible.builtin.copy:
+        dest: "{{ comparison_output_dir }}/crosswalk_input.csv"
+        content: "{{ (comparison_crosswalk_csv_content | default('', true)) }}"
+        mode: "0600"
+
+    - name: Bind effective input paths
+      ansible.builtin.set_fact:
+        _manual_path: >-
+          {{ (comparison_output_dir ~ '/manual_assessment_input.csv')
+             if (comparison_manual_csv_content | default('', true)) | length > 0
+             else (comparison_manual_csv | default('', true)) }}
+        _crosswalk_path: >-
+          {{ (comparison_output_dir ~ '/crosswalk_input.csv')
+             if (comparison_crosswalk_csv_content | default('', true)) | length > 0
+             else (comparison_crosswalk_csv | default('', true)) }}
+
+    - name: Run the concordance core
+      ansible.builtin.command:
+        argv: >-
+          {{ ['python3', playbook_dir ~ '/../../scripts/benchmark_concordance.py',
+              '--csv-out-dir', comparison_output_dir,
+              '--csv-tag', comparison_tag]
+             + (['--manual-csv', _manual_path,
+                 '--manual-col-control', comparison_manual_col_control,
+                 '--manual-col-result', comparison_manual_col_result,
+                 '--manual-col-notes', comparison_manual_col_notes]
+                if _manual_path | length > 0 else [])
+             + (['--crosswalk-csv', _crosswalk_path]
+                if _crosswalk_path | length > 0 else []) }}
+        stdin: >-
+          {{ {'aac_rows': results_query.query_result,
+              'coverage': comparison_coverage,
+              'pass_values': comparison_pass_values,
+              'fail_values': comparison_fail_values} | to_json }}
+      register: concordance_run
+      changed_when: true
+
+    - name: Bind concordance result
+      ansible.builtin.set_fact:
+        concordance: "{{ concordance_run.stdout | from_json }}"
+
+    - name: Render Markdown comparison report
+      vars:
+        s: "{{ concordance.summary }}"
+        has_manual: "{{ s.manual_rows_supplied | int > 0 }}"
+      ansible.builtin.copy:
+        dest: "{{ comparison_md_file }}"
+        mode: "0644"
+        content: |
+          # {{ s.benchmark }} v{{ s.benchmark_version }} — {{ 'Concordance with Manual Assessment' if has_manual else 'AAC Control Verdicts' }}
+
+          **Subject:** {{ (comparison_tenant | default('', true)) }}
+          **Generated:** {{ ansible_date_time.iso8601 }}
+          **Window:** latest stored result per section, last {{ comparison_lookback }} days
+          **Source:** AAC `compliance_results` evidence store (framework `{{ comparison_framework }}`)
+
+          ## Coverage boundary (declared up front)
+
+          Of the benchmark's {{ s.benchmark_total_controls }} controls, AAC
+          evaluates {{ comparison_coverage.evaluated | length }} automatically,
+          takes {{ comparison_coverage.requires_attestation | length }} by
+          recorded operator attestation, and currently has no path for
+          {{ (comparison_coverage.unresolved | length) + (comparison_coverage.not_implemented | length) }}.
+          A control the manual assessment answered that AAC did not is a
+          declared scope boundary, not a discrepancy — those rows are classed
+          `manual_only` below, never hidden.
+
+          ## AAC verdict counts
+
+          | Status | Controls |
+          |---|---|
+          {% for k, v in (s.aac_status_counts | dictsort) %}
+          | {{ k }} | {{ v }} |
+          {% endfor %}
+          {% if has_manual %}
+
+          ## Agreement
+
+          Both assessed: **{{ s.both_assessed }}** controls — agreeing on
+          **{{ s.agree }}**{{ ' (' ~ s.agreement_rate_pct ~ '%)' if s.agreement_rate_pct is not none else '' }}.
+
+          | Class | Controls |
+          |---|---|
+          {% for k, v in (s.agreement_counts | dictsort) %}
+          | {{ k }} | {{ v }} |
+          {% endfor %}
+
+          ## Where the assessments differ
+
+          {% set diffs = concordance.controls | selectattr('agreement', 'in', ['aac_fail_manual_pass', 'aac_pass_manual_fail']) | list %}
+          {% if diffs | length == 0 %}
+          None — every control both assessments answered, they answered the same way.
+          {% else %}
+          | Control | AAC | Manual | AAC detail | Manual notes |
+          |---|---|---|---|---|
+          {% for c in diffs %}
+          | {{ c.control_id }} | {{ c.aac_status }} | {{ c.manual_raw }} | {{ c.aac_detail }} | {{ c.manual_notes }} |
+          {% endfor %}
+          {% endif %}
+
+          ## Manual-only controls (AAC scope boundary)
+
+          {% set monly = concordance.controls | selectattr('agreement', 'equalto', 'manual_only') | list %}
+          {% if monly | length == 0 %}
+          None.
+          {% else %}
+          | Control | AAC status | Why | Manual verdict |
+          |---|---|---|---|
+          {% for c in monly %}
+          | {{ c.control_id }} | {{ c.aac_status }} | {{ c.aac_detail }} | {{ c.manual_raw }} |
+          {% endfor %}
+          {% endif %}
+
+          ## AAC-only controls (not in the manual artifact)
+
+          {% set aonly = concordance.controls | selectattr('agreement', 'equalto', 'aac_only') | list %}
+          {{ aonly | length }} controls AAC assessed that the manual artifact
+          does not mention — full list in the concordance CSV.
+          {% endif %}
+          {% if concordance.evidence_gaps | length > 0 %}
+
+          ## Evidence gaps and unrecorded attestations
+
+          These stored messages are not assessed failures — they are areas
+          with no admissible evidence, and they are never counted as passes:
+          {% for g in concordance.evidence_gaps %}
+          - {{ g }}
+          {% endfor %}
+          {% endif %}
+
+          ---
+          *Generated by AAC from stored OPA evaluations. Co-authored by Claude
+          (Anthropic) via Claude Code — AI-authorship transparency.*
+
+    - name: Render HTML comparison report
+      vars:
+        s: "{{ concordance.summary }}"
+        has_manual: "{{ s.manual_rows_supplied | int > 0 }}"
+        diffs: "{{ concordance.controls | selectattr('agreement', 'in', ['aac_fail_manual_pass', 'aac_pass_manual_fail']) | list }}"
+        monly: "{{ concordance.controls | selectattr('agreement', 'equalto', 'manual_only') | list }}"
+      ansible.builtin.copy:
+        dest: "{{ comparison_html_file }}"
+        mode: "0644"
+        content: |
+          <!DOCTYPE html>
+          <html>
+          <head>
+              <title>Benchmark Comparison - {{ comparison_tag }}</title>
+              <style>
+                  * { margin: 0; padding: 0; box-sizing: border-box; }
+                  body { font-family: 'Segoe UI', Arial, sans-serif; background: #f0f2f5; color: #333; }
+                  .header { background: linear-gradient(135deg, #1a237e, #283593); color: white; padding: 30px 40px; }
+                  .header h1 { font-size: 26px; margin-bottom: 5px; }
+                  .header p { opacity: 0.9; font-size: 14px; }
+                  .container { max-width: 1200px; margin: 0 auto; padding: 30px; }
+                  .summary-cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; margin-bottom: 30px; }
+                  .card { background: white; border-radius: 10px; padding: 25px; box-shadow: 0 2px 10px rgba(0,0,0,0.08); }
+                  .card-value { font-size: 36px; font-weight: bold; margin-bottom: 5px; }
+                  .card-label { color: #666; font-size: 14px; }
+                  .card.red .card-value { color: #c62828; }
+                  .card.green .card-value { color: #2e7d32; }
+                  .card.blue .card-value { color: #1565c0; }
+                  .card.amber .card-value { color: #f57c00; }
+                  .section { background: white; border-radius: 10px; padding: 25px; margin-bottom: 20px; box-shadow: 0 2px 10px rgba(0,0,0,0.08); }
+                  .section h2 { color: #1a237e; margin-bottom: 12px; font-size: 20px; }
+                  table { border-collapse: collapse; width: 100%; font-size: 14px; }
+                  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #eee; vertical-align: top; }
+                  th { color: #1a237e; }
+                  .semantics { background: #e8eaf6; border-left: 4px solid #283593; padding: 12px 16px; font-size: 13px; margin-bottom: 20px; border-radius: 4px; }
+                  .gaps { background: #fff3e0; border-left: 4px solid #f57c00; padding: 12px 16px; font-size: 13px; border-radius: 4px; }
+                  .none { color: #2e7d32; font-weight: 600; }
+                  .footer { text-align: center; padding: 20px; color: #666; font-size: 12px; }
+              </style>
+          </head>
+          <body>
+              <div class="header">
+                  <h1>{{ s.benchmark | e }} v{{ s.benchmark_version | e }} — {{ 'Concordance with Manual Assessment' if has_manual else 'AAC Control Verdicts' }}</h1>
+                  <p>Subject: {{ (comparison_tenant | default('', true)) | e }} | Generated: {{ ansible_date_time.iso8601 }} |
+                     Latest stored result per section, last {{ comparison_lookback }} days</p>
+              </div>
+              <div class="container">
+                  <div class="semantics">
+                      <strong>Coverage boundary, declared up front:</strong> of the benchmark's
+                      {{ s.benchmark_total_controls }} controls, AAC evaluates
+                      {{ comparison_coverage.evaluated | length }} automatically, takes
+                      {{ comparison_coverage.requires_attestation | length }} by recorded operator
+                      attestation, and currently has no path for
+                      {{ (comparison_coverage.unresolved | length) + (comparison_coverage.not_implemented | length) }}.
+                      A control the manual assessment answered that AAC did not is a declared scope
+                      boundary, not a discrepancy — classed <code>manual_only</code>, never hidden.
+                  </div>
+                  {% if has_manual %}
+                  <div class="summary-cards">
+                      <div class="card blue"><div class="card-value">{{ s.both_assessed }}</div><div class="card-label">Both assessed</div></div>
+                      <div class="card green"><div class="card-value">{{ s.agree }}</div><div class="card-label">Agree{{ ' (' ~ s.agreement_rate_pct ~ '%)' if s.agreement_rate_pct is not none else '' }}</div></div>
+                      <div class="card red"><div class="card-value">{{ diffs | length }}</div><div class="card-label">Differ</div></div>
+                      <div class="card amber"><div class="card-value">{{ monly | length }}</div><div class="card-label">Manual-only (scope boundary)</div></div>
+                  </div>
+                  <div class="section">
+                      <h2>Where the assessments differ</h2>
+                      {% if diffs | length == 0 %}
+                      <p class="none">None — every control both assessments answered, they answered the same way.</p>
+                      {% else %}
+                      <table>
+                          <tr><th>Control</th><th>AAC</th><th>Manual</th><th>AAC detail</th><th>Manual notes</th></tr>
+                          {% for c in diffs %}
+                          <tr><td>{{ c.control_id | e }}</td><td>{{ c.aac_status | e }}</td><td>{{ c.manual_raw | e }}</td><td>{{ c.aac_detail | e }}</td><td>{{ c.manual_notes | e }}</td></tr>
+                          {% endfor %}
+                      </table>
+                      {% endif %}
+                  </div>
+                  <div class="section">
+                      <h2>Manual-only controls (AAC scope boundary)</h2>
+                      {% if monly | length == 0 %}
+                      <p class="none">None.</p>
+                      {% else %}
+                      <table>
+                          <tr><th>Control</th><th>AAC status</th><th>Why</th><th>Manual verdict</th></tr>
+                          {% for c in monly %}
+                          <tr><td>{{ c.control_id | e }}</td><td>{{ c.aac_status | e }}</td><td>{{ c.aac_detail | e }}</td><td>{{ c.manual_raw | e }}</td></tr>
+                          {% endfor %}
+                      </table>
+                      {% endif %}
+                  </div>
+                  {% endif %}
+                  <div class="section">
+                      <h2>AAC verdict counts</h2>
+                      <table>
+                          <tr><th>Status</th><th>Controls</th></tr>
+                          {% for k, v in (s.aac_status_counts | dictsort) %}
+                          <tr><td>{{ k | e }}</td><td>{{ v }}</td></tr>
+                          {% endfor %}
+                      </table>
+                  </div>
+                  {% if concordance.evidence_gaps | length > 0 %}
+                  <div class="gaps">
+                      <strong>Evidence gaps and unrecorded attestations</strong> — not assessed
+                      failures, never counted as passes:
+                      <ul>{% for g in concordance.evidence_gaps %}<li>{{ g | e }}</li>{% endfor %}</ul>
+                  </div>
+                  {% endif %}
+                  <div class="footer">
+                      Generated by AAC from stored OPA evaluations |
+                      Co-authored by Claude (Anthropic) via Claude Code — AI-authorship transparency
+                  </div>
+              </div>
+          </body>
+          </html>
+
+    # EE /tmp vanishes with the job (CLAUDE.md "PDF Files Not Persisting").
+    - name: Publish outputs to persistent storage
+      when: report_publish_host | default('') | length > 0
+      ansible.builtin.command:
+        argv: >-
+          {{ ['scp', '-o', 'StrictHostKeyChecking=accept-new', '-o', 'BatchMode=yes',
+              comparison_md_file, comparison_html_file]
+             + (concordance.csv_files | default([]))
+             + [(report_publish_user | default('aapuser1')) ~ '@' ~ report_publish_host
+                ~ ':' ~ (report_publish_dir | default('/var/tmp')) ~ '/'] }}
+      changed_when: true
+
+    - name: Warn when no persistent publication is configured
+      when: report_publish_host | default('') | length == 0
+      ansible.builtin.debug:
+        msg: >-
+          WARNING: outputs were written only to the execution environment
+          ({{ comparison_output_dir }}) and will vanish when this job ends.
+          Set report_publish_host (+ report_publish_user/report_publish_dir)
+          to copy them to persistent storage.
+
+    - name: Comparison summary
+      ansible.builtin.debug:
+        msg:
+          - "Benchmark comparison — {{ comparison_framework }} / {{ (comparison_tenant | default('', true)) }}"
+          - "  MD:   {{ comparison_md_file }}"
+          - "  HTML: {{ comparison_html_file }}"
+          - "  CSVs: {{ concordance.csv_files | default([]) | join(', ') }}"
+          - "  AAC verdicts: {{ concordance.summary.aac_status_counts }}"
+          - "  Agreement: {{ concordance.summary.agreement_counts }}"

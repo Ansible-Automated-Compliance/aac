@@ -1,0 +1,431 @@
+---
+# Generate Compliance Report from Database
+#
+# READ-ONLY report over compliance_results — the same store Grafana reads, so
+# the report's totals reconcile with the dashboards by construction. This
+# playbook never evaluates policies and never writes assessment rows; producing
+# results is the assessment playbooks' job (aac_store_results role).
+#
+# Semantics (stated in the report footer so a reader can reconcile it against
+# any Grafana panel): the LATEST stored result per (hostname, framework) whose
+# evaluation_timestamp falls inside the lookback window. A Grafana panel that
+# counts every row in the window will legitimately show a larger number — that
+# is assessments-run, not systems-assessed.
+#
+# Variables:
+#   lookback_days        days of history to consider (default: 30)
+#   report_framework     limit to one framework key (default: all frameworks)
+#   output_dir           where the files land inside the EE (default: /tmp/compliance_reports)
+#   report_formats       which files to write: html, csv, md — any subset, comma-
+#                        separated or a list (default: all three). Same data, same
+#                        semantics; the CSV is one row per latest (hostname,
+#                        framework) result, the Markdown mirrors the HTML sections
+#   report_persist_host  host to SCP the finished report to (default: aac_host when
+#                        defined). The EE filesystem is destroyed when the job ends —
+#                        without a persist host the report only survives in job stdout.
+#   report_persist_user  SSH user on the persist host (default: aap_ssh_user)
+
+- name: Generate Compliance Report from Database
+  hosts: localhost
+  gather_facts: yes
+  connection: local
+
+  vars:
+    lookback: "{{ lookback_days | default(30) }}"
+    report_output_dir: "{{ output_dir | default('/tmp/compliance_reports') }}"
+    report_timestamp: "{{ ansible_date_time.iso8601_basic_short }}"
+    report_base: "{{ report_output_dir }}/compliance_report_{{ report_timestamp }}"
+    report_file: "{{ report_base }}.html"
+    report_csv_file: "{{ report_base }}.csv"
+    report_md_file: "{{ report_base }}.md"
+    report_formats_default: "html,csv,md"
+    pg_login_host: "{{ aac_result_pg_host | default(pg_host) | mandatory }}"
+    pg_login_db: "{{ pg_database | default('compliance') }}"
+    pg_login_user: "{{ pg_user | default('postgres') }}"
+    pg_login_password: "{{ compliance_db_password }}"
+    framework_filter: "{{ report_framework | default('') }}"
+
+  tasks:
+    # site_config.yml is gitignored and absent from project checkouts — every
+    # value it can supply also arrives via extra_vars or defaults below.
+    - name: Load optional local config
+      ansible.builtin.include_vars: "{{ item }}"
+      with_first_found:
+        - files:
+            - "{{ playbook_dir }}/../vars/site_config.yml"
+          skip: true
+
+    - name: Load optional local secrets
+      ansible.builtin.include_vars: "{{ item }}"
+      with_first_found:
+        - files:
+            - "{{ playbook_dir }}/../vars/vault_secrets.yml"
+          skip: true
+
+    - name: Ensure report directory exists
+      file:
+        path: "{{ report_output_dir }}"
+        state: directory
+        mode: '0755'
+
+    - name: Query latest stored result per host and framework
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_login_host }}"
+        login_user: "{{ pg_login_user }}"
+        login_password: "{{ pg_login_password }}"
+        login_db: "{{ pg_login_db }}"
+        query: >-
+          SELECT DISTINCT ON (COALESCE(hostname, 'estate'), framework)
+            COALESCE(hostname, 'estate') AS hostname,
+            framework,
+            policy_name,
+            policy_version,
+            total_controls,
+            passed_controls,
+            failed_controls,
+            ROUND(compliance_percentage::numeric, 1) AS compliance_percentage,
+            compliant,
+            evaluation_timestamp,
+            COALESCE(metadata->>'platform', '') AS platform,
+            COALESCE(metadata->>'risk_level', 'unknown') AS risk_level,
+            COALESCE((metadata->>'waived_count')::int, 0) AS waived_count,
+            CASE
+              WHEN violations IS NULL
+                   OR jsonb_typeof(violations) = 'null' THEN '[]'::jsonb
+              WHEN jsonb_typeof(violations) = 'array' THEN violations
+              WHEN jsonb_typeof(violations) = 'object'
+                   AND jsonb_typeof(violations->'violations') = 'array'
+                THEN violations->'violations'
+              WHEN jsonb_typeof(violations) = 'object'
+                   AND jsonb_typeof(violations->'result'->'violations') = 'array'
+                THEN violations->'result'->'violations'
+              WHEN jsonb_typeof(violations) = 'object'
+                   AND violations ? 'violations'
+                THEN jsonb_build_array(violations->'violations')
+              ELSE jsonb_build_array(violations)
+            END AS violations
+          FROM compliance_results
+          WHERE evaluation_timestamp >= NOW() - (%(days)s || ' days')::interval
+            AND (%(fw)s = '' OR framework = %(fw)s)
+          ORDER BY COALESCE(hostname, 'estate'), framework, evaluation_timestamp DESC
+        named_args:
+          days: "{{ lookback }}"
+          fw: "{{ framework_filter }}"
+      register: results_query
+
+    - name: Fail loudly when the window holds no results
+      assert:
+        that: results_query.rowcount | int > 0
+        fail_msg: >-
+          No rows in compliance_results within the last {{ lookback }} days
+          {{ ('for framework ' + framework_filter) if framework_filter else '' }}.
+          Run an assessment first — this report only renders stored results, it
+          does not evaluate anything itself.
+
+    - name: Calculate overall statistics
+      vars:
+        rows: "{{ results_query.query_result }}"
+      set_fact:
+        report_rows: "{{ rows }}"
+        total_systems: "{{ rows | map(attribute='hostname') | unique | length }}"
+        total_assessments: "{{ rows | length }}"
+        compliant_count: "{{ rows | selectattr('compliant') | list | length }}"
+        avg_compliance: "{{ (rows | map(attribute='compliance_percentage') | map('float') | sum / (rows | length)) | round(1) }}"
+        frameworks_covered: "{{ rows | map(attribute='framework') | unique | sort }}"
+
+    - name: Resolve the requested formats (list or comma-separated string; default all three)
+      set_fact:
+        _formats: >-
+          {{ ((report_formats | default(report_formats_default, true))
+              if (report_formats | default(report_formats_default, true)) is sequence and (report_formats | default(report_formats_default, true)) is not string
+              else ((report_formats | default(report_formats_default, true)) | string | split(',')))
+             | map('trim') | map('lower') | reject('equalto', '') | list }}
+
+    - name: Refuse unknown formats
+      assert:
+        that: _formats | difference(['html', 'csv', 'md']) | length == 0
+        fail_msg: "report_formats must be a subset of html, csv, md — got {{ _formats }}"
+
+    - name: Generate HTML Report
+      when: "'html' in _formats"
+      copy:
+        dest: "{{ report_file }}"
+        mode: '0644'
+        content: |
+          <!DOCTYPE html>
+          <html>
+          <head>
+              <title>Compliance Report - {{ ansible_date_time.date }}</title>
+              <style>
+                  * { margin: 0; padding: 0; box-sizing: border-box; }
+                  body { font-family: 'Segoe UI', Arial, sans-serif; background: #f0f2f5; color: #333; }
+                  .header { background: linear-gradient(135deg, #1a237e, #283593); color: white; padding: 30px 40px; }
+                  .header h1 { font-size: 28px; margin-bottom: 5px; }
+                  .header p { opacity: 0.9; font-size: 14px; }
+                  .container { max-width: 1400px; margin: 0 auto; padding: 30px; }
+                  .summary-cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; margin-bottom: 30px; }
+                  .card { background: white; border-radius: 10px; padding: 25px; box-shadow: 0 2px 10px rgba(0,0,0,0.08); }
+                  .card-value { font-size: 36px; font-weight: bold; margin-bottom: 5px; }
+                  .card-label { color: #666; font-size: 14px; }
+                  .card.green .card-value { color: #2e7d32; }
+                  .card.orange .card-value { color: #f57c00; }
+                  .card.blue .card-value { color: #1565c0; }
+                  .section { background: white; border-radius: 10px; padding: 25px; margin-bottom: 20px; box-shadow: 0 2px 10px rgba(0,0,0,0.08); }
+                  .section h2 { color: #1a237e; margin-bottom: 20px; font-size: 20px; border-bottom: 2px solid #e0e0e0; padding-bottom: 10px; }
+                  table { width: 100%; border-collapse: collapse; }
+                  th, td { padding: 14px; text-align: left; border-bottom: 1px solid #e0e0e0; }
+                  th { background: #f5f5f5; font-weight: 600; color: #333; }
+                  tr:hover { background: #fafafa; }
+                  .status-compliant { color: #2e7d32; font-weight: 600; }
+                  .status-non-compliant { color: #c62828; font-weight: 600; }
+                  .risk-low { background: #e8f5e9; color: #2e7d32; padding: 4px 12px; border-radius: 12px; font-size: 12px; }
+                  .risk-medium { background: #fff3e0; color: #f57c00; padding: 4px 12px; border-radius: 12px; font-size: 12px; }
+                  .risk-high { background: #ffebee; color: #c62828; padding: 4px 12px; border-radius: 12px; font-size: 12px; }
+                  .risk-critical { background: #b71c1c; color: white; padding: 4px 12px; border-radius: 12px; font-size: 12px; }
+                  .risk-unknown { background: #eceff1; color: #546e7a; padding: 4px 12px; border-radius: 12px; font-size: 12px; }
+                  .progress-bar { background: #e0e0e0; border-radius: 10px; height: 10px; overflow: hidden; }
+                  .progress-fill { height: 100%; border-radius: 10px; }
+                  .footer { text-align: center; padding: 20px; color: #666; font-size: 12px; }
+                  .semantics { background: #e8eaf6; border-left: 4px solid #283593; padding: 12px 16px; font-size: 13px; color: #333; margin-bottom: 20px; border-radius: 4px; }
+              </style>
+          </head>
+          <body>
+              <div class="header">
+                  <h1>Compliance Report</h1>
+                  <p>Generated: {{ ansible_date_time.iso8601 }} | Window: last {{ lookback }} days |
+                     Frameworks: {{ frameworks_covered | join(', ') }}</p>
+              </div>
+
+              <div class="container">
+                  <div class="semantics">
+                      <strong>How to read these numbers:</strong> each row is the latest stored
+                      result per host and framework inside the window, straight from the
+                      <code>compliance_results</code> evidence store. Dashboard panels that count
+                      every assessment run in the window will show larger totals — that is
+                      assessments-run, not systems-assessed.
+                  </div>
+
+                  <div class="summary-cards">
+                      <div class="card blue">
+                          <div class="card-value">{{ total_systems }}</div>
+                          <div class="card-label">Systems Assessed</div>
+                      </div>
+                      <div class="card green">
+                          <div class="card-value">{{ compliant_count }} / {{ total_assessments }}</div>
+                          <div class="card-label">Compliant Results (latest per host+framework)</div>
+                      </div>
+                      <div class="card orange">
+                          <div class="card-value">{{ avg_compliance }}%</div>
+                          <div class="card-label">Average Compliance</div>
+                      </div>
+                      <div class="card">
+                          <div class="card-value">{{ frameworks_covered | length }}</div>
+                          <div class="card-label">Frameworks Covered</div>
+                      </div>
+                  </div>
+
+                  <div class="section">
+                      <h2>Latest Result per Host and Framework</h2>
+                      <table>
+                          <thead>
+                              <tr>
+                                  <th>Hostname</th>
+                                  <th>Framework</th>
+                                  <th>Status</th>
+                                  <th>Score</th>
+                                  <th>Controls (passed / total)</th>
+                                  <th>Waived</th>
+                                  <th>Risk</th>
+                                  <th>Assessed</th>
+                              </tr>
+                          </thead>
+                          <tbody>
+          {% for row in report_rows %}
+                              <tr>
+                                  <td><strong>{{ row.hostname }}</strong></td>
+                                  <td>{{ row.framework }}</td>
+                                  <td class="status-{{ 'compliant' if row.compliant else 'non-compliant' }}">
+                                      {{ '&#10003; Compliant' if row.compliant else '&#10007; Non-Compliant' }}
+                                  </td>
+                                  <td>
+                                      <div style="display: flex; align-items: center; gap: 10px;">
+                                          <div class="progress-bar" style="width: 100px;">
+                                              <div class="progress-fill" style="width: {{ row.compliance_percentage }}%; background: {{ '#4caf50' if row.compliance_percentage | float >= 90 else '#ff9800' if row.compliance_percentage | float >= 70 else '#f44336' }};"></div>
+                                          </div>
+                                          <span>{{ row.compliance_percentage }}%</span>
+                                      </div>
+                                  </td>
+                                  <td>{{ row.passed_controls }} / {{ row.total_controls }}</td>
+                                  <td>{{ row.waived_count if row.waived_count | int > 0 else '—' }}</td>
+                                  <td><span class="risk-{{ row.risk_level | lower }}">{{ row.risk_level | upper }}</span></td>
+                                  <td>{{ row.evaluation_timestamp | string | truncate(19, True, '') }}</td>
+                              </tr>
+          {% endfor %}
+                          </tbody>
+                      </table>
+                  </div>
+
+                  <div class="section">
+                      <h2>Findings</h2>
+                      <p style="color:#666; font-size:13px; margin-bottom:15px;">
+                          Every finding from each latest result above — the list only, as
+                          recorded in the evidence store. Remediation guidance is deliberately
+                          not part of this report.
+                      </p>
+          {% set ns = namespace(any=false) %}
+          {% for row in report_rows %}
+          {% set raw = row.violations | default(none) %}
+          {% set parsed = (raw | from_json) if raw is string else (raw if raw is not none else []) %}
+          {% set vlist = parsed if (parsed is sequence and parsed is not string and parsed is not mapping) else ([parsed] if parsed else []) %}
+          {% set risk = (row.risk_level | default('unknown') | lower) if (row.risk_level | default('unknown') | lower) in ['low', 'medium', 'high', 'critical'] else 'unknown' %}
+          {% if vlist and vlist | length > 0 %}
+          {% set ns.any = true %}
+                      <details style="margin-bottom:12px;">
+                          <summary style="cursor:pointer; padding:8px 0; font-size:15px;">
+                              <strong>{{ row.hostname | e }}</strong> &mdash; {{ row.framework | e }}
+                              <span class="risk-{{ risk }}" style="margin-left:8px;">{{ vlist | length }} finding{{ 's' if vlist | length != 1 }}</span>
+                          </summary>
+                          <ul style="margin:10px 0 10px 25px; line-height:1.7; font-size:14px;">
+          {% for item in vlist %}
+          {% if item is string %}
+                              <li>{{ item | e }}</li>
+          {% elif item is mapping %}
+                              <li>{{ (item.description | default(item.msg | default((item.standard | default('') ~ ' — ' ~ item.requirement | default('')) if (item.standard is defined or item.requirement is defined) else (item | dict2items | rejectattr('key', 'in', ['remediation', 'fix', 'remediation_guidance']) | items2dict | to_json), true), true)) | e }}</li>
+          {% else %}
+                              <li>{{ item | string | e }}</li>
+          {% endif %}
+          {% endfor %}
+                          </ul>
+                      </details>
+          {% endif %}
+          {% endfor %}
+          {% if not ns.any %}
+                      <p style="color:#2e7d32;">No findings recorded in any latest result in this window.</p>
+          {% endif %}
+                  </div>
+              </div>
+
+              <div class="footer">
+                  <p>Ansible Automated Compliance (AAC) — read-only report over the compliance_results evidence store</p>
+                  <p>Semantics: latest result per (hostname, framework), evaluation_timestamp within the last {{ lookback }} days</p>
+              </div>
+          </body>
+          </html>
+
+    # One row per latest (hostname, framework) result — the same rows the HTML
+    # tables; findings flattened to one cell separated by " | ". Cells that start
+    # with = + - @ are prefixed with a quote so a spreadsheet never executes them.
+    - name: Generate CSV Report
+      when: "'csv' in _formats"
+      copy:
+        dest: "{{ report_csv_file }}"
+        mode: '0644'
+        content: |
+          hostname,framework,status,compliance_percentage,passed_controls,total_controls,failed_controls,waived_count,risk_level,evaluation_timestamp,findings_count,findings
+          {% for row in report_rows %}
+          {% set raw = row.violations | default(none) %}
+          {% set parsed = (raw | from_json) if raw is string else (raw if raw is not none else []) %}
+          {% set vlist = parsed if (parsed is sequence and parsed is not string and parsed is not mapping) else ([parsed] if parsed else []) %}
+          {% set texts = [] %}
+          {% for item in vlist %}
+          {% if item is string %}{% set _ = texts.append(item) %}
+          {% elif item is mapping %}{% set _ = texts.append(item.description | default(item.msg | default(((item.standard | default('')) ~ ' — ' ~ (item.requirement | default(''))) if (item.standard is defined or item.requirement is defined) else (item | to_json), true), true)) %}
+          {% else %}{% set _ = texts.append(item | string) %}
+          {% endif %}
+          {% endfor %}
+          {% set findings = texts | join(' | ') %}
+          {% set findings = ("'" ~ findings) if (findings and findings[0] in '=+-@') else findings %}
+          {{ row.hostname | string | regex_replace('"', '""') }},{{ row.framework }},{{ 'compliant' if row.compliant else 'non-compliant' }},{{ row.compliance_percentage }},{{ row.passed_controls }},{{ row.total_controls }},{{ row.failed_controls | default((row.total_controls | int) - (row.passed_controls | int)) }},{{ row.waived_count | default(0) }},{{ row.risk_level | default('unknown') | lower }},{{ row.evaluation_timestamp | string | truncate(19, True, '') }},{{ vlist | length }},"{{ findings | regex_replace('"', '""') }}"
+          {% endfor %}
+
+    - name: Generate Markdown Report
+      when: "'md' in _formats"
+      copy:
+        dest: "{{ report_md_file }}"
+        mode: '0644'
+        content: |
+          # Compliance Report — {{ ansible_date_time.date }}
+
+          Generated {{ ansible_date_time.iso8601 }} · window: last {{ lookback }} days · frameworks: {{ frameworks_covered | join(', ') }}
+
+          | Systems assessed | Compliant / assessments | Average score | Frameworks |
+          |---|---|---|---|
+          | {{ total_systems }} | {{ compliant_count }} / {{ total_assessments }} | {{ avg_compliance }}% | {{ frameworks_covered | length }} |
+
+          ## Latest result per host and framework
+
+          | Hostname | Framework | Status | Score | Controls (passed / total) | Waived | Risk | Assessed |
+          |---|---|---|---|---|---|---|---|
+          {% for row in report_rows %}
+          | {{ row.hostname }} | {{ row.framework }} | {{ 'Compliant' if row.compliant else 'Non-Compliant' }} | {{ row.compliance_percentage }}% | {{ row.passed_controls }} / {{ row.total_controls }} | {{ row.waived_count if row.waived_count | int > 0 else '—' }} | {{ row.risk_level | default('unknown') | upper }} | {{ row.evaluation_timestamp | string | truncate(19, True, '') }} |
+          {% endfor %}
+
+          ## Findings
+
+          {% set ns = namespace(any=false) %}
+          {% for row in report_rows %}
+          {% set raw = row.violations | default(none) %}
+          {% set parsed = (raw | from_json) if raw is string else (raw if raw is not none else []) %}
+          {% set vlist = parsed if (parsed is sequence and parsed is not string and parsed is not mapping) else ([parsed] if parsed else []) %}
+          {% if vlist and vlist | length > 0 %}
+          {% set ns.any = true %}
+          ### {{ row.hostname }} — {{ row.framework }} ({{ vlist | length }} finding{{ 's' if vlist | length != 1 }}, risk {{ row.risk_level | default('unknown') | lower }})
+
+          {% for item in vlist %}
+          {% if item is string %}
+          - {{ item }}
+          {% elif item is mapping %}
+          - {{ item.description | default(item.msg | default(((item.standard | default('')) ~ ' — ' ~ (item.requirement | default(''))) if (item.standard is defined or item.requirement is defined) else (item | dict2items | rejectattr('key', 'in', ['remediation', 'fix', 'remediation_guidance']) | items2dict | to_json), true), true) }}
+          {% else %}
+          - {{ item | string }}
+          {% endif %}
+          {% endfor %}
+
+          {% endif %}
+          {% endfor %}
+          {% if not ns.any %}
+          No findings recorded in any latest result in this window.
+          {% endif %}
+
+          ---
+          Ansible Automated Compliance (AAC) — read-only report over the compliance_results evidence store.
+          Semantics: latest result per (hostname, framework), evaluation_timestamp within the last {{ lookback }} days.
+
+    - name: Collect the files that were written
+      set_fact:
+        report_files: >-
+          {{ ([report_file] if 'html' in _formats else [])
+             + ([report_csv_file] if 'csv' in _formats else [])
+             + ([report_md_file] if 'md' in _formats else []) }}
+
+    # The EE filesystem is destroyed when the job ends. Copy the finished report
+    # to a persistent host, or it survives nowhere but this job's stdout.
+    - name: Persist report to a host that outlives the job
+      when: (report_persist_host | default(aac_host | default(''))) | length > 0
+      vars:
+        persist_dest: "{{ report_persist_user | default(aap_ssh_user | default('aapuser1')) }}@{{ report_persist_host | default(aac_host) }}"
+      shell: >
+        ssh -o StrictHostKeyChecking=no -o BatchMode=yes {{ persist_dest }} 'mkdir -p ~/reports'
+        &&
+        scp -o StrictHostKeyChecking=no -o BatchMode=yes
+        {{ report_files | join(' ') }} {{ persist_dest }}:reports/
+      register: persist_result
+
+    - name: Warn when no persist host is configured
+      when: (report_persist_host | default(aac_host | default(''))) | length == 0
+      debug:
+        msg: >-
+          WARNING: no report_persist_host configured — the report files
+          ({{ report_files | join(', ') }}) exist only inside this job's execution
+          environment and are destroyed when the job ends. Set
+          report_persist_host (and a machine credential for it) to keep them.
+
+    - name: Display report summary
+      debug:
+        msg:
+          - "Systems assessed (window): {{ total_systems }}"
+          - "Compliant (latest per host+framework): {{ compliant_count }} / {{ total_assessments }}"
+          - "Average compliance: {{ avg_compliance }}%"
+          - "Formats: {{ _formats | join(', ') }}"
+          - "Files: {{ report_files | join(', ') }}"
+          - "Persisted: {{ 'yes — ' + (report_persist_host | default(aac_host)) + ':~/reports/' if persist_result is not skipped else 'NO — EE-local only' }}"

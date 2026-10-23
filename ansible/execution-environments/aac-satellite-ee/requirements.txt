@@ -1,0 +1,8 @@
+# The foreman inventory plugin talks to the Satellite API over HTTPS.
+requests>=2.34.2
+# Not used by the content pre-check, which compares exact version-release strings
+# with ansible.builtin.uri and Jinja only. Kept because collections in this EE pull
+# it in anyway; pinning a floor here keeps that resolution predictable.
+packaging>=26.3
+# Findings are written to the AAC compliance database.
+psycopg2-binary>=2.9.13

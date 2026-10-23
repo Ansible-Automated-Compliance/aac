@@ -1,0 +1,28 @@
+---
+# Test inventory for RHEL 8 CIS compliance assessment
+all:
+  hosts:
+    localhost:
+      ansible_connection: local
+      ansible_become: yes
+
+    # Add your RHEL 8 hosts here
+    # rhel8-server-01:
+    #   ansible_host: 192.168.1.10
+    #   ansible_user: admin
+    #   ansible_become: yes
+
+  vars:
+    # OPA configuration
+    opa_server_url: "http://localhost:8181"
+
+    # Target platform
+    target_platform: "rhel8"
+
+    # Compliance framework
+    compliance_framework: "cis"
+
+    # Report generation
+    generate_report: true
+    report_format: "json"
+    assessment_output_dir: "/tmp/compliance_assessments"

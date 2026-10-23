@@ -1,0 +1,55 @@
+---
+# Default variables for gather_user_security role
+
+# System UID threshold (users below this are system accounts)
+system_uid_min: 1000
+
+# System GID threshold
+system_gid_min: 1000
+
+# Files to check in user home directories
+user_dotfiles_to_check:
+  - .netrc
+  - .forward
+  - .rhosts
+
+# Shells that indicate a disabled account
+disabled_shells:
+  - /sbin/nologin
+  - /usr/sbin/nologin
+  - /bin/false
+  - /usr/bin/false
+
+# Expected disabled password indicators
+disabled_password_indicators:
+  - "!!"
+  - "*"
+  - "!"
+
+# Shell configuration files to check for TMOUT
+shell_config_files:
+  - /etc/profile
+  - /etc/profile.d/*.sh
+  - /etc/bashrc
+  - /etc/bash.bashrc
+
+# Default umask files to check
+umask_config_files:
+  - /etc/profile
+  - /etc/bashrc
+  - /etc/login.defs
+
+# Maximum acceptable umask (more restrictive is better)
+max_acceptable_umask: "027"
+
+# Maximum acceptable shell timeout (seconds)
+max_acceptable_timeout: 900
+
+# Files to check for root PATH integrity
+root_path_files:
+  - /root/.bash_profile
+  - /root/.bashrc
+  - /etc/profile
+
+# Expected home directory permissions (octal)
+expected_home_dir_mode: "750"

@@ -1,0 +1,58 @@
+---
+# Copy to m365_config.yml and fill in. Never commit the real file.
+#
+# Graph and the Fabric admin API take client credentials. Exchange,
+# Teams, SharePoint and Purview require app-only CERTIFICATE
+# authentication -- Exchange Online PowerShell does not accept a client
+# secret at all, which is why both are listed.
+
+m365_tenant_id: "00000000-0000-0000-0000-000000000000"
+m365_client_id: "00000000-0000-0000-0000-000000000000"
+m365_client_secret: "{{ vault_m365_client_secret }}"
+m365_organization: "contoso.onmicrosoft.com"
+
+# ── AAC platform endpoints (REQUIRED for a standalone run) ─────────────
+# The assessment POSTs facts to OPA and persists results to PostgreSQL.
+# On AAP, supply these as job-template extra_vars or survey answers; for a
+# standalone `ansible-playbook` run set them here. cis_m365_v7 loads into
+# the SECURITY OPA bucket (benchmarks/cis/** -> opa-security), so this is
+# opa_security_url, NOT opa_compliance_url. The role preflight fails fast
+# and loud if opa_security_url is empty (or pg_host, when persisting).
+# opa_security_url: <set via extra_vars / survey / inventory>   # your opa-security route / service URL
+# pg_host: <set via extra_vars / survey / inventory>   # PostgreSQL host for compliance_results (omit if m365_store_results: false)
+# compliance_db_user: postgres   # DB user for the persist step (m365_db_user follows it). Do NOT add an
+#                                # optional survey question for it with a blank default: an empty answer
+#                                # is passed as "" and the preflight fails closed on purpose.
+
+# PowerShell-backed sections (2, 3, 6, 7, 8)
+m365_certificate_path: "/etc/aac/m365/app-cert.pfx"
+m365_certificate_password: "{{ vault_m365_certificate_password }}"
+m365_certificate_thumbprint: "{{ vault_m365_certificate_thumbprint }}"
+m365_sharepoint_admin_url: "https://contoso-admin.sharepoint.com"
+
+# Set false to skip the PowerShell sections deliberately -- for example
+# when running on an execution environment without pwsh. The report
+# records the skip rather than implying those sections passed.
+m365_include_powershell_sections: true
+
+# ── Proxy (Graph/Fabric collectors) ───────────────────────────────────
+# By default the Graph/Fabric collectors honour the execution environment's
+# HTTP(S)_PROXY (m365_use_proxy: true). Behind a corporate proxy that must be
+# forced, set m365_proxy to the proxy URL; leave it blank to use the
+# environment. Set m365_use_proxy: false to force a direct connection.
+# (PowerShell-backed sections use their own proxy path.)
+m365_use_proxy: true
+# m365_proxy: <set via extra_vars / survey / inventory>   # e.g. "http://proxy.corp.example:8080"
+
+# Required application permissions
+#   Graph   Policy.Read.All, Directory.Read.All,
+#           RoleManagement.Read.Directory, Group.Read.All,
+#           Domain.Read.All, Application.Read.All, User.Read.All,
+#           AuditLog.Read.All, UserAuthenticationMethod.Read.All,
+#           DeviceManagementConfiguration.Read.All,
+#           OrgSettings-AppsAndServices.Read.All, OrgSettings-Forms.Read.All
+#   EXO     Exchange.ManageAsApp, plus an assigned Entra directory role
+#   Fabric  Tenant.Read.All, AND the admin-portal switch
+#           "Service principals can use Fabric APIs" naming a security
+#           group that contains this app -- the permission alone is not
+#           sufficient and the failure is a 401/403 with a valid token.

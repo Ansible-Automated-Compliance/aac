@@ -1,0 +1,285 @@
+---
+# aac_store_certification/tasks/main.yml
+# Validates inputs, computes deterministic CAA fields, inserts one row into
+# compliance_certifications, and exposes aac_certification_id.
+
+- name: Validate required CAA inputs
+  assert:
+    that:
+      - (aac_caa_framework | default('', true))         | length > 0
+      - (aac_caa_scope_value | default('', true))       | length > 0
+      - aac_caa_compliance_status in ['compliant', 'non_compliant', 'partial']
+      - aac_caa_scope             in ['host', 'fleet', 'control', 'compensating_control']
+      - aac_caa_result is mapping
+    fail_msg: >
+      aac_store_certification: framework, scope_value, compliance_status,
+      and scope are required; result must be a mapping.
+
+# ── Resolve policy_library_sha from the rego_policy_libraries submodule ───────
+# Empirically, AAP's runner strips .git when copying the project into /runner/
+# project on the EE — so all three git-file-based strategies below miss (they
+# work locally, and inside the task pod's raw checkout, but not in the EE).
+# `awx_project_revision` is an AAP-injected extra_var that carries the parent-
+# repo's SHA at time of sync; when the git files aren't available, we fall
+# back to a `project:<sha>` marker so an auditor can still dereference the
+# exact policies commit (parent-repo SHA → submodule pointer at that SHA).
+#
+# Strategy order:
+#   1. `git -C policies rev-parse HEAD`   — submodule directory is a git checkout
+#   2. `git -C . ls-tree HEAD policies`   — parent repo tracks the submodule
+#   3. Read policies/.git/HEAD directly   — archived checkouts with ref files
+#   4. `project:<awx_project_revision>`   — AAP-provided parent SHA, prefixed
+- name: Resolve policy_library_sha (submodule pointer, multi-strategy)
+  shell: |
+    set -uo pipefail
+    dir={{ aac_caa_policy_dir | quote }}
+
+    # Strategy 1 — submodule directory is itself a git checkout.
+    if [ -e "$dir/policies/.git" ]; then
+      sha=$(git -C "$dir/policies" rev-parse HEAD 2>/dev/null || true)
+      if [ -n "$sha" ]; then printf '%s' "$sha"; exit 0; fi
+    fi
+
+    # Strategy 2 — parent repo tracks the submodule as a gitlink.
+    if [ -e "$dir/.git" ]; then
+      sha=$(git -C "$dir" ls-tree HEAD policies 2>/dev/null | awk '{print $3}')
+      if [ -n "$sha" ]; then printf '%s' "$sha"; exit 0; fi
+    fi
+
+    # Strategy 3 — read policies/.git/HEAD (raw ref file). This works even when
+    # git binary is missing or the submodule directory is a "gitdir:" pointer
+    # written by `git submodule update --init` in older Git versions.
+    head_file="$dir/policies/.git/HEAD"
+    if [ ! -f "$head_file" ] && [ -f "$dir/policies/.git" ]; then
+      # .git is a file "gitdir: <path>" — follow it
+      gitdir=$(sed -n 's/^gitdir: //p' "$dir/policies/.git" 2>/dev/null || true)
+      if [ -n "$gitdir" ]; then
+        # gitdir path may be relative to policies/
+        case "$gitdir" in
+          /*) head_file="$gitdir/HEAD" ;;
+          *)  head_file="$dir/policies/$gitdir/HEAD" ;;
+        esac
+      fi
+    fi
+    if [ -f "$head_file" ]; then
+      ref=$(cat "$head_file" 2>/dev/null || true)
+      case "$ref" in
+        "ref: "*)
+          # Symbolic ref — dereference by reading the file it points to.
+          ref_path="${ref#ref: }"
+          # head_file is .../HEAD; refs are siblings under the same gitdir root.
+          root=$(dirname "$head_file")
+          if [ -f "$root/$ref_path" ]; then
+            sha=$(cat "$root/$ref_path" 2>/dev/null | tr -d '[:space:]' || true)
+            if [ -n "$sha" ]; then printf '%s' "$sha"; exit 0; fi
+          fi
+          ;;
+        [0-9a-f]*)
+          # Detached HEAD or raw SHA.
+          sha=$(printf '%s' "$ref" | tr -d '[:space:]')
+          if [ -n "$sha" ]; then printf '%s' "$sha"; exit 0; fi
+          ;;
+      esac
+    fi
+
+    # Strategy 4 — AAP-provided parent-repo SHA. Passed in via environment
+    # rather than Jinja-templated into the shell body so nested defaults from
+    # role vars can't collide with the shell block's own parsing. Whitespace
+    # trimming happens at the Ansible layer (see environment: below) — the
+    # earlier attempt to trim with `tr -d '[:space:]'` inside this shell body
+    # caused every subsequent CIS RHEL 9 job to fail at task-parse with
+    # "unbalanced jinja2 block or quotes" (job 464 on lab-aap and 9 others).
+    aap_rev="$AAP_PROJECT_REVISION"
+    if [ -n "$aap_rev" ]; then
+      printf 'project:%s' "$aap_rev"
+      exit 0
+    fi
+
+    # Strategy 5 — give up.
+    printf 'unknown'
+  environment:
+    # `regex_replace('\s+', '')` strips ALL whitespace (leading, trailing, AND
+    # embedded) from the AAP-provided value before it enters the shell —
+    # matches the original `tr -d '[:space:]'` sanitization guarantee from
+    # PR #280, but on the Ansible side to avoid the char-class construct that
+    # tripped Ansible's arg-splitter in the lab EE.
+    AAP_PROJECT_REVISION: "{{ aac_caa_project_revision | regex_replace('\\s+', '') }}"
+  register: _caa_policy_sha
+  delegate_to: "{{ aac_caa_delegate_to }}"
+  become: no
+  changed_when: false
+  failed_when: false
+
+# ── Compute deterministic CAA fields via helper script ───────────────────────
+- name: Build CAA payload (stdin to helper script)
+  set_fact:
+    _caa_helper_payload: >-
+      {{ {
+        'framework':            aac_caa_framework,
+        'framework_version':    aac_caa_framework_version,
+        'scope':                aac_caa_scope,
+        'scope_value':          aac_caa_scope_value,
+        'evaluator_aap_job_id': aac_caa_evaluator_aap_job_id | int,
+        'policy_library_sha':   (_caa_policy_sha.stdout | default('unknown', true)),
+        'input':                aac_caa_input,
+        'result':               aac_caa_result,
+        'violations':           aac_caa_violations,
+        'compliance_status':    aac_caa_compliance_status,
+      } | to_json }}
+
+- name: Compute deterministic CAA fields
+  command: python3 {{ role_path }}/files/build_caa.py
+  args:
+    stdin: "{{ _caa_helper_payload }}"
+  register: _caa_helper_out
+  delegate_to: "{{ aac_caa_delegate_to }}"
+  become: no
+  changed_when: false
+
+- name: Parse helper output
+  set_fact:
+    _caa_fields: "{{ _caa_helper_out.stdout | from_json }}"
+
+# ── Cosign key-based signature (CAA spec §7 item 4) ──────────────────────────
+# Hard-require a signing key. Every CAA row is a cryptographic artifact;
+# writing rows with a placeholder "signature" defeats the whole point. The
+# operator populates caa_signing_private_key in vault_secrets.yml before
+# assessments start writing CAAs.
+- name: Assert a CAA signing private key is configured
+  assert:
+    that:
+      - aac_caa_signing_private_key | length > 0
+    fail_msg: >-
+      aac_store_certification: caa_signing_private_key is not set in
+      vault_secrets.yml. Every CAA row must be cryptographically signed —
+      generate a key with `COSIGN_PASSWORD="" cosign generate-key-pair`, put
+      the private PEM content into caa_signing_private_key, and commit the
+      matching public key to docs/security/caa-signing-key-vN.pub for
+      auditor verification. See docs/security/CAA_VERIFICATION.md.
+
+# Write the canonical projection to a temp file with mode 0600. Passing via
+# /dev/stdin was fragile in some EE shells — a real file is portable.
+- name: Write CAA projection to a temp file for signing
+  copy:
+    content: "{{ _caa_fields.projection }}"
+    dest: "/tmp/caa_projection_{{ _caa_fields.certification_id }}.json"
+    mode: '0600'
+  delegate_to: "{{ aac_caa_delegate_to }}"
+  become: no
+  changed_when: false
+
+# Sign with the private key sourced from env — cosign resolves env://VAR at
+# runtime and reads the PEM content. no_log guards the private key from job
+# stdout on the Ansible side; cosign only prints "Using payload from:" and
+# the signature on stderr/stdout, neither of which contains the key.
+- name: Cosign sign the CAA canonical projection
+  command:
+    cmd: >-
+      cosign sign-blob
+      --key env://COSIGN_PRIVATE_KEY
+      --tlog-upload=false
+      --yes
+      /tmp/caa_projection_{{ _caa_fields.certification_id }}.json
+  environment:
+    COSIGN_PRIVATE_KEY: "{{ aac_caa_signing_private_key }}"
+    COSIGN_PASSWORD:    "{{ aac_caa_signing_password }}"
+  register: _caa_cosign_result
+  delegate_to: "{{ aac_caa_delegate_to }}"
+  become: no
+  changed_when: false
+  no_log: true
+
+- name: Capture cosign signature (base64)
+  set_fact:
+    _caa_signature_b64: "{{ _caa_cosign_result.stdout | trim }}"
+
+# Read the EXACT bytes cosign signed back off disk so signed_projection in
+# the DB is byte-identical to what was signed. Using `_caa_fields.projection`
+# directly loses byte-fidelity through Ansible's YAML/Jinja/string pipeline
+# — verified empirically: sig verifies against the file, not against a
+# re-templated string of the "same" value.
+- name: Slurp back the exact projection bytes that cosign signed
+  slurp:
+    src: "/tmp/caa_projection_{{ _caa_fields.certification_id }}.json"
+  register: _caa_signed_projection_slurp
+  delegate_to: "{{ aac_caa_delegate_to }}"
+  become: no
+
+- name: Decode the signed projection bytes for DB storage
+  set_fact:
+    # `| string` prevents Ansible from auto-parsing the JSON output of
+    # b64decode back into a dict — postgresql_query rejects dict values
+    # for TEXT columns with "can't adapt type 'dict'". Same class of
+    # gotcha as the fix in PR #290.
+    _caa_signed_projection: "{{ _caa_signed_projection_slurp.content | b64decode | string }}"
+
+- name: Remove temp projection file
+  file:
+    path: "/tmp/caa_projection_{{ _caa_fields.certification_id }}.json"
+    state: absent
+  delegate_to: "{{ aac_caa_delegate_to }}"
+  become: no
+  changed_when: false
+
+# ── INSERT into compliance_certifications ─────────────────────────────────────
+- name: Insert CAA row
+  community.postgresql.postgresql_query:
+    login_host:     "{{ aac_caa_pg_host }}"
+    login_port:     "{{ aac_caa_pg_port }}"
+    login_user:     "{{ aac_caa_pg_user }}"
+    login_password: "{{ aac_caa_pg_password }}"
+    login_db:             "{{ aac_caa_pg_db }}"
+    query: |
+      INSERT INTO compliance_certifications
+        (certification_id, framework, framework_version,
+         scope, scope_value, period_start, period_end,
+         evaluator_aap_job_id, evaluator_aap_host,
+         policy_library_sha, opa_bundle_revision,
+         input_hash, result, regulatory_clauses,
+         compliance_status, severity_summary,
+         signature, signature_algorithm, signed_by, signed_at,
+         artifact_uri, signed_projection)
+      VALUES
+        (%s::uuid, %s, %s,
+         %s, %s, %s::timestamptz, %s::timestamptz,
+         %s::integer, %s,
+         %s, %s,
+         %s, %s::jsonb, %s::text[],
+         %s, %s::jsonb,
+         decode(%s, 'base64'), %s, %s, %s::timestamptz,
+         %s, %s)
+      RETURNING certification_id::text AS certification_id
+    positional_args:
+      - "{{ _caa_fields.certification_id }}"
+      - "{{ (aac_caa_framework | default('', true)) }}"
+      - "{{ (aac_caa_framework_version | default('', true)) }}"
+      - "{{ aac_caa_scope }}"
+      - "{{ (aac_caa_scope_value | default('', true)) }}"
+      - "{{ _caa_fields.period_start }}"
+      - "{{ _caa_fields.period_end }}"
+      - "{{ aac_caa_evaluator_aap_job_id | int }}"
+      - "{{ aac_caa_evaluator_aap_host }}"
+      - "{{ _caa_policy_sha.stdout | default('unknown', true) }}"
+      - "{{ aac_caa_opa_bundle_revision }}"
+      - "{{ _caa_fields.input_hash }}"
+      - "{{ aac_caa_result | to_json }}"
+      - "{}"
+      - "{{ (aac_caa_compliance_status | default('', true)) }}"
+      - "{{ _caa_fields.severity_summary | to_json }}"
+      - "{{ _caa_signature_b64 }}"
+      - "{{ aac_caa_signing_algorithm }}"
+      - "{{ aac_caa_signing_key_id }}"
+      - "{{ _caa_fields.signed_at }}"
+      - "{{ aac_caa_artifact_uri }}"
+      # signed_projection = the EXACT bytes cosign signed. Slurped back off
+      # disk (see task above) — string-round-tripping the Python-serialized
+      # projection through Ansible YAML/Jinja lost byte fidelity in
+      # practice, and cosign verify failed on the "same" data.
+      - "{{ _caa_signed_projection }}"
+  register: _caa_insert
+  delegate_to: "{{ aac_caa_delegate_to }}"
+  become: no
+
+- name: Expose certification ID
+  set_fact:
+    aac_certification_id: "{{ _caa_insert.query_result[0].certification_id | default(None) }}"

@@ -1,0 +1,43 @@
+---
+# aac_enforceauth_bridge — entry point
+# Expects: aac_host, aap_ssh_user (site_config.yml) and compliance_reader_password
+# (vault_secrets.yml). Deploys the read-only AAC Compliance-State API for EnforceAuth.
+
+- name: Sync app source and write DB env file
+  import_tasks: dirs.yml
+  tags: [aac_eauth, aac_eauth_dirs]
+
+- name: Build the Compliance-State API image
+  import_tasks: build.yml
+  tags: [aac_eauth, aac_eauth_build]
+
+- name: Deploy the Compliance-State API container
+  import_tasks: container.yml
+  tags: [aac_eauth, aac_eauth_container]
+
+- name: Wait for the Compliance-State API to be healthy
+  import_tasks: healthcheck.yml
+  tags: [aac_eauth, aac_eauth_healthcheck]
+
+- name: Install user-level systemd unit
+  import_tasks: systemd.yml
+  when: aac_eauth_generate_systemd | bool
+  tags: [aac_eauth, aac_eauth_systemd]
+
+- name: Compliance-State API deployment summary
+  debug:
+    msg:
+      - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+      - "  AAC Compliance-State API (EnforceAuth bridge) — Deployed"
+      - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+      - "  Container:  {{ aac_eauth_container_name }}"
+      - "  Health:     http://{{ aac_host }}:{{ aac_eauth_port }}/health"
+      - "  Host state: http://{{ aac_host }}:{{ aac_eauth_port }}/v1/compliance/hosts/<host>"
+      - "  OPA bundle: http://{{ aac_host }}:{{ aac_eauth_port }}/v1/bundle.tar.gz"
+      - "  DB:         {{ aac_eauth_db_user }}@{{ aac_eauth_db_host }}:{{ aac_eauth_db_port }}/{{ aac_eauth_db_name }} (read-only)"
+      - ""
+      - "  Point EnforceAuth's OPA at the endpoints above:"
+      - "    http.send  -> policy/enforceauth_authz.rego"
+      - "    bundle     -> policy/enforceauth_authz_bundle.rego"
+      - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  tags: [aac_eauth]

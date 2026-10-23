@@ -1,0 +1,60 @@
+---
+# AAC Digital Sovereignty Execution Environment
+#
+# Dedicated EE for the Digital Sovereignty assessment domain — data
+# residency, jurisdictional control, cloud-provider dependency, and the
+# sovereignty debt category that feeds the Technical Debt heat map.
+#
+# Used by:
+#   ansible/playbooks/digital_sovereignty_assessment.yml
+#   aac-demos repo: demos/digital_sovereignty/playbooks/digital_sovereignty_demo_preflight.yml
+#
+# NOT used by:
+#   CIS / STIG / NERC-CIP / AMI assessments — aac-compliance-ee
+#   trivy + kubescape state assessment    — aac-policy-tools-ee
+#   Zift authz migration                  — aac-zift-ee
+#   Windows golden image                  — aac-windows-ee
+#   AMI 2.0 / GEISA device management     — aac-ami-ee
+#
+# ── Why a separate EE? Read this before adding to it ──────────────────
+# Honest accounting: as of 2026-08-06 the DS playbooks call only
+# `community.postgresql.postgresql_query` and builtins (uri, set_fact).
+# Every one of those already exists in aac-compliance-ee, so this EE adds
+# NO capability today. It exists for three reasons that are about
+# packaging and blast radius, not dependencies:
+#
+#   1. Customer packaging — a sovereignty-only customer should not
+#      receive an image carrying Terraform, Mitogen, amazon.aws and
+#      infra.aap_configuration. Those are core concerns, not theirs.
+#   2. Blast radius — DS is a demo headliner. Pinning it to core means
+#      every core rebuild re-validates the DS demo path.
+#   3. Room to grow — jurisdiction/residency tooling (cloud region
+#      inspection, data-flow mapping) lands here without touching core.
+#
+# If DS never grows its own tooling, this EE stays collection-identical
+# to aac-policy-tools-ee minus the binaries. That is a known and accepted
+# trade, not an oversight. Do not "fix" it by folding it back into core
+# without checking reasons 1 and 2 still fail to apply.
+#
+# Image: quay.io/rh-ee-tcoulter/aac-sovereignty-ee:vX.Y.Z (linux/amd64)
+
+version: 3
+
+images:
+  base_image:
+    name: quay.io/ansible/creator-ee:v24.2.0
+
+dependencies:
+  galaxy: requirements.yml
+  python: requirements.txt
+  ansible_core:
+    package_pip: ansible-core>=2.15.0
+  ansible_runner:
+    package_pip: ansible-runner>=2.3.0
+
+options:
+  package_manager_path: /usr/bin/microdnf
+
+# No additional_build_steps: this EE carries no external binaries. If you
+# find yourself adding one, that is the signal DS has grown its own
+# tooling domain — update the rationale block above to say what and why.

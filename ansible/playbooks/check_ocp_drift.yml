@@ -1,0 +1,197 @@
+---
+# check_ocp_drift.yml — CIP-010 R2 configuration drift detection for OpenShift
+#
+# Diffs the LIVE cluster against the most recent CIP-010 baseline row
+# (framework `nerc_cip_ocp_baseline`, written by capture_ocp_baseline.yml) and
+# reports deviations as NERC-CIP CIP-010 R2 findings:
+#   - regressions   : a check that was PASS at baseline and is now FAIL  (insecure change)
+#   - config drift  : a security-relevant config object whose .spec fingerprint changed
+#   - new failures  : a FAIL check absent from the baseline set
+# Each finding is marked UNAUDITED unless a matching authorized change ticket is
+# supplied (`drift_change_ticket`) — CIP-010 R1.2 change authorization. Results are
+# stored in `compliance_results` (framework `nerc_cip_ocp`) with the CCR uid as the
+# auditor evidence back-reference. Non-zero regressions/config-drift => compliant=false.
+#
+# AAP Job Template: "AAC - Check OCP NERC-CIP Drift (CIP-010)"
+# Credentials: OpenShift API bearer token, Ansible Vault
+
+- name: Detect OpenShift CIP-010 configuration drift vs baseline
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - [ "../vars/vault_secrets.yml", "../vars/empty_fallback.yml" ]
+    - ../vars/site_config.yml
+
+  vars:
+    ocp_scan_name: "ocp4-nerc-cip"
+    ocp_compliance_ns: "openshift-compliance"
+    cluster_name: "{{ ocp_cluster_name | default('crc') }}"
+    nerc_cip_annotation: "control.compliance.openshift.io/NERC-CIP"
+    authorized_ticket: "{{ drift_change_ticket | default('') }}"
+    aac_result_pg_host: "{{ pg_host }}"
+    ocp_baseline_objects:
+      - {api_version: "config.openshift.io/v1", kind: "OAuth",             name: "cluster"}
+      - {api_version: "config.openshift.io/v1", kind: "APIServer",         name: "cluster"}
+      - {api_version: "config.openshift.io/v1", kind: "Image",             name: "cluster"}
+      - {api_version: "operator.openshift.io/v1", kind: "IngressController", name: "default", namespace: "openshift-ingress-operator"}
+
+  tasks:
+    - name: Load the most recent CIP-010 baseline row
+      community.postgresql.postgresql_query:
+        login_host: "{{ aac_result_pg_host }}"
+        login_user: "postgres"
+        login_password: "{{ compliance_db_password }}"
+        login_db: "compliance"
+        query: >-
+          SELECT metadata FROM compliance_results
+          WHERE framework = 'nerc_cip_ocp_baseline' AND hostname = %(host)s
+          ORDER BY evaluation_timestamp DESC LIMIT 1
+        named_args:
+          host: "{{ cluster_name }}"
+      register: baseline_row
+
+    - name: Fail if no baseline exists
+      ansible.builtin.assert:
+        that: baseline_row.query_result | length > 0
+        fail_msg: "No CIP-010 baseline for cluster '{{ cluster_name }}'. Run capture_ocp_baseline.yml first."
+
+    - name: Extract baseline check-map + fingerprints + PASS-key set
+      ansible.builtin.set_fact:
+        baseline_checks: "{{ baseline_row.query_result[0].metadata.baseline_checks | default({}) }}"
+        baseline_fingerprints: "{{ baseline_row.query_result[0].metadata.config_fingerprints | default({}) }}"
+        baseline_pass_keys: >-
+          {{ (baseline_row.query_result[0].metadata.baseline_checks | default({}))
+             | dict2items | selectattr('value','equalto','PASS') | map(attribute='key') | list }}
+
+    - name: Read current ComplianceCheckResults
+      kubernetes.core.k8s_info:
+        api_version: compliance.openshift.io/v1alpha1
+        kind: ComplianceCheckResult
+        namespace: "{{ ocp_compliance_ns }}"
+        label_selectors:
+          - "compliance.openshift.io/scan-name={{ ocp_scan_name }}"
+        host: "{{ ocp_api_url | default(omit) }}"
+        api_key: "{{ ocp_api_token | default(omit) }}"
+        validate_certs: "{{ ocp_verify_ssl | default(false) | bool }}"
+      register: ccr_now
+
+    - name: Index current CCRs by name (status + uid + cip controls)
+      ansible.builtin.set_fact:
+        cur_by_name: >-
+          {{ cur_by_name | default({}) | combine({
+               item.metadata.name: {
+                 'status': item.status,
+                 'uid': item.metadata.uid,
+                 'cip_controls': (item.metadata.annotations[nerc_cip_annotation] | default('')).split(';') | map('trim') | select() | list
+               } }) }}
+      loop: "{{ ccr_now.resources }}"
+      loop_control:
+        label: "{{ item.metadata.name }}"
+
+    - name: Compute regressions (baseline PASS -> now FAIL) and new failures
+      ansible.builtin.set_fact:
+        regressed: >-
+          {{ cur_by_name | dict2items
+             | selectattr('value.status','equalto','FAIL')
+             | selectattr('key','in', baseline_pass_keys) | list }}
+        new_failures: >-
+          {{ cur_by_name | dict2items
+             | selectattr('value.status','equalto','FAIL')
+             | rejectattr('key','in', baseline_checks.keys() | list) | list }}
+
+    - name: Re-fingerprint the security-relevant config objects
+      kubernetes.core.k8s_info:
+        api_version: "{{ item.api_version }}"
+        kind: "{{ item.kind }}"
+        name: "{{ item.name }}"
+        namespace: "{{ item.namespace | default(omit) }}"
+        host: "{{ ocp_api_url | default(omit) }}"
+        api_key: "{{ ocp_api_token | default(omit) }}"
+        validate_certs: "{{ ocp_verify_ssl | default(false) | bool }}"
+      loop: "{{ ocp_baseline_objects }}"
+      loop_control:
+        label: "{{ item.kind }}/{{ item.name }}"
+      register: cur_obj_raw
+      failed_when: false   # an unreadable/absent object is skipped, not fatal
+
+    - name: Detect config-object drift (fingerprint changed vs baseline)
+      ansible.builtin.set_fact:
+        config_changed: >-
+          {{ config_changed | default([]) + ([ {
+               'object': (item.item.kind ~ '/' ~ item.item.name),
+               'baseline_fp': baseline_fingerprints[item.item.kind ~ '/' ~ item.item.name] | default('(absent)'),
+               'current_fp': ((item.resources[0].spec | default({})) | to_json | hash('sha1'))
+             } ] if (baseline_fingerprints[item.item.kind ~ '/' ~ item.item.name] | default('(absent)'))
+                    != ((item.resources[0].spec | default({})) | to_json | hash('sha1')) else []) }}
+      loop: "{{ cur_obj_raw.results }}"
+      loop_control:
+        label: "{{ item.item.kind }}/{{ item.item.name }}"
+      when: not (item.failed | default(false)) and (item.resources | default([]) | length > 0)
+
+    - name: Assemble regression violations (CCR-level insecure changes)
+      ansible.builtin.set_fact:
+        drift_violations: >-
+          {{ drift_violations | default([]) + [ {
+               'control': (item.value.cip_controls | first | default('unmapped')),
+               'cip_controls': item.value.cip_controls,
+               'check': item.key,
+               'ccr_uid': item.value.uid,
+               'deviation': 'regression: PASS(baseline) -> FAIL(now)',
+               'authorized': (authorized_ticket | length > 0),
+               'change_ticket': (authorized_ticket if (authorized_ticket | length > 0) else 'UNAUDITED'),
+               'message': (item.value.cip_controls | join(', ')) ~ ' — insecure change: ' ~ item.key
+             } ] }}
+      loop: "{{ regressed }}"
+      loop_control:
+        label: "{{ item.key }}"
+
+    - name: Append config-object drift violations (CIP-010 R1 baseline deviation)
+      ansible.builtin.set_fact:
+        drift_violations: >-
+          {{ drift_violations | default([]) + [ {
+               'control': 'CIP-010 R1',
+               'cip_controls': ['CIP-010'],
+               'check': item.object ~ ' (.spec changed)',
+               'ccr_uid': '',
+               'deviation': 'config drift: ' ~ item.baseline_fp ~ ' -> ' ~ item.current_fp,
+               'authorized': (authorized_ticket | length > 0),
+               'change_ticket': (authorized_ticket if (authorized_ticket | length > 0) else 'UNAUDITED'),
+               'message': 'CIP-010 — config object ' ~ item.object ~ ' changed vs baseline'
+             } ] }}
+      loop: "{{ config_changed | default([]) }}"
+      loop_control:
+        label: "{{ item.object }}"
+
+    - name: Summarize drift
+      ansible.builtin.debug:
+        msg:
+          - "CIP-010 drift for cluster '{{ cluster_name }}' vs baseline {{ baseline_row.query_result[0].metadata.change_ticket | default('(attestation)') }}"
+          - "regressions {{ regressed | length }} | new failures {{ new_failures | length }} | config-object drift {{ config_changed | default([]) | length }}"
+          - "total drift findings {{ drift_violations | default([]) | length }} | unaudited {{ drift_violations | default([]) | rejectattr('authorized') | list | length }}"
+
+    - name: Store the CIP-010 drift record (system-of-record)
+      ansible.builtin.include_role:
+        name: aac_store_results
+      vars:
+        aac_result_policy_name: "OpenShift CIP-010 Drift — ocp4-nerc-cip"
+        aac_result_framework: "nerc_cip_ocp"
+        aac_result_policy_version: "{{ ocp_scan_name }}-drift"
+        aac_result_hostname: "{{ cluster_name }}"
+        aac_result_total_controls: "{{ baseline_checks | length }}"
+        aac_result_failed_controls: "{{ drift_violations | default([]) | length }}"
+        aac_result_passed_controls: "{{ (baseline_checks | length) - (drift_violations | default([]) | length) }}"
+        aac_result_compliance_pct: "{{ (((baseline_checks | length) - (drift_violations | default([]) | length)) / ([baseline_checks | length, 1] | max) * 100) | round(2) }}"
+        aac_result_compliant: "{{ (drift_violations | default([]) | length) == 0 }}"
+        aac_result_violations: "{{ drift_violations | default([]) }}"
+        aac_result_pg_password: "{{ compliance_db_password }}"
+        aac_result_metadata:
+          record_type: "cip_010_drift"
+          source: "openshift-compliance-operator"
+          scan: "{{ ocp_scan_name }}"
+          regressions: "{{ regressed | map(attribute='key') | list }}"
+          new_failures: "{{ new_failures | map(attribute='key') | list }}"
+          config_drift: "{{ config_changed | default([]) | map(attribute='object') | list }}"
+          unaudited: "{{ (authorized_ticket | length) == 0 }}"
+          change_ticket: "{{ authorized_ticket }}"

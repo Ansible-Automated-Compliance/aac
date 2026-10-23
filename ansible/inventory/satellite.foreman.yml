@@ -1,0 +1,78 @@
+---
+# Satellite as a dynamic inventory source.
+#
+# Red Hat documents this as the first of three Satellite x AAP integration points
+# (with the content collection and post-provision callback). It solves a real AAC
+# problem: inventory here has been hand-maintained, so AAC only ever assessed the
+# hosts somebody remembered to add. Satellite already knows every registered host,
+# and it knows each one's content view, lifecycle environment and errata state.
+#
+# Plugin: redhat.satellite.foreman — the Red Hat CERTIFIED collection, entitled to
+# support through an AAP subscription. Confirmed from the collection source
+# (plugins/inventory/foreman.py) rather than assumed from the upstream name.
+# theforeman.foreman is the community collection it derives from; prefer the
+# certified one wherever it covers the need.
+#
+# Requires the aac-satellite-ee execution environment, which carries the
+# collection and enables the plugin in its ansible.cfg.
+#
+# Every option below was verified by running this file against a live Satellite
+# 6.18.3 (foreman 3.16.0.10) and reading the host vars that actually came back.
+# The earlier revision parsed cleanly and produced nothing usable, which is the
+# failure mode worth guarding against: a broken inventory reads as an empty estate.
+plugin: redhat.satellite.foreman
+
+# url / user / password are deliberately NOT set here.
+#
+# The plugin does NOT template Jinja in these options — a `lookup('env', ...)`
+# value is passed to the HTTP layer verbatim and the whole inventory fails to
+# parse ("Invalid URL ... No scheme supplied"). The plugin reads these three from
+# the environment natively, so supply them that way and leave them unset here:
+#
+#   FOREMAN_SERVER   (full URL, including https://)
+#   FOREMAN_USER
+#   FOREMAN_PASSWORD
+#
+# In AAP, attach a Red Hat Satellite 6 credential to the inventory source; the
+# credential type injects exactly these three variables.
+validate_certs: true
+
+# Pull the content facet — it carries the content view and lifecycle environment,
+# which is what satellite_content_precheck.yml scopes its availability query by.
+# The option is `want_content_facet_attributes`; the data lands in the host var
+# `foreman_content_attributes` (note: NOT foreman_content_facet_attributes).
+want_content_facet_attributes: true
+want_facts: true
+want_params: true
+want_hostcollections: true
+
+# The plugin already creates lifecycle-environment and content-view groups of its
+# own — foreman_lifecycle_environment_rhel7_dev, foreman_content_view_rhel7 and so
+# on. Verified against the live Satellite, so this file does not duplicate them.
+# Only the OS grouping has to be composed, and the fact key is a `::` namespace,
+# which needs bracket syntax rather than dotted access.
+keyed_groups:
+  - key: foreman_facts['distribution::name'] | default('unknown') | regex_replace('[^A-Za-z0-9]', '_')
+    prefix: os
+    separator: "_"
+
+compose:
+  # Surface the content scoping as plain host vars so a play does not have to
+  # reach into the facet structure.
+  aac_content_view: foreman_content_attributes.content_view_name | default(none)
+  aac_lifecycle_environment: foreman_content_attributes.lifecycle_environment_name | default(none)
+
+# Deliberately NOT composed: aac_content_view_version_id.
+#
+# The plugin flattens the content facet and drops content_view_version_id — it is
+# absent from foreman_content_attributes on Satellite 6.18.3, so composing it
+# yields an empty string on every host. An empty string reaching the pre-check
+# would scope its package query to nothing and every item would come back
+# unavailable, which is a false block dressed up as an answer.
+#
+# satellite_content_precheck.yml therefore resolves the content view version
+# itself, from the host detail endpoint, where the field does exist.
+
+cache: true
+cache_plugin: jsonfile
+cache_timeout: 3600

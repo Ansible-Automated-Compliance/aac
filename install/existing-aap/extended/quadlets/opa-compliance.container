@@ -1,0 +1,16 @@
+[Unit]
+Description=AAC OPA Compliance (:8182)
+After=network-online.target
+
+[Container]
+Image=docker.io/openpolicyagent/opa:latest
+ContainerName=opa-compliance
+PublishPort=8182:8181
+Volume=/etc/opa/compliance:/policies:ro,z
+Exec=run --server --addr :8181 /policies
+
+[Service]
+Restart=always
+
+[Install]
+WantedBy=default.target

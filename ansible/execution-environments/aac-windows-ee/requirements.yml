@@ -1,0 +1,27 @@
+---
+# Collection set for the Windows golden-image demo + CIS Windows assessment.
+#
+#   ansible.windows      win_* core modules (win_service, win_regedit,
+#                        win_shell, setup) — golden image + CIS collection
+#   community.windows    win_* extended modules used by the drift/reset path
+#   amazon.aws           aws_recreate_windows.yml recreates the EC2 lab host;
+#                        see the rationale block in execution-environment.yml
+#   community.postgresql store assessment results + CAA rows
+#   community.general    general-purpose helpers
+#   ansible.utils        filters used by the CIS scoring path
+#
+# Deliberately EXCLUDED (core-only concerns, unused by Windows playbooks):
+#   infra.aap_configuration, ansible.posix
+collections:
+  - name: ansible.windows
+    version: ">=2.0.0"
+  - name: community.windows
+    version: ">=2.0.0"
+  - name: amazon.aws
+    version: ">=8.0.0"
+  - name: community.postgresql
+    version: ">=3.0.0"
+  - name: community.general
+    version: ">=8.0.0"
+  - name: ansible.utils
+    version: ">=2.10.0"

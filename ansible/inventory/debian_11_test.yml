@@ -1,0 +1,55 @@
+---
+# Test inventory for Debian 11 LTS CIS compliance assessment
+all:
+  hosts:
+    # Example Debian 11 hosts
+    # debian-server-01:
+    #   ansible_host: 192.168.1.30
+    #   ansible_user: debian
+    #   ansible_ssh_private_key_file: ~/.ssh/id_rsa
+    #   ansible_become: yes
+    #   ansible_become_method: sudo
+
+  vars:
+    # OPA configuration
+    opa_server_url: "http://localhost:8181"
+
+    # Target platform
+    target_platform: "debian_11"
+
+    # Compliance framework
+    compliance_framework: "cis"
+
+    # Report generation
+    generate_report: true
+    report_format: "json"
+    assessment_output_dir: "/tmp/compliance_assessments"
+
+  # IMPORTANT: Debian 11 Requirements
+  #
+  # 1. Python 3.8+ should be installed (comes with Debian 11 by default)
+  # 2. SSH access with sudo privileges required
+  # 3. For passwordless sudo, ensure /etc/sudoers has: %sudo ALL=(ALL:ALL) NOPASSWD:ALL
+  #
+  # Example host configuration:
+  #
+  # all:
+  #   hosts:
+  #     debian-prod-01:
+  #       ansible_host: 192.168.1.30
+  #       ansible_user: debian
+  #       ansible_ssh_private_key_file: ~/.ssh/debian_key
+  #       ansible_become: yes
+  #
+  #     debian-prod-02:
+  #       ansible_host: 192.168.1.31
+  #       ansible_user: admin
+  #       ansible_password: "{{ vault_debian_password }}"  # Use Ansible Vault
+  #       ansible_become: yes
+  #       ansible_become_password: "{{ vault_debian_sudo_password }}"
+  #
+  # Test connectivity:
+  #   ansible -i inventory/debian_11_test.yml all -m ping
+  #
+  # Run assessment:
+  #   ansible-playbook -i inventory/debian_11_test.yml playbooks/cis_debian_11_assessment.yml

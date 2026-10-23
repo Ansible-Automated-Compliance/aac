@@ -1,0 +1,217 @@
+---
+# satellite_content_precheck.yml — will the fix we are about to pin actually install?
+#
+# AAC generates remediation playbooks that pin an exact build:
+#     dnf install openssl-1.0.2k-22.el7_9
+#
+# If that build is not in the content the host can reach, the playbook fails at
+# install time — at 2am, inside a change window, on a host already drained and in
+# maintenance mode. Satellite is the only system that knows what a given host can
+# reach, because content is scoped by content view and lifecycle environment.
+#
+# Measured on a workshop Satellite: 51 openssl builds exist across the
+# organisation, but only 29 are reachable by a host bound to the RHEL7 content
+# view. Of the 51, 16 are .el8. An unscoped check calls all 51 available, and the
+# generated playbook fails on a RHEL7 host.
+#
+# This runs BEFORE generation and answers, per worklist item:
+#   available   — the pinned build is in the host's content
+#   unavailable — it is not; generating the playbook would produce a failing artifact
+#   unknown     — we could not determine it. FAIL CLOSED: never treated as available.
+#
+# Read-only. Queries Satellite; changes nothing.
+#
+# Why the comparison is an exact match on version-release, and not ">= version":
+# Satellite returns version and release as SEPARATE fields, and the release is
+# where the fix lives. The 29 openssl builds reachable by a RHEL7 host carry just
+# TWO distinct version values (1.0.1e, 1.0.2k) across 29 distinct version-release
+# pairs. Comparing on version alone therefore calls the vulnerable 1.0.2k-12.el7
+# an acceptable match for a pinned 1.0.2k-22.el7_9 — a false "available", which is
+# the precise failure this play exists to prevent. ansible-core has no RPM EVR
+# comparison (`version_type` offers loose/strict/semver/pep440 only), so ordering
+# is not attempted: a build is available when exactly that build is reachable.
+
+- name: Satellite content availability pre-check
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    satellite_validate_certs: true
+    aac_precheck_fail_on_unavailable: true
+    # Katello honours values this large; the guard below still checks for truncation.
+    aac_precheck_page_size: 1000
+
+  tasks:
+    - name: Require the inputs
+      ansible.builtin.assert:
+        that:
+          - satellite_url is defined and satellite_url | length > 0
+          - satellite_username is defined
+          - satellite_password is defined
+          - target_host is defined and target_host | length > 0
+          - worklist is defined and worklist | length > 0
+        fail_msg: >-
+          satellite_url, satellite_username, satellite_password, target_host and
+          worklist are all required. worklist is a list of
+          {product, fixed_version} — normally the rows AAC already produced.
+          fixed_version must include the release (openssl-1.0.2k-22.el7_9, not
+          openssl-1.0.2k); a version without a release does not identify a build.
+
+    # ── Resolve what content this host can actually reach ────────────────────
+    #
+    # The DETAIL endpoint, not /api/hosts?search=. The search listing returns a
+    # trimmed content facet that omits content_view_version_id entirely, so
+    # scoping off it silently reports every host as bound to nothing.
+    - name: Find the host in Satellite
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "{{ satellite_url }}/api/hosts/{{ target_host | urlencode }}"
+        user: "{{ satellite_username }}"
+        password: "{{ satellite_password }}"
+        force_basic_auth: true
+        validate_certs: "{{ satellite_validate_certs }}"
+        return_content: true
+        status_code: [200, 401, 403, 404]
+      register: sat_host
+
+    # A credential or permission problem is not "host not found". Reporting it as
+    # unknown sends the operator to promote content when the actual fix is to
+    # correct the credential, so fail fast and say which.
+    - name: Refuse to guess when Satellite rejected the credential
+      ansible.builtin.fail:
+        msg: >-
+          Satellite returned {{ sat_host.status }} for {{ target_host }}.
+          {{ 'The credential was rejected (401).' if sat_host.status == 401
+             else 'The account is authenticated but not permitted to read this host (403).' }}
+          Fix the Satellite credential or its role before re-running — this is not
+          a content problem and must not be reported as one.
+      when: sat_host.status in [401, 403]
+
+    - name: Resolve the content view version the host is bound to
+      ansible.builtin.set_fact:
+        sat_host_found: "{{ sat_host.status == 200 }}"
+        sat_content_facet: "{{ (sat_host.json | default({})).content_facet_attributes | default({}) }}"
+
+    - name: Determine the single content view version in scope
+      ansible.builtin.set_fact:
+        # More than one content view environment means more than one content
+        # scope, and this play checks one. Claiming an answer from the first of
+        # several is the kind of guess that produces an uninstallable artifact.
+        sat_multi_cv: "{{ (sat_content_facet.multi_content_view_environment | default(false)) | bool }}"
+        sat_cvv: "{{ sat_content_facet.content_view_version_id | default('') }}"
+
+    - name: Report that content reach could not be determined
+      ansible.builtin.debug:
+        msg: >-
+          UNKNOWN — {{ 'host not found in Satellite' if not sat_host_found
+          else ('host is bound to multiple content view environments; this check scopes to one'
+                if sat_multi_cv
+                else 'host is registered but bound to no content view version') }}.
+          Content availability cannot be determined for {{ target_host }}, so every
+          item below is reported unknown and none is treated as available.
+      when: not sat_host_found or sat_multi_cv or sat_cvv | string | length == 0
+
+    - name: Note the content scope in use
+      ansible.builtin.debug:
+        msg: >-
+          {{ target_host }} is bound to
+          {{ sat_content_facet.content_view.name | default('?') }} /
+          {{ sat_content_facet.lifecycle_environment.name | default('?') }}
+          (content view version id {{ sat_cvv }}). Only content reachable through
+          that scope is considered available.
+      when: sat_host_found and not sat_multi_cv and sat_cvv | string | length > 0
+
+    # ── Per item: is the pinned build reachable? ─────────────────────────────
+    - name: Query the host's reachable content for each worklist product
+      ansible.builtin.uri:
+        use_proxy: false
+        url: >-
+          {{ satellite_url }}/katello/api/packages?per_page={{ aac_precheck_page_size }}&content_view_version_id={{ sat_cvv }}&search={{ ('name = ' ~ item.product) | urlencode }}
+        user: "{{ satellite_username }}"
+        password: "{{ satellite_password }}"
+        force_basic_auth: true
+        validate_certs: "{{ satellite_validate_certs }}"
+        return_content: true
+      register: sat_packages
+      loop: "{{ worklist }}"
+      loop_control:
+        label: "{{ item.product }}"
+      when: sat_host_found and not sat_multi_cv and sat_cvv | string | length > 0
+      failed_when: false
+
+    - name: Decide each item
+      ansible.builtin.set_fact:
+        precheck_results: >-
+          {{ precheck_results | default([]) + [ {
+               'product': item.item.product,
+               'required': item.item.fixed_version,
+               'verdict': (
+                 'unknown' if (
+                   (item.skipped | default(false))
+                   or (item.status | default(0)) != 200
+                   or ((item.json.subtotal | default(0)) | int) > ((item.json.results | default([])) | length)
+                   or ('-' not in (item.item.fixed_version | string))
+                 )
+                 else (
+                   'available' if (item.item.fixed_version | string) in (
+                     (item.json.results | default([]))
+                     | map(attribute='version') | list
+                     | zip((item.json.results | default([])) | map(attribute='release') | list)
+                     | map('join', '-') | list
+                   ) else 'unavailable'
+                 )
+               ),
+               'reason': (
+                 'query skipped — content scope unresolved' if (item.skipped | default(false))
+                 else ('Satellite returned status ' ~ (item.status | default('none')) if (item.status | default(0)) != 200
+                 else ('result set truncated — ' ~ (item.json.subtotal | default(0)) ~ ' builds exist, '
+                       ~ ((item.json.results | default([])) | length) ~ ' returned'
+                       if ((item.json.subtotal | default(0)) | int) > ((item.json.results | default([])) | length)
+                 else ('pinned value carries no release, so it does not identify a build'
+                       if '-' not in (item.item.fixed_version | string) else '')))
+               ),
+               'reachable_builds': (
+                 (item.json.results | default([])) | map(attribute='version') | list
+                 | zip((item.json.results | default([])) | map(attribute='release') | list)
+                 | map('join', '-') | list | unique | sort
+               )
+             } ] }}
+      loop: "{{ sat_packages.results | default([]) }}"
+      loop_control:
+        label: "{{ item.item.product | default('?') }}"
+
+    - name: Summarise
+      ansible.builtin.debug:
+        msg: >-
+          {{ target_host }} — available: {{ precheck_results | default([]) | selectattr('verdict','equalto','available') | list | length }},
+          unavailable: {{ precheck_results | default([]) | selectattr('verdict','equalto','unavailable') | list | length }},
+          unknown: {{ precheck_results | default([]) | selectattr('verdict','equalto','unknown') | list | length }}
+
+    - name: Show every item that would produce a failing playbook
+      ansible.builtin.debug:
+        msg: >-
+          {{ item.product }} [{{ item.verdict }}]: needs {{ item.required }}{{ ' — ' ~ item.reason if item.reason else '' }}.
+          The content {{ target_host }} can reach offers
+          {{ (item.reachable_builds | join(', ')) if item.reachable_builds | length > 0 else 'nothing' }}
+      loop: "{{ precheck_results | default([]) | rejectattr('verdict','equalto','available') | list }}"
+      loop_control:
+        label: "{{ item.product }}"
+
+    # Fail closed. An unknown is not an implicit pass — that is precisely the
+    # assumption that produces a playbook nobody can install.
+    - name: Refuse to proceed when any item is not confirmed available
+      ansible.builtin.fail:
+        msg: >-
+          {{ (precheck_results | default([]) | rejectattr('verdict','equalto','available') | list | length) }}
+          of {{ precheck_results | default([]) | length }} items are not confirmed
+          available in the content {{ target_host }} can reach
+          ({{ precheck_results | default([]) | selectattr('verdict','equalto','unavailable') | list | length }} unavailable,
+          {{ precheck_results | default([]) | selectattr('verdict','equalto','unknown') | list | length }} unknown).
+          Generating a remediation playbook now would produce an artifact that fails
+          at install time.
+          {{ 'For the unavailable items, promote the content to this host lifecycle environment. ' if (precheck_results | default([]) | selectattr('verdict','equalto','unavailable') | list | length) > 0 }}{{ 'For the unknown items, resolve the reason printed above — an unknown is never treated as available. ' if (precheck_results | default([]) | selectattr('verdict','equalto','unknown') | list | length) > 0 }}Set
+          aac_precheck_fail_on_unavailable=false to record the findings and continue.
+      when:
+        - aac_precheck_fail_on_unavailable | bool
+        - (precheck_results | default([]) | rejectattr('verdict','equalto','available') | list | length) > 0

@@ -1,0 +1,45 @@
+---
+# AAC Schedules — RHPDS Configuration
+#
+# Nightly jobs keep compliance data fresh and OPA policies current.
+# All schedules use UTC; RHPDS demo windows are typically US Eastern (UTC-4/5).
+#
+# Schedule overview:
+#   02:00 UTC  — Reload OPA policies (git pull latest Rego)
+#   03:00 UTC  — NERC-CIP full audit → PostgreSQL + PDF evidence
+#   04:00 UTC  — AMI full compliance audit → PostgreSQL
+#   05:00 UTC  — Technical debt assessment → PostgreSQL + Grafana
+
+controller_schedules:
+
+  # ── Nightly OPA Policy Reload ───────────────────────────────────────────────
+  - name: AAC Nightly OPA Policy Reload
+    description: "Pull latest Rego from git and reload all 3 OPA containers"
+    organization: "{{ aac_organization }}"
+    unified_job_template: AAC_Infra_LoadOPAPolicies
+    rrule: "DTSTART:20240101T020000Z RRULE:FREQ=DAILY;INTERVAL=1"
+    enabled: true
+
+  # ── Nightly NERC-CIP Full Audit ─────────────────────────────────────────────
+  - name: AAC Nightly NERC-CIP Full Audit
+    description: "CIP-002 through CIP-015 + INSM compliance report → PostgreSQL"
+    organization: "{{ aac_organization }}"
+    unified_job_template: AAC_NERC_FullAudit
+    rrule: "DTSTART:20240101T030000Z RRULE:FREQ=DAILY;INTERVAL=1"
+    enabled: true
+
+  # ── Nightly AMI Full Compliance Audit ──────────────────────────────────────
+  - name: AAC Nightly AMI Compliance Audit
+    description: "AMI full audit across NIST IR 7628, IEC 62443, device and head-end checks"
+    organization: "{{ aac_organization }}"
+    unified_job_template: AAC_AMI_FullAuditStore
+    rrule: "DTSTART:20240101T040000Z RRULE:FREQ=DAILY;INTERVAL=1"
+    enabled: true
+
+  # ── Nightly Technical Debt Assessment ──────────────────────────────────────
+  - name: AAC Nightly Technical Debt Assessment
+    description: "Score all compliance domains → debt_items + technical_debt_summary → Grafana"
+    organization: "{{ aac_organization }}"
+    unified_job_template: AAC - Technical Debt Assessment
+    rrule: "DTSTART:20240101T050000Z RRULE:FREQ=DAILY;INTERVAL=1"
+    enabled: true

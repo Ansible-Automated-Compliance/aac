@@ -1,0 +1,26 @@
+{
+  "github_protection": {
+    "required_pull_request_reviews": {
+      "required_approving_review_count": 1,
+      "require_code_owner_reviews": true,
+      "dismiss_stale_reviews": true
+    },
+    "required_status_checks": { "strict": false, "contexts": ["Validate Ansible content", "Validate Approvals"] },
+    "enforce_admins": { "enabled": false }
+  },
+  "required_signatures": true,
+  "sbom": {
+    "bomFormat": "CycloneDX",
+    "specVersion": "1.5",
+    "components": [
+      { "purl": "pkg:pypi/requests@2.31.0" },
+      { "purl": "pkg:npm/left-pad@1.3.0" }
+    ]
+  },
+  "provenance": { "present": true, "signed": true, "slsa_build_level": 2 },
+  "signing": { "artifacts_signed": true, "method": "cosign" },
+  "dependencies": { "pinned": true, "vetted": true, "unresolved_purls": 0 },
+  "vulnerabilities": { "kev_hits": 0, "osv_hits": 0, "unaddressed": 0 },
+  "build": { "hardened": true, "isolated": true, "ephemeral": true },
+  "artifact": { "name": "authlib", "capabilities": ["auth", "crypto"] }
+}

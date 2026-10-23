@@ -1,0 +1,198 @@
+---
+# AAC Fresh Install — Phase 2: Prepare RHEL 9 OS
+#
+# Registers Red Hat subscription, enables AAP 2.6 repos, updates the OS,
+# installs all required packages, configures firewall, sets up SELinux
+# contexts for OPA and MCP directories, and installs ansible-core.
+#
+# Survey variables (required):
+#   target_host   — public IP from Phase 1
+#   rhsm_password — Red Hat account password (for subscription-manager register)
+#
+# Runtime: ~10-15 minutes
+#
+# AAP Job Template: "AAC - Fresh Install: 02 Prepare OS"
+# Credentials: Ansible Vault, Compliance SSH Credential
+# EE: AAC Compliance EE
+
+- name: Prepare RHEL 9 OS for AAP + AAC Installation
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - [ "../vars/vault_secrets.yml", "../vars/empty_fallback.yml" ]
+    - ../vars/site_config.yml
+
+  vars:
+    target_host:   "{{ target_host }}"
+    rhsm_password: "{{ rhsm_password }}"
+    ansible_ssh_user: "ec2-user"
+
+  tasks:
+
+    # ── Subscription Registration ─────────────────────────────────────────────
+    - name: Register with Red Hat subscription manager
+      ansible.builtin.shell: |
+        sudo subscription-manager register \
+          --username '{{ vault_redhat_username }}' \
+          --password '{{ rhsm_password }}' \
+          --auto-attach \
+          || subscription-manager status | grep -q "Current" && echo "already registered"
+      delegate_to: "{{ target_host }}"
+      vars:
+        ansible_user: ec2-user
+      register: reg_result
+      changed_when: "'already registered' not in reg_result.stdout"
+
+    - name: Enable AAP 2.6 repository
+      ansible.builtin.shell: |
+        sudo subscription-manager repos \
+          --enable ansible-automation-platform-2.6-for-rhel-9-x86_64-rpms
+      delegate_to: "{{ target_host }}"
+      vars:
+        ansible_user: ec2-user
+
+    # ── System Update ─────────────────────────────────────────────────────────
+    - name: Update all packages
+      ansible.builtin.shell: |
+        sudo dnf update -y
+      delegate_to: "{{ target_host }}"
+      vars:
+        ansible_user: ec2-user
+      async: 900
+      poll: 15
+
+    # ── Required Packages ─────────────────────────────────────────────────────
+    - name: Install required packages
+      ansible.builtin.shell: |
+        sudo dnf install -y \
+          podman \
+          git \
+          python3 \
+          python3-pip \
+          jq \
+          curl \
+          wget \
+          unzip \
+          firewalld \
+          ansible-core \
+          ansible-builder \
+          policycoreutils-python-utils
+      delegate_to: "{{ target_host }}"
+      vars:
+        ansible_user: ec2-user
+      async: 600
+      poll: 10
+
+    - name: Verify podman is installed
+      ansible.builtin.shell: podman --version
+      delegate_to: "{{ target_host }}"
+      vars:
+        ansible_user: ec2-user
+      register: podman_ver
+
+    - name: Verify ansible-core is installed
+      ansible.builtin.shell: ansible --version | head -1
+      delegate_to: "{{ target_host }}"
+      vars:
+        ansible_user: ec2-user
+      register: ansible_ver
+
+    - name: Show installed versions
+      ansible.builtin.debug:
+        msg:
+          - "podman:       {{ podman_ver.stdout }}"
+          - "ansible-core: {{ ansible_ver.stdout }}"
+
+    # ── Firewall Configuration ────────────────────────────────────────────────
+    - name: Enable and start firewalld
+      ansible.builtin.shell: |
+        sudo systemctl enable --now firewalld
+      delegate_to: "{{ target_host }}"
+      vars:
+        ansible_user: ec2-user
+
+    - name: Open required firewall ports
+      ansible.builtin.shell: |
+        sudo firewall-cmd --permanent --add-service=https
+        sudo firewall-cmd --permanent --add-service=http
+        sudo firewall-cmd --permanent --add-port=8181/tcp
+        sudo firewall-cmd --permanent --add-port=8182/tcp
+        sudo firewall-cmd --permanent --add-port=8183/tcp
+        sudo firewall-cmd --permanent --add-port=8004/tcp
+        sudo firewall-cmd --permanent --add-port=3000/tcp
+        sudo firewall-cmd --permanent --add-port=8085/tcp
+        sudo firewall-cmd --permanent --add-port=8086/tcp
+        sudo firewall-cmd --permanent --add-port=8087/tcp
+        sudo firewall-cmd --reload
+        sudo firewall-cmd --list-ports
+      delegate_to: "{{ target_host }}"
+      vars:
+        ansible_user: ec2-user
+      register: fw_result
+
+    - name: Show open ports
+      ansible.builtin.debug:
+        msg: "Open ports: {{ fw_result.stdout_lines }}"
+
+    # ── SELinux Contexts ──────────────────────────────────────────────────────
+    - name: Create OPA policy directories
+      ansible.builtin.shell: |
+        sudo mkdir -p /etc/opa/security /etc/opa/compliance /etc/opa/ot
+        sudo chmod 755 /etc/opa /etc/opa/security /etc/opa/compliance /etc/opa/ot
+      delegate_to: "{{ target_host }}"
+      vars:
+        ansible_user: ec2-user
+
+    - name: Set SELinux context for OPA directories
+      ansible.builtin.shell: |
+        sudo semanage fcontext -a -t container_file_t "/etc/opa(/.*)?"
+        sudo restorecon -Rv /etc/opa
+      delegate_to: "{{ target_host }}"
+      vars:
+        ansible_user: ec2-user
+
+    - name: Create MCP server directory
+      ansible.builtin.shell: |
+        sudo mkdir -p /opt/aap-mcp-server
+        sudo semanage fcontext -a -t container_file_t "/opt/aap-mcp-server(/.*)?"
+        sudo restorecon -Rv /opt/aap-mcp-server
+      delegate_to: "{{ target_host }}"
+      vars:
+        ansible_user: ec2-user
+
+    # ── Enable podman linger (for rootless containers at boot) ────────────────
+    - name: Enable loginctl linger for ec2-user
+      ansible.builtin.shell: |
+        sudo loginctl enable-linger ec2-user
+      delegate_to: "{{ target_host }}"
+      vars:
+        ansible_user: ec2-user
+
+    # ── Verify SELinux is enforcing ───────────────────────────────────────────
+    - name: Check SELinux status
+      ansible.builtin.shell: getenforce
+      delegate_to: "{{ target_host }}"
+      vars:
+        ansible_user: ec2-user
+      register: selinux_status
+
+    - name: "=== Phase 2 Complete ==="
+      ansible.builtin.debug:
+        msg:
+          - "╔══════════════════════════════════════════════════════════╗"
+          - "║               OS Preparation Complete                    ║"
+          - "╚══════════════════════════════════════════════════════════╝"
+          - ""
+          - "  Packages: podman, git, ansible-core, firewalld installed"
+          - "  Firewall: 443, 8181-8183, 3000, 8004, 8085-8087 open"
+          - "  SELinux:  {{ selinux_status.stdout }} (must be Enforcing)"
+          - "  OPA dirs: /etc/opa/{security,compliance,ot} with container_file_t"
+          - ""
+          - "  ⚠️  CONFIRM before Phase 3:"
+          - "  Verify you have copied the AAP bundle and manifest to:"
+          - "    /home/ec2-user/aap-bundle.tar.gz"
+          - "    /home/ec2-user/aap-manifest.zip"
+          - ""
+          - "  Then run Phase 03 with target_host = {{ target_host }}"

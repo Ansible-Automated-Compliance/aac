@@ -1,0 +1,123 @@
+---
+# Rebuild the "NERC/AMI - Nightly Audit + Report" workflow
+#
+# Flow (all parallel — no convergence node):
+#   [NERC CIP Compliance Report]
+#   [AMI - Full Compliance Audit and Store]
+#   [AAC - Remediation Report]
+#
+# All three run simultaneously as root nodes. This is intentional:
+# they are independent audits that write to PostgreSQL independently.
+#
+# Workflow ID: 99
+# JT IDs: 26=NERC CIP Report, 29=AMI Full Audit, 63=Remediation Report
+
+- name: Rebuild NERC/AMI Nightly Audit Workflow
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - [ "../vars/vault_secrets.yml", "../vars/empty_fallback.yml" ]
+    - ../vars/site_config.yml
+
+  vars:
+    aap_token: "{{ vault_aap_local_mcp_token }}"
+    wf_id:     99
+    jt_nerc:   26    # AAC - NERC CIP Compliance Report
+    jt_ami:    29    # AMI - Full Compliance Audit and Store
+    jt_report: 63    # AAC - Remediation Report
+
+  tasks:
+
+    # -------------------------------------------------------------------------
+    # Delete existing nodes (idempotent rebuild)
+    # -------------------------------------------------------------------------
+    - name: Get existing workflow nodes
+      uri:
+        use_proxy: false
+        url: "{{ aap_url }}/api/controller/v2/workflow_job_templates/{{ wf_id }}/workflow_nodes/?page_size=50"
+        headers:
+          Authorization: "Bearer {{ aap_token }}"
+        validate_certs: false
+      register: existing_nodes
+
+    - name: Delete existing nodes
+      uri:
+        use_proxy: false
+        url: "{{ aap_url }}/api/controller/v2/workflow_job_template_nodes/{{ item.id }}/"
+        method: DELETE
+        headers:
+          Authorization: "Bearer {{ aap_token }}"
+        validate_certs: false
+        status_code: [200, 204]
+      loop: "{{ existing_nodes.json.results }}"
+
+    # -------------------------------------------------------------------------
+    # Create nodes (all root nodes — run in parallel)
+    # -------------------------------------------------------------------------
+    - name: Node 1 — NERC CIP Compliance Report
+      uri:
+        use_proxy: false
+        url: "{{ aap_url }}/api/controller/v2/workflow_job_templates/{{ wf_id }}/workflow_nodes/"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ aap_token }}"
+          Content-Type: "application/json"
+        validate_certs: false
+        body_format: json
+        body:
+          unified_job_template: "{{ jt_nerc }}"
+          all_parents_must_converge: false
+        status_code: [200, 201]
+      register: node_nerc
+
+    - name: Node 2 — AMI Full Compliance Audit and Store
+      uri:
+        use_proxy: false
+        url: "{{ aap_url }}/api/controller/v2/workflow_job_templates/{{ wf_id }}/workflow_nodes/"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ aap_token }}"
+          Content-Type: "application/json"
+        validate_certs: false
+        body_format: json
+        body:
+          unified_job_template: "{{ jt_ami }}"
+          all_parents_must_converge: false
+        status_code: [200, 201]
+      register: node_ami
+
+    - name: Node 3 — Remediation Report
+      uri:
+        use_proxy: false
+        url: "{{ aap_url }}/api/controller/v2/workflow_job_templates/{{ wf_id }}/workflow_nodes/"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ aap_token }}"
+          Content-Type: "application/json"
+        validate_certs: false
+        body_format: json
+        body:
+          unified_job_template: "{{ jt_report }}"
+          all_parents_must_converge: false
+        status_code: [200, 201]
+      register: node_report
+
+    # No connections — all three are root nodes running in parallel
+
+    # -------------------------------------------------------------------------
+    # Done
+    # -------------------------------------------------------------------------
+    - name: "=== Workflow Rebuilt ==="
+      debug:
+        msg:
+          - "Workflow: NERC/AMI - Nightly Audit + Report (ID: {{ wf_id }})"
+          - ""
+          - "  [NERC CIP Report]  [AMI Full Audit]  [Remediation Report]  ← all parallel"
+          - ""
+          - "  All three run simultaneously as independent root nodes."
+          - "  Each writes its results to PostgreSQL independently."
+          - "  Schedule: Nightly (configure in AAP Schedules)"
+          - ""
+          - "View: {{ aap_url }}/#/workflows/{{ wf_id }}"

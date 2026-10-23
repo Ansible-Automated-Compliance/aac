@@ -1,0 +1,18 @@
+# sshpass — required for ansible SSH connection type when using password
+# auth (Machine credential with password) or pkcs11_provider.
+sshpass [platform:rpm]
+
+# Must match dependencies.python_interpreter (python312) so Python.h exists
+# when collection deps build systemd-python / other C extensions.
+python3.12-devel [platform:rpm]
+python3-devel [platform:rpm]
+postgresql-devel [platform:rpm]
+# Runtime postgres client — provides pg_dump / psql so
+# community.postgresql.postgresql_db state=dump works without
+# shelling out to the host.
+postgresql [platform:rpm]
+libpq-devel [platform:rpm]
+# systemd-python (pulled by collection deps) needs libsystemd.pc at build time
+systemd-devel [platform:rpm]
+pkgconf [platform:rpm]
+gcc [compile]

@@ -1,0 +1,26 @@
+# AAC Compliance-State API — read-only authorization-context service for EnforceAuth.
+# Rootless-podman friendly; RHEL-only base per AAC conventions.
+FROM registry.access.redhat.com/ubi9/python-311:latest
+
+USER 0
+WORKDIR /app
+
+COPY requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r /app/requirements.txt
+
+# App runs as a package (app.main) so the relative imports in main.py resolve.
+COPY . /app/app
+RUN touch /app/app/__init__.py
+
+# Runs as an arbitrary non-root UID under rootless podman.
+USER 1001
+EXPOSE 8090
+
+# The compliance_reader password is injected via env file at runtime, never baked in.
+ENV AAC_DB_HOST=host.containers.internal \
+    AAC_DB_PORT=5432 \
+    AAC_DB_NAME=compliance \
+    AAC_DB_USER=compliance_reader \
+    AAC_MAX_AGE_SECONDS=86400
+
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8090"]

@@ -1,0 +1,384 @@
+---
+# harden_system_services.yml — CIS Windows Server 2022 Hardening: System Services
+#
+# Disables unnecessary services per CIS Section 5 (26 controls).
+# Also configures registry-based hardening (Section 18 — 22 controls).
+#
+# Domain ownership: Infrastructure / Platform Engineering
+# Controls addressed: 26 (services) + 22 (registry) = 48 controls
+# AAP Job Template: "CIS Windows 2022 Harden - Services & Registry" (Infrastructure team)
+# Credentials: Windows Compliance Lab (ID 7) + Ansible Vault (ID 8)
+# EE: AAC Compliance EE
+
+- name: CIS Windows Server 2022 — Services and Registry Hardening
+  hosts: "{{ target_hosts | default('all') }}"
+  gather_facts: false
+
+  vars_files:
+    - [ "../../vars/vault_secrets.yml", "../../vars/empty_fallback.yml" ]
+
+  vars:
+    # Set these to true if the server actually needs these roles
+    require_iis:        false
+    require_ftp:        false
+    require_iscsi:      false
+    require_rds:        false
+    require_ssh_server: false
+    require_snmp:       false
+
+  tasks:
+
+    # ── Section 5: Disable Unnecessary Services ───────────────────────────────
+
+    - name: Disable Bluetooth Audio Gateway Service (CIS 5.1)
+      win_service:
+        name: BTAGService
+        start_mode: disabled
+        state: stopped
+      failed_when: false
+
+    - name: Disable Bluetooth Support Service (CIS 5.2)
+      win_service:
+        name: bthserv
+        start_mode: disabled
+        state: stopped
+      failed_when: false
+
+    - name: Disable Computer Browser service (CIS 5.3)
+      win_service:
+        name: Browser
+        start_mode: disabled
+        state: stopped
+      failed_when: false
+      ignore_errors: true   # Service may not be installed
+
+    - name: Disable Downloaded Maps Manager (CIS 5.4)
+      win_service:
+        name: MapsBroker
+        start_mode: disabled
+        state: stopped
+      failed_when: false
+
+    - name: Disable Geolocation Service (CIS 5.5)
+      win_service:
+        name: lfsvc
+        start_mode: disabled
+        state: stopped
+      failed_when: false
+
+    - name: Disable IIS Admin Service (CIS 5.6)
+      win_service:
+        name: IISADMIN
+        start_mode: disabled
+        state: stopped
+      when: not require_iis
+      failed_when: false
+      ignore_errors: true
+
+    - name: Disable Infrared Monitor Service (CIS 5.7)
+      win_service:
+        name: irmon
+        start_mode: disabled
+        state: stopped
+      failed_when: false
+      ignore_errors: true
+
+    - name: Disable Internet Connection Sharing (CIS 5.8)
+      win_service:
+        name: SharedAccess
+        start_mode: disabled
+        state: stopped
+      failed_when: false
+
+    - name: Disable Link-Layer Topology Discovery Mapper (CIS 5.9)
+      win_service:
+        name: lltdsvc
+        start_mode: disabled
+        state: stopped
+      failed_when: false
+
+    - name: Disable Windows Subsystem for Linux (CIS 5.10)
+      win_service:
+        name: LxssManager
+        start_mode: disabled
+        state: stopped
+      failed_when: false
+      ignore_errors: true
+
+    - name: Disable Microsoft FTP Service (CIS 5.11)
+      win_service:
+        name: FTPSVC
+        start_mode: disabled
+        state: stopped
+      when: not require_ftp
+      failed_when: false
+      ignore_errors: true
+
+    - name: Disable Microsoft iSCSI Initiator Service (CIS 5.12)
+      win_service:
+        name: MSiSCSI
+        start_mode: disabled
+        state: stopped
+      when: not require_iscsi
+      failed_when: false
+
+    - name: Disable OpenSSH SSH Server (CIS 5.13)
+      win_service:
+        name: sshd
+        start_mode: disabled
+        state: stopped
+      when: not require_ssh_server
+      failed_when: false
+      ignore_errors: true
+
+    - name: Disable Peer Name Resolution Protocol (CIS 5.14)
+      win_service:
+        name: PNRPsvc
+        start_mode: disabled
+        state: stopped
+      failed_when: false
+
+    - name: Disable Peer Networking Grouping (CIS 5.15)
+      win_service:
+        name: p2psvc
+        start_mode: disabled
+        state: stopped
+      failed_when: false
+
+    - name: Set Remote Desktop Configuration to Manual (CIS 5.16)
+      win_service:
+        name: SessionEnv
+        start_mode: manual
+      when: not require_rds
+      failed_when: false
+
+    - name: Disable Remote Procedure Call Locator (CIS 5.17)
+      win_service:
+        name: RpcLocator
+        start_mode: disabled
+        state: stopped
+      failed_when: false
+      ignore_errors: true
+
+    - name: Disable Remote Registry (CIS 5.18)
+      win_service:
+        name: RemoteRegistry
+        start_mode: disabled
+        state: stopped
+      failed_when: false
+
+    - name: Disable Routing and Remote Access (CIS 5.19)
+      win_service:
+        name: RemoteAccess
+        start_mode: disabled
+        state: stopped
+      failed_when: false
+
+    - name: Disable SMBv1 server (CIS 5.20)
+      win_shell: |
+        Set-SmbServerConfiguration -EnableSMB1Protocol $false -Force
+      changed_when: true
+      failed_when: false
+
+    - name: Disable Simple TCP/IP Services (CIS 5.21)
+      win_service:
+        name: simptcp
+        start_mode: disabled
+        state: stopped
+      failed_when: false
+      ignore_errors: true
+
+    - name: Disable SNMP Service (CIS 5.22)
+      win_service:
+        name: SNMP
+        start_mode: disabled
+        state: stopped
+      when: not require_snmp
+      failed_when: false
+      ignore_errors: true
+
+    - name: Disable Telnet service (CIS 5.23)
+      win_service:
+        name: TlntSvr
+        start_mode: disabled
+        state: stopped
+      failed_when: false
+      ignore_errors: true
+
+    - name: Disable TFTP Daemon (CIS 5.24)
+      win_service:
+        name: tftpd
+        start_mode: disabled
+        state: stopped
+      failed_when: false
+      ignore_errors: true
+
+    - name: Disable World Wide Web Publishing Service (CIS 5.25)
+      win_service:
+        name: W3SVC
+        start_mode: disabled
+        state: stopped
+      when: not require_iis
+      failed_when: false
+      ignore_errors: true
+
+    - name: Disable Xbox Live Auth Manager (CIS 5.26)
+      win_service:
+        name: XblAuthManager
+        start_mode: disabled
+        state: stopped
+      failed_when: false
+      ignore_errors: true
+
+    # ── Section 18: Registry-Based Hardening ───────────────────────────────────
+
+    - name: Enable UAC restrictions for local accounts on network logon (CIS 18.3.1)
+      win_regedit:
+        path: HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System
+        name: LocalAccountTokenFilterPolicy
+        data: 0
+        type: dword
+
+    - name: Disable SMBv1 client driver (CIS 18.3.3)
+      win_regedit:
+        path: HKLM:\SYSTEM\CurrentControlSet\Services\MrxSmb10
+        name: Start
+        data: 4
+        type: dword
+
+    - name: Enable SEHOP — Structured Exception Handling Overwrite Protection (CIS 18.3.5)
+      win_regedit:
+        path: HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\kernel
+        name: DisableExceptionChainValidation
+        data: 0
+        type: dword
+
+    - name: Disable WDigest authentication (CIS 18.3.7)
+      win_regedit:
+        path: HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\WDigest
+        name: UseLogonCredential
+        data: 0
+        type: dword
+
+    - name: Disable AutoAdminLogon (CIS 18.4.1)
+      win_regedit:
+        path: HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon
+        name: AutoAdminLogon
+        data: '0'
+        type: string
+
+    - name: Set IPv6 source routing protection to maximum (CIS 18.4.3)
+      win_regedit:
+        path: HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip6\Parameters
+        name: DisableIPSourceRouting
+        data: 2
+        type: dword
+
+    - name: Set IPv4 source routing protection to maximum (CIS 18.4.4)
+      win_regedit:
+        path: HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters
+        name: DisableIPSourceRouting
+        data: 2
+        type: dword
+
+    - name: Disable ICMP redirect (CIS 18.4.5)
+      win_regedit:
+        path: HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters
+        name: EnableICMPRedirect
+        data: 0
+        type: dword
+
+    - name: Set security event log warning level to 90% (CIS 18.4.8)
+      win_regedit:
+        path: HKLM:\SYSTEM\CurrentControlSet\Services\Eventlog\Security
+        name: WarningLevel
+        data: 90
+        type: dword
+
+    - name: Disable NetBIOS name release without authentication (CIS 18.4.11)
+      win_regedit:
+        path: HKLM:\SYSTEM\CurrentControlSet\Services\NetBT\Parameters
+        name: NoNameReleaseOnDemand
+        data: 1
+        type: dword
+
+    - name: Set NetBIOS node type to H-node (CIS 18.6.4.1)
+      win_regedit:
+        path: HKLM:\SYSTEM\CurrentControlSet\Services\NetBT\Parameters
+        name: NodeType
+        data: 8
+        type: dword
+
+    - name: Disable insecure guest logons to SMB servers (CIS 18.6.8.1)
+      win_regedit:
+        path: HKLM:\SOFTWARE\Policies\Microsoft\Windows\LanmanWorkstation
+        name: AllowInsecureGuestAuth
+        data: 0
+        type: dword
+
+    - name: Disable Microsoft Peer-to-Peer Networking Services (CIS 18.6.9.1)
+      win_regedit:
+        path: HKLM:\SOFTWARE\Policies\Microsoft\Peernet
+        name: Disabled
+        data: 1
+        type: dword
+
+    - name: Disable LLMNR (CIS 18.6.19.2.1)
+      win_regedit:
+        path: HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient
+        name: EnableMulticast
+        data: 0
+        type: dword
+
+    - name: Set RDP encryption level to High (CIS 18.8.36.1)
+      win_regedit:
+        path: HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services
+        name: MinEncryptionLevel
+        data: 3
+        type: dword
+
+    - name: Require NLA for RDP (CIS 18.8.36.2)
+      win_regedit:
+        path: HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services
+        name: UserAuthentication
+        data: 1
+        type: dword
+
+    - name: Disable credential delegation (CIS 18.9.17)
+      win_regedit:
+        path: HKLM:\SOFTWARE\Policies\Microsoft\Windows\CredentialsDelegation
+        name: AllowDefaultCredentials
+        data: 0
+        type: dword
+
+    - name: Disable AutoRun for all drives (CIS 18.10.12.1)
+      win_regedit:
+        path: HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer
+        name: NoDriveTypeAutoRun
+        data: 255
+        type: dword
+
+    - name: Disable AutoPlay (CIS 18.10.12.2)
+      win_regedit:
+        path: HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer
+        name: NoAutorun
+        data: 1
+        type: dword
+
+    - name: Disable Windows Error Reporting (CIS 18.10.15.1)
+      win_regedit:
+        path: HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Error Reporting
+        name: Disabled
+        data: 1
+        type: dword
+
+    - name: Enable device installation restrictions (CIS 18.10.57.1)
+      win_regedit:
+        path: HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeviceInstall\Restrictions
+        name: DenyDeviceIDs
+        data: 1
+        type: dword
+
+    - name: Hardening complete
+      debug:
+        msg: "Services and registry hardening complete. Run assessment to verify."

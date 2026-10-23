@@ -1,0 +1,113 @@
+---
+# AMI Head-End System Security Assessment Input Data
+# Reflects a realistic MDMS deployment with intentional gaps in some areas
+# Load via "AMI - Head-End Security Assessment" job template
+
+organization: "Example Electric Utility"
+assessment_date: "2026-02-28"
+assessor: "AMI Security Team"
+headend_system: "MDMS v4.2 - Primary Data Center"
+
+mdms:
+  # ==========================================================================
+  # API Gateway Configuration
+  # ==========================================================================
+  api_gateway:
+    authentication:
+      mfa_enabled: true
+      mfa_required_for_admin: true
+      mfa_method: "hardware_token"
+      oauth2_enabled: true
+      jwt_expiry_minutes: 30
+      refresh_token_rotation: true
+
+    authorization:
+      rbac_enabled: true
+      default_deny: true
+      roles:
+        - name: "meter_reader"
+          permissions: ["read:meter_data"]
+        - name: "field_technician"
+          permissions: ["read:meter_data", "write:meter_commands"]
+        - name: "admin"
+          permissions: ["read:meter_data", "write:meter_commands", "manage:config"]
+
+    transport:
+      tls_minimum_version: "TLS_1.3"
+      ssl_disabled: true
+      tls_1_0_disabled: true
+      tls_1_1_disabled: true
+
+    protection:
+      input_validation: true
+      rate_limiting_enabled: true
+      request_size_limit_enforced: true
+
+  # ==========================================================================
+  # Database Security
+  # ==========================================================================
+  database:
+    encryption:
+      at_rest: true
+      algorithm: "AES-256"
+      tde_enabled: true
+      key_management: "HSM"          # Hardware Security Module
+
+    network:
+      public_access_disabled: true
+      isolated_to_private_subnet: true
+      default_port_changed: true     # Not using default 5432/3306
+      ssl_required_for_connections: true
+      connection_tls_version: "TLS_1.3"
+
+    access:
+      per_application_accounts: true
+      shared_admin_account_disabled: true
+      least_privilege_per_account: true
+
+  # ==========================================================================
+  # Audit Logging
+  # ==========================================================================
+  audit_logging:
+    events_logged:
+      - "user_login"
+      - "user_logout"
+      - "failed_authentication"
+      - "data_access"
+      - "data_modification"
+      - "configuration_change"
+      - "privilege_escalation"
+      - "api_call"
+      - "meter_command_issued"
+      - "firmware_update_triggered"
+
+    retention_days: 730          # 2 years — exceeds 365-day minimum
+
+    encrypted: true
+    integrity_protection: "HMAC_SHA256"
+    write_once_storage: true
+
+    siem_integrated: true
+    real_time_alerting: true
+    alert_on_critical_events: true
+
+  # ==========================================================================
+  # Network Segmentation
+  # NOTE: Direct SSH is allowed (gap) — bastion_host_required should be true
+  # ==========================================================================
+  network:
+    ot_it_separation: true
+    firewall_between_zones: true
+    internet_facing: false
+    dmz_used: true
+    bastion_host_required: false     # GAP: Direct SSH not blocked
+    direct_ssh_blocked: false        # VIOLATION: Direct SSH allowed
+
+  # ==========================================================================
+  # Patch Management
+  # NOTE: High severity patch window is 90 days — exceeds the 60-day limit
+  # ==========================================================================
+  patching:
+    critical_patch_max_days: 14     # 14 days for critical — compliant
+    high_patch_max_days: 90         # 90 days for high — VIOLATION (limit is 60)
+    vulnerability_scanning_enabled: true

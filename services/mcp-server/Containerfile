@@ -1,0 +1,36 @@
+# AAP MCP Server - Python Implementation
+# Simpler deployment based on mancubus77/mcp-server-aap
+
+FROM registry.access.redhat.com/ubi9/python-311:latest
+
+LABEL name="aap-mcp-server-python" \
+      version="1.0.0" \
+      description="Ansible Automation Platform MCP Server (Python)"
+
+USER root
+
+WORKDIR /opt/app-root/src
+
+# Install dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy server code — only the OPA-governed entrypoint ships; the ungoverned
+# server.py bypass has been removed from the tree.
+COPY server_opa.py .
+COPY aap_client.py .
+
+# Set permissions for OpenShift
+RUN chown -R 1001:0 /opt/app-root && \
+    chmod -R g=u /opt/app-root
+
+USER 1001
+
+# Environment variables (override at runtime)
+ENV AAP_URL="https://aap-aap.apps.cluster-9d56n-2.dynamic.redhatworkshops.io" \
+    AAP_VERIFY_SSL="false" \
+    MCP_PORT="3000"
+
+EXPOSE 3000
+
+CMD ["python", "server_opa.py"]

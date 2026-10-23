@@ -1,0 +1,42 @@
+---
+# Windows host connection settings for WinRM
+# This file applies to all hosts in the 'windows' group
+
+# Connection type - MUST be winrm for Windows (not ssh)
+ansible_connection: winrm
+
+# WinRM transport options:
+#   - ntlm: NTLM authentication (most common for domain/local accounts)
+#   - kerberos: Kerberos authentication (domain environments)
+#   - basic: Basic authentication (must enable on Windows, less secure)
+#   - credssp: CredSSP authentication (supports credential delegation)
+ansible_winrm_transport: ntlm
+
+# WinRM port:
+#   - 5985: HTTP (unencrypted, use for testing only)
+#   - 5986: HTTPS (encrypted, recommended for production)
+ansible_port: 5986
+
+# Certificate validation:
+#   - ignore: Skip certificate validation (required for self-signed certs)
+#   - validate: Require valid certificate (production with proper PKI)
+ansible_winrm_server_cert_validation: ignore
+
+# Connection timeout (seconds)
+ansible_winrm_connection_timeout: 60
+
+# Operation timeout (seconds)
+ansible_winrm_operation_timeout_sec: 60
+
+# Read timeout (seconds)
+ansible_winrm_read_timeout_sec: 90
+
+# Shell type for Windows
+ansible_shell_type: powershell
+
+# Do NOT use become/sudo on Windows (causes errors)
+# ansible_become: false
+
+# OPA configuration — CIS/NIST/STIG benchmarks live on opa-security (:8181)
+# Value comes from site_config.yml via vars_files in playbooks
+opa_server_url: "{{ opa_security_url }}"

@@ -1,0 +1,55 @@
+---
+# Test inventory for Ubuntu 22.04 LTS CIS compliance assessment
+all:
+  hosts:
+    # Example Ubuntu 22.04 hosts
+    # ubuntu-server-01:
+    #   ansible_host: 192.168.1.30
+    #   ansible_user: ubuntu
+    #   ansible_ssh_private_key_file: ~/.ssh/id_rsa
+    #   ansible_become: yes
+    #   ansible_become_method: sudo
+
+  vars:
+    # OPA configuration
+    opa_server_url: "http://localhost:8181"
+
+    # Target platform
+    target_platform: "ubuntu_22_04"
+
+    # Compliance framework
+    compliance_framework: "cis"
+
+    # Report generation
+    generate_report: true
+    report_format: "json"
+    assessment_output_dir: "/tmp/compliance_assessments"
+
+  # IMPORTANT: Ubuntu 22.04 Requirements
+  #
+  # 1. Python 3.8+ should be installed (comes with Ubuntu 22.04 by default)
+  # 2. SSH access with sudo privileges required
+  # 3. For passwordless sudo, ensure /etc/sudoers has: %sudo ALL=(ALL:ALL) NOPASSWD:ALL
+  #
+  # Example host configuration:
+  #
+  # all:
+  #   hosts:
+  #     ubuntu-prod-01:
+  #       ansible_host: 192.168.1.30
+  #       ansible_user: ubuntu
+  #       ansible_ssh_private_key_file: ~/.ssh/ubuntu_key
+  #       ansible_become: yes
+  #
+  #     ubuntu-prod-02:
+  #       ansible_host: 192.168.1.31
+  #       ansible_user: admin
+  #       ansible_password: "{{ vault_ubuntu_password }}"  # Use Ansible Vault
+  #       ansible_become: yes
+  #       ansible_become_password: "{{ vault_ubuntu_sudo_password }}"
+  #
+  # Test connectivity:
+  #   ansible -i inventory/ubuntu_22_04_test.yml all -m ping
+  #
+  # Run assessment:
+  #   ansible-playbook -i inventory/ubuntu_22_04_test.yml playbooks/cis_ubuntu_22_04_assessment.yml

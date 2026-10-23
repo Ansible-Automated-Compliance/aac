@@ -1,0 +1,200 @@
+---
+# pull_patch_worklist.yml — pull the Portal patch manifest and resolve it to hosts
+#
+# This is the return leg of the Portal bridge. The outbound leg already exists:
+# `refresh_inventory_catalog.yml` builds the catalog and the AAC Portal Bridge
+# serves it at GET /api/aac/v1/inventory_catalog, which the Portal pulls into
+# `tenant_inventory_catalog` and matches against CVE feeds.
+#
+# This playbook closes the loop:
+#
+#   Portal  GET /portal/v1/tenants/{tenant_id}/patches   (scope: remediation)
+#     → per CVE: severity + KEV membership, affected {vendor, product, version}
+#       with a host COUNT, and the fix coordinates + install command
+#   AAC     resolve the count back to actual hostnames against installed_inventory
+#     → patch_worklist: what to patch, where it is needed, how critical, and the
+#       exact command that applies it
+#
+# The Portal never receives hostnames (the catalog aggregates them away), and it
+# hosts no patch binaries. What comes down the pipe is the ADDRESS of each fix;
+# the host resolution happens here, locally.
+#
+# Read-only with respect to managed hosts: this builds a work list, it does not
+# apply anything. Application goes through AAP under the existing approval flow.
+#
+# AAP Job Template: "AAC - Pull Patch Worklist (Portal)"
+# Credentials: Ansible Vault
+# EE: AAC Compliance EE (community.postgresql)
+# Schedule: after "AAC - Refresh Inventory Catalog (patch intelligence)"
+#
+# Required config:
+#   site_config.yml  → portal_base_url, portal_tenant_id
+#   vault_secrets.yml → vault_portal_tenant_token  (tenant token, scope 'remediation')
+
+- name: Pull Portal patch manifest and resolve it to a per-host work list
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - [ "../vars/vault_secrets.yml", "../vars/empty_fallback.yml" ]
+    - ../vars/site_config.yml
+
+  vars:
+    pg_port: "{{ compliance_db_port | default(5432) }}"
+    pg_db: "compliance"
+    pg_user: "postgres"
+    pg_password: "{{ compliance_db_password }}"
+
+    # Severity floor for the pull. Leave empty to take everything.
+    # patch_severity: <set via extra_vars / survey / inventory>
+    # Server caps this at 2000. We surface it if we hit the cap (see below).
+    patch_limit: 2000
+
+  tasks:
+    - name: Fail early when the Portal connection is not configured
+      ansible.builtin.assert:
+        that:
+          - portal_base_url is defined and portal_base_url | length > 0
+          - portal_tenant_id is defined and portal_tenant_id | length > 0
+          - vault_portal_tenant_token is defined
+          - vault_portal_tenant_token | length > 0
+          - vault_portal_tenant_token != 'PLACEHOLDER'
+        fail_msg: >-
+          Portal pull is not configured. Set portal_base_url and portal_tenant_id
+          in ansible/vars/site_config.yml, and vault_portal_tenant_token in
+          ansible/vars/vault_secrets.yml (a tenant token carrying the
+          'remediation' scope, issued from the Portal).
+
+    - name: Ensure the worklist schema exists
+      # postgresql_script, NOT postgresql_query: `path_to_script` was removed
+      # from postgresql_query in community.postgresql 3.0. Running a .sql file
+      # is postgresql_script's job, and its parameter is `path`.
+      community.postgresql.postgresql_script:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        path: "{{ playbook_dir }}/../files/patch_worklist_schema.sql"
+
+    - name: Pull the patch manifest from the Portal
+      ansible.builtin.uri:
+        use_proxy: false
+        url: >-
+          {{ portal_base_url }}/portal/v1/tenants/{{ portal_tenant_id }}/patches?limit={{ patch_limit }}{{
+            '&severity=' ~ patch_severity if (patch_severity | default('', true)) | length > 0 else '' }}
+        method: GET
+        headers:
+          Authorization: "Bearer {{ vault_portal_tenant_token }}"
+          Accept: "application/json"
+        return_content: true
+        status_code: [200]
+        timeout: 60
+      register: manifest
+      no_log: true
+
+    # no_log above protects the bearer header, but it also means a 200 carrying
+    # a non-JSON body would surface as an opaque Jinja error on the staging
+    # task. Fail here instead, with something a reader can act on.
+    - name: Verify the response parsed as the expected manifest
+      ansible.builtin.assert:
+        that:
+          - manifest.json is defined
+          - manifest.json.items is defined
+        fail_msg: >-
+          The Portal returned HTTP 200 but the body was not a patch manifest
+          (expected JSON with an 'items' array). Check that portal_base_url
+          points at the API and not a proxy or login page, and that the token
+          carries the 'remediation' scope.
+
+    # Count the array we actually received rather than trusting the response's
+    # own `count` field. They agree today, but `count` is the server's word for
+    # how many it returned — if that ever comes to mean "total available", the
+    # truncation check below would silently stop firing.
+    - name: Record how many entries actually came back
+      ansible.builtin.set_fact:
+        manifest_items: "{{ manifest.json['items'] | length }}"
+
+    - name: Summarize the pull
+      ansible.builtin.debug:
+        msg: "Pulled {{ manifest_items }} CVE entries from {{ portal_base_url }}"
+
+    # The endpoint caps at `limit` with no cursor. If we came back exactly at the
+    # cap the result is probably truncated — say so rather than silently
+    # resolving a partial manifest.
+    - name: Warn when the manifest may be truncated
+      ansible.builtin.debug:
+        msg: >-
+          WARNING: the pull returned exactly {{ patch_limit }} entries, the
+          requested cap. The manifest is likely truncated — re-run with a
+          severity filter (patch_severity=CRITICAL) to narrow it, or raise
+          patch_limit (server maximum is 2000).
+      when: (manifest_items | int) >= (patch_limit | int)
+
+    - name: Stage the manifest for set-based resolution
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: >-
+          INSERT INTO patch_manifest_raw (tenant_id, item_count, manifest)
+          VALUES (%s, %s, %s::jsonb)
+        positional_args:
+          - "{{ portal_tenant_id }}"
+          - "{{ manifest_items | int }}"
+          - "{{ manifest.json | to_json }}"
+
+    - name: Resolve the manifest to per-host work items
+      community.postgresql.postgresql_script:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        path: "{{ playbook_dir }}/../files/patch_worklist_resolve.sql"
+
+    - name: Read back the resolved work list
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: >-
+          SELECT count(*)                                          AS work_items,
+                 count(DISTINCT hostname)                          AS hosts,
+                 count(DISTINCT cve_id)                            AS cves,
+                 count(*) FILTER (WHERE kev_member)                AS kev_items,
+                 count(*) FILTER (WHERE severity = 'CRITICAL')     AS critical_items,
+                 count(*) FILTER (WHERE fix_match = 'none')        AS no_fix_items,
+                 count(*) FILTER (WHERE fix_match = 'ambiguous')   AS ambiguous_items,
+                 count(*) FILTER (WHERE patch_source = 'vendor_entitled') AS entitled_items
+            FROM patch_worklist
+      register: worklist_stats
+
+    - name: Summary
+      ansible.builtin.debug:
+        msg:
+          - "patch_worklist: {{ worklist_stats.query_result[0].work_items }} items across {{ worklist_stats.query_result[0].hosts }} hosts / {{ worklist_stats.query_result[0].cves }} CVEs"
+          - "priority: {{ worklist_stats.query_result[0].kev_items }} KEV-listed, {{ worklist_stats.query_result[0].critical_items }} CRITICAL"
+          - "fix coverage: {{ worklist_stats.query_result[0].no_fix_items }} with no known fix, {{ worklist_stats.query_result[0].ambiguous_items }} ambiguous vendor match"
+          - "{{ worklist_stats.query_result[0].entitled_items }} items are vendor-entitled (RHEL/SUSE) — fetched from the customer's own subscription, never mirrored by the Portal"
+          - "Next: review patch_worklist, then apply via AAP under the approval flow. Nothing has been applied by this run."
+
+    # A zero-row work list after a non-empty manifest almost always means the
+    # inventory is stale (the catalog was rebuilt after the Portal last pulled),
+    # not that the estate is clean. Call it out.
+    - name: Flag a suspicious empty result
+      ansible.builtin.debug:
+        msg: >-
+          NOTE: the manifest carried {{ manifest_items }} CVEs
+          but nothing resolved to a host. That usually means installed_inventory
+          is out of step with what the Portal last pulled — re-run
+          "AAC - Refresh Inventory Catalog (patch intelligence)", let the Portal
+          re-pull the catalog, then run this again.
+      when:
+        - (manifest_items | int) > 0
+        - (worklist_stats.query_result[0].work_items | int) == 0

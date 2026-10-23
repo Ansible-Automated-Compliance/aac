@@ -1,0 +1,42 @@
+---
+# Environment profile: RHPDS (ephemeral OpenShift demo cluster, AAP 2.7)
+#
+# In-cluster service DNS is identical to lab/mac-aap (the `aac` namespace).
+# What is unique to RHPDS: the cluster name is dynamic, so EXTERNAL routes are
+# templated from `rhpds_cluster`, and managed demo targets live on an external
+# EC2 host whose IP is discovered at provision time.
+#
+# Required override (install_config.yml or survey):
+#   rhpds_cluster: "cluster-abc123.dynamic.redhatworkshops.io"
+
+env_profile_name: rhpds
+topology: openshift
+
+# --- AAP ---
+aap_url: "http://aap.aap-operator.svc.cluster.local"
+external_aap_url: "https://aap-aap-operator.apps.{{ rhpds_cluster | default('SET_rhpds_cluster') }}"
+aap_admin_user: "admin"
+aap_ssh_user: "aapuser1"
+
+# --- OPA / Grafana / MCP / PostgreSQL (in-cluster service DNS) ---
+opa_security_url:   "http://opa-security.aac.svc.cluster.local:8181"
+opa_compliance_url: "http://opa-compliance.aac.svc.cluster.local:8181"
+# Host-side consumers (the MCP server container) cannot resolve in-cluster DNS
+# and need an externally reachable OPA route. Not defined for this profile:
+# set external_opa_compliance_url (site_config.yml or -e) before running
+# deploy_mcp_server.yml; the role refuses to start without it.
+opa_ot_url:         "http://opa-ot.aac.svc.cluster.local:8181"
+grafana_url: "http://grafana.aac.svc.cluster.local:3000"
+mcp_url:     "http://aap-eda-api.aap-operator.svc.cluster.local:8000"
+pg_host: "compliance-db.aac.svc.cluster.local"
+pg_port: 5432
+pg_user: "postgres"
+pg_db:   "compliance"
+
+# --- Execution Environment ---
+ee_image: "image-registry.openshift-image-registry.svc:5000/aac/aac-compliance-ee:v1.3.0"
+
+secret_source: aap_credential
+
+# --- External managed demo host (EC2), discovered at provision time ---
+rhpds_demo_host_ip: "PENDING_EC2_IP"

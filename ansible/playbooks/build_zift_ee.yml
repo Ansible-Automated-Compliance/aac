@@ -1,0 +1,165 @@
+---
+# build_zift_ee.yml — Build AAC Zift Execution Environment
+#
+# Builds EE v0.1.0 with Zift v0.2.3 (EnforceAuth authorization migration
+# tool — extracts embedded authz from application code into Rego/Cedar).
+# Runs ansible-builder inside the EE to generate the Containerfile,
+# then delegates all podman commands to the host where podman is installed.
+#
+# Single-arch: linux/amd64 only. Zift upstream ships only x86_64 for Linux.
+# When aarch64-unknown-linux-gnu ships, adopt the multi-arch pattern used
+# by build_policy_tools_ee.yml + build_policy_tools_ee_manifest.yml.
+#
+# AAP Job Template: seed via ansible/playbooks/seed_zift_ee_templates.yml
+# Credentials: Ansible Vault, Machine (for delegate_to SSH)
+
+- name: Build AAC Zift Execution Environment on AAP Controller
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - [ "../vars/vault_secrets.yml", "../vars/empty_fallback.yml" ]
+    - ../vars/site_config.yml
+
+  vars:
+    aap_host:         "{{ aac_host }}"
+    aap_user:         "{{ aap_ssh_user }}"
+    ee_version:       "v0.1.0"
+    ee_image:         "quay.io/rh-ee-tcoulter/aac-zift-ee"
+    ee_build_dir:     "/tmp/aac-zift-ee-build"
+    ee_source_dir:    "{{ playbook_dir }}/../execution-environments/aac-zift-ee"
+
+  tasks:
+
+    # ── Step 1: Generate Containerfile in EE (has ansible-builder) ────────────
+    - name: Create EE build directory
+      ansible.builtin.file:
+        path: "{{ ee_build_dir }}"
+        state: directory
+        mode: '0755'
+
+    - name: Copy EE definition files from project to build dir
+      ansible.builtin.copy:
+        src: "{{ ee_source_dir }}/{{ item }}"
+        dest: "{{ ee_build_dir }}/{{ item }}"
+        remote_src: true
+      loop:
+        - execution-environment.yml
+        - requirements.yml
+        - requirements.txt
+        - bindep.txt
+        - ansible.cfg
+
+    - name: Install ansible-builder in EE if not present
+      ansible.builtin.command: pip3 install ansible-builder
+      args:
+        creates: /usr/local/bin/ansible-builder
+
+    - name: Generate Containerfile using ansible-builder
+      ansible.builtin.command: ansible-builder create
+      args:
+        chdir: "{{ ee_build_dir }}"
+      environment:
+        HOME: /root
+
+    # ── Step 2: Copy context to host, build and push with host podman ─────────
+    - name: Add physical host to inventory for direct SSH (bypasses AAP receptor)
+      ansible.builtin.add_host:
+        name: aap_physical_host
+        ansible_host: "{{ aap_host }}"
+        ansible_user: "{{ aap_user }}"
+        ansible_connection: ssh
+        ansible_ssh_common_args: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+
+    - name: Ensure build context directory exists on host
+      ansible.builtin.file:
+        path: "{{ ee_build_dir }}/context"
+        state: directory
+        mode: '0755'
+      delegate_to: aap_physical_host
+
+    - name: Copy build context to host
+      ansible.builtin.copy:
+        src: "{{ ee_build_dir }}/context/"
+        dest: "{{ ee_build_dir }}/context/"
+        mode: preserve
+      delegate_to: aap_physical_host
+
+    - name: Build EE image with podman on host
+      ansible.builtin.shell: >
+        /usr/bin/podman build
+        -f {{ ee_build_dir }}/context/Dockerfile
+        -t {{ ee_image }}:{{ ee_version }}
+        {{ ee_build_dir }}/context
+      delegate_to: aap_physical_host
+
+    - name: Verify Zift is in the image
+      ansible.builtin.shell: >
+        /usr/bin/podman run --rm {{ ee_image }}:{{ ee_version }} zift --version
+      register: zift_verify
+      delegate_to: aap_physical_host
+
+    - name: Show Zift version in image
+      ansible.builtin.debug:
+        msg: "Zift: {{ zift_verify.stdout_lines[0] }}"
+
+    - name: Tag image as latest
+      ansible.builtin.shell: >
+        /usr/bin/podman tag {{ ee_image }}:{{ ee_version }} {{ ee_image }}:latest
+      delegate_to: aap_physical_host
+
+    - name: Login to quay.io on host
+      ansible.builtin.shell: >
+        /usr/bin/podman login quay.io
+        -u {{ vault_quay_username }}
+        -p {{ vault_quay_password }}
+      delegate_to: aap_physical_host
+      no_log: true
+
+    - name: Push versioned image to quay.io
+      ansible.builtin.shell: >
+        /usr/bin/podman push {{ ee_image }}:{{ ee_version }}
+      delegate_to: aap_physical_host
+
+    - name: Push latest tag to quay.io
+      ansible.builtin.shell: >
+        /usr/bin/podman push {{ ee_image }}:latest
+      delegate_to: aap_physical_host
+
+    # ── Step 3: Load image into receptor's separate podman store ─────────────
+    # AAP's receptor container uses /home/aapuser1/aap/containers/storage
+    # (configured via /home/aapuser1/aap/containers/storage.conf), which is
+    # separate from the standard user podman store (~/.local/share/containers).
+    # Without this step AAP jobs keep using stale cached EE images.
+    - name: Load new EE image into receptor podman store
+      ansible.builtin.shell: >
+        CONTAINERS_STORAGE_CONF=/home/aapuser1/aap/containers/storage.conf
+        /usr/bin/podman load -i <(/usr/bin/podman save {{ ee_image }}:{{ ee_version }})
+      args:
+        executable: /bin/bash
+      delegate_to: aap_physical_host
+      register: receptor_load
+
+    - name: Load latest tag into receptor podman store
+      ansible.builtin.shell: >
+        CONTAINERS_STORAGE_CONF=/home/aapuser1/aap/containers/storage.conf
+        /usr/bin/podman load -i <(/usr/bin/podman save {{ ee_image }}:latest)
+      args:
+        executable: /bin/bash
+      delegate_to: aap_physical_host
+
+    - name: Clean up build directory on host
+      ansible.builtin.file:
+        path: "{{ ee_build_dir }}"
+        state: absent
+      delegate_to: aap_physical_host
+
+    - name: Build complete
+      ansible.builtin.debug:
+        msg:
+          - "✅ {{ ee_image }}:{{ ee_version }} built and pushed to quay.io"
+          - "✅ {{ ee_image }}:latest tagged and pushed"
+          - "✅ Image loaded into receptor podman store (AAP job store)"
+          - "   Zift: {{ zift_verify.stdout_lines[0] }}"
+          - "   Receptor load: {{ receptor_load.stdout_lines[-1] | default('done') }}"

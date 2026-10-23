@@ -1,0 +1,113 @@
+---
+# Deploy the AO routing policies (source of truth in ansible/opa-routing/policies/)
+# into the live opa-routing `routing-policy` ConfigMap, then roll the deployment
+# so OPA reloads them. This is the deployment path that keeps the versioned policy
+# and the running policy from silently diverging.
+#
+# Auth: attach the "OpenShift In-Cluster (aac-demo-runner)" credential to the job
+# template. It injects K8S_AUTH_HOST / K8S_AUTH_API_KEY / K8S_AUTH_VERIFY_SSL. The
+# aac-demo-runner service account is granted least-privilege patch on exactly the
+# routing-policy ConfigMap and opa-routing Deployment (see
+# ansible/opa-routing/deploy/rbac.yaml).
+#
+# Backs job template: "AAC - Load OPA Routing Policies".
+
+- name: Deploy OPA routing policies to the routing-policy ConfigMap
+  hosts: localhost
+  connection: local
+  gather_facts: true
+
+  vars:
+    policy_dir: "{{ playbook_dir }}/../opa-routing/policies"
+    routing_namespace: "aac-policy"
+    routing_configmap: "routing-policy"
+    routing_deployment: "opa-routing"
+    # Deploy the POLICY files only. golden_config.json is the runtime state
+    # document owned by the rollback-pause toggle; re-writing the repo default
+    # here would clobber an active change-window pause on a routine reload, so it
+    # is deliberately excluded. Seed it once at initial ConfigMap creation (see
+    # the manual recipe in ansible/opa-routing/README.md).
+    # Every .rego in ansible/opa-routing/policies/ (tests/ excluded). Keep this
+    # list and the ConfigMap/opa-run recipe in ansible/opa-routing/README.md
+    # identical: a policy missing here is a policy a fresh environment never
+    # loads, and the AO endpoint that calls it returns an empty result.
+    routing_files:
+      - routing.rego
+      - drift_routing.rego
+      - gpuflex_routing.rego
+      - tanium_drift_routing.rego
+      - ami_routing.rego
+    _k8s_host: "{{ lookup('env', 'K8S_AUTH_HOST') }}"
+    _k8s_token: "{{ lookup('env', 'K8S_AUTH_API_KEY') }}"
+    # TLS verification follows the attached credential's K8S_AUTH_VERIFY_SSL.
+    # Default TRUE (fail closed) when it is unset -- a self-signed CRC endpoint is
+    # handled by setting verify_ssl=false on the OpenShift credential, never by a
+    # hardcoded bypass here.
+    _k8s_verify: "{{ (lookup('env', 'K8S_AUTH_VERIFY_SSL') | default('true', true)) | bool }}"
+
+  tasks:
+    - name: Preflight — OpenShift credential is attached
+      ansible.builtin.assert:
+        that:
+          - _k8s_host | length > 0
+          - _k8s_token | length > 0
+        fail_msg: >-
+          No OpenShift credential detected (K8S_AUTH_HOST/K8S_AUTH_API_KEY unset).
+          Attach the "OpenShift In-Cluster (aac-demo-runner)" credential to this job.
+
+    - name: Read the routing policy files into the ConfigMap data map
+      ansible.builtin.set_fact:
+        _cm_data: "{{ _cm_data | default({}) | combine({item: lookup('file', policy_dir ~ '/' ~ item)}) }}"
+      loop: "{{ routing_files }}"
+
+    - name: Patch the routing-policy ConfigMap with the versioned policies
+      ansible.builtin.uri:
+        url: "{{ _k8s_host }}/api/v1/namespaces/{{ routing_namespace }}/configmaps/{{ routing_configmap }}"
+        method: PATCH
+        body: "{{ {'data': _cm_data} | to_json }}"
+        body_format: raw
+        headers:
+          Authorization: "Bearer {{ _k8s_token }}"
+          Content-Type: application/merge-patch+json
+        validate_certs: "{{ _k8s_verify }}"
+        status_code: [200]
+
+    - name: Roll opa-routing so OPA reloads the policies
+      ansible.builtin.uri:
+        url: "{{ _k8s_host }}/apis/apps/v1/namespaces/{{ routing_namespace }}/deployments/{{ routing_deployment }}"
+        method: PATCH
+        body: "{{ {'spec': {'template': {'metadata': {'annotations': {'aac.golden/restartedAt': ansible_date_time.iso8601}}}}} | to_json }}"
+        body_format: raw
+        headers:
+          Authorization: "Bearer {{ _k8s_token }}"
+          Content-Type: application/strategic-merge-patch+json
+        validate_certs: "{{ _k8s_verify }}"
+        status_code: [200]
+      register: _rollout
+
+    # A PATCH only acknowledges the request. Wait for the new ReplicaSet to
+    # actually become Ready so a bad policy or image-pull failure fails the job
+    # instead of leaving the old policy running (or OPA down) under a green run.
+    - name: Wait for the opa-routing rollout to complete (new generation Ready)
+      ansible.builtin.uri:
+        url: "{{ _k8s_host }}/apis/apps/v1/namespaces/{{ routing_namespace }}/deployments/{{ routing_deployment }}"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ _k8s_token }}"
+        validate_certs: "{{ _k8s_verify }}"
+        return_content: true
+      register: _dep
+      until:
+        - _dep.json.status.observedGeneration | default(0) >= _dep.json.metadata.generation
+        - (_dep.json.status.updatedReplicas | default(0)) == (_dep.json.spec.replicas | default(1))
+        - (_dep.json.status.readyReplicas | default(0)) == (_dep.json.spec.replicas | default(1))
+        - (_dep.json.status.unavailableReplicas | default(0)) == 0
+      retries: 30
+      delay: 5
+
+    - name: Report
+      ansible.builtin.debug:
+        msg: >-
+          Deployed {{ routing_files | length }} policy files to
+          {{ routing_namespace }}/{{ routing_configmap }} and rolled
+          {{ routing_deployment }} to Ready (golden_config.json preserved).

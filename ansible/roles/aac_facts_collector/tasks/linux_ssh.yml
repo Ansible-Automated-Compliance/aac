@@ -1,0 +1,45 @@
+---
+# linux_ssh.yml — Collect SSH configuration facts
+
+- name: Get effective SSH daemon configuration
+  shell: sshd -T 2>/dev/null || cat /etc/ssh/sshd_config 2>/dev/null || echo ""
+  register: sshd_effective_raw
+  changed_when: false
+  failed_when: false
+
+- name: Get SSH config file permissions
+  stat:
+    path: /etc/ssh/sshd_config
+  register: sshd_config_stat
+  failed_when: false
+
+- name: Check SSH service status
+  shell: systemctl is-active sshd 2>/dev/null || systemctl is-active ssh 2>/dev/null || echo "unknown"
+  register: sshd_status_raw
+  changed_when: false
+  failed_when: false
+
+- name: Set SSH facts
+  set_fact:
+    aac_ssh:
+      raw_config:      "{{ sshd_effective_raw.stdout | default('') }}"
+      service_active:  "{{ sshd_status_raw.stdout | default('unknown') }}"
+      config_file_permissions:
+        mode:  "{{ '%04o' | format(sshd_config_stat.stat.mode | int) if (sshd_config_stat is defined and sshd_config_stat.stat is defined and sshd_config_stat.stat.mode is defined) else 'unknown' }}"
+        owner: "{{ sshd_config_stat.stat.pw_name | default('unknown') if (sshd_config_stat is defined and sshd_config_stat.stat is defined) else 'unknown' }}"
+      # Parse key security parameters from effective config
+      # regex_search returns None on no match; | default([]) guards | first
+      permit_root_login: >-
+        {{ sshd_effective_raw.stdout | regex_search('(?i)^PermitRootLogin\s+(\S+)', '\1', multiline=True) | default([], true) | first | default('not_set') }}
+      password_auth: >-
+        {{ sshd_effective_raw.stdout | regex_search('(?i)^PasswordAuthentication\s+(\S+)', '\1', multiline=True) | default([], true) | first | default('not_set') }}
+      pubkey_auth: >-
+        {{ sshd_effective_raw.stdout | regex_search('(?i)^PubkeyAuthentication\s+(\S+)', '\1', multiline=True) | default([], true) | first | default('not_set') }}
+      max_auth_tries: >-
+        {{ sshd_effective_raw.stdout | regex_search('(?i)^MaxAuthTries\s+(\d+)', '\1', multiline=True) | default([], true) | first | default('not_set') }}
+      protocol_version: >-
+        {{ sshd_effective_raw.stdout | regex_search('(?i)^Protocol\s+(\S+)', '\1', multiline=True) | default([], true) | first | default('2') }}
+      x11_forwarding: >-
+        {{ sshd_effective_raw.stdout | regex_search('(?i)^X11Forwarding\s+(\S+)', '\1', multiline=True) | default([], true) | first | default('not_set') }}
+      client_alive_interval: >-
+        {{ sshd_effective_raw.stdout | regex_search('(?i)^ClientAliveInterval\s+(\d+)', '\1', multiline=True) | default([], true) | first | default('not_set') }}

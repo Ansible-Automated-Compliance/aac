@@ -1,0 +1,36 @@
+---
+# linux_selinux.yml — Collect SELinux / AppArmor MAC facts
+
+- name: Get SELinux status
+  shell: sestatus 2>/dev/null || getenforce 2>/dev/null || echo "not_installed"
+  register: selinux_status_raw
+  changed_when: false
+  failed_when: false
+
+- name: Check AppArmor status (Debian/Ubuntu)
+  shell: |
+    if command -v aa-status &>/dev/null; then
+      echo "APPARMOR:$(aa-status --enabled && echo enabled || echo disabled)"
+    else
+      echo "APPARMOR:not_installed"
+    fi
+  register: apparmor_status_raw
+  changed_when: false
+  failed_when: false
+
+- name: Set SELinux/MAC facts
+  set_fact:
+    aac_selinux:
+      selinux:
+        status_raw:  "{{ selinux_status_raw.stdout | default('') }}"
+        mode:        "{{ ansible_selinux.mode | default('disabled') }}"
+        type:        "{{ ansible_selinux.type | default('unknown') }}"
+        status:      "{{ ansible_selinux.status | default('disabled') }}"
+        config_mode: "{{ ansible_selinux.config_mode | default('unknown') }}"
+      apparmor:
+        status_raw:  "{{ apparmor_status_raw.stdout | default('') }}"
+        installed: "{{ 'not_installed' not in apparmor_status_raw.stdout | default('not_installed') }}"
+      mac_framework: >-
+        {{ 'selinux' if (ansible_selinux.status | default('disabled')) != 'disabled'
+           else ('apparmor' if 'not_installed' not in apparmor_status_raw.stdout | default('not_installed')
+           else 'none') }}

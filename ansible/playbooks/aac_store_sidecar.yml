@@ -1,0 +1,108 @@
+---
+# aac_store_sidecar.yml — Store organizational context (sidecar) datasets (ADR-001)
+#
+# Reads a sidecar YAML/JSON file and stores it in the sidecar_datasets table
+# with a timestamp matching the core facts collection window.
+#
+# Sidecar datasets provide organizational context that cannot be discovered
+# from endpoint facts alone:
+#   - digital_sovereignty: approved jurisdictions, key management, AI services
+#   - nerc_cip:            BES Cyber System classifications, ESP boundaries
+#   - hardware_supply_chain: manufacturer provenance, firmware origin
+#   - ai_governance:       approved AI services, training data policy
+#
+# TIME ALIGNMENT: Run this on the same nightly schedule as aac_gather_facts.yml
+# so that sidecar data and core facts share the same collection window.
+# The sidecar_datasets_latest view always returns the most recent sidecar,
+# which will be from the same nightly window as the most recent host_facts.
+#
+# AAP Job Template: "AAC - Store Sidecar Dataset"
+# Credentials: Ansible Vault
+# EE: AAC Compliance EE
+# Inventory: localhost
+# Schedule: Same nightly schedule as AAC - Gather Facts (All Systems)
+# Survey:
+#   sidecar_type — digital_sovereignty | nerc_cip | hardware_supply_chain | ai_governance
+#   entity_id    — org or site name this sidecar applies to
+#   sidecar_file — path to sidecar YAML file (relative to project root)
+
+- name: Store Sidecar Dataset to PostgreSQL
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - [ "../vars/vault_secrets.yml", "../vars/empty_fallback.yml" ]
+    - ../vars/site_config.yml
+
+  vars:
+    pg_password:  "{{ compliance_db_password }}"
+    sidecar_type: "digital_sovereignty"
+    entity_id:    "default_org"
+    sidecar_file: "examples/sidecars/digital_sovereignty.yml"
+
+  tasks:
+
+    - name: Load sidecar data file
+      set_fact:
+        sidecar_data: "{{ lookup('file', playbook_dir + '/../../' + sidecar_file) | from_yaml }}"
+
+    - name: Validate required sidecar fields
+      assert:
+        that:
+          - sidecar_data is mapping
+          - sidecar_type in ['digital_sovereignty', 'nerc_cip', 'hardware_supply_chain', 'ai_governance', 'third_party_risk']
+          - entity_id | length > 0
+        fail_msg: "Sidecar validation failed: check sidecar_type, entity_id, and file format"
+
+    - name: Store sidecar dataset to PostgreSQL
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port | default(5433) }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: |
+          INSERT INTO sidecar_datasets
+            (sidecar_type, entity_id, collected_at, valid_from, schema_version, source, data)
+          VALUES (%s, %s, NOW(), NOW(), %s, %s, %s::jsonb)
+        positional_args:
+          - "{{ sidecar_type }}"
+          - "{{ entity_id }}"
+          - "{{ sidecar_data.schema_version | default('1.0') }}"
+          - "{{ sidecar_data.source | default('manual') }}"
+          - "{{ sidecar_data | to_json }}"
+      register: store_result
+
+    - name: Verify stored sidecar
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port | default(5433) }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: |
+          SELECT sidecar_type, entity_id, collected_at, source
+          FROM sidecar_datasets_latest
+          WHERE sidecar_type = %s AND entity_id = %s
+        positional_args:
+          - "{{ sidecar_type }}"
+          - "{{ entity_id }}"
+      register: verify_result
+
+    - name: Sidecar storage summary
+      debug:
+        msg:
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "  Sidecar Dataset Stored"
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "  Type:       {{ sidecar_type }}"
+          - "  Entity:     {{ entity_id }}"
+          - "  File:       {{ sidecar_file }}"
+          - "  Collected:  {{ verify_result.query_result[0].collected_at | default('now') }}"
+          - "  Source:     {{ sidecar_data.source | default('manual') }}"
+          - ""
+          - "  Time-aligned with nightly host_facts collection."
+          - "  Assessments using this sidecar will read from"
+          - "  sidecar_datasets_latest — always the most recent."
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

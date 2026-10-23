@@ -1,0 +1,95 @@
+---
+# rotation_grafana.yml — Step 4 of AAC Credential Rotation Workflow
+#
+# Generates a new Grafana admin password, applies it via the Grafana API,
+# validates login, and writes the new password to the rotation temp directory
+# for vault update (Step 5).
+#
+# Survey variables (set at workflow level):
+#   rotate_grafana (bool) — set to false to skip this step
+#
+# Part of workflow: "AAC - Rotate Credentials"
+
+- name: Rotate Grafana Admin Password
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - ../vars/site_config.yml
+
+  vars:
+    # aap_host: <set via extra_vars / survey / inventory>   # default aac_host
+    rotation_dir: "/tmp/aac_cred_rotation"
+
+    # Survey default — override at workflow level
+    rotate_grafana: false
+
+  tasks:
+
+    - name: Skip if not selected
+      meta: end_play
+      when: not (rotate_grafana | bool)
+
+    - name: Confirm Grafana is reachable
+      uri:
+        use_proxy: false
+        url: "{{ grafana_url }}/api/health"
+        method: GET
+        status_code: 200
+        validate_certs: false
+      register: grafana_health
+
+    - name: Generate new Grafana password
+      set_fact:
+        # No special chars — avoids bash quoting issues in container env vars
+        new_grafana_password: "{{ lookup('password', '/dev/null length=20 chars=ascii_letters,digits') }}"
+      no_log: true
+
+    - name: Apply new Grafana password via API
+      uri:
+        use_proxy: false
+        url: "{{ grafana_url }}/api/user/password"
+        method: PUT
+        body_format: json
+        body:
+          oldPassword: "{{ grafana_admin_password }}"
+          newPassword: "{{ new_grafana_password }}"
+          confirmNew:  "{{ new_grafana_password }}"
+        headers:
+          Content-Type: "application/json"
+        url_username: admin
+        url_password: "{{ grafana_admin_password }}"
+        force_basic_auth: true
+        status_code: 200
+        validate_certs: false
+      no_log: true
+
+    - name: Validate new password — test login
+      uri:
+        use_proxy: false
+        url: "{{ grafana_url }}/api/org"
+        method: GET
+        url_username: admin
+        url_password: "{{ new_grafana_password }}"
+        force_basic_auth: true
+        status_code: 200
+        validate_certs: false
+      register: grafana_validate
+      no_log: true
+
+    - name: Write new password to rotation directory
+      copy:
+        dest: "{{ rotation_dir }}/grafana_password.env"
+        mode: "0600"
+        content: "{{ new_grafana_password }}"
+      delegate_to: "{{ (aap_host | default(aac_host)) }}"
+      become: true
+      no_log: true
+
+    - name: Grafana rotation complete
+      debug:
+        msg:
+          - "✅ New Grafana password generated and applied"
+          - "✅ Login validated successfully"
+          - "✅ Password written to rotation directory for vault update"

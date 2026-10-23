@@ -1,0 +1,613 @@
+= Ansible Automated Compliance (AAC) — Executive Architecture Guide
+:doctype: book
+:toc: left
+:toclevels: 3
+:sectanchors:
+:sectnums:
+:icons: font
+:experimental:
+:author: Tim Coulter (Red Hat); Claude (Anthropic) — co-author
+:version-label: Version
+:revnumber: 1.0
+:revdate: 2026-09-16
+:description: Plain-language architecture for VPs, CTOs, and compliance executives — with a clear map of Red Hat supported vs customer-owned components.
+
+[.lead]
+This guide explains *what* Ansible Automated Compliance (AAC) is, *how* the pieces fit together, and *which parts carry a Red Hat support entitlement* — without assuming deep technical background. Use it in executive briefings, architecture reviews, and procurement conversations.
+
+== At a glance — supported vs. customer-owned
+
+[IMPORTANT]
+====
+*The architecture runs on a supported Red Hat product. The policy library and delivery packaging are not a Red Hat product entitlement today.*
+
+In plain terms:
+
+* **Red Hat supports the engine** — Ansible Automation Platform (AAP) and its Policy-as-Code (PaC) integration with Open Policy Agent (OPA).
+* **You own the content** — the Rego policy library, playbooks, installers, and dashboards that turn AAP into a continuous compliance platform.
+
+This is the same relationship every Ansible customer already has: Red Hat supports the platform; you own your automation content.
+====
+
+== Why this platform exists
+
+Organizations spend millions on compliance — audits, consultants, point tools, and manual evidence collection — yet still answer regulators with *screenshots and spreadsheets* taken at a single moment in time.
+
+AAC addresses four executive-level problems:
+
+[cols="1,3",options="header"]
+|===
+| Problem | What AAC does differently
+
+| **Point-in-time audits**
+| Runs assessments on a schedule (or on events) and stores every result with a timestamp — evidence becomes a *trend*, not a snapshot.
+
+| **Tool sprawl**
+| One policy language (Rego), one decision engine (OPA), one orchestrator (AAP), one evidence store (PostgreSQL) — instead of separate products per framework (CIS, NIST, ISO, NERC-CIP, …).
+
+| **Drift between audits**
+| Event-Driven Ansible (EDA) can react when configuration changes — unauthorized drift surfaces before the next audit cycle.
+
+| **Ungoverned automation**
+| The same OPA + Rego pattern gates CI/CD changes, playbooks, and (optionally) AI tool calls — not just server hardening.
+|===
+
+== The architecture in one picture
+
+The diagram below is the mental model executives should carry: **AAP is the hub**. Everything else connects to it.
+
+[source,text]
+----
+                         YOUR INFRASTRUCTURE
+    ┌──────────────────────────────────────────────────────────────┐
+    │  Servers · Cloud · Windows · Network · OT · M365 · K8s …     │
+    └────────────────────────────┬─────────────────────────────────┘
+                                 │  read-only assessment
+                                 │  (SSH, APIs, PowerShell, etc.)
+                                 ▼
+    ┌──────────────────────────────────────────────────────────────┐
+    │  LAYER 1 — ORCHESTRATION        ✅ RED HAT SUPPORTED (AAP)   │
+    │  ┌────────────────────────────────────────────────────────┐  │
+    │  │  Ansible Automation Platform 2.6+                      │  │
+    │  │  • Controller (jobs, schedules, workflows)             │  │
+    │  │  • Event-Driven Ansible (real-time triggers)           │  │
+    │  │  • Execution Environments (where jobs run)             │  │
+    │  │  • Policy-as-Code gate (pre-launch job checks)         │  │
+    │  └────────────────────────────────────────────────────────┘  │
+    └───────────────┬──────────────────────────────┬───────────────┘
+                    │ collected facts              │ scored results
+                    ▼                              ▼
+    ┌───────────────────────────┐   ┌──────────────────────────────┐
+    │  LAYER 3 — DECISION       │   │  LAYER 2 — EVIDENCE STORE    │
+    │  ⚠️  OPA (customer-run)   │   │ ⚠️ PostgreSQL (customer-run) │
+    │  ┌─────────────────────┐  │   │ ┌──────────────────────────┐ │
+    │  │ opa-security        │  │   │ │ compliance_results       │ │
+    │  │ opa-compliance      │  │   │ │ compliance_facts         │ │
+    │  │ opa-ot              │  │   │ │ historical JSONB records │ │
+    │  └─────────────────────┘  │   │ └──────────────────────────┘ │
+    │  Rego policies evaluate   │   │ 13+ months audit history     │
+    │  facts → pass/fail/score  │   └──────────────┬───────────────┘
+    └───────────────────────────┘                  │
+                    ▲                              ▼
+                    │                    ┌──────────────────────────┐
+                    │                    │ Grafana (optional)       │
+                    │                    │ ❌ not a Red Hat product │
+                    │                    │ dashboards & trends      │
+                    └────────────────────┴──────────────────────────┘
+                              AAC REGO LIBRARY
+                         ❌ content — community tier today
+                         (600+ policy files, 50+ frameworks)
+----
+
+=== Legend — support at a glance
+
+[cols="1,4,2",options="header"]
+|===
+| Symbol | Meaning | Examples
+
+| ✅
+| *Red Hat supported product or product feature* — standard entitlement, SLAs, errata
+| AAP Controller, EDA, Execution Environments, PaC integration, RHEL
+
+| ⚠️
+| *Supported capability, customer-operated component* — Red Hat supports *calling* OPA from AAP; you operate the OPA servers and database
+| OPA server instances, PostgreSQL compliance database
+
+| ❌
+| *Not a Red Hat product entitlement* — open source or reference implementation; customer or community ownership
+| AAC Rego library, AAC playbooks/installers, Grafana dashboards
+|===
+
+== How an assessment works — five steps
+
+No jargon version of what happens when a compliance job runs:
+
+[arabic]
+. **Collect** — AAP runs a job that reads configuration from your systems (read-only). Think of it as an automated, structured inventory of security settings — not changing anything.
+. **Send** — The job posts those facts as JSON to an OPA server (one of three, depending on the framework).
+. **Decide** — OPA runs *Rego policies* — rules written in a declarative language — and returns a scored report: which controls passed, which failed, and why.
+. **Store** — Results land in PostgreSQL as a permanent record (hostname, framework, score, violations, timestamp).
+. **Report** — Grafana dashboards and exported PDF/DOCX reports read from that database for auditors and executives.
+
+[NOTE]
+====
+*Latency expectation:* A single-framework assessment typically takes *seconds to minutes*, depending on estate size. This is *not* the same as AAP's Policy-as-Code pre-launch gate, which must answer in under ~2 seconds.
+====
+
+== Layer 1 — Ansible Automation Platform (the hub)
+
+=== What it is
+
+AAP is the platform many enterprises already run for automation. AAC does not replace it — AAC *extends* it with compliance job templates, workflows, policies, and evidence storage.
+
+=== Components executives should recognize
+
+[cols="2,3,1",options="header"]
+|===
+| Component | Role in AAC | Red Hat support
+
+| **Automation Controller**
+| Schedules and runs compliance assessments; stores job history
+| ✅ Supported
+
+| **Execution Environments (EEs)**
+| Container images where jobs execute (e.g., M365 assessment needs PowerShell)
+| ✅ Supported
+
+| **Event-Driven Ansible (EDA)**
+| Watches for drift events and triggers enforcement workflows
+| ✅ Supported
+
+| **Policy-as-Code (PaC)**
+| Pre-launch gate: blocks jobs that violate Rego policy *before* they run
+| ✅ Supported (GA since AAP 2.5.5)
+
+| **Private Automation Hub**
+| Hosts certified collections and custom EEs
+| ✅ Supported
+|===
+
+=== Policy-as-Code vs continuous assessment
+
+Executives often conflate two uses of OPA. They are *complementary*, not interchangeable:
+
+[cols="2,2,2",options="header"]
+|===
+| | **Policy-as-Code (PaC)** | **AAC assessment**
+
+| *When*
+| Before a job launches
+| After facts are collected
+
+| *What OPA sees*
+| Job metadata (who, what template, which inventory)
+| Configuration facts from servers, cloud, M365, OT devices
+
+| *Decision persisted?*
+| No — gate and gone
+| Yes — every row stored in PostgreSQL
+
+| *Proves compliance to an auditor?*
+| No — it governs automation
+| Yes — that is the purpose
+
+| *Red Hat support*
+| ✅ Product feature
+| ✅ Runs on supported AAP; content is customer-owned
+|===
+
+**Recommendation for architecture conversations:** *Run both.* PaC governs *who may run what*; AAC proves *what the estate looks like* against CIS, NIST, ISO, NERC-CIP, and dozens of other frameworks.
+
+== Layer 2 — PostgreSQL (the audit memory)
+
+=== What it is
+
+A database that stores every assessment result as structured JSON. This is the difference between *"we were compliant on audit day"* and *"here is continuous evidence for the last 13 months."*
+
+=== Why it matters to the board
+
+* Regulators and auditors increasingly expect *continuous monitoring*, not annual snapshots.
+* Historical trending shows improvement — or drift — quarter over quarter.
+* Replacing the database means losing the evidence chain (a deliberate stickiness property for operational compliance programs).
+
+=== Support status
+
+[WARNING]
+====
+PostgreSQL as a *technology* is well understood and often already present in the enterprise. The AAC compliance database is a *customer-deployed instance* — not shipped as a Red Hat product. Red Hat supports PostgreSQL where it is an AAP platform dependency; AAC's dedicated compliance DB is operated like any customer-managed database.
+====
+
+== Layer 3 — Open Policy Agent (OPA)
+
+=== What OPA is — without the engineering lecture
+
+**Open Policy Agent (OPA)** is a decision engine. You send it a JSON document describing *state*; it returns a JSON document describing *whether that state meets your rules*.
+
+Analogies that land with executives:
+
+[cols="1,2",options="header"]
+|===
+| Analogy | Mapping
+
+| **Credit scoring**
+| Facts about a loan application go in; approve/deny and reasons come out.
+
+| **Tax software**
+| Your financial inputs go in; calculated obligations and line-item explanations come out.
+
+| **AAC compliance**
+| Server or tenant configuration goes in; pass/fail per control and violation messages come out.
+|===
+
+OPA is *not* a scanner, *not* a SIEM, and *not* a replacement for AAP. It is the *judge* that reads evidence AAP collected.
+
+=== Why AAC uses three OPA servers
+
+One OPA process could hold all policies. AAC splits into three *purpose-specific* instances so that:
+
+* **Security teams** evaluate CIS, NIST, and STIG without sharing runtime with OT policies.
+* **GRC / audit teams** evaluate ISO 27001, SOC 2, PCI-DSS, SOX, and similar frameworks on a separate endpoint.
+* **Critical infrastructure / OT teams** evaluate NERC-CIP, AMI, and IEC 62443 in an isolated bucket.
+
+[cols="2,2,2",options="header"]
+|===
+| Container | Typical frameworks | Deployment note
+
+| **opa-security**
+| CIS benchmarks (incl. CIS M365 v7), NIST, STIGs, cloud CIS, container/K8s CIS
+| Often port 8181 in single-host installs
+
+| **opa-compliance**
+| ISO 27001, SOC 2, PCI-DSS, SOX, FISMA, GDPR, digital sovereignty
+| Often port 8182 in single-host installs
+
+| **opa-ot**
+| NERC-CIP, AMI/NIST IR 7628, IEC 62443, AI governance (OT-adjacent)
+| Often port 8183 in single-host installs
+|===
+
+[NOTE]
+====
+On OpenShift deployments, all three services typically listen on port 8181 internally and are distinguished by *service name* (for example `opa-security`, `opa-compliance`, `opa-ot`) rather than by port number.
+====
+
+=== OPA and Red Hat support — the precise answer
+
+[IMPORTANT]
+====
+*Invoking OPA from AAP is a supported Red Hat product capability (Policy-as-Code).*
+
+*Operating the OPA server process is the customer's responsibility* — the same as under PaC. Red Hat documents the integration; Red Hat does not ship or support the OPA server binary as a Red Hat product.
+
+When a VP asks *"Is OPA supported?"* the accurate answer is:
+
+* *"The integration is supported."*
+* *"The server instances are yours to run, patch, and monitor — like any middleware you deploy alongside AAP."*
+====
+
+== Rego policies — the rules OPA enforces
+
+=== What Rego is
+
+**Rego** is the policy language OPA understands. Think of it as *spreadsheet logic for compliance* — declarative rules that say, in effect:
+
+[quote]
+____
+If the SSH server allows root login, then record a violation for CIS control 5.2.4.
+____
+
+Policies are plain text files (`.rego`), stored in git, reviewed like code, and loaded into OPA at deploy time.
+
+=== The AAC policy library
+
+AAC ships a curated library maintained in a separate open-source repository (`rego_policy_libraries`), included in this project as a git submodule under `policies/`.
+
+[cols="2,3",options="header"]
+|===
+| Attribute | Detail
+
+| **Scale**
+| 600+ policy files across 50+ frameworks (CIS, NIST, STIG, ISO, NERC-CIP, PCI, M365 v7, …)
+
+| **Testing**
+| 540+ automated tests; CI verifies control IDs against official benchmark enumerations
+
+| **Design posture**
+| *Fail-closed* — if a fact cannot be collected, the report says *"could not be evaluated"*, never a silent pass
+
+| **Support tier today**
+| ❌ *Community* — Apache-2.0, no Red Hat entitlement (same model as Ansible Galaxy collections)
+
+| **Future path**
+| Subset may move to Validated or Certified tiers on Automation Hub — a separate commercial conversation
+|===
+
+=== How policies map to business frameworks
+
+Each regulatory or benchmark framework has a named *package* in OPA. When AAP finishes collecting facts, it calls an endpoint like:
+
+[source,text]
+----
+POST /v1/data/cis_rhel9/compliance_assessment
+POST /v1/data/cis_m365_v7/main/compliance_report
+POST /v1/data/nerc_cip_main
+POST /v1/data/iso27001
+----
+
+The response is a structured report executives can dashboard: total controls, pass rate, violation list, and metadata for auditors.
+
+=== Policies vs playbooks — who owns what
+
+[cols="2,2,2,2",options="header"]
+|===
+| Artifact | Written in | Owner | Red Hat support
+
+| **Platform**
+| — | Red Hat | ✅ AAP entitlement
+
+| **Rego policies**
+| Rego | Customer / community (AAC library) | ❌ Content
+
+| **Ansible playbooks & roles**
+| YAML | Customer (AAC reference playbooks) | ❌ Like any customer automation
+
+| **Installers & seed jobs**
+| YAML | Customer (AAC reference) | ❌ Reference implementation
+|===
+
+== AAC content layer — what this repository adds
+
+Beyond policies, the compliance repository provides the *delivery layer* that turns AAP + OPA into a working program:
+
+[cols="2,3,1",options="header"]
+|===
+| Area | What it provides | Support
+
+| **Playbooks & roles**
+| Fact collection, OPA evaluation, PostgreSQL persistence, remediation workflows
+| ❌ Reference
+
+| **Job templates & workflows**
+| Pre-built AAP objects (seed playbooks create them)
+| ❌ Reference
+
+| **Execution Environments**
+| Custom EEs (e.g., M365 with PowerShell) — build recipes included
+| ❌ Customer-built images on supported AAP
+
+| **Grafana dashboards**
+| Compliance trending, NERC-CIP, technical debt, sovereignty views
+| ❌ Optional presentation
+
+| **EDA rulebooks**
+| Drift detection, golden image enforcement, webhook triggers
+| ❌ Reference
+
+| **Collections (`aac.m365`, etc.)**
+| Ansible modules for Microsoft 365, cloud, and domain-specific fact gathering
+| ❌ Community content
+|===
+
+[CAUTION]
+====
+*Positioning:* The policy layer is rigorously tested. The install and delivery layer is a *reference implementation* built to demonstrate the approach — expect customer engineering involvement for production hardening. See `docs/AAC_HONEST_STATUS_AND_POSITIONING.md` for field-ready language.
+====
+
+== Complete support matrix
+
+Use this table in procurement and architecture review meetings.
+
+[cols="2,1,3,2",options="header"]
+|===
+| Component | Supported? | What that means | Who to call
+
+| **RHEL** (AAC host / execution nodes)
+| ✅
+| Standard platform support
+| Red Hat Support
+
+| **Ansible Automation Platform**
+| ✅
+| Controller, Hub, EDA, EEs, credentials, RBAC
+| Red Hat Support
+
+| **Policy-as-Code feature**
+| ✅
+| OPA settings in controller; pre-launch enforcement
+| Red Hat Support
+
+| **OPA invoked from AAP**
+| ✅ capability
+| Supported integration pattern; not the OPA binary itself
+| Red Hat Support (integration); customer ops (OPA process)
+
+| **OPA server (×3 instances)**
+| ⚠️
+| Customer-deployed middleware; CNCF open source
+| Customer platform team
+
+| **PostgreSQL compliance DB**
+| ⚠️
+| Customer-deployed; standard PostgreSQL operations
+| Customer DBA / platform team
+
+| **AAC Rego policy library**
+| ❌
+| Community open source; tested, not entitled
+| AAC maintainers / your compliance engineering
+
+| **AAC playbooks & installers**
+| ❌
+| Reference implementation
+| Your automation team (with AAC docs)
+
+| **Grafana**
+| ❌
+| Optional visualization; swappable
+| Customer observability team
+
+| **Smart meter / OT simulators**
+| ❌
+| Demo and lab tooling for NERC-CIP/AMI scenarios
+| Lab only — not production OT
+|===
+
+=== Support triage ladder (for IT leadership)
+
+When something fails, the first broken layer owns the problem:
+
+[arabic]
+. Is AAP healthy? (controller API, execution capacity) → **Red Hat**
+. Did the job reach an execution environment? → **Red Hat**
+. Is OPA reachable and healthy? → **Customer platform**
+. Are the correct policies loaded? → **Customer compliance engineering**
+. Did PostgreSQL accept the write? → **Customer DBA**
+. Is the assessment result correct against the benchmark? → **Policy/content team**
+
+== Event-driven compliance and AI governance (optional modules)
+
+=== Event-Driven Ansible (EDA)
+
+EDA watches for events — file changes, webhooks, Git pushes — and can launch enforcement workflows without waiting for a schedule.
+
+[cols="2,2",options="header"]
+|===
+| ✅ EDA as an AAP product | ❌ AAC rulebook content
+
+| Red Hat supports the EDA runtime
+| AAC ships example rulebooks (ports 5000–5004) as reference
+|===
+
+=== MCP server (AI tool governance)
+
+AAC can expose AAP through an MCP (Model Context Protocol) interface so AI assistants launch jobs — with optional OPA governance over which tools an agent may call.
+
+[cols="2,2",options="header"]
+|===
+| ✅ AAP job execution | ❌ MCP container & governance policies
+
+| Standard platform
+| Reference deployment; OPA policies for AI governance are AAC content
+|===
+
+== Deployment profiles (where components live)
+
+Executives often ask *"Is this on OpenShift or on a VM?"* — AAC supports both; the logical architecture is the same.
+
+[cols="2,2,2",options="header"]
+|===
+| Profile | Typical use | Notes
+
+| **Existing AAP + dedicated AAC host**
+| Enterprise with AAP already; AAC on RHEL with podman
+| OPA on host ports 8181/8182/8183; common in field installs
+
+| **OpenShift / CRC (lab or RHPDS)**
+| Cloud-native demo and Red Hat workshop environments
+| OPA as cluster services in namespace `aac`
+
+| **Full RHPDS provisioning workflow**
+| One-click demo environment on ephemeral OpenShift
+| Seven-node AAP workflow seeds entire stack
+|===
+
+== Evidence and audit narrative
+
+What AAC gives auditors that PaC alone cannot:
+
+* **Per-control violations** with framework control IDs traceable to CIS/NIST/ISO/NERC-CIP text (via your compliance program, not reproduced in this doc).
+* **Timestamped history** in PostgreSQL — queryable, exportable, trendable.
+* **Optional cosign signing** of certification records for offline verification (`compliance_certifications`).
+* **Separation of duties** — collection (AAP), decision (OPA), storage (PostgreSQL) are distinct components with distinct access controls.
+
+== Frequently asked executive questions
+
+=== "Is this a Red Hat product?"
+
+*Partially.* AAP is the product. AAC is the *content and reference implementation* that demonstrates continuous compliance on AAP — analogous to a comprehensive Ansible project, not a separate SKU.
+
+=== "Can Red Hat support our CIS / NERC-CIP assessments end-to-end?"
+
+Red Hat supports the platform and the PaC integration. The AAC policy library and playbooks are community/reference tier today. Production programs should plan for customer compliance engineering ownership — with Red Hat supporting the AAP layer.
+
+=== "What do we need to buy?"
+
+At minimum: **AAP subscription** (which you may already have), **infrastructure** to run OPA and PostgreSQL, and **engineering capacity** to deploy and maintain AAC content. No separate AAC license exists in this open-source reference model.
+
+=== "How is this different from OpenSCAP / a vulnerability scanner?"
+
+Scanners *find* issues and stop. AAC *collects state, evaluates policy, stores history, and can remediate through AAP* — closing the loop from detection to verified fix with audit evidence.
+
+=== "Is OPA going away after the Styra acquisition?"
+
+OPA remains a CNCF graduated project. AAP's PaC feature is built on OPA. AAC standardizes on OPA for the same reason Red Hat productized it — it is the supported decision engine for policy-as-code in the Ansible portfolio.
+
+== Glossary
+
+[cols="1,3",options="header"]
+|===
+| Term | Plain-English definition
+
+| **AAP**
+| Ansible Automation Platform — Red Hat's automation controller, hub, and event-driven stack.
+
+| **PaC (Policy-as-Code)**
+| AAP feature that calls OPA before a job launches to allow or deny it.
+
+| **OPA**
+| Open Policy Agent — decision engine that evaluates Rego policies against JSON input.
+
+| **Rego**
+| Policy language used by OPA; human-readable rules stored in `.rego` files.
+
+| **Execution Environment (EE)**
+| Container image where AAP runs a job — includes Ansible collections and tools (e.g., PowerShell for M365).
+
+| **EDA**
+| Event-Driven Ansible — reacts to events and triggers automation.
+
+| **Framework**
+| A compliance standard (CIS RHEL 9, ISO 27001, NERC-CIP, CIS M365 v7, …).
+
+| **Fact collection**
+| Read-only gathering of configuration state from managed systems.
+
+| **Fail-closed**
+| If data is missing, report *unknown/non-compliant* — never assume pass.
+
+| **Submodule**
+| Git link to the separate `rego_policy_libraries` repository holding Rego policies.
+|===
+
+== Related documents
+
+* `docs/AAC_HONEST_STATUS_AND_POSITIONING.md` — field-ready answers for customer hard questions
+* `docs/integration/AAC_PAC_SUPPORT_BRIEFING.md` — support conversation slide source
+* `docs/integration/ANSIBLE_POLICY_AS_CODE_vs_AAC.md` — deep PaC vs AAC comparison
+* `docs/AAC_SOLUTION_ARCHITECTURE.md` — capabilities and business value
+* `README.md` — technical platform overview
+* `CLAUDE.md` — operator reference for live environments
+
+== Document control
+
+[cols="2,2",options="header"]
+|===
+| Field | Value
+
+| Version
+| 1.0
+
+| Date
+| 2026-09-16
+
+| AAC platform version
+| 2.8.0 (see `VERSION` at repository root)
+
+| Audience
+| VPs, CTOs, CISOs, enterprise architects, procurement
+
+| Authorship
+| Tim Coulter (Red Hat); Claude (Anthropic) — co-author
+|===
+
+_To export for slides or board packs: `pandoc docs/AAC_EXECUTIVE_ARCHITECTURE.adoc -o AAC_EXECUTIVE_ARCHITECTURE-v1.0.docx`_

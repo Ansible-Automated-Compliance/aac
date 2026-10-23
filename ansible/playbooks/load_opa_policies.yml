@@ -1,0 +1,827 @@
+---
+# Load OPA Policies into Purpose-Specific Containers
+#
+# Loads policies from the git project checkout into the correct OPA container:
+#   opa-security  (:8181): CIS Benchmarks, NIST SP 800-53, NIST CSF/RMF, STIGs, crypto detection
+#   opa-compliance (:8182): ISO 27001, SOC 2, PCI-DSS, SOX, DORA, NIS2, FISMA, FedRAMP, CMMC,
+#                           GDPR, HIPAA, CCPA, ISO 27701, NCSC CAF, NY DFS, SEC Cyber, SWIFT CSP,
+#                           HITRUST, 21 CFR Part 11, TISAX, CSA CCM, NIST 800-171, Digital Sovereignty,
+#                           Enforcement (Sentinel/Git), MCP Governance, EU AI Act
+#   opa-ot        (:8183): NERC-CIP, IEC 62443, AMI/NIST IR 7628, NIST 800-82, AI Governance,
+#                           NIST AI RMF
+#
+# ── Selective Loading ─────────────────────────────────────────────────────────
+# Variable: source (default: database)
+#   database   — DEFAULT. Load the tenant's enabled set from customer_frameworks:
+#                the catalog baseline (ansible/vars/framework_catalog.yml,
+#                enabled_by_default: true) plus what discovery enrolled plus the
+#                customer's own choices. If the table is missing or the tenant is
+#                unseeded, load the catalog BASELINE and say so — never "all".
+#   baseline   — load only the catalog baseline (no database needed)
+#   all        — load every framework. EXPLICIT OPT-IN for lab and demo builds
+#                only; a customer install never defaults to it (100+ bundles,
+#                ~12 min, and a transient 503 drops frameworks silently)
+#   extra_vars — load only the keys listed in frameworks_to_load
+#   file       — read the checkable selection file (policy_selection_file,
+#                default ansible/vars/policy_selection.yml). Copy
+#                ansible/vars/policy_selection.yml.example (every loadable
+#                framework listed, all true; regenerate with
+#                scripts/gen_policy_selection_example.py), flip unwanted keys
+#                to false. Unknown keys fail the run; deselected frameworks
+#                are listed in the output, never silently dropped.
+#
+# Variable: frameworks_to_load (used when source=extra_vars)
+#   Comma-separated string OR YAML list of loader_key values.
+#   Example: "iso27001,pci_dss,nist_800_53"
+#
+# Variable: tenant_id (used when source=database, default: default)
+#   Tenant to query in customer_frameworks table.
+#
+# ── Policy ID Construction ────────────────────────────────────────────────────
+#   <prefix><relative-path-from-dir-with-slashes-as-underscores>
+#
+#   Example: benchmarks/cis/os/linux/rhel_9/auditd_validation.rego
+#            dir=benchmarks/cis, prefix=""
+#            → os_linux_rhel_9_auditd_validation
+#
+# Using relative path (not basename) ensures policies from different platforms
+# with the same filename get unique IDs and do not silently overwrite each other.
+
+- name: Load OPA Policies into Purpose-Specific Containers
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - ../vars/site_config.yml
+    - [ "../vars/vault_secrets.yml", "../vars/empty_fallback.yml" ]
+
+  vars:
+    # AAP project checkout path (project ID 11 = Compliance Automation)
+    project_dir: "{{ playbook_dir }}/../../"
+
+    # Selective loading mode: database (default) | baseline | file | extra_vars | all.
+    # Decision 2026-10-16: a new install never loads "all". database = catalog
+    # baseline + discovery enrollment + customer selection; "all" is an explicit
+    # opt-in for lab/demo builds (their job templates and workflow nodes pass it).
+    source: "database"
+
+    # Prune policy IDs present in OPA but NOT in the set this run loaded (a
+    # reconcile). ON by default: OPA recompiles the whole store on every PUT, so
+    # orphaned IDs left by a prior load — especially a loader that changed its
+    # ID scheme between generations — collide (duplicate packages / "multiple
+    # default rules") and poison compilation for HEALTHY policies too. Pruning
+    # every run keeps the store == the checkout. Set reconcile=false only for a
+    # deliberate additive lazy load onto a store you do not own.
+    # Guarded: a container whose file-find came back empty is NEVER pruned (an
+    # empty wanted-set must never be read as "delete everything").
+    reconcile: true
+    # A scoped load (source=extra_vars, e.g. the generic assessment's on-demand
+    # load of one framework) is ADDITIVE: it never prunes, because its wanted-set
+    # is one framework and pruning against it would empty the rest of that
+    # container. Set reconcile_scoped=true only to deliberately shrink a store
+    # to exactly frameworks_to_load.
+    reconcile_scoped: false
+
+    # Fail the play if any policy file fails to load (a partial load is a silent
+    # correctness bug — the framework's package resolves to {}). Set
+    # allow_partial_load=true only to deliberately tolerate known-bad files.
+    allow_partial_load: false
+
+    # Used when source=extra_vars: comma-separated or list of loader_key values
+    frameworks_to_load: []
+
+    # Used when source=file: the operator's checkable selection file.
+    policy_selection_file: "{{ playbook_dir }}/../vars/policy_selection.yml"
+
+    # Used when source=database|baseline
+    tenant_id: "default"
+    framework_catalog_file: "{{ playbook_dir }}/../vars/framework_catalog.yml"
+    aac_db_password: "{{ compliance_db_password }}"
+
+    # Each entry has: name, url, frameworks[]
+    # Each framework entry has: dir, prefix, key
+    #   key  — loader_key in framework_catalog (used for selective filtering)
+    #   dir  — path relative to policies/ in the git checkout
+    #   prefix — prepended to the relative-path ID when loading into OPA
+    opa_containers:
+      - name: opa-security
+        url: "{{ opa_security_url }}"
+        frameworks:
+          # CIS is split per-platform so only discovered platforms load. Each
+          # entry's prefix = "<subdir>_" reproduces the exact policy IDs the old
+          # single `benchmarks/cis` entry produced (the ID was already the path
+          # below benchmarks/cis with '/'→'_'), so under `source: all` every real
+          # policy loads identically (285 IDs verified). The only file the old
+          # entry loaded that these don't is benchmarks/cis/_framework_key_tests/
+          # test_framework_key_bridges.rego — a Rego TEST module, deliberately not
+          # pushed to OPA. Only the selective-load granularity changes.
+          - { dir: "benchmarks/cis/aks",                         prefix: "aks_",                         key: cis_aks }
+          - { dir: "benchmarks/cis/amazon_linux_2023",           prefix: "amazon_linux_2023_",           key: cis_amazon_linux_2023 }
+          - { dir: "benchmarks/cis/apache",                      prefix: "apache_",                      key: cis_apache }
+          - { dir: "benchmarks/cis/aws",                         prefix: "aws_",                         key: cis_aws }
+          - { dir: "benchmarks/cis/azure",                       prefix: "azure_",                       key: cis_azure }
+          - { dir: "benchmarks/cis/cloud",                       prefix: "cloud_",                       key: cis_cloud }
+          - { dir: "benchmarks/cis/containers",                  prefix: "containers_",                  key: cis_containers }
+          - { dir: "benchmarks/cis/databases",                   prefix: "databases_",                   key: cis_databases }
+          - { dir: "benchmarks/cis/debian_11",                   prefix: "debian_11_",                   key: cis_debian_11 }
+          - { dir: "benchmarks/cis/docker",                      prefix: "docker_",                      key: cis_docker }
+          - { dir: "benchmarks/cis/eks",                         prefix: "eks_",                         key: cis_eks }
+          - { dir: "benchmarks/cis/gcp",                         prefix: "gcp_",                         key: cis_gcp }
+          - { dir: "benchmarks/cis/gke",                         prefix: "gke_",                         key: cis_gke }
+          - { dir: "benchmarks/cis/kubernetes",                  prefix: "kubernetes_",                  key: cis_kubernetes }
+          - { dir: "benchmarks/cis/mobile_devices",              prefix: "mobile_devices_",              key: cis_mobile_devices }
+          - { dir: "benchmarks/cis/mysql",                       prefix: "mysql_",                       key: cis_mysql }
+          - { dir: "benchmarks/cis/network",                     prefix: "network_",                     key: cis_network }
+          - { dir: "benchmarks/cis/network_devices",             prefix: "network_devices_",             key: cis_network_devices }
+          # VyOS + pfSense have their own opa_framework_map routing keys and can be
+          # enabled selectively. They live UNDER network_devices/, so cis_network_devices
+          # already loads them under source=all (the prefix keeps IDs identical, so the
+          # overlap is an idempotent no-op) — these entries just make them loadable on
+          # their own key in database mode.
+          - { dir: "benchmarks/cis/network_devices/vyos",        prefix: "network_devices_vyos_",        key: cis_vyos }
+          - { dir: "benchmarks/cis/network_devices/pfsense",     prefix: "network_devices_pfsense_",     key: cis_pfsense }
+          - { dir: "benchmarks/cis/nginx",                       prefix: "nginx_",                       key: cis_nginx }
+          - { dir: "benchmarks/cis/oci",                         prefix: "oci_",                         key: cis_oci }
+          - { dir: "benchmarks/cis/openshift",                   prefix: "openshift_",                   key: cis_openshift }
+          - { dir: "benchmarks/cis/oracle",                      prefix: "oracle_",                      key: cis_oracle }
+          - { dir: "benchmarks/cis/os",                          prefix: "os_",                          key: cis_os_legacy }
+          - { dir: "benchmarks/cis/postgresql",                  prefix: "postgresql_",                  key: cis_postgresql }
+          - { dir: "benchmarks/cis/rhel_10",                     prefix: "rhel_10_",                     key: cis_rhel10 }
+          - { dir: "benchmarks/cis/rhel_8",                      prefix: "rhel_8_",                      key: cis_rhel8 }
+          - { dir: "benchmarks/cis/rhel_9",                      prefix: "rhel_9_",                      key: cis_rhel9 }
+          - { dir: "benchmarks/cis/rocky_linux_8",               prefix: "rocky_linux_8_",               key: cis_rocky_linux_8 }
+          - { dir: "benchmarks/cis/rocky_linux_9",               prefix: "rocky_linux_9_",               key: cis_rocky_linux_9 }
+          - { dir: "benchmarks/cis/saas",                        prefix: "saas_",                        key: cis_saas }
+          - { dir: "benchmarks/cis/ubuntu_20_04",                prefix: "ubuntu_20_04_",                key: cis_ubuntu_2004 }
+          - { dir: "benchmarks/cis/ubuntu_22_04",                prefix: "ubuntu_22_04_",                key: cis_ubuntu_2204 }
+          - { dir: "benchmarks/cis/ubuntu_24_04",                prefix: "ubuntu_24_04_",                key: cis_ubuntu_2404 }
+          - { dir: "benchmarks/cis/vmware",                      prefix: "vmware_",                      key: cis_vmware }
+          - { dir: "benchmarks/cis/web_servers",                 prefix: "web_servers_",                 key: cis_web_servers }
+          - { dir: "benchmarks/cis/windows_10",                  prefix: "windows_10_",                  key: cis_windows_10 }
+          - { dir: "benchmarks/cis/windows_11",                  prefix: "windows_11_",                  key: cis_windows_11 }
+          - { dir: "benchmarks/cis/windows_server_2016",         prefix: "windows_server_2016_",         key: cis_windows_server_2016 }
+          - { dir: "benchmarks/cis/windows_server_2019_modular", prefix: "windows_server_2019_modular_", key: cis_windows_2019 }
+          - { dir: "benchmarks/cis/windows_server_2022",         prefix: "windows_server_2022_",         key: cis_windows_server_2022 }
+          - { dir: "benchmarks/cis/windows_server_2022_modular", prefix: "windows_server_2022_modular_", key: cis_windows_2022 }
+          - { dir: "benchmarks/stig",                                   prefix: "stig_",        key: stigs }
+          - { dir: "frameworks/federal/nist/sp_800_53",                 prefix: "nist_800_53_", key: nist_800_53 }
+          - { dir: "frameworks/federal/nist/cybersecurity_framework_2.0", prefix: "nist_csf_",  key: nist_csf }
+          - { dir: "frameworks/federal/nist/risk_management_framework", prefix: "nist_rmf_",    key: nist_rmf }
+          - { dir: "benchmarks/scuba/m365",                             prefix: "scuba_m365_",  key: scuba_m365 }
+          - { dir: "benchmarks/nsa_cisa/kubernetes",                    prefix: "nsa_cisa_k8s_", key: nsa_cisa_k8s }
+          - { dir: "benchmarks/pss/kubernetes",                         prefix: "k8s_pss_",     key: k8s_pss }
+          - { dir: "frameworks/federal/zero_trust",                     prefix: "zero_trust_",  key: zero_trust }
+          - { dir: "frameworks/federal/nist_ssdf",                      prefix: "nist_ssdf_",   key: nist_ssdf }
+
+      - name: opa-compliance
+        url: "{{ opa_compliance_url }}"
+        frameworks:
+          - { dir: "frameworks/management/iso27001",             prefix: "iso27001_",       key: iso27001 }
+          - { dir: "frameworks/management/soc2",                 prefix: "soc2_",           key: soc2 }
+          - { dir: "frameworks/management/cis_controls_v8",      prefix: "cis_controls_v8_", key: cis_controls_v8 }
+          - { dir: "frameworks/financial/pci_dss",               prefix: "pci_dss_",        key: pci_dss }
+          - { dir: "frameworks/financial/sox",                   prefix: "sox_",            key: sox }
+          - { dir: "frameworks/financial/dora",                  prefix: "dora_",           key: dora }
+          - { dir: "frameworks/financial/ny_dfs",                prefix: "ny_dfs_",         key: ny_dfs }
+          - { dir: "frameworks/financial/sec_cyber",             prefix: "sec_cyber_",      key: sec_cyber }
+          - { dir: "frameworks/financial/swift_csp",             prefix: "swift_csp_",      key: swift_csp }
+          - { dir: "frameworks/federal/fisma",                   prefix: "fisma_",          key: fisma }
+          - { dir: "frameworks/federal/fedramp",                 prefix: "fedramp_",        key: fedramp }
+          - { dir: "frameworks/federal/cmmc",                    prefix: "cmmc_",           key: cmmc }
+          - { dir: "frameworks/federal/nist/sp_800_171",         prefix: "nist_800_171_",   key: nist_800_171 }
+          - { dir: "frameworks/privacy/gdpr",                    prefix: "gdpr_",           key: gdpr }
+          - { dir: "frameworks/privacy/hipaa",                   prefix: "hipaa_",          key: hipaa }
+          - { dir: "frameworks/privacy/iso27701",                prefix: "iso27701_",       key: iso27701 }
+          - { dir: "frameworks/privacy/ccpa",                    prefix: "ccpa_",           key: ccpa }
+          - { dir: "frameworks/privacy/ferpa",                   prefix: "ferpa_",          key: ferpa }
+          - { dir: "frameworks/privacy/coppa",                   prefix: "coppa_",          key: coppa }
+          - { dir: "frameworks/federal/cjis",                    prefix: "cjis_",           key: cjis }
+          - { dir: "frameworks/federal/pqc",                     prefix: "pqc_",            key: pqc }
+          - { dir: "frameworks/federal/irs_1075",                prefix: "irs_1075_",       key: irs_1075 }
+          - { dir: "frameworks/regional/essential_eight",        prefix: "essential_eight_", key: essential_eight }
+          - { dir: "frameworks/regional/cyber_essentials",       prefix: "cyber_essentials_", key: cyber_essentials }
+          - { dir: "frameworks/regional/bsi_c5",                 prefix: "bsi_c5_",         key: bsi_c5 }
+          - { dir: "frameworks/compliance/ncsc_caf",             prefix: "",                key: ncsc_caf }
+          - { dir: "frameworks/compliance/nis2",                 prefix: "nis2_",           key: nis2 }
+          - { dir: "frameworks/management/hitrust",              prefix: "hitrust_",        key: hitrust }
+          - { dir: "frameworks/regulatory/cfr_part_11",          prefix: "cfr_part_11_",    key: cfr_part_11 }
+          - { dir: "frameworks/management/tisax",                prefix: "tisax_",          key: tisax }
+          - { dir: "frameworks/management/csa_ccm",              prefix: "csa_ccm_",        key: csa_ccm }
+          - { dir: "frameworks/sovereignty/digital_sovereignty", prefix: "",                key: digital_sovereignty }
+          - { dir: "frameworks/management/corporate",            prefix: "corporate_",      key: corporate }
+          - { dir: "frameworks/management/technical_debt",       prefix: "technical_debt_", key: technical_debt }
+          - { dir: "enforcement/ansible",                        prefix: "sentinel_",       key: sentinel_ansible }
+          - { dir: "enforcement/terraform",                      prefix: "sentinel_",       key: sentinel_terraform }
+          - { dir: "enforcement/dockerfile",                     prefix: "sentinel_",       key: sentinel_dockerfile }
+          - { dir: "enforcement/kubernetes",                     prefix: "sentinel_",       key: sentinel_kubernetes }
+          - { dir: "enforcement/git",                            prefix: "git_",            key: git_security }
+          - { dir: "governance/mcp",                             prefix: "",                key: mcp_governance }
+          - { dir: "governance/eu_ai_act",                       prefix: "eu_ai_act_",      key: eu_ai_act }
+
+      - name: opa-ot
+        url: "{{ opa_ot_url }}"
+        frameworks:
+          - { dir: "frameworks/critical_infrastructure/nerc_cip",           prefix: "",              key: nerc_cip }
+          - { dir: "frameworks/critical_infrastructure/iec_62443",          prefix: "iec_62443_",    key: iec_62443 }
+          - { dir: "frameworks/critical_infrastructure/ami/nist_ir_7628",   prefix: "",              key: ami_nist_ir7628 }
+          - { dir: "frameworks/critical_infrastructure/ami/device_compliance", prefix: "",           key: ami_device }
+          - { dir: "frameworks/critical_infrastructure/ami/headend",        prefix: "",              key: ami_headend }
+          - { dir: "frameworks/critical_infrastructure/nist_800_82",        prefix: "nist_800_82_",  key: nist_800_82 }
+          - { dir: "governance/ai",                                          prefix: "ai_governance_", key: ai_governance }
+          - { dir: "frameworks/federal/nist/ai_rmf",                        prefix: "nist_ai_rmf_",  key: nist_ai_rmf }
+          - { dir: "threat_detection/crypto_mining",                        prefix: "security_",     key: crypto_miner_detection }
+
+  tasks:
+    # ── Auto-discover RHPDS EC2 OPA host if running in RHPDS workflow ─────────
+    - name: Look up Elastic IP by tag (RHPDS mode detection)
+      amazon.aws.ec2_eip_info:
+        region: "{{ aws_region | default('us-east-1') }}"
+        filters:
+          "tag:Name": "rhpds-demo-host-eip"
+      register: eip_lookup
+      when: rhpds_demo_host_ip | default('') in ['', 'PENDING_EC2_IP']
+      ignore_errors: true
+
+    - name: Override OPA URLs for RHPDS EC2 host (from EIP lookup)
+      ansible.builtin.set_fact:
+        opa_security_url:   "http://{{ eip_lookup.addresses[0].public_ip }}:8181"
+        opa_compliance_url: "http://{{ eip_lookup.addresses[0].public_ip }}:8182"
+        opa_ot_url:         "http://{{ eip_lookup.addresses[0].public_ip }}:8183"
+      when:
+        - eip_lookup is not skipped
+        - eip_lookup.failed is not defined or not eip_lookup.failed
+        - eip_lookup.addresses | default([]) | length > 0
+
+    - name: Override OPA URLs for RHPDS EC2 host (from provided IP)
+      ansible.builtin.set_fact:
+        opa_security_url:   "http://{{ rhpds_demo_host_ip }}:8181"
+        opa_compliance_url: "http://{{ rhpds_demo_host_ip }}:8182"
+        opa_ot_url:         "http://{{ rhpds_demo_host_ip }}:8183"
+      when:
+        - rhpds_demo_host_ip | default('') not in ['', 'PENDING_EC2_IP']
+
+    - name: Show OPA target URLs
+      ansible.builtin.debug:
+        msg:
+          - "opa-security:   {{ opa_security_url }}"
+          - "opa-compliance: {{ opa_compliance_url }}"
+          - "opa-ot:         {{ opa_ot_url }}"
+
+    # ── Resolve selective loading: build enabled_frameworks list ─────────────
+    # `source` is usually an AAP extra var (template or launch), and set_fact can
+    # never override an extra var. Every decision below therefore reads the
+    # derived _eff_source, never `source`. _prune_allowed records whether this
+    # run's set is an EXPLICIT selection: only an explicit selection may prune.
+    # A fallback (missing table, unseeded tenant, missing DB settings) loads the
+    # baseline ADDITIVELY — it never deletes what an operator already loaded.
+    - name: Start from the requested source
+      ansible.builtin.set_fact:
+        _eff_source: "{{ source }}"
+        _fallback_reason: ""
+
+    - name: Refuse an unknown source
+      ansible.builtin.assert:
+        that: _eff_source in ['database', 'baseline', 'file', 'extra_vars', 'all']
+        fail_msg: "source must be one of database, baseline, file, extra_vars, all — got '{{ source }}'"
+
+    - name: Parse frameworks_to_load into a list (extra_vars mode)
+      ansible.builtin.set_fact:
+        enabled_frameworks: >-
+          {{ frameworks_to_load
+             if frameworks_to_load is iterable and frameworks_to_load is not string
+             else (frameworks_to_load | string).split(',') | map('trim') | select | list }}
+      when: _eff_source == 'extra_vars'
+
+    - name: Read the framework catalog (baseline = enabled_by_default)
+      ansible.builtin.include_vars:
+        file: "{{ framework_catalog_file }}"
+        name: _catalog
+      when: _eff_source in ['database', 'baseline']
+
+    - name: Compute the catalog baseline
+      ansible.builtin.set_fact:
+        _catalog_baseline: >-
+          {{ _catalog.framework_catalog_entries | selectattr('enabled_by_default', 'defined')
+             | selectattr('enabled_by_default') | map(attribute='loader_key') | list }}
+      when: _eff_source in ['database', 'baseline']
+
+    # DB settings are checked before use: an undefined pg_host or password fails
+    # while templating, before failed_when can catch it.
+    - name: Fall back to the baseline when the database settings are missing (database mode)
+      ansible.builtin.set_fact:
+        _eff_source: baseline
+        _fallback_reason: "database settings missing (pg_host / compliance_db_password)"
+      when:
+        - _eff_source == 'database'
+        - (pg_host | default('', true) | length == 0) or (compliance_db_password | default('', true) | length == 0)
+
+    - name: Query customer_frameworks table (database mode)
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port | default(5432) }}"
+        login_user: "{{ pg_user | default('postgres', true) }}"
+        login_password: "{{ aac_db_password }}"
+        login_db: "{{ pg_db | default('compliance', true) }}"
+        query: |
+          SELECT loader_key, (SELECT count(*) FROM customer_frameworks c2 WHERE c2.tenant_id = %(tenant_id)s) AS tenant_rows
+          FROM   customer_frameworks
+          WHERE  tenant_id = %(tenant_id)s
+            AND  enabled   = true
+          UNION ALL
+          SELECT NULL, (SELECT count(*) FROM customer_frameworks c3 WHERE c3.tenant_id = %(tenant_id)s)
+        named_args:
+          tenant_id: "{{ tenant_id }}"
+      register: db_frameworks
+      failed_when: false
+      when: _eff_source == 'database'
+
+    - name: Fall back to the baseline when customer_frameworks is unavailable
+      ansible.builtin.set_fact:
+        _eff_source: baseline
+        _fallback_reason: >-
+          customer_frameworks could not be read
+          ({{ db_frameworks.msg | default('unknown error') | regex_replace('\\s+', ' ') | truncate(140) }})
+      when:
+        - _eff_source == 'database'
+        - db_frameworks.query_result is not defined
+
+    - name: Read the tenant's selection
+      ansible.builtin.set_fact:
+        enabled_frameworks: "{{ db_frameworks.query_result | map(attribute='loader_key') | reject('none') | list }}"
+        _tenant_rows: "{{ db_frameworks.query_result | map(attribute='tenant_rows') | map('int') | max }}"
+      when:
+        - _eff_source == 'database'
+        - db_frameworks.query_result is defined
+
+    # UNSEEDED tenant (0 rows) -> baseline, additively. Rows exist but none are
+    # enabled -> the operator's explicit "load nothing" — respected.
+    - name: Fall back to the baseline when the tenant is unseeded (0 rows)
+      ansible.builtin.set_fact:
+        _eff_source: baseline
+        _fallback_reason: "tenant '{{ tenant_id }}' has no customer_frameworks rows (catalog never seeded)"
+      when:
+        - _eff_source == 'database'
+        - (_tenant_rows | default(0) | int) == 0
+
+    - name: Note an intentional empty enabled set (rows exist, none enabled)
+      ansible.builtin.debug:
+        msg: >-
+          customer_frameworks has rows for tenant '{{ tenant_id }}' but none are
+          enabled — loading nothing (operator's choice; not overriding).
+      when:
+        - _eff_source == 'database'
+        - enabled_frameworks | default([]) | length == 0
+
+    - name: Use the catalog baseline (requested, or as a fallback)
+      ansible.builtin.set_fact:
+        enabled_frameworks: "{{ _catalog_baseline }}"
+      when: _eff_source == 'baseline'
+
+    - name: Say that the baseline is a fallback and will not prune
+      ansible.builtin.debug:
+        msg: >-
+          {{ _fallback_reason }}. Loading the catalog BASELINE
+          ({{ _catalog_baseline | length }} bundles: {{ _catalog_baseline | join(', ') }})
+          ADDITIVELY — nothing already loaded is removed, and never everything.
+          Run 'AAC - Initialize PostgreSQL Database', 'AAC - Seed Framework Catalog'
+          and 'AAC - Enroll Discovered Frameworks' to load the full selection.
+      when: _fallback_reason | length > 0
+
+    # ── File mode: the checkable selection file ───────────────────────────────
+    - name: Resolve the selection file (file mode)
+      ansible.builtin.stat:
+        path: "{{ policy_selection_file }}"
+      register: _psel_stat
+      when: _eff_source == 'file'
+
+    - name: Fail clearly when the selection file is missing (file mode)
+      ansible.builtin.fail:
+        msg: >-
+          source=file but {{ policy_selection_file }} does not exist.
+          Copy ansible/vars/policy_selection.yml.example there and flip the
+          frameworks you do not want to false.
+      when:
+        - _eff_source == 'file'
+        - not _psel_stat.stat.exists
+
+    - name: Read the selection file (file mode)
+      ansible.builtin.include_vars:
+        file: "{{ policy_selection_file }}"
+        name: _psel
+      when: _eff_source == 'file'
+
+    - name: Validate the selection file shape (file mode)
+      ansible.builtin.assert:
+        that:
+          - _psel.policy_selection is defined
+          - _psel.policy_selection is mapping
+        fail_msg: >-
+          {{ policy_selection_file }} must contain a top-level
+          `policy_selection:` mapping of loader_key: true|false — see
+          ansible/vars/policy_selection.yml.example.
+      when: _eff_source == 'file'
+
+    - name: Reject unknown loader keys in the selection file (file mode)
+      vars:
+        _valid_keys: >-
+          {{ opa_containers | map(attribute='frameworks') | flatten
+             | map(attribute='key') | list }}
+        _unknown: >-
+          {{ _psel.policy_selection | dict2items
+             | map(attribute='key') | reject('in', _valid_keys) | list }}
+      ansible.builtin.assert:
+        that: _unknown | length == 0
+        fail_msg: >-
+          policy_selection contains keys the loader does not know:
+          {{ _unknown | join(', ') }}. Fix the typo or regenerate the example
+          (scripts/gen_policy_selection_example.py) after adding the framework
+          to this playbook.
+      when: _eff_source == 'file'
+
+    - name: Validate selection file values (file mode)
+      ansible.builtin.assert:
+        that:
+          - >-
+            (_psel.policy_selection | dict2items
+             | selectattr('value', 'sameas', true) | list | length)
+            + (_psel.policy_selection | dict2items
+               | selectattr('value', 'sameas', false) | list | length)
+            == (_psel.policy_selection | length)
+        fail_msg: >-
+          {{ policy_selection_file }} values must be YAML booleans true or false.
+      when: _eff_source == 'file'
+
+    - name: Derive enabled frameworks from the selection file (file mode)
+      ansible.builtin.set_fact:
+        enabled_frameworks: >-
+          {{ _psel.policy_selection | dict2items
+             | selectattr('value', 'eq', true)
+             | map(attribute='key') | list }}
+        _psel_deselected: >-
+          {{ _psel.policy_selection | dict2items
+             | rejectattr('value', 'eq', true)
+             | map(attribute='key') | list }}
+      when: _eff_source == 'file'
+
+    # A framework in the loader but absent from the file is DESELECTED — the
+    # file is the complete checklist, so absence is a choice made visible here.
+    - name: List deselected frameworks (file mode — never silently dropped)
+      vars:
+        _valid_keys: >-
+          {{ opa_containers | map(attribute='frameworks') | flatten
+             | map(attribute='key') | list }}
+        _not_listed: "{{ _valid_keys | reject('in', _psel.policy_selection.keys() | list) | list }}"
+      ansible.builtin.debug:
+        msg: >-
+          Selection file: {{ enabled_frameworks | length }} enabled;
+          {{ _psel_deselected | length }} set false
+          ({{ _psel_deselected | join(', ') if _psel_deselected else 'none' }});
+          {{ _not_listed | length }} absent from the file and therefore skipped
+          ({{ _not_listed | join(', ') if _not_listed else 'none' }}).
+      when: _eff_source == 'file'
+
+    - name: Set enabled_frameworks to ALL when source=all
+      ansible.builtin.set_fact:
+        enabled_frameworks: []
+      when: _eff_source == 'all'
+
+    - name: Say that source=all is an explicit lab/demo opt-in
+      ansible.builtin.debug:
+        msg: >-
+          source=all: loading EVERY framework bundle. This is the lab/demo opt-in;
+          a customer install loads the selection (source=database) instead.
+      when: _eff_source == 'all'
+
+    - name: Show active loading mode
+      ansible.builtin.debug:
+        msg: >-
+          Loading mode: {{ _eff_source }}{{ ' (fallback from ' ~ source ~ ')' if _eff_source != source else '' }}
+          {% if _eff_source != 'all' %}
+          Enabled frameworks ({{ enabled_frameworks | length }}):
+          {{ enabled_frameworks | join(', ') }}
+          {% else %}
+          Loading all frameworks.
+          {% endif %}
+
+    # ── Build filtered opa_containers list ────────────────────────────────────
+    - name: Decide whether this run may prune (explicit selections only)
+      ansible.builtin.set_fact:
+        _prune_allowed: >-
+          {{ (_fallback_reason | length == 0)
+             and (_eff_source != 'extra_vars' or (reconcile_scoped | bool)) }}
+
+    - name: Build opa_containers_active (filter by enabled_frameworks)
+      ansible.builtin.set_fact:
+        opa_containers_active: >-
+          {%- set active = [] -%}
+          {%- for container in opa_containers -%}
+            {%- set active_frameworks = [] -%}
+            {%- for fw in container.frameworks -%}
+              {%- if _eff_source == 'all' or fw.key in enabled_frameworks -%}
+                {%- set _ = active_frameworks.append(fw) -%}
+              {%- endif -%}
+            {%- endfor -%}
+            {%- set _ = active.append({'name': container.name, 'url': container.url,
+                                       'frameworks': active_frameworks}) -%}
+          {%- endfor -%}
+          {{ active }}
+
+    # ── Verify OPA containers are healthy ─────────────────────────────────────
+    # No stop/start needed — OPA accepts PUT /v1/policies/<id> while running.
+    # Restarting via SSH from inside an EE container fails because rootless
+    # podman containers are tied to the user's XDG_RUNTIME_DIR login session.
+    - name: Verify OPA containers are healthy
+      uri:
+        use_proxy: false
+        url: "{{ item.url }}/health"
+        status_code: 200
+        timeout: 10
+      loop: "{{ opa_containers_active }}"
+      loop_control:
+        label: "{{ item.name }}"
+      retries: 6
+      delay: 5
+      register: health_check
+      until: not health_check.failed
+
+    # ── Load policies from git checkout ───────────────────────────────────────
+    # Test files (test_*.rego / *_test.rego, incl. those under tests/ dirs) are
+    # excluded: they carry `undefined ref` compile errors against fixtures OPA
+    # doesn't have, are pointless server-side, and every one loaded needlessly
+    # inflates the store and the recompile cost.
+    - name: Find all policy files per container
+      find:
+        paths: "{{ project_dir }}/policies/{{ item.1.dir }}"
+        patterns: "*.rego"
+        excludes: ["test_*.rego", "*_test.rego"]
+        recurse: true
+      register: policy_files_raw
+      loop: "{{ opa_containers_active | subelements('frameworks') }}"
+      loop_control:
+        label: "{{ item.0.name }} <- {{ item.1.dir }}"
+      ignore_errors: true
+
+    # OPA recompiles the ENTIRE policy set on every PUT, so a rapid sequence of
+    # hundreds of per-file PUTs can transiently overwhelm the container — it then
+    # returns 503 (Service Unavailable) in bursts. Without a retry, those PUTs are
+    # silently dropped (ignore_errors), leaving a framework partially loaded
+    # (e.g. cis_rhel9 missing → Day-2 CIS check returns {}). Retry transient
+    # failures (5xx / timeout) with backoff; do NOT retry a permanent 4xx
+    # (genuine Rego compile error), which retries can't fix.
+    - name: Load each policy file into the appropriate OPA container
+      uri:
+        use_proxy: false
+        url: "{{ item.0.item.0.url }}/v1/policies/{{ item.0.item.1.prefix }}{{ item.1.path | regex_replace('^.*/' + item.0.item.1.dir + '/', '') | regex_replace('/', '_') | regex_replace('\\.rego$', '') }}"
+        method: PUT
+        body: "{{ lookup('file', item.1.path) }}"
+        body_format: raw
+        headers:
+          Content-Type: "text/plain"
+        status_code: 200
+        timeout: 60
+      loop: "{{ policy_files_raw.results | subelements('files', skip_missing=True) }}"
+      loop_control:
+        label: "{{ item.0.item.0.name }}: {{ item.1.path | basename }}"
+      register: load_results
+      retries: 6
+      delay: 3
+      until: >-
+        (load_results.status | default(0) == 200)
+        or (load_results.status | default(0) >= 400 and load_results.status | default(0) < 500)
+      ignore_errors: true
+
+    # ── Load AAC consumer bridges ─────────────────────────────────────────────
+    # These live in THIS repo, not the policy library. The library names its
+    # entrypoints after the packages that hold the policy (cis_ubuntu_22_04,
+    # stig.kubernetes, nist.sp800_53); AAC addresses frameworks by its own
+    # opa_framework_map keys (cis_ubuntu_2204, stig_kubernetes, nist_800_53).
+    # Translating between the two is AAC's concern, so the alias modules ship
+    # here. See opa_bridges/README.md.
+    #
+    # Loaded AFTER the library so the canonical entrypoint each alias points at
+    # is already present in the container.
+    - name: Find AAC consumer bridge modules per container
+      ansible.builtin.find:
+        paths: "{{ project_dir }}/opa_bridges/{{ item.name | regex_replace('^opa-', '') }}"
+        patterns: "*.rego"
+      register: bridge_files_raw
+      loop: "{{ opa_containers_active }}"
+      loop_control:
+        label: "{{ item.name }}"
+      ignore_errors: true
+
+    - name: Load each AAC consumer bridge into the appropriate OPA container
+      uri:
+        use_proxy: false
+        url: "{{ item.0.item.url }}/v1/policies/aac_bridge_{{ item.1.path | basename | regex_replace('\\.rego$', '') }}"
+        method: PUT
+        body: "{{ lookup('file', item.1.path) }}"
+        body_format: raw
+        headers:
+          Content-Type: "text/plain"
+        status_code: 200
+        timeout: 60
+      loop: "{{ bridge_files_raw.results | subelements('files', skip_missing=True) }}"
+      loop_control:
+        label: "{{ item.0.item.name }}: {{ item.1.path | basename }}"
+      register: bridge_load_results
+      retries: 6
+      delay: 3
+      until: >-
+        (bridge_load_results.status | default(0) == 200)
+        or (bridge_load_results.status | default(0) >= 400 and bridge_load_results.status | default(0) < 500)
+      ignore_errors: true
+
+    - name: Fail if any AAC consumer bridge did not load
+      ansible.builtin.fail:
+        msg: >-
+          {{ bridge_load_results.results | selectattr('failed', 'equalto', true) | list | length }}
+          AAC consumer bridge(s) failed to load. Every framework key they alias
+          will return {} and its assessment job will fail. Failed:
+          {{ bridge_load_results.results | selectattr('failed', 'equalto', true)
+             | map(attribute='item.1.path') | map('basename') | list | join(', ') }}
+      when: bridge_load_results.results | selectattr('failed', 'equalto', true) | list | length > 0
+
+    # Surface any module that STILL failed after retries — a partial load is a
+    # silent correctness bug otherwise (the framework's package resolves to {}).
+    - name: Collect policies that failed to load after retries
+      ansible.builtin.set_fact:
+        failed_policies: >-
+          {{ load_results.results
+             | selectattr('failed', 'equalto', true)
+             | map(attribute='item.1.path')
+             | map('basename')
+             | list }}
+
+    - name: Warn on any policies that failed to load
+      ansible.builtin.debug:
+        msg: >-
+          WARNING — {{ failed_policies | length }} policy file(s) failed to load
+          after retries and are MISSING from OPA (frameworks may be incomplete):
+          {{ failed_policies | join(', ') }}
+      when: failed_policies | length > 0
+
+    # ── Security exception waivers ────────────────────────────────────────────
+    # The waiver MODULE ships with the policy library (governance/exceptions —
+    # deliberately outside every container's frameworks list, so it is loaded
+    # here explicitly, once per container). The waiver ENTRIES are site data
+    # from ansible/vars/waivers.yml; override waiver_entries via extra_vars.
+    # Loaded into every active container so the aac_store_results waiver query
+    # works wherever it points.
+    - name: Load waiver exceptions module into every OPA container
+      uri:
+        use_proxy: false
+        url: "{{ item.url }}/v1/policies/exceptions_waivers"
+        method: PUT
+        body: "{{ lookup('file', project_dir + '/policies/governance/exceptions/waivers.rego') }}"
+        body_format: raw
+        headers:
+          Content-Type: "text/plain"
+        status_code: 200
+        timeout: 60
+      loop: "{{ opa_containers_active }}"
+      loop_control:
+        label: "{{ item.name }}"
+      retries: 6
+      delay: 3
+      register: waiver_module_load
+      until: >-
+        (waiver_module_load.status | default(0) == 200)
+        or (waiver_module_load.status | default(0) >= 400 and waiver_module_load.status | default(0) < 500)
+
+    - name: Load site waiver entries
+      ansible.builtin.include_vars: "{{ item }}"
+      with_first_found:
+        - files:
+            - "{{ project_dir }}/ansible/vars/waivers.yml"
+          skip: true
+      when: waiver_entries is not defined
+
+    - name: Push waiver entries as OPA data
+      uri:
+        use_proxy: false
+        url: "{{ item.url }}/v1/data/waivers"
+        method: PUT
+        body: { "entries": "{{ waiver_entries | default([]) }}" }
+        body_format: json
+        status_code: [204]
+        timeout: 60
+      loop: "{{ opa_containers_active }}"
+      loop_control:
+        label: "{{ item.name }}: {{ waiver_entries | default([]) | length }} entries"
+
+    # ── Reconcile (prune) ────────────────────────────────────────────────────
+    # A PUT-only load never REMOVES policies already in OPA, so orphans from a
+    # prior load (especially one that changed its ID scheme) stay resident and
+    # collide on recompile. Runs for EVERY source now (was source=database only),
+    # so the store always converges to == the checkout. WANTED = exactly the IDs
+    # this run's load targeted. Protected from pruning: the always-loaded bridges
+    # (aac_bridge_*) and the waiver module (exceptions_waivers).
+    #
+    # SAFETY: a container is pruned ONLY if its wanted-set is non-empty. An empty
+    # wanted-set means the file-find failed (ignore_errors) — pruning against it
+    # would delete the entire store. Empty wanted ⇒ that container is skipped.
+    - name: Reconcile — compute the WANTED policy IDs per container
+      ansible.builtin.set_fact:
+        _wanted_by_url: >-
+          {%- set d = {} -%}
+          {%- for r in policy_files_raw.results -%}
+            {%- set url = r.item.0.url -%}
+            {%- set _ = d.setdefault(url, []) -%}
+            {%- for f in r.files -%}
+              {%- set rel = f.path | regex_replace('^.*/' + r.item.1.dir + '/', '') | regex_replace('/', '_') | regex_replace('\.rego$', '') -%}
+              {%- set _ = d[url].append(r.item.1.prefix + rel) -%}
+            {%- endfor -%}
+          {%- endfor -%}
+          {{ d }}
+      when: reconcile | bool and _prune_allowed | bool
+
+    - name: Reconcile — GET present policy IDs per active container
+      uri:
+        use_proxy: false
+        url: "{{ item.url }}/v1/policies"
+        method: GET
+        status_code: 200
+      loop: "{{ opa_containers_active }}"
+      loop_control:
+        label: "{{ item.name }}"
+      register: _present_pol
+      when: reconcile | bool and _prune_allowed | bool
+
+    - name: Reconcile — compute prune targets (present but not wanted)
+      ansible.builtin.set_fact:
+        _prune_targets: >-
+          {%- set out = [] -%}
+          {%- for pr in _present_pol.results -%}
+            {%- set url = pr.item.url -%}
+            {%- set wanted = _wanted_by_url.get(url, []) -%}
+            {%- if wanted | length > 0 -%}
+              {%- for pol in (pr.json.result | default([])) -%}
+                {%- if pol.id not in wanted and not pol.id.startswith('aac_bridge_') and pol.id != 'exceptions_waivers' -%}
+                  {%- set _ = out.append({'url': url, 'id': pol.id}) -%}
+                {%- endif -%}
+              {%- endfor -%}
+            {%- endif -%}
+          {%- endfor -%}
+          {{ out }}
+      when: reconcile | bool and _prune_allowed | bool and (_present_pol is not skipped)
+
+    - name: Reconcile — delete policies not in the loaded set
+      uri:
+        use_proxy: false
+        url: "{{ item.url }}/v1/policies/{{ item.id }}"
+        method: DELETE
+        status_code: [200, 204, 404]
+      loop: "{{ _prune_targets | default([]) }}"
+      loop_control:
+        label: "prune {{ item.id }}"
+      when: reconcile | bool and _prune_allowed | bool
+
+    - name: Reconcile summary
+      ansible.builtin.debug:
+        msg: "Reconcile pruned {{ _prune_targets | default([]) | length }} orphaned policies (present in OPA, not in this load)."
+      when: reconcile | bool and _prune_allowed | bool
+
+    # FAIL LOUD — placed AFTER the prune so a sediment-collision run still gets
+    # its orphans cleaned first (making the re-run converge); only then do we
+    # fail on any genuine remaining load failure. A partial load is a silent
+    # correctness bug: the missing framework's package resolves to {} and its
+    # assessment job passes empty. A green loader run with buried errors (the
+    # pre-2026-09-28 behaviour) is how a scheme-change collision hid for weeks.
+    - name: Fail if any policy file failed to load
+      ansible.builtin.fail:
+        msg: >-
+          {{ failed_policies | length }} policy file(s) failed to load and are
+          MISSING from OPA — the frameworks they belong to will return {} and
+          their assessment jobs will silently pass empty. Failed:
+          {{ failed_policies | join(', ') }}.
+          Orphans were pruned this run; re-run to converge, or fix the failing
+          file(s). Pass allow_partial_load=true to tolerate deliberately.
+      when:
+        - failed_policies | length > 0
+        - not (allow_partial_load | bool)
+
+    - name: Count policies in each container
+      uri:
+        use_proxy: false
+        url: "{{ item.url }}/v1/policies"
+        method: GET
+        status_code: 200
+      loop: "{{ opa_containers_active }}"
+      loop_control:
+        label: "{{ item.name }}"
+      register: policy_counts
+
+    - name: Print loading summary
+      debug:
+        msg: |
+          OPA Policy Loading Complete
+          ===========================
+          Loading mode: {{ _eff_source }}{{ ' (fallback from ' ~ source ~ ')' if _eff_source != source else '' }}
+          {% for result in policy_counts.results %}
+          {{ result.item.name }} ({{ result.item.url }}):
+            Policies loaded: {{ result.json.result | length }}
+          {% endfor %}
+
+          Total errors: {{ load_results.results | selectattr('failed', 'equalto', true) | list | length }}

@@ -1,0 +1,157 @@
+---
+# EDA Rulebook: Oracle Database Compliance Monitoring
+#
+# Monitors Oracle configuration files and alert logs for changes and
+# triggers CIS Oracle 19c re-assessment via AAP job template.
+#
+# Framework Support: CIS Oracle Database 19c
+#
+# NOTE: ansible.eda.file_watch detects filesystem events (create/modify/delete)
+#       on the monitored paths. It does NOT perform content-based log matching.
+#       For content-based alert log analysis (ALTER SYSTEM, GRANT, etc.), route
+#       Oracle audit logs through a SIEM/log aggregator to the webhook source in
+#       compliance_webhook_events.yml instead.
+#
+# AAP Job Template: "CIS Oracle 19c Assessment" (create from cis_oracle_assessment.yml)
+#
+# SCOPE: oracle_servers inventory group.
+
+- name: Oracle Database Compliance Monitoring
+  hosts: oracle_servers
+  sources:
+
+    # ── Oracle configuration file monitoring ──────────────────────────────
+    - name: oracle_config_watch
+      ansible.eda.file_watch:
+        paths:
+          # Network listener and encryption configuration (CIS Oracle 2.1, 3.x)
+          - /u01/app/oracle/product/19.0.0/dbhome_1/network/admin/listener.ora
+          - /u01/app/oracle/product/19.0.0/dbhome_1/network/admin/sqlnet.ora
+          - /u01/app/oracle/product/19.0.0/dbhome_1/network/admin/tnsnames.ora
+          # Oracle password file (CIS Oracle 4.x — authentication)
+          - /u01/app/oracle/product/19.0.0/dbhome_1/dbs/orapw
+          # Init parameters file (CIS Oracle 2.x — OS authentication, audit settings)
+          - /u01/app/oracle/product/19.0.0/dbhome_1/dbs/init.ora
+          - /u01/app/oracle/admin/
+          # Oracle audit log directory (CIS Oracle 6.x)
+          - /u01/app/oracle/admin/orcl/adump/
+        recursive: true
+        ignore_regexes:
+          - ".*\\.swp$"
+          - ".*~$"
+          - ".*\\.bak$"
+          - ".*\\.tmp$"
+          - ".*\\.aud$"   # individual audit records — too noisy; watch dir only
+
+  rules:
+
+    # ── CIS Oracle 2.1 / 3.x: Listener configuration changed ─────────────
+    # listener.ora defines which addresses and protocols Oracle accepts
+    # connections on. Changes affect network access controls and must
+    # trigger an immediate CIS assessment (CIS Oracle 2.1.x, 3.1).
+    - name: Oracle Listener Configuration Changed
+      condition: event.path is search("/listener\\.ora")
+      throttle:
+        once_within: 5 minutes
+        group_by_attributes:
+          - event.meta.host
+      action:
+        run_job_template:
+          name: "CIS Oracle 19c Assessment"
+          organization: Default
+          job_args:
+            limit: "{{ event.meta.host }}"
+            extra_vars:
+              compliance_trigger: oracle_listener_config_change
+              changed_file: "{{ event.path }}"
+              change_type: "{{ event.change_type }}"
+              priority: critical
+
+    # ── CIS Oracle 3.x: Network encryption configuration changed ──────────
+    # sqlnet.ora controls network encryption and authentication settings.
+    # Changes here directly affect CIS Oracle 3.1 (encryption) and 3.2
+    # (checksumming) controls.
+    - name: Oracle Network Encryption Configuration Changed
+      condition: event.path is search("/sqlnet\\.ora")
+      throttle:
+        once_within: 5 minutes
+        group_by_attributes:
+          - event.meta.host
+      action:
+        run_job_template:
+          name: "CIS Oracle 19c Assessment"
+          organization: Default
+          job_args:
+            limit: "{{ event.meta.host }}"
+            extra_vars:
+              compliance_trigger: oracle_network_config_change
+              changed_file: "{{ event.path }}"
+              change_type: "{{ event.change_type }}"
+              priority: high
+
+    # ── CIS Oracle 4.x: Password file changed ─────────────────────────────
+    # The Oracle password file stores the SYS and SYSOPER passwords.
+    # Any modification is a critical authentication event (CIS Oracle 4.1).
+    - name: Oracle Password File Changed
+      condition: event.path is search("/dbs/orapw")
+      throttle:
+        once_within: 5 minutes
+        group_by_attributes:
+          - event.meta.host
+      action:
+        run_job_template:
+          name: "CIS Oracle 19c Assessment"
+          organization: Default
+          job_args:
+            limit: "{{ event.meta.host }}"
+            extra_vars:
+              compliance_trigger: oracle_password_file_change
+              changed_file: "{{ event.path }}"
+              change_type: "{{ event.change_type }}"
+              priority: critical
+
+    # ── CIS Oracle 2.x: Init parameters changed ───────────────────────────
+    # init.ora / spfile contain OS_AUTHENT_PREFIX, AUDIT_TRAIL, REMOTE_OS_AUTHENT,
+    # and other security-critical parameters. Changes affect CIS 2.x controls.
+    - name: Oracle Init Parameters Changed
+      condition: >
+        event.path is search("/dbs/init\\.ora|/admin/") and
+        not (event.path is search("/adump/"))
+      throttle:
+        once_within: 10 minutes
+        group_by_attributes:
+          - event.meta.host
+      action:
+        run_job_template:
+          name: "CIS Oracle 19c Assessment"
+          organization: Default
+          job_args:
+            limit: "{{ event.meta.host }}"
+            extra_vars:
+              compliance_trigger: oracle_init_param_change
+              changed_file: "{{ event.path }}"
+              change_type: "{{ event.change_type }}"
+              priority: high
+
+    # ── CIS Oracle 6.x: Audit trail activity ──────────────────────────────
+    # New files in the audit directory indicate audited activity occurred.
+    # Triggers assessment to verify audit configuration is still compliant
+    # (CIS Oracle 6.1 — AUDIT_TRAIL parameter, 6.2 — audit of sys operations).
+    - name: Oracle Audit Trail Activity
+      condition: >
+        event.path is search("/adump/") and
+        event.change_type == "created"
+      throttle:
+        once_within: 30 minutes
+        group_by_attributes:
+          - event.meta.host
+      action:
+        run_job_template:
+          name: "CIS Oracle 19c Assessment"
+          organization: Default
+          job_args:
+            limit: "{{ event.meta.host }}"
+            extra_vars:
+              compliance_trigger: oracle_audit_activity
+              changed_file: "{{ event.path }}"
+              priority: low

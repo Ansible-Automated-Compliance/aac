@@ -1,0 +1,171 @@
+---
+# =============================================================================
+# AAC - Deploy Prometheus Compliance Exporter
+#
+# Deploys a custom Prometheus exporter that reads compliance results from
+# PostgreSQL and exposes them as Prometheus metrics on port 9101.
+#
+# Uses docker.io/library/python:3.12-slim (pre-cached on host) — no image
+# build needed. Requirements are installed at container start via a startup
+# script that is volume-mounted from the app directory.
+#
+# Metrics exposed:
+#   aac_compliance_score        — compliance % per hostname+framework (latest)
+#   aac_compliant               — 1=compliant, 0=non-compliant (latest)
+#   aac_controls_total/passed/failed — control counts per hostname+framework
+#   aac_violations_total        — violation count per hostname+framework
+#   aac_last_assessment_seconds — Unix timestamp of latest assessment
+#   aac_assessments_24h         — assessments run in last 24h per framework
+#
+# The exporter runs as a rootless podman container on port 9101.
+# Prometheus can scrape it at http://<aac-host>:9101/metrics
+#
+# AAP Job Template: "AAC - Deploy Prometheus Exporter"
+# Credentials: Ansible Vault (ID 8), Compliance SSH Credential (ID 3)
+# Inventory: Compliance Infrastructure (ID 4), limit: aap-controller-ssh
+# =============================================================================
+
+- name: Deploy AAC Prometheus Compliance Exporter
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    exporter_container_name: "aac-prometheus-exporter"
+    # Use home directory — aapuser1 cannot create new subdirs in /opt (root-owned)
+    exporter_app_dir:        "/home/aapuser1/aac-prometheus-exporter"
+    exporter_port:           "9101"
+    # Use pre-cached slim image — avoids rootless subuid build issues
+    exporter_base_image:     "docker.io/library/python:3.12-slim"
+    scrape_interval:         "60"
+
+  vars_files:
+    - [ "../vars/vault_secrets.yml", "../vars/empty_fallback.yml" ]
+    - ../vars/site_config.yml
+
+  tasks:
+
+    # ── Phase 1: Copy source files to host ───────────────────────────────────
+    # Use shell+scp for files and shell+heredoc for generated content.
+    # copy/file modules with delegate_to run inside the EE container rather
+    # than writing to the SSH host, so we bypass them entirely.
+    - name: Create exporter app directory
+      shell: mkdir -p {{ exporter_app_dir }} && chmod 0750 {{ exporter_app_dir }}
+      delegate_to: "{{ aac_ssh_delegate }}"
+      changed_when: false
+
+    - name: Copy exporter source files to host via SCP
+      # SCP runs in the EE where the project files are available via playbook_dir.
+      # The Compliance SSH Credential (ID 3) injects the aapuser1 key into the EE.
+      shell: >
+        scp -o StrictHostKeyChecking=no -o BatchMode=yes
+        {{ playbook_dir }}/../../integrations/prometheus/compliance_exporter.py
+        {{ playbook_dir }}/../../integrations/prometheus/requirements.txt
+        aapuser1@{{ aac_host }}:{{ exporter_app_dir }}/
+      changed_when: true
+
+    - name: Write container startup script
+      # Heredoc with quoted delimiter ('EOF') prevents shell variable expansion
+      # inside the script. pip --target avoids /.local permission issues in the
+      # rootless container where HOME may not be writable.
+      shell: |
+        cat > {{ exporter_app_dir }}/start.sh << 'EOF'
+        #!/bin/sh
+        pip install --quiet --no-cache-dir --target /tmp/pypackages psycopg2-binary
+        export PYTHONPATH=/tmp/pypackages
+        exec python /app/compliance_exporter.py
+        EOF
+        chmod 0755 {{ exporter_app_dir }}/start.sh
+      delegate_to: "{{ aac_ssh_delegate }}"
+      changed_when: true
+
+    # ── Phase 2: Deploy container ────────────────────────────────────────────
+    - name: Stop and remove existing exporter container
+      shell: |
+        podman stop {{ exporter_container_name }} 2>/dev/null || true
+        podman rm   {{ exporter_container_name }} 2>/dev/null || true
+      delegate_to: "{{ aac_ssh_delegate }}"
+      changed_when: false
+
+    - name: Start exporter container
+      # --userns=keep-id  — maps host UID into container so volume files are readable
+      # :z volume flag    — relabels mount for SELinux (required on RHEL hosts)
+      # pip --target      — installs to /tmp/pypackages, avoids /.local write error
+      # First run takes ~20s for pip install; subsequent restarts use pip cache.
+      shell: |
+        podman run -d \
+          --name {{ exporter_container_name }} \
+          -p {{ exporter_port }}:{{ exporter_port }} \
+          --restart=always \
+          --userns=keep-id \
+          -v {{ exporter_app_dir }}:/app:ro,z \
+          -e POSTGRES_HOST=host.containers.internal \
+          -e POSTGRES_PORT=5432 \
+          -e POSTGRES_DB=compliance \
+          -e POSTGRES_USER=compliance_reader \
+          -e POSTGRES_PASSWORD={{ compliance_reader_password }} \
+          -e EXPORTER_PORT={{ exporter_port }} \
+          -e SCRAPE_INTERVAL={{ scrape_interval }} \
+          {{ exporter_base_image }} \
+          sh /app/start.sh
+      delegate_to: "{{ aac_ssh_delegate }}"
+      no_log: true
+      changed_when: true
+
+    # ── Phase 3: Health check ─────────────────────────────────────────────────
+    # Check via 127.0.0.1 (IPv4) — the container binds 0.0.0.0 but RHEL may
+    # route 'localhost' to ::1; using 127.0.0.1 avoids the IPv6 mismatch.
+    - name: Wait for exporter to be ready (allows time for pip install)
+      shell: curl -sf http://127.0.0.1:{{ exporter_port }}/health
+      delegate_to: "{{ aac_ssh_delegate }}"
+      register: exporter_health
+      until: exporter_health.rc == 0
+      retries: 18
+      delay: 10
+      changed_when: false
+
+    - name: Fetch metric names to verify
+      shell: curl -s http://127.0.0.1:{{ exporter_port }}/metrics | grep '^aac_' | sed 's/{.*//' | sort -u
+      delegate_to: "{{ aac_ssh_delegate }}"
+      register: metrics_names
+      changed_when: false
+
+    - name: Show metric names exposed
+      debug:
+        msg: "Metrics exposed: {{ metrics_names.stdout_lines }}"
+
+    # ── Phase 4: Generate Prometheus scrape config snippet ───────────────────
+    - name: Print Prometheus scrape config snippet
+      debug:
+        msg:
+          - ""
+          - "Add this to your prometheus.yml scrape_configs:"
+          - ""
+          - "  - job_name: 'aac_compliance'"
+          - "    scrape_interval: {{ scrape_interval }}s"
+          - "    static_configs:"
+          - "      - targets: ['{{ aac_host }}:{{ exporter_port }}']"
+          - "        labels:"
+          - "          environment: 'production'"
+          - "          service: 'aac-compliance'"
+
+    # ── Summary ───────────────────────────────────────────────────────────────
+    - name: "=== Prometheus Exporter Deployed ==="
+      debug:
+        msg:
+          - ""
+          - "╔══════════════════════════════════════════════════════════╗"
+          - "║     AAC Prometheus Compliance Exporter — Active           ║"
+          - "╚══════════════════════════════════════════════════════════╝"
+          - ""
+          - "  Metrics:       http://127.0.0.1:{{ exporter_port }}/metrics  (on host)"
+          - "  Health:        http://127.0.0.1:{{ exporter_port }}/health   (on host)"
+          - "  External:      open firewall port {{ exporter_port }} to allow Prometheus scraping"
+          - "  Refresh:       every {{ scrape_interval }}s from PostgreSQL"
+          - ""
+          - "  Key metrics:"
+          - "    aac_compliance_score{hostname, framework}"
+          - "    aac_compliant{hostname, framework}"
+          - "    aac_controls_failed{hostname, framework}"
+          - "    aac_violations_total{hostname, framework}"
+          - "    aac_assessments_24h{framework}"

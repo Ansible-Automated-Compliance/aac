@@ -1,0 +1,194 @@
+---
+# =============================================================================
+# Standards watch list — operational input for standards_update_sweep.yml
+#
+# Machine-readable companion to the authoritative registry:
+#   policies/STANDARDS_UPDATE_REGISTRY.md   (rego library, human-readable)
+#
+# Each entry: framework key (matches registry row), the version the library
+# implements, and a PUBLIC watch URL whose content changing is a signal that
+# the upstream may have revised. The sweep is CHANGE DETECTION (content
+# hashing), not version parsing — a hit means "a human looks", not "the
+# standard changed". Keep URLs to stable, public, non-authenticated pages.
+#
+# When the registry gains/loses a row, update this list in the same PR.
+# =============================================================================
+
+standards_watch:
+  - framework: cisa_cpg
+    implemented: "2.0 (Oct 2025)"
+    watch_url: "https://www.cisa.gov/cross-sector-cybersecurity-performance-goals"
+  - framework: nist_csf
+    implemented: "2.0 (Feb 2024)"
+    watch_url: "https://www.nist.gov/cyberframework"
+  - framework: nist_800_53
+    implemented: "r5 (patch-release model)"
+    watch_url: "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final"
+  - framework: nist_800_171
+    implemented: "r3 (May 2024)"
+    watch_url: "https://csrc.nist.gov/pubs/sp/800/171/r3/final"
+  - framework: stig
+    implemented: "per-module pins"
+    watch_url: "https://public.cyber.mil/stigs/downloads/"
+  - framework: pci_dss
+    implemented: "4.x"
+    watch_url: "https://www.pcisecuritystandards.org/document_library/"
+  - framework: iso27001
+    implemented: "2022 (+Amd 1:2024)"
+    watch_url: "https://csrc.nist.gov/projects/olir"
+  - framework: iso_42001
+    implemented: "2023 (first edition)"
+    watch_url: "https://csrc.nist.gov/projects/olir"
+  - framework: hipaa
+    implemented: "current Security Rule (NPRM in flight)"
+    watch_url: "https://www.federalregister.gov/api/v1/documents.json?conditions%5Bterm%5D=HIPAA+Security+Rule&per_page=3&order=newest"
+  - framework: glba
+    implemented: "16 CFR 314 (as amended, May 2024)"
+    watch_url: "https://www.ftc.gov/legal-library/browse/rules/safeguards-rule"
+  - framework: ccpa
+    implemented: "current regs (CPPA rulemaking ongoing)"
+    watch_url: "https://cppa.ca.gov/regulations/"
+  - framework: eu_ai_act
+    implemented: "Reg. 2024/1689 (phased applicability)"
+    watch_url: "https://artificialintelligenceact.eu/implementation-timeline/"
+  - framework: nerc_cip
+    implemented: "per-standard (incl. CIP-015-1)"
+    watch_url: "https://www.nerc.com/pa/Stand/Pages/ReliabilityStandards.aspx"
+  - framework: cmmc
+    implemented: "2.0 (final rule Dec 2024, phased)"
+    watch_url: "https://www.federalregister.gov/api/v1/documents.json?conditions%5Bterm%5D=CMMC&per_page=3&order=newest"
+  - framework: ny_dfs
+    implemented: "23 NYCRR 500 v2 (Nov 2023)"
+    watch_url: "https://www.dfs.ny.gov/industry_guidance/cybersecurity"
+  - framework: itar
+    implemented: "22 CFR 120-130"
+    watch_url: "https://www.pmddtc.state.gov/ddtc_public/ddtc_public?id=ddtc_public_portal_itar_landing"
+  - framework: cobit
+    implemented: "2019"
+    watch_url: "https://www.isaca.org/resources/cobit"
+  - framework: dora
+    implemented: "Reg. 2022/2554 (RTS/ITS landing)"
+    watch_url: "https://www.eiopa.europa.eu/digital-operational-resilience-act-dora_en"
+  - framework: fedramp
+    implemented: "rev5 baselines (20x in progress)"
+    watch_url: "https://www.fedramp.gov/"
+  - framework: swift_csp
+    implemented: "CSCF (annual cycle)"
+    watch_url: "https://www.swift.com/myswift/customer-security-programme-csp"
+    manual: true   # swift.com unreachable non-interactively; CSCF is an annual cycle — check each December
+
+  # ── Coverage completion 2026-10-01 — every registry row watched ──────
+  # (closes the 20-of-38 gap found validating the sweep; URLs verified
+  # fetchable 2026-10-01. One deliberate exclusion, at the bottom.)
+  - framework: cis_benchmarks
+    implemented: "pinned per directory (highest-churn family)"
+    watch_url: "https://www.cisecurity.org/cis-benchmarks"
+  - framework: cis_m365
+    implemented: "pinned per module"
+    watch_url: "https://www.cisecurity.org/benchmark/microsoft_365"
+  - framework: scuba_m365
+    implemented: "104 policies, per-policy pins"
+    # GitHub commits API scoped to the baselines dir — JSON, so the hash
+    # flips exactly when a baseline commit lands, no page-chrome noise.
+    watch_url: "https://api.github.com/repos/cisagov/ScubaGear/commits?path=PowerShell/ScubaGear/baselines&per_page=1"
+  - framework: cis_kubernetes
+    implemented: "pinned per module"
+    watch_url: "https://www.cisecurity.org/benchmark/kubernetes"
+  - framework: cis_eks
+    implemented: "v1.8.0"
+    watch_url: "https://www.cisecurity.org/benchmark/amazon_web_services"
+  - framework: cis_aks
+    implemented: "v1.8.0"
+    watch_url: "https://www.cisecurity.org/benchmark/azure"
+  - framework: k8s_pod_security
+    implemented: "field lists as of 2026-09"
+    watch_url: "https://kubernetes.io/docs/concepts/security/pod-security-standards/"
+  - framework: soc2
+    implemented: "2017 TSC, 2022 revised points of focus"
+    watch_url: "https://www.aicpa-cima.com/topic/audit-assurance/audit-and-assurance-greater-than-soc-2"
+  - framework: gdpr
+    implemented: "2016/679 (guidance-driven)"
+    watch_url: "https://www.edpb.europa.eu/our-work-tools/general-guidance/guidelines-recommendations-best-practices_en"
+  - framework: eu_cra
+    implemented: "Reg. 2024/2847 (phased through 2027)"
+    watch_url: "https://digital-strategy.ec.europa.eu/en/policies/cyber-resilience-act"
+  - framework: nis2
+    implemented: "Directive 2022/2555 (transposition ongoing)"
+    watch_url: "https://digital-strategy.ec.europa.eu/en/policies/nis2-directive"
+  - framework: iec_62443
+    implemented: "per-part"
+    watch_url: "https://www.isa.org/standards-and-publications/isa-standards/isa-iec-62443-series-of-standards"
+  - framework: nist_ai_rmf
+    implemented: "1.0 (+ GenAI profile 2024)"
+    watch_url: "https://www.nist.gov/itl/ai-risk-management-framework"
+  - framework: hitrust
+    implemented: "pinned in module"
+    watch_url: "https://hitrustalliance.net/hitrust-framework"
+  - framework: tisax
+    implemented: "pinned in module (ISA catalog)"
+    watch_url: "https://portal.enx.com/en-US/TISAX/"
+  - framework: cfr_part_11
+    implemented: "21 CFR 11"
+    watch_url: "https://www.ecfr.gov/current/title-21/chapter-I/subchapter-A/part-11"
+  - framework: ferpa
+    implemented: "34 CFR 99 (per eCFR 2026-09)"
+    watch_url: "https://www.ecfr.gov/current/title-34/subtitle-A/part-99"
+  - framework: coppa
+    implemented: "16 CFR 312 as amended (eff. 2025-06-23)"
+    watch_url: "https://www.ecfr.gov/current/title-16/chapter-I/subchapter-C/part-312"
+  # ── Implemented-but-unwatched sweep 2026-10-01 — the code is the truth ──
+  # Cross-check of frameworks/ + benchmarks/ in the library against this
+  # list found 12 implemented frameworks with no watch entry (the registry
+  # doc itself lagged the code). 8 watchable + 4 manual below.
+  - framework: ncsc_caf
+    implemented: "per module (frameworks/compliance/ncsc_caf)"
+    watch_url: "https://www.ncsc.gov.uk/collection/cyber-assessment-framework"
+  - framework: nist_800_82
+    implemented: "r3 (frameworks/critical_infrastructure)"
+    watch_url: "https://csrc.nist.gov/pubs/sp/800/82/r3/final"
+  - framework: tsa_pipeline
+    implemented: "security directives (frameworks/critical_infrastructure)"
+    # tsa.gov refuses non-interactive fetches; Federal Register API is the
+    # authoritative change signal (same pattern as the cmmc entry).
+    watch_url: "https://www.federalregister.gov/api/v1/documents.json?conditions%5Bterm%5D=TSA+pipeline+security+directive&per_page=3&order=newest"
+  - framework: nist_ssdf
+    implemented: "SP 800-218 (frameworks/federal/nist_ssdf)"
+    watch_url: "https://csrc.nist.gov/projects/ssdf"
+  - framework: zero_trust
+    implemented: "SP 800-207 / CISA ZTMM (frameworks/federal/zero_trust)"
+    watch_url: "https://www.cisa.gov/zero-trust-maturity-model"
+  - framework: sec_cyber
+    implemented: "disclosure rules (frameworks/financial/sec_cyber)"
+    watch_url: "https://www.federalregister.gov/api/v1/documents.json?conditions%5Bterm%5D=cybersecurity+disclosure&conditions%5Bagencies%5D%5B%5D=securities-and-exchange-commission&per_page=3&order=newest"
+  - framework: cis_controls_v8
+    implemented: "v8 (frameworks/management/cis_controls_v8)"
+    watch_url: "https://www.cisecurity.org/controls"
+  - framework: csa_ccm
+    implemented: "v4 (frameworks/management/csa_ccm)"
+    watch_url: "https://cloudsecurityalliance.org/research/cloud-controls-matrix"
+  - framework: cjis
+    implemented: "13 policy areas (frameworks/federal/cjis)"
+    watch_url: "https://le.fbi.gov/cjis-division/cjis-security-policy-resource-center"
+    manual: true   # le.fbi.gov 403s non-interactive fetches; CJIS revises ~annually — check the resource center quarterly
+  - framework: sox
+    implemented: "ITGC (frameworks/financial/sox)"
+    watch_url: "https://pcaobus.org/oversight/standards"
+    manual: true   # pcaobus.org 403s non-interactive fetches; statute stable, guidance-driven
+  - framework: iso27701
+    implemented: "per module (frameworks/privacy/iso27701)"
+    watch_url: "https://www.iso.org/standard/85819.html"
+    manual: true   # iso.org 403s non-interactive fetches; 27701:2025 revision shipped — module review due
+  - framework: essential_eight
+    implemented: "per module (frameworks/regional/essential_eight)"
+    watch_url: "https://www.cyber.gov.au/business-government/asds-cyber-security-frameworks/essential-eight"
+    manual: true   # cyber.gov.au unreachable non-interactively; ACSC updates the maturity model ~annually
+
+  # DELIBERATELY UNWATCHED: NSA/CISA Kubernetes Hardening Guidance —
+  # nsa.gov and cisa.gov both refuse non-interactive fetches (403/404),
+  # and the guidance has been stable at v1.2 since Aug 2022. Revisit if
+  # a watchable upstream page appears. (Registry row stays, marked manual.)
+  #
+  # INTERNAL FRAMEWORKS (no external upstream to watch): ami, corporate,
+  # technical_debt, digital_sovereignty, geisa — maintained in-repo.
+  # fisma: statutory; implementation tracked via the nist_800_53 /
+  # nist_csf entries above.

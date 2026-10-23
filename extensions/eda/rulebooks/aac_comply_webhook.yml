@@ -1,0 +1,77 @@
+---
+# Sentinel — GitHub Webhook EDA Rulebook
+#
+# Listens for GitHub push events on port 5003.
+# When Terraform (.tf) or Ansible (.yml) files are pushed,
+# triggers the appropriate Sentinel validation job in AAP.
+#
+# Setup:
+#   Run: demos/sentinel/playbooks/seed_eda_sentinel_activation.yml
+#   This creates the EDA project, credentials, and rulebook activation.
+#
+# For real GitHub webhooks (public server required):
+#   Set GitHub webhook URL: http://<public-ip>:5003/
+#   Enable events: Push
+#
+# For demo use:
+#   The demo script (01_git_checkin_block_ansible.sh) pushes a real commit
+#   to GitHub then POSTs the webhook payload directly to this port,
+#   simulating GitHub delivery on a private network.
+#
+# Job Templates triggered:
+#   - "Sentinel — Validate Ansible Playbook"
+#   - "Sentinel — Validate Terraform Plan"
+
+- name: Sentinel GitHub Webhook Listener
+  hosts: all
+  sources:
+    - ansible.eda.webhook:
+        host: 0.0.0.0
+        port: 5003
+
+  rules:
+    # -------------------------------------------------------------------------
+    # Ansible playbooks or examples pushed — validate the playbook
+    #
+    # Matches push events containing .yml files under playbooks/ or examples/.
+    # The github_file var picks the first modified yml file in the first commit;
+    # the demo script always puts exactly one file in commits[0].modified so
+    # this is reliable. For multi-file pushes OPA evaluates the first yml file.
+    # -------------------------------------------------------------------------
+    - name: Ansible playbook pushed — run Sentinel validation
+      condition: >-
+        event.payload.ref is defined and
+        event.payload.after is defined and
+        event.payload.commits is defined and
+        event.payload.repository is defined
+      action:
+        run_job_template:
+          name: "AAC_Comply_AnsibleDeny"
+          organization: "Default"
+          job_args:
+            extra_vars:
+              playbook_source:      "github"
+              github_repo:          "{{ event.payload.repository.full_name }}"
+              github_sha:           "{{ event.payload.after }}"
+              github_file:          "{{ event.payload.commits[0].modified[0] | default(event.payload.commits[0].added[0]) | default('') }}"
+              sentinel_environment: "{{ 'production' if event.payload.ref == 'refs/heads/main' else 'staging' }}"
+
+    # -------------------------------------------------------------------------
+    # Terraform files pushed — validate the plan
+    # -------------------------------------------------------------------------
+    - name: Terraform file pushed — run Sentinel validation
+      condition: >-
+        event.payload.ref is defined and
+        event.payload.after is defined and
+        event.payload.commits is defined and
+        event.payload.repository is defined
+      action:
+        run_job_template:
+          name: "AAC_Comply_TerraformDeny"
+          organization: "Default"
+          job_args:
+            extra_vars:
+              plan_source:          "github"
+              github_repo:          "{{ event.payload.repository.full_name }}"
+              github_sha:           "{{ event.payload.after }}"
+              sentinel_environment: "{{ 'production' if event.payload.ref == 'refs/heads/main' else 'staging' }}"

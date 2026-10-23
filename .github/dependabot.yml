@@ -1,0 +1,44 @@
+# Dependabot — surface dependency CVEs to us before a customer scan does.
+# https://docs.github.com/code-security/dependabot
+version: 2
+updates:
+  - package-ecosystem: "pip"
+    # Cover every Python manifest in the repo (uses directory globs).
+    directories:
+      - "/scripts"
+      - "/services/*"
+      - "/integrations/enforceauth/app"
+      - "/integrations/prometheus"
+      - "/install/existing-aap/extended/ee"
+      - "/ansible/execution-environments/*"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 10
+    # One consolidated PR per weekly run instead of a PR per package (Juan's
+    # ask 2026-09-28). Security majors still arrive individually via
+    # Dependabot security updates, which ignore grouping for clarity.
+    groups:
+      python-deps:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+    labels:
+      - "dependencies"
+      - "security"
+    commit-message:
+      prefix: "chore(deps)"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    groups:
+      actions-deps:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+    labels:
+      - "dependencies"
+      - "github-actions"
+    commit-message:
+      prefix: "chore(actions)"

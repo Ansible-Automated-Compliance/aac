@@ -1,0 +1,200 @@
+---
+# Digital Sovereignty Sidecar Dataset (ADR-001)
+#
+# This file captures organizational decisions and architectural context
+# that cannot be discovered from endpoint facts alone.
+#
+# Maintained by: Security Architecture / CISO Office
+# Review frequency: Quarterly, or on any architecture change
+# Stored via: AAC - Store Sidecar Dataset (sidecar_type: digital_sovereignty)
+#
+# TIME ALIGNMENT: This sidecar is collected on the same nightly schedule
+# as host_facts so compliance assessments use data from the same window.
+
+schema_version: "1.0"
+source: manual               # manual | automated | api_import
+review_date: "2026-03-19"
+reviewed_by: "Security Architecture Team"
+
+# ── Jurisdiction approvals ────────────────────────────────────────────────────
+approved_jurisdictions:
+  - DE
+  - FR
+  - AT
+  - NL
+  - BE
+  - GB
+
+approved_cloud_regions:
+  - eu-central-1
+  - eu-west-1
+  - eu-west-3
+  - on_prem_de
+  - on_prem_fr
+
+# ── Cloud providers ───────────────────────────────────────────────────────────
+cloud_providers:
+  - provider_id: aws
+    provider_name: Amazon Web Services
+    hq_country: US
+    subject_to_cloud_act: true
+    sovereign_cloud_offering:
+      available: true
+      jurisdiction: EU
+    data_processed_pct: 50
+
+# ── Data residency ────────────────────────────────────────────────────────────
+metadata_storage:
+  location_country: DE
+  in_approved_jurisdiction: true
+
+telemetry_and_logs:
+  location_country: DE
+  in_approved_jurisdiction: true
+  vendor_access_to_logs: false
+
+data_flow_inventory:
+  maintained: true
+  last_review_date: "2026-01-15T00:00:00Z"
+
+# ── Cryptographic controls ────────────────────────────────────────────────────
+hsm_configuration:
+  deployed: true
+  type: fips_140_2_level3
+  location_country: DE
+  vendor_access_possible: false
+  key_material_leaves_hsm: false
+
+key_management_policies:
+  rotation_policy_documented: true
+  rotation_frequency_days: 365
+  key_ceremony_documented: true
+  dual_control_enforced: true
+  split_knowledge_enforced: true
+  escrow:
+    exists: false
+
+encryption_standards:
+  algorithms_approved:
+    - AES-256
+    - RSA-4096
+    - ECDSA-P-384
+    - SHA-256
+    - TLS-1.3
+  tls_minimum_version: "1.2"
+  prohibited_algorithms:
+    - DES
+    - 3DES
+    - RC4
+    - MD5
+    - SHA-1
+
+code_signing:
+  implemented: true
+  key_location_country: DE
+  private_key_in_approved_jurisdiction: true
+
+# ── Infrastructure ────────────────────────────────────────────────────────────
+hardware_components:
+  - component_id: server-rack-de-001
+    component_type: server
+    manufacturer_country: DE
+    firmware_origin_country: DE
+    supply_chain_audited: true
+    known_vulnerabilities:
+      hardware_backdoor: false
+
+concentration_limits:
+  max_single_provider_pct: 70
+  max_foreign_provider_pct: 50
+
+exit_strategy:
+  documented: true
+  portability_tested: true
+  estimated_migration_days: 60
+  data_portability_format_open: true
+
+# ── Operational controls ──────────────────────────────────────────────────────
+vendor_access:
+  - vendor_id: V001
+    vendor_name: AWS Support EU
+    vendor_hq_country: DE
+    access_type: remote
+    sessions_monitored: true
+    sessions_logged: true
+    sessions_recorded: true
+    access_requires_approval: true
+    just_in_time_access: true
+    data_classification_accessed: sensitive
+
+foreign_access_requests:
+  policy_documented: true
+  legal_review_required: true
+  notification_to_data_owner: true
+  right_to_challenge: true
+
+remote_operations:
+  vpn_in_jurisdiction: true
+  jump_host_in_jurisdiction: true
+  remote_from_approved_countries_only: true
+
+# ── Network sovereignty ───────────────────────────────────────────────────────
+bgp_configuration:
+  autonomous_system_number_owned: true
+  route_filtering_enabled: true
+  rpki_deployed: true
+  route_origin_validation: true
+  peer_list_reviewed_date: "2026-02-01T00:00:00Z"
+  routes_documented: true
+
+dns_configuration:
+  resolver_location_country: DE
+  resolver_under_org_control: true
+  dnssec_enabled: true
+  dns_over_https_or_tls: true
+  public_dns_providers_blocked: true
+  zone_transfers_controlled: true
+  dns_logs_retained_days: 365
+
+internet_egress:
+  single_controlled_egress_point: true
+  egress_country: DE
+  traffic_inspected_at_egress: true
+  allowed_destinations_documented: true
+  blocked_destinations_documented: true
+
+traffic_routing:
+  sensitive_traffic_transits_foreign_country: false
+  traffic_routed_over_approved_paths: true
+  encrypted_if_transits_foreign: true
+
+# ── AI/ML governance ──────────────────────────────────────────────────────────
+ai_services:
+  - service_id: ai-azure-openai-001
+    service_name: Azure OpenAI Service
+    service_type: llm
+    provider: microsoft
+    provider_hq_country: US
+    deployment_type: saas
+    inference_location_country: DE
+    data_sent_for_inference: true
+    data_used_for_training: false
+    data_classification_processed: internal
+    opt_out_of_training:
+      available: true
+      enabled: true
+    data_retention_by_provider_days: 0
+
+ai_governance:
+  policy_documented: true
+  approved_ai_services_list: true
+  shadow_ai_controls: true
+  data_handling_procedures: true
+  human_oversight_for_decisions: true
+
+ml_training:
+  training_data_location_country: DE
+  training_infrastructure_country: DE
+  training_data_classification: internal
+  data_leaves_jurisdiction_for_training: false
+  federated_learning_used: false

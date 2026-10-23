@@ -1,0 +1,64 @@
+---
+# AAC Windows Execution Environment
+#
+# Dedicated EE for the Windows domain — the golden-image drift/remediation
+# demo and CIS Windows Server benchmark assessment.
+#
+# Used by:
+#   aac-demos repo: demos/windows_golden_image/playbooks/seed_windows_golden_demo.yml
+#   aac-demos repo: demos/windows_golden_image/playbooks/windows_golden_reset_demo.yml
+#   aac-demos repo: demos/windows_golden_image/playbooks/windows_golden_open_ticket.yml
+#   ansible/playbooks/aws_recreate_windows.yml
+#   ansible/playbooks/cis_windows_server_2022_assessment.yml
+#
+# NOT used by:
+#   Linux CIS / STIG / NERC-CIP / AMI  — aac-compliance-ee
+#   trivy + kubescape                   — aac-policy-tools-ee
+#   Zift authz migration                — aac-zift-ee
+#   Digital Sovereignty                 — aac-sovereignty-ee
+#
+# ── Why a separate EE? ────────────────────────────────────────────────
+# Not because core is missing anything: aac-compliance-ee already carries
+# ansible.windows, community.windows, amazon.aws, pywinrm and
+# requests-credssp. This EE is about SIZE and COUPLING.
+#
+# Core additionally carries Terraform (~90 MB), Mitogen and
+# infra.aap_configuration — none of which any Windows playbook touches.
+# Splitting means the Windows demo pulls a much smaller image and stops
+# being re-validated on every core rebuild (Terraform bump, Mitogen
+# change, config-as-code collection bump).
+#
+# ── Why amazon.aws IS included here ───────────────────────────────────
+# The Windows lab host is an EC2 instance and `aws_recreate_windows.yml`
+# is part of this demo set — it recreates that instance. Excluding
+# amazon.aws would make this EE unable to run its own demo's reset path
+# and force that one playbook back onto core, which defeats the split.
+# The cost is real (amazon.aws is not small); the alternative is worse.
+#
+# ── Windows connectivity ──────────────────────────────────────────────
+# EEs are Linux containers regardless of the managed OS. Windows targets
+# are reached over WinRM from this container, so pywinrm and
+# requests-credssp are Python-side requirements (see requirements.txt),
+# not a different base image.
+#
+# Image: quay.io/rh-ee-tcoulter/aac-windows-ee:vX.Y.Z (linux/amd64)
+
+version: 3
+
+images:
+  base_image:
+    name: quay.io/ansible/creator-ee:v24.2.0
+
+dependencies:
+  galaxy: requirements.yml
+  python: requirements.txt
+  ansible_core:
+    package_pip: ansible-core>=2.15.0
+  ansible_runner:
+    package_pip: ansible-runner>=2.3.0
+
+options:
+  package_manager_path: /usr/bin/microdnf
+
+# No additional_build_steps: everything Windows needs arrives via the
+# galaxy collections and the Python WinRM stack. No external binaries.

@@ -1,0 +1,14 @@
+---
+# AAC EDA Projects — RHPDS Configuration
+#
+# Single EDA project — same compliance repo as the AAP project.
+# EDA rulebooks live under extensions/eda/rulebooks/ in the repo.
+
+eda_projects:
+
+  - name: Compliance Automation EDA
+    description: "AAC EDA rulebooks — Golden Image, Sentinel, Compliance Webhook, NERC-CIP"
+    organization: "{{ aac_organization }}"
+    url: "https://github.com/ansible-automated-compliance/aac.git"
+    credential: "{{ vault_github_pat }}"
+    verify_ssl: false

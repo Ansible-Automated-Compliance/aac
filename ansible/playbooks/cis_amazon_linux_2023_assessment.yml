@@ -1,0 +1,224 @@
+---
+# CIS Amazon Linux 2023 Compliance Assessment
+# Collects system facts and evaluates against CIS Amazon Linux 2023 benchmark in OPA
+
+- name: CIS Amazon Linux 2023 Compliance Assessment
+  hosts: all
+  gather_facts: yes
+  become: yes
+
+  vars_files:
+    - [ "../vars/vault_secrets.yml", "../vars/empty_fallback.yml" ]
+    - ../vars/site_config.yml
+
+  vars:
+    opa_server_url: "{{ opa_security_url }}"
+    report_dir: "{{ playbook_dir }}/../../reports"
+    timestamp: "{{ ansible_date_time.iso8601_basic_short }}"
+
+  pre_tasks:
+    - name: Verify this is Amazon Linux 2023
+      assert:
+        that:
+          - ansible_distribution == "Amazon"
+          - ansible_distribution_version is version('2023', '>=')
+        fail_msg: "This playbook is for Amazon Linux 2023 only. Detected: {{ ansible_distribution }} {{ ansible_distribution_version }}"
+        success_msg: "Amazon Linux 2023 detected - proceeding with assessment"
+
+    - name: Ensure report directory exists
+      file:
+        path: "{{ report_dir }}"
+        state: directory
+        mode: '0755'
+      delegate_to: localhost
+      become: no
+
+  tasks:
+    - name: Collect comprehensive system facts
+      setup:
+        gather_subset:
+          - all
+          - hardware
+          - network
+          - virtual
+
+    - name: Gather modprobe configuration
+      shell: |
+        for fs in cramfs squashfs udf; do
+          if grep -q "install $fs /bin/true" /etc/modprobe.d/* 2>/dev/null || \
+             lsmod | grep -q "^$fs"; then
+            echo "$fs:disabled"
+          else
+            echo "$fs:enabled"
+          fi
+        done
+      register: modprobe_check
+      changed_when: false
+      failed_when: false
+
+    - name: Check SELinux status
+      command: sestatus
+      register: selinux_status
+      changed_when: false
+      failed_when: false
+
+    - name: Check firewalld status
+      command: firewall-cmd --state
+      register: firewalld_status
+      changed_when: false
+      failed_when: false
+
+    - name: Gather SSH configuration
+      slurp:
+        src: /etc/ssh/sshd_config
+      register: sshd_config_content
+      failed_when: false
+
+    - name: Gather auditd configuration
+      slurp:
+        src: /etc/audit/auditd.conf
+      register: auditd_config_content
+      failed_when: false
+
+    - name: Build OPA input payload
+      set_fact:
+        opa_input:
+          ansible_facts:
+            ansible_hostname: "{{ ansible_hostname }}"
+            ansible_distribution: "{{ ansible_distribution }}"
+            ansible_distribution_version: "{{ ansible_distribution_version }}"
+            ansible_distribution_major_version: "{{ ansible_distribution_major_version }}"
+            ansible_os_family: "{{ ansible_os_family }}"
+            ansible_kernel: "{{ ansible_kernel }}"
+            ansible_architecture: "{{ ansible_architecture }}"
+            ansible_processor_cores: "{{ ansible_processor_cores }}"
+            ansible_memtotal_mb: "{{ ansible_memtotal_mb }}"
+            ansible_mounts: "{{ ansible_mounts }}"
+            ansible_interfaces: "{{ ansible_interfaces | default(['lo']) }}"
+            ansible_default_ipv4: "{{ ansible_default_ipv4 | default({}) }}"
+            ansible_selinux: "{{ ansible_selinux | default({}) }}"
+            ansible_service_mgr: "{{ ansible_service_mgr }}"
+
+    - name: Save facts to local file
+      copy:
+        content: "{{ opa_input | to_nice_json }}"
+        dest: "{{ report_dir }}/{{ inventory_hostname }}_al2023_facts_{{ timestamp }}.json"
+      delegate_to: localhost
+      become: false  # delegated to the controller/EE: no sudo there
+
+    - name: Query OPA for compliance violations
+      uri:
+        use_proxy: false
+        url: "{{ opa_server_url }}/v1/data/cis/amazon_linux_2023/violations"
+        method: POST
+        body_format: json
+        body:
+          input: "{{ opa_input }}"
+        return_content: yes
+        status_code: [200, 404]
+      register: opa_violations_response
+      delegate_to: localhost
+      become: false  # delegated to the controller/EE: no sudo there
+      ignore_errors: yes
+
+    - name: Query OPA for compliance summary
+      uri:
+        use_proxy: false
+        url: "{{ opa_server_url }}/v1/data/cis/amazon_linux_2023/compliance_summary"
+        method: POST
+        body_format: json
+        body:
+          input: "{{ opa_input }}"
+        return_content: yes
+        status_code: [200, 404]
+      register: opa_summary_response
+      delegate_to: localhost
+      become: false  # delegated to the controller/EE: no sudo there
+      ignore_errors: yes
+
+    - name: Check if OPA policy is available
+      set_fact:
+        opa_policy_available: "{{ opa_summary_response.json.result is defined and opa_summary_response.json.result is not none }}"
+
+    - name: Parse OPA results
+      set_fact:
+        violations_raw: "{{ opa_violations_response.json.result | default([]) }}"
+        compliance_score: "{{ opa_summary_response.json.result.compliance_percentage | default(0) | float | round(2) }}"
+        total_controls: "{{ opa_summary_response.json.result.total_controls | default(278) | int }}"
+        failed_controls: "{{ opa_summary_response.json.result.failing_controls | default(0) | int }}"
+        passed_controls: "{{ opa_summary_response.json.result.passing_controls | default(0) | int }}"
+        assessment_timestamp: "{{ ansible_date_time.iso8601 }}"
+      when: opa_policy_available | bool
+
+    - name: Normalize violations to list of dicts
+      set_fact:
+        violations: >-
+          {%- set viols = [] -%}
+          {%- for v in violations_raw -%}
+            {%- if v is mapping -%}
+              {%- set _ = viols.append(v) -%}
+            {%- else -%}
+              {%- set _ = viols.append({'message': v | string, 'severity': 'medium', 'control_id': ''}) -%}
+            {%- endif -%}
+          {%- endfor -%}
+          {{ viols }}
+      when: opa_policy_available | bool
+
+    - name: Display compliance summary
+      debug:
+        msg:
+          - "========================================="
+          - "CIS Amazon Linux 2023 Compliance Assessment"
+          - "========================================="
+          - "Hostname: {{ inventory_hostname }}"
+          - "Distribution: {{ ansible_distribution }} {{ ansible_distribution_version }}"
+          - "Kernel: {{ ansible_kernel }}"
+          - "Compliance Score: {{ compliance_score }}%"
+          - "Total Controls: {{ total_controls }}"
+          - "Passed: {{ passed_controls }} | Failed: {{ failed_controls }}"
+          - "========================================="
+      when: opa_policy_available | bool
+
+    - name: Display notice when OPA policy not available
+      debug:
+        msg:
+          - "OPA policy 'cis/amazon_linux_2023' is not available."
+          - "Facts saved to: {{ report_dir }}/{{ inventory_hostname }}_al2023_facts_{{ timestamp }}.json"
+      when: not (opa_policy_available | bool)
+
+    # -------------------------------------------------------------------------
+    # Store results to PostgreSQL
+    # -------------------------------------------------------------------------
+    - name: Store CIS Amazon Linux 2023 results to PostgreSQL
+      include_role:
+        name: aac_store_results
+      vars:
+        aac_result_framework:      "cis_amazon_linux_2023"
+        aac_result_policy_name:    "CIS Amazon Linux 2023"
+        aac_result_policy_version: "CIS Amazon Linux 2023 Benchmark v1.0.0"
+        aac_result_total_controls: "{{ total_controls | int }}"
+        aac_result_violations:     "{{ violations | default([]) }}"
+        aac_result_failed_controls: "{{ failed_controls | int }}"
+        aac_result_passed_controls: "{{ passed_controls | int }}"
+        aac_result_compliance_pct:  "{{ compliance_score | float }}"
+        aac_result_metadata:
+          hostname:              "{{ inventory_hostname }}"
+          ip_address:            "{{ ansible_default_ipv4.address | default('N/A') }}"
+          distribution:          "{{ ansible_distribution }}"
+          distribution_version:  "{{ ansible_distribution_version }}"
+          kernel:                "{{ ansible_kernel }}"
+          architecture:          "{{ ansible_architecture }}"
+          assessment_time:       "{{ assessment_timestamp }}"
+          opa_server:            "{{ opa_server_url }}"
+        aac_result_opa_server: "{{ opa_server_url }}"
+      when: opa_policy_available | bool
+
+    - name: Results stored to PostgreSQL
+      debug:
+        msg: "CIS Amazon Linux 2023 results stored to PostgreSQL (row ID: {{ aac_result_id | default('?') }})."
+      when: opa_policy_available | bool
+
+    - name: "View results in Grafana"
+      debug:
+        msg: "Dashboard: {{ grafana_url }}/d/aac-compliance-001"
+      when: opa_policy_available | bool

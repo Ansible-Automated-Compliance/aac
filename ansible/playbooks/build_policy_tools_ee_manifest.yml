@@ -1,0 +1,107 @@
+---
+# build_policy_tools_ee_manifest.yml — Combine per-arch images into a
+#                                       multi-arch manifest list.
+#
+# Run AFTER build_policy_tools_ee.yml has produced both:
+#   quay.io/rh-ee-tcoulter/aac-policy-tools-ee:<ver>-amd64
+#   quay.io/rh-ee-tcoulter/aac-policy-tools-ee:<ver>-arm64
+#
+# This playbook creates the multi-arch manifest at:
+#   quay.io/rh-ee-tcoulter/aac-policy-tools-ee:<ver>
+#   quay.io/rh-ee-tcoulter/aac-policy-tools-ee:latest
+#
+# Consumers (mac-aap arm64 pods, lab-aap amd64 hosts) automatically pull
+# the right arch from the manifest list — no per-environment tag pinning.
+#
+# Pre-reqs:
+#   - podman 4+
+#   - logged into quay.io (or vault_quay_* set)
+#
+# Variables:
+#   ee_version  : "v1.0.0"    (the per-arch tags will be <ver>-amd64 + <ver>-arm64)
+#   ee_image    : "quay.io/rh-ee-tcoulter/aac-policy-tools-ee"
+#   tag_latest  : true        (also push :latest pointing at the same manifest)
+
+- name: Combine per-arch images into a multi-arch manifest
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - ../vars/site_config.yml
+
+  vars:
+    ee_version: "v1.0.0"
+    ee_image:   "quay.io/rh-ee-tcoulter/aac-policy-tools-ee"
+    tag_latest: true
+    archs: ["amd64", "arm64"]
+
+  tasks:
+
+    - name: Login to quay.io
+      ansible.builtin.command:
+        argv:
+          - podman
+          - login
+          - quay.io
+          - "-u"
+          - "{{ vault_quay_username }}"
+          - "-p"
+          - "{{ vault_quay_password }}"
+      when:
+        - vault_quay_username is defined
+        - vault_quay_password is defined
+      no_log: true
+
+    - name: Pull each per-arch image (so podman manifest can reference them)
+      ansible.builtin.command:
+        cmd: "podman pull --platform=linux/{{ item }} {{ ee_image }}:{{ ee_version }}-{{ item }}"
+      loop: "{{ archs }}"
+      changed_when: false
+
+    - name: Remove any stale local manifest at the target tag
+      ansible.builtin.command:
+        cmd: "podman manifest rm {{ ee_image }}:{{ ee_version }}"
+      failed_when: false
+      changed_when: false
+
+    - name: Create multi-arch manifest at versioned tag
+      ansible.builtin.command:
+        argv: >-
+          {{
+            ['podman', 'manifest', 'create', ee_image + ':' + ee_version]
+            + (archs | map('regex_replace', '^(.*)$', ee_image + ':' + ee_version + '-\1') | list)
+          }}
+
+    - name: Push versioned manifest
+      ansible.builtin.command:
+        cmd: "podman manifest push --all {{ ee_image }}:{{ ee_version }}"
+      changed_when: true
+
+    - name: Remove any stale local manifest at :latest
+      ansible.builtin.command:
+        cmd: "podman manifest rm {{ ee_image }}:latest"
+      failed_when: false
+      changed_when: false
+      when: tag_latest | bool
+
+    - name: Create :latest multi-arch manifest
+      ansible.builtin.command:
+        argv: >-
+          {{
+            ['podman', 'manifest', 'create', ee_image + ':latest']
+            + (archs | map('regex_replace', '^(.*)$', ee_image + ':' + ee_version + '-\1') | list)
+          }}
+      when: tag_latest | bool
+
+    - name: Push :latest manifest
+      ansible.builtin.command:
+        cmd: "podman manifest push --all {{ ee_image }}:latest"
+      when: tag_latest | bool
+      changed_when: true
+
+    - name: Manifest published
+      ansible.builtin.debug:
+        msg:
+          - "✅ {{ ee_image }}:{{ ee_version }} → multi-arch ({{ archs | join(', ') }})"
+          - "{% if tag_latest %}✅ {{ ee_image }}:latest → multi-arch ({{ archs | join(', ') }}){% endif %}"

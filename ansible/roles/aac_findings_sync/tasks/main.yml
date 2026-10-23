@@ -1,0 +1,199 @@
+---
+# aac_findings_sync/tasks/main.yml
+# compliance_results (latest per subject+framework, in window)
+#   → scripts/findings_extract.py (deterministic identity)
+#   → upsert into compliance_findings (reopen on regression, waiver-aware)
+#   → resolve open findings a NEWER scan no longer reports (verified by
+#     rescan — never resolved by absence of data).
+# Runs in the EE. Reads evidence; writes only the derived findings table.
+
+- name: Apply findings schema (idempotent)
+  community.postgresql.postgresql_script:
+    login_host: "{{ findings_pg_host }}"
+    login_port: "{{ findings_pg_port }}"
+    login_user: "{{ findings_pg_user }}"
+    login_password: "{{ compliance_db_password }}"
+    login_db: "{{ findings_pg_db }}"
+    ssl_mode: "{{ findings_pg_ssl_mode }}"
+    path: "{{ role_path }}/files/schema.sql"
+
+- name: Read latest assessment row per subject and framework
+  community.postgresql.postgresql_query:
+    login_host: "{{ findings_pg_host }}"
+    login_port: "{{ findings_pg_port }}"
+    login_user: "{{ findings_pg_user }}"
+    login_password: "{{ compliance_db_password }}"
+    login_db: "{{ findings_pg_db }}"
+    ssl_mode: "{{ findings_pg_ssl_mode }}"
+    query: |
+      SELECT DISTINCT ON (hostname, framework)
+        id, hostname, framework, violations,
+        metadata, evaluation_timestamp
+      FROM compliance_results
+      WHERE hostname IS NOT NULL AND hostname <> ''
+        AND evaluation_timestamp >= NOW() - (%(days)s || ' days')::interval
+        AND (%(fw)s = '' OR framework = %(fw)s)
+      ORDER BY hostname, framework, evaluation_timestamp DESC
+    named_args:
+      days: "{{ findings_lookback_days | int | string }}"
+      fw: "{{ (findings_framework | default('', true)) }}"
+  register: _latest_rows
+
+- name: Nothing to sync
+  ansible.builtin.meta: end_play
+  when: _latest_rows.query_result | length == 0
+
+# One tested pass over the rows yields all three sets: open findings (from
+# violations), waived findings (from metadata.waivers_applied — waived, never
+# hidden), and the scanned (framework, subject, ts) pairs that bound the
+# resolution step.
+- name: Extract findings, waivers, and scanned pairs
+  ansible.builtin.command:
+    argv: ["{{ findings_python }}", "{{ role_path }}/../../../scripts/findings_extract.py"]
+    stdin: "{{ _latest_rows.query_result | to_json }}"
+  register: _extract
+  changed_when: false
+
+- name: Bind extracted sets
+  ansible.builtin.set_fact:
+    _viol_findings: "{{ (_extract.stdout | from_json).findings }}"
+    _waived_findings: "{{ (_extract.stdout | from_json).waived }}"
+    _scanned: "{{ (_extract.stdout | from_json).scanned }}"
+
+- name: Upsert open findings (reopen on regression)
+  community.postgresql.postgresql_query:
+    login_host: "{{ findings_pg_host }}"
+    login_port: "{{ findings_pg_port }}"
+    login_user: "{{ findings_pg_user }}"
+    login_password: "{{ compliance_db_password }}"
+    login_db: "{{ findings_pg_db }}"
+    ssl_mode: "{{ findings_pg_ssl_mode }}"
+    query: |
+      INSERT INTO compliance_findings
+        (framework, control_id, subject, finding_type, severity, title, refs,
+         status, first_seen, last_seen, times_seen, last_result_id)
+      SELECT p.framework, p.control_id, p.subject, p.finding_type,
+             p.severity, p.title, COALESCE(p.refs, '{}'::jsonb),
+             'open', p.observed_at, p.observed_at, 1, p.result_id
+      FROM jsonb_to_recordset(%(payload)s::jsonb) AS p(
+             framework text, control_id text, subject text, finding_type text,
+             severity text, title text, refs jsonb,
+             observed_at timestamptz, result_id bigint)
+      ON CONFLICT (framework, control_id, subject, finding_type) DO UPDATE SET
+        status = 'open',
+        resolved_at = NULL,
+        severity = EXCLUDED.severity,
+        title = EXCLUDED.title,
+        refs = EXCLUDED.refs,
+        first_seen = LEAST(compliance_findings.first_seen, EXCLUDED.first_seen),
+        last_seen = GREATEST(compliance_findings.last_seen, EXCLUDED.last_seen),
+        times_seen = compliance_findings.times_seen
+          + CASE WHEN compliance_findings.last_result_id IS DISTINCT FROM EXCLUDED.last_result_id
+                 THEN 1 ELSE 0 END,
+        last_result_id = EXCLUDED.last_result_id
+    named_args:
+      payload: "{{ _viol_findings | to_json }}"
+  when: _viol_findings | length > 0
+  register: _upsert_open
+
+- name: Upsert waived findings (visible, excepted)
+  community.postgresql.postgresql_query:
+    login_host: "{{ findings_pg_host }}"
+    login_port: "{{ findings_pg_port }}"
+    login_user: "{{ findings_pg_user }}"
+    login_password: "{{ compliance_db_password }}"
+    login_db: "{{ findings_pg_db }}"
+    ssl_mode: "{{ findings_pg_ssl_mode }}"
+    query: |
+      INSERT INTO compliance_findings
+        (framework, control_id, subject, finding_type, severity, title, refs,
+         status, first_seen, last_seen, times_seen, last_result_id)
+      SELECT p.framework, p.control_id, p.subject, p.finding_type,
+             p.severity, p.title, COALESCE(p.refs, '{}'::jsonb),
+             'waived', p.observed_at, p.observed_at, 1, p.result_id
+      FROM jsonb_to_recordset(%(payload)s::jsonb) AS p(
+             framework text, control_id text, subject text, finding_type text,
+             severity text, title text, refs jsonb,
+             observed_at timestamptz, result_id bigint)
+      ON CONFLICT (framework, control_id, subject, finding_type) DO UPDATE SET
+        status = 'waived',
+        resolved_at = NULL,
+        last_seen = GREATEST(compliance_findings.last_seen, EXCLUDED.last_seen),
+        last_result_id = EXCLUDED.last_result_id
+    named_args:
+      payload: "{{ _waived_findings | to_json }}"
+  when: _waived_findings | length > 0
+
+- name: Resolve findings a newer scan no longer reports (verified by rescan)
+  community.postgresql.postgresql_query:
+    login_host: "{{ findings_pg_host }}"
+    login_port: "{{ findings_pg_port }}"
+    login_user: "{{ findings_pg_user }}"
+    login_password: "{{ compliance_db_password }}"
+    login_db: "{{ findings_pg_db }}"
+    ssl_mode: "{{ findings_pg_ssl_mode }}"
+    query: |
+      UPDATE compliance_findings f
+      SET status = 'resolved', resolved_at = s.ts
+      FROM jsonb_to_recordset(%(scanned)s::jsonb)
+             AS s(framework text, subject text, ts timestamptz)
+      WHERE f.framework = s.framework
+        AND f.subject = s.subject
+        AND f.status IN ('open', 'waived')
+        AND f.last_seen < s.ts
+        AND NOT EXISTS (
+          SELECT 1 FROM jsonb_to_recordset(%(payload)s::jsonb)
+                 AS p(framework text, control_id text, subject text, finding_type text)
+          WHERE p.framework = f.framework AND p.subject = f.subject
+            AND p.control_id = f.control_id AND p.finding_type = f.finding_type)
+    named_args:
+      scanned: "{{ _scanned | to_json }}"
+      payload: "{{ (_viol_findings + _waived_findings) | to_json }}"
+  register: _resolve
+
+# The one exception to never-delete: rows whose subject is execution context
+# (EE pod names, localhost) fabricate blast radius and should never have
+# existed — the extractor now refuses them; this heals rows created before
+# that guard. Real findings are never deleted, only state-transitioned.
+- name: Remove invalid-subject findings (execution context is not an asset)
+  community.postgresql.postgresql_query:
+    login_host: "{{ findings_pg_host }}"
+    login_port: "{{ findings_pg_port }}"
+    login_user: "{{ findings_pg_user }}"
+    login_password: "{{ compliance_db_password }}"
+    login_db: "{{ findings_pg_db }}"
+    ssl_mode: "{{ findings_pg_ssl_mode }}"
+    query: |
+      DELETE FROM compliance_findings
+      WHERE lower(subject) IN ('localhost', '127.0.0.1')
+         OR lower(subject) LIKE 'automation-job-%'
+  register: _hygiene
+
+- name: Read the actionable summary — targets, not percentages
+  community.postgresql.postgresql_query:
+    login_host: "{{ findings_pg_host }}"
+    login_port: "{{ findings_pg_port }}"
+    login_user: "{{ findings_pg_user }}"
+    login_password: "{{ compliance_db_password }}"
+    login_db: "{{ findings_pg_db }}"
+    ssl_mode: "{{ findings_pg_ssl_mode }}"
+    query: |
+      SELECT framework, control_id, affected_count,
+             array_to_string(affected_subjects[1:8], ', ') AS subjects
+      FROM findings_blast_radius
+      WHERE finding_type = 'violation'
+      ORDER BY affected_count DESC, control_id
+      LIMIT 10
+  register: _radius
+
+- name: Findings sync summary
+  ansible.builtin.debug:
+    msg: >-
+      Findings sync: {{ _viol_findings | length }} open finding(s) observed
+      across {{ _scanned | length }} subject/framework scans,
+      {{ _waived_findings | length }} waived,
+      {{ _resolve.rowcount | default(0) }} resolved by rescan.
+      Widest blast radius:
+      {% for r in _radius.query_result %}
+      [{{ r.framework }}] {{ r.control_id }} → {{ r.affected_count }} system(s): {{ r.subjects }};
+      {% endfor %}

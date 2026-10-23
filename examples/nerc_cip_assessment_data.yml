@@ -1,0 +1,499 @@
+---
+# NERC CIP Compliance Assessment Input Data
+# Edit this file to reflect your organization's actual compliance state
+# Load into OPA via the "AAC - NERC CIP Compliance Report" job template
+
+organization: "Example Utility Co."
+assessment_date: "2026-02-27"
+assessor: "Compliance Team"
+
+# CIP-002: BES Cyber System Categorization
+bes_cyber_systems:
+  - system_id: "BCS-001"
+    name: "Energy Management System (EMS)"
+    impact_level: "high"
+    has_external_routable_connectivity: true
+    esp_name: "ESP-CONTROL-01"
+    asset_type: "control_center"
+  - system_id: "BCS-002"
+    name: "SCADA System - Transmission"
+    impact_level: "high"
+    has_external_routable_connectivity: true
+    esp_name: "ESP-SCADA-01"
+    asset_type: "transmission"
+  - system_id: "BCS-003"
+    name: "Substation RTU - 345kV"
+    impact_level: "medium"
+    has_external_routable_connectivity: false
+    esp_name: "ESP-SUB-01"
+    asset_type: "substation"
+
+categorization_documentation:
+  criteria_defined: true
+  methodology_documented: true
+  rationale_provided: true
+  last_review_date: "2025-11-15T00:00:00Z"
+
+# CIP-003: Security Management Controls
+cybersecurity_organization:
+  senior_manager:
+    designated: true
+    authority_documented: true
+    responsibilities_defined: true
+  policies:
+    documented: true
+    approved: true
+    last_review_date: 1769731200000000000  # 2026-01-30 in nanoseconds (< 365 days ago)
+  information_sharing_plan:
+    documented: true
+    contacts_current: true
+  delegated_authority:
+    documented: true
+    current: true
+
+# CIP-004: Personnel & Training
+personnel:
+  - person_id: "P001"
+    name: "Jane Smith"
+    role: "System Admin"
+    risk_assessment_completed: true
+    risk_assessment_date: "2025-09-01T00:00:00Z"
+    training_completed: true
+    training_date: "2025-10-15T00:00:00Z"
+    access_authorized: true
+  - person_id: "P002"
+    name: "Bob Johnson"
+    role: "Network Engineer"
+    risk_assessment_completed: true
+    risk_assessment_date: "2025-08-15T00:00:00Z"
+    training_completed: true
+    training_date: "2025-09-20T00:00:00Z"
+    access_authorized: true
+
+personnel_changes:
+  - person_id: "P003"
+    change_type: "termination"
+    change_date: "2025-12-01T00:00:00Z"
+    access_revoked: true
+    access_revocation_date: "2025-12-01T00:00:00Z"
+    revocation_within_24h: true
+
+# CIP-005: Electronic Security Perimeters
+electronic_security_perimeters:
+  BCS-001:
+    defined: true
+    documented: true
+    network_diagram_current: true
+  BCS-002:
+    defined: true
+    documented: true
+    network_diagram_current: true
+  BCS-003:
+    defined: true
+    documented: true
+    network_diagram_current: true
+
+electronic_access_points:
+  - eap_id: "EAP-001"
+    esp_id: "ESP-CONTROL-01"
+    type: "firewall"
+    deny_by_default: true
+    permits_documented: true
+    authenticated: true
+  - eap_id: "EAP-002"
+    esp_id: "ESP-SCADA-01"
+    type: "firewall"
+    deny_by_default: true
+    permits_documented: true
+    authenticated: true
+
+remote_access_sessions:
+  - session_id: "RA-001"
+    user_id: "P001"
+    multi_factor_authentication: true
+    encryption_used: true
+    session_logged: true
+    authorized: true
+
+# CIP-006: Physical Security
+physical_security_perimeters:
+  BCS-001:
+    defined: true
+    physical_access_controlled: true
+    monitored: true
+  BCS-002:
+    defined: true
+    physical_access_controlled: true
+    monitored: true
+  BCS-003:
+    defined: true
+    physical_access_controlled: true
+    monitored: true
+
+physical_access_controls:
+  - control_id: "PAC-001"
+    psp_id: "PSP-CONTROL-01"
+    type: "card_reader"
+    operational: true
+    tested: true
+    last_test_date: "2025-11-01T00:00:00Z"
+
+visitor_control_program:
+  documented: true
+  escort_procedures: true
+  access_logging: true
+  identification_required: true
+
+physical_locations:
+  - location_id: "LOC-001"
+    name: "Control Center"
+    psp_defined: true
+    access_logs_retained: true
+    retention_days: 90
+
+# CIP-007: Systems Security Management
+patch_management:
+  BCS-001:
+    process_documented: true
+    patches_evaluated: true
+    evaluation_frequency_days: 35
+    patches_applied_or_mitigated: true
+  BCS-002:
+    process_documented: true
+    patches_evaluated: true
+    evaluation_frequency_days: 35
+    patches_applied_or_mitigated: true
+  BCS-003:
+    process_documented: true
+    patches_evaluated: true
+    evaluation_frequency_days: 35
+    patches_applied_or_mitigated: true
+
+network_port_management:
+  BCS-001:
+    ports_documented: true
+    unnecessary_ports_disabled: true
+    last_review_date: "2025-10-01T00:00:00Z"
+  BCS-002:
+    ports_documented: true
+    unnecessary_ports_disabled: true
+    last_review_date: "2025-10-01T00:00:00Z"
+  BCS-003:
+    ports_documented: true
+    unnecessary_ports_disabled: true
+    last_review_date: "2025-10-01T00:00:00Z"
+
+malicious_code_protection:
+  BCS-001:
+    deployed: true
+    signatures_current: true
+    alerts_configured: true
+  BCS-002:
+    deployed: true
+    signatures_current: true
+    alerts_configured: true
+  BCS-003:
+    deployed: true
+    signatures_current: true
+    alerts_configured: true
+
+security_monitoring:
+  BCS-001:
+    logging_enabled: true
+    alerts_configured: true
+    log_retention_days: 90
+    reviewed_regularly: true
+  BCS-002:
+    logging_enabled: true
+    alerts_configured: true
+    log_retention_days: 90
+    reviewed_regularly: true
+  BCS-003:
+    logging_enabled: true
+    alerts_configured: true
+    log_retention_days: 90
+    reviewed_regularly: true
+
+system_access_controls:
+  BCS-001:
+    accounts_documented: true
+    least_privilege_enforced: true
+    shared_accounts_justified: false
+    default_passwords_changed: true
+    authentication_required: true
+  BCS-002:
+    accounts_documented: true
+    least_privilege_enforced: true
+    shared_accounts_justified: false
+    default_passwords_changed: true
+    authentication_required: true
+  BCS-003:
+    accounts_documented: true
+    least_privilege_enforced: true
+    shared_accounts_justified: false
+    default_passwords_changed: true
+    authentication_required: true
+
+# CIP-008: Incident Reporting and Response
+incident_response_plan:
+  documented: true
+  approved: true
+  last_review_date: 1769731200000000000  # 2026-01-30 in nanoseconds
+
+incident_reporting:
+  procedures_documented: true
+  contact_information_current: true
+  reporting_criteria_defined: true
+  escalation_procedures_defined: true
+
+incident_response_testing:
+  last_test_date: 1769731200000000000  # 2026-01-30 in nanoseconds
+  test_documented: true
+  lessons_learned_captured: true
+
+incident_response_team:
+  - person_id: "P001"
+    role: "Incident Commander"
+    trained: true
+    contact_current: true
+
+# CIP-009: Recovery Plans
+recovery_plans:
+  BCS-001:
+    documented: true
+    approved: true
+    conditions_defined: true
+    roles_defined: true
+    last_review_date: "2025-08-01T00:00:00Z"
+  BCS-002:
+    documented: true
+    approved: true
+    conditions_defined: true
+    roles_defined: true
+    last_review_date: "2025-08-01T00:00:00Z"
+  BCS-003:
+    documented: true
+    approved: true
+    conditions_defined: true
+    roles_defined: true
+    last_review_date: "2025-08-01T00:00:00Z"
+
+backup_procedures:
+  BCS-001:
+    documented: true
+    backups_performed: true
+    backup_frequency: "daily"
+    offsite_storage: true
+  BCS-002:
+    documented: true
+    backups_performed: true
+    backup_frequency: "daily"
+    offsite_storage: true
+  BCS-003:
+    documented: true
+    backups_performed: true
+    backup_frequency: "weekly"
+    offsite_storage: true
+
+recovery_testing:
+  BCS-001:
+    tested: true
+    last_test_date: "2025-09-15T00:00:00Z"
+    test_documented: true
+    deficiencies_addressed: true
+  BCS-002:
+    tested: true
+    last_test_date: "2025-09-15T00:00:00Z"
+    test_documented: true
+    deficiencies_addressed: true
+  BCS-003:
+    # INTENTIONAL VIOLATION (CIP-009): Recovery testing overdue — no test performed
+    tested: false
+    last_test_date: "2024-03-01T00:00:00Z"
+    test_documented: false
+    deficiencies_addressed: false
+
+# CIP-010: Configuration Management
+baseline_configurations:
+  BCS-001:
+    documented: true
+    includes_software: true
+    includes_ports: true
+    includes_security_patches: true
+    last_updated: "2025-11-01T00:00:00Z"
+  BCS-002:
+    documented: true
+    includes_software: true
+    includes_ports: true
+    includes_security_patches: true
+    last_updated: "2025-11-01T00:00:00Z"
+  BCS-003:
+    documented: true
+    includes_software: true
+    includes_ports: true
+    includes_security_patches: true
+    last_updated: "2025-11-01T00:00:00Z"
+
+configuration_changes:
+  - change_id: "CHG-001"
+    system_id: "BCS-001"
+    change_date: "2025-12-15T00:00:00Z"
+    authorized: true
+    tested: true
+    baseline_updated: true
+    security_controls_verified: true
+
+vulnerability_assessments:
+  BCS-001:
+    # INTENTIONAL VIOLATION (CIP-010): Vulnerability assessment not performed
+    performed: false
+    last_assessment_date: "2024-01-15T00:00:00Z"
+    findings_documented: false
+    remediation_tracked: false
+  BCS-002:
+    performed: true
+    last_assessment_date: "2025-10-01T00:00:00Z"
+    findings_documented: true
+    remediation_tracked: true
+  BCS-003:
+    performed: true
+    last_assessment_date: "2025-10-01T00:00:00Z"
+    findings_documented: true
+    remediation_tracked: true
+
+configuration_monitoring:
+  BCS-001:
+    monitoring_enabled: true
+    unauthorized_changes_alerted: true
+    review_frequency: "daily"
+  BCS-002:
+    monitoring_enabled: true
+    unauthorized_changes_alerted: true
+    review_frequency: "daily"
+  BCS-003:
+    monitoring_enabled: true
+    unauthorized_changes_alerted: true
+    review_frequency: "daily"
+
+# CIP-011: Information Protection
+bes_cyber_system_information:
+  inventory_maintained: true
+  classification_performed: true
+  handling_procedures_defined: true
+
+information_protection:
+  procedures_documented: true
+  storage_controls_implemented: true
+  transmission_controls_implemented: true
+  access_controls_enforced: true
+
+information_access:
+  - access_id: "IA-001"
+    person_id: "P001"
+    authorized: true
+    need_to_know_verified: true
+
+information_disposal:
+  procedures_documented: true
+  secure_deletion_methods: true
+  disposal_documentation: true
+  media_sanitization: true
+
+# CIP-013: Supply Chain Risk Management
+supply_chain_management:
+  # INTENTIONAL VIOLATION (CIP-013): Supply chain risk management plan not implemented
+  plan_documented: false
+  plan_approved: false
+  vendor_risk_assessments: []
+  software_integrity_verification: false
+  hardware_authenticity_verification: false
+
+security_testing:
+  program_documented: true
+  testing_performed: true
+  last_test_date: "2025-11-01T00:00:00Z"
+  results_reviewed: true
+  remediation_tracked: true
+
+# CIP-012: Communications Between Control Centers
+control_center_communications:
+  inventory_maintained: true
+  criticality_assessed: true
+  protection_requirements_defined: true
+  links:
+    - link_id: "LINK-001"
+      from_center: "Control Center A"
+      to_center: "Control Center B"
+      encrypted: true
+      authenticated: true
+      availability_measures: true
+
+communication_monitoring:
+  enabled: true
+  logging_implemented: true
+  anomaly_detection: true
+  alerting_configured: true
+
+# CIP-014: Physical Security of Transmission Stations and Substations
+transmission_security_assessments:
+  completed: true
+  third_party_verified: true
+  assessor: "GridSec Consulting LLC"
+  assessment_date: "2025-09-01T00:00:00Z"
+  stations:
+    - station_id: "TX-001"
+      name: "345kV Transmission Station Alpha"
+      risk_assessment_completed: true
+      physical_security_plan_approved: true
+      law_enforcement_coordination: true
+    - station_id: "TX-002"
+      name: "138kV Switching Station Beta"
+      risk_assessment_completed: true
+      physical_security_plan_approved: true
+      law_enforcement_coordination: true
+
+# CIP-015: Internal Network Security Monitoring (INSM)
+insm:
+  categorization_review_date: "2026-01-15T00:00:00Z"
+  systems:
+    - system_id: "BCS-001"
+      impact_categorization: "high"
+      has_external_routable_connectivity: true
+      esp_name: "ESP-CONTROL-01"
+      network_baseline:
+        established: true
+        documented: true
+      anomaly_detection:
+        implemented: true
+        covers_esp: true
+      malicious_comm_detection:
+        capability_documented: true
+        tools:
+          - "Darktrace"
+          - "Claroty"
+      response_process:
+        documented: true
+        includes_notification: true
+        includes_investigation: true
+    - system_id: "BCS-002"
+      impact_categorization: "high"
+      has_external_routable_connectivity: true
+      esp_name: "ESP-SCADA-01"
+      network_baseline:
+        established: true
+        documented: true
+      anomaly_detection:
+        implemented: true
+        covers_esp: true
+      malicious_comm_detection:
+        capability_documented: true
+        tools:
+          - "Darktrace"
+      response_process:
+        documented: true
+        includes_notification: true
+        includes_investigation: true
+  documentation_review:
+    documented: true
+    reviewer: "Compliance Manager"
+    last_review_date: "2026-01-15T00:00:00Z"

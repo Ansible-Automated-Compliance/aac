@@ -1,0 +1,175 @@
+---
+# export_oscal_assessment.yml
+#
+# Exports AAC compliance_results from PostgreSQL as NIST OSCAL 1.1.2
+# Assessment Results JSON. Suitable for FedRAMP, CMMC, and NIST 800-53A
+# audit evidence submission and integration with GRC platforms.
+#
+# OSCAL spec: https://pages.nist.gov/OSCAL/reference/latest/assessment-results/
+#
+# AAP Job Template: "AAC - Export OSCAL Assessment Results"
+# Execution Environment: AAC Compliance EE (ID 6) — has community.postgresql
+#
+# Survey variables:
+#   framework        — framework key, e.g. cis_rhel9, nerc_cip, iso27001
+#   hostname         — (optional) filter to a single host; blank = all hosts
+#   output_format    — json (default) or yaml
+#   output_dir       — where to write the file (default: /tmp/oscal_exports)
+#   max_results      — max rows to export (default: 100)
+
+- name: Export Compliance Assessment Results as OSCAL 1.1.2
+  hosts: localhost
+  connection: local
+  gather_facts: true
+
+  vars:
+    oscal_version: "1.1.2"
+    aac_tool_version: "1.0.0"
+    export_timestamp: "{{ ansible_date_time.iso8601 }}"
+
+  tasks:
+    # site_config.yml / vault_secrets.yml are gitignored and absent from project
+    # checkouts — load them OPTIONALLY (as export_sarif_assessment.yml does);
+    # every value they supply can also arrive via extra_vars.
+    - name: Load optional local config
+      ansible.builtin.include_vars: "{{ item }}"
+      with_first_found:
+        - files: ["{{ playbook_dir }}/../vars/site_config.yml"]
+          skip: true
+
+    - name: Load optional local secrets
+      ansible.builtin.include_vars: "{{ item }}"
+      with_first_found:
+        - files: ["{{ playbook_dir }}/../vars/vault_secrets.yml"]
+          skip: true
+      no_log: true
+
+    # set_fact, NOT vars-block self-reference (`x: "{{ x | default(..) }}"`)
+    # — that pattern Jinja-recurses on ansible-core 2.16+ and made this
+    # playbook fail on its very first execution (job 3536, 2026-08-31).
+    # Same fix as install_preflight / verify_install.
+    - name: Resolve export parameters (eager, non-recursive)
+      ansible.builtin.set_fact:
+        framework: "{{ framework | default('cis_rhel9') }}"
+        hostname_filter: "{{ hostname | default('') }}"
+        output_format: "{{ output_format | default('json') }}"
+        output_dir: "{{ output_dir | default('/tmp/oscal_exports') }}"
+        max_results: "{{ max_results | default(100) | int }}"
+
+    - name: Build export filename
+      ansible.builtin.set_fact:
+        # Single line — a folded scalar (>-) inserts a space where the newline
+        # was, producing "…cis_rhel9 -DATE.json".
+        export_filename: "oscal-assessment-{{ framework }}{{ ('-' + (hostname_filter | replace('.', '-'))) if hostname_filter else '' }}-{{ ansible_date_time.date }}.{{ output_format }}"
+
+    # ── Step 1: Query compliance_results ─────────────────────────────────────
+
+    - name: Ensure output directory exists
+      ansible.builtin.file:
+        path: "{{ output_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Query latest assessment results per host
+      # Parameterized (named_args) — never string-interpolate survey input into
+      # SQL. The optional host filter is expressed as "blank matches all" so the
+      # query stays fully bound with no dynamic WHERE construction.
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_user: postgres
+        login_password: "{{ compliance_db_password }}"
+        login_db: compliance
+        query: |
+          SELECT DISTINCT ON (hostname)
+            hostname, framework, policy_name, policy_version,
+            total_controls, passed_controls, failed_controls,
+            compliance_percentage, compliant, violations, metadata,
+            evaluation_timestamp
+          FROM compliance_results
+          WHERE framework = %(framework)s
+            AND (%(host)s = '' OR hostname = %(host)s)
+          ORDER BY hostname, evaluation_timestamp DESC
+          LIMIT %(max_rows)s
+        named_args:
+          framework: "{{ framework }}"
+          host: "{{ hostname_filter }}"
+          max_rows: "{{ max_results | int }}"
+      register: assessment_rows
+
+    - name: Fail if no results found
+      ansible.builtin.fail:
+        msg: "No compliance_results found for framework='{{ framework }}'{{ ' host=' + hostname_filter if hostname_filter else '' }}"
+      when: assessment_rows.rowcount == 0
+
+    # ── Step 2: Build OSCAL document ─────────────────────────────────────────
+
+    - name: Build OSCAL results array
+      ansible.builtin.set_fact:
+        oscal_results: >-
+          {{
+            assessment_rows.query_result | map('community.general.json_query',
+              '{
+                uuid: to_uuid(hostname),
+                title: join(\" — \", [policy_name, hostname]),
+                description: join(\" \", [
+                  \"Automated compliance assessment of\", hostname,
+                  \"against\", framework, \"(\" + policy_name + \").\",
+                  \"Score:\", compliance_percentage | string + \"%\",
+                  \"(\" + passed_controls | string + \"/\" + total_controls | string + \" controls passed).\"
+                ]),
+                start: evaluation_timestamp,
+                end: evaluation_timestamp,
+                reviewed_controls: {
+                  control_selections: [{ description: policy_name, include_all: {} }]
+                },
+                observations: violations[0:50] | default([]) | map(attribute=\"control_id\") | list,
+                findings: violations[0:50] | default([]),
+                compliant: compliant
+              }'
+            ) | list
+          }}
+      when: false  # Pre-task; actual build done below in Python helper
+
+    - name: Build OSCAL Assessment Results document (Python)
+      # command, not script: the script module does not support stdin
+      # (second latent defect surfaced by the first real executions,
+      # jobs 3536/3541 — this playbook had never run before 2026-08-31).
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/../../scripts/oscal_mapper.py"
+        stdin: "{{ assessment_rows.query_result | to_json }}"
+      environment:
+        OSCAL_VERSION: "{{ oscal_version }}"
+        FRAMEWORK: "{{ framework }}"
+        TOOL_VERSION: "{{ aac_tool_version }}"
+        EXPORT_TIMESTAMP: "{{ export_timestamp }}"
+      register: oscal_output
+
+    # ── Step 3: Write output file ─────────────────────────────────────────────
+
+    - name: Write OSCAL file
+      ansible.builtin.copy:
+        content: "{{ oscal_output.stdout }}"
+        dest: "{{ output_dir }}/{{ export_filename | trim }}"
+        mode: "0644"
+
+    - name: Publish output path via set_stats
+      ansible.builtin.set_stats:
+        data:
+          oscal_export_path: "{{ output_dir }}/{{ export_filename | trim }}"
+          oscal_framework: "{{ framework }}"
+          oscal_host_count: "{{ assessment_rows.rowcount }}"
+
+    - name: Export summary
+      ansible.builtin.debug:
+        msg: |
+          ═══════════════════════════════════════════════════════════
+          OSCAL Export Complete
+          ═══════════════════════════════════════════════════════════
+          Framework:   {{ framework }}
+          Hosts:       {{ assessment_rows.rowcount }}
+          Format:      {{ output_format | upper }}
+          Output:      {{ output_dir }}/{{ export_filename | trim }}
+          OSCAL ver:   {{ oscal_version }}
+          ═══════════════════════════════════════════════════════════

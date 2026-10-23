@@ -1,0 +1,30 @@
+---
+# Where the recovery script and its unit land (user-scoped — aapuser1 has
+# Linger=yes, so user units run at boot without a login).
+aac_post_boot_user: aapuser1
+aac_post_boot_home: "/home/{{ aac_post_boot_user }}"
+aac_post_boot_bin: "{{ aac_post_boot_home }}/.local/bin/aac-post-boot.sh"
+aac_post_boot_unit_dir: "{{ aac_post_boot_home }}/.config/systemd/user"
+aac_post_boot_conf_dir: "{{ aac_post_boot_home }}/.config/aac"
+
+# systemd start timeout. crc start alone can take 5+ minutes and the script then
+# waits on AAP, so this must comfortably exceed aac_post_boot_aap_wait_seconds.
+aac_post_boot_timeout_sec: 3600
+
+# --- script configuration (written to post-boot.env) ------------------------
+# From the environment profile (external_aap_url) or extra_vars; no lab literal.
+aac_post_boot_aap_url: "{{ external_aap_url | mandatory }}"
+# The OPA compliance route the hook re-publishes the template registry to
+# (profile: external_opa_compliance_url). Required: the script will not start without it.
+aac_post_boot_opa_compliance_url: "{{ external_opa_compliance_url | default(undef(), true) | mandatory(msg='Set external_opa_compliance_url in the environment profile, site_config.yml, or -e') }}"
+aac_post_boot_aap_user: "admin"
+# Set from vault; never commit a real value.
+aac_post_boot_aap_pass: "{{ vault_aap_admin_ui_password | default('') }}"
+aac_post_boot_start_crc: true
+aac_post_boot_aap_wait_seconds: 1800
+
+# Templates launched to refresh the dashboards after boot:
+#   212 Collate OCP NERC-CIP  — moves Compliance Operator CCRs into compliance_results
+#   214 Check OCP NERC-CIP Drift
+#    10 AAC - NERC CIP Compliance Report (fleet + CIP-015 INSM)
+aac_post_boot_refresh_templates: "212,214,10"

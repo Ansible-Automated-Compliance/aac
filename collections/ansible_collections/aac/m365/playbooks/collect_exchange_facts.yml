@@ -1,0 +1,42 @@
+---
+# Sample playbook — collect M365 Exchange facts and POST to OPA for
+# CIS Section 4 evaluation.
+
+- name: Collect M365 Exchange facts → evaluate against CIS via OPA
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  collections:
+    - aac.m365
+
+  vars:
+    opa_url: "{{ opa_url | default('http://opa-compliance:8182') }}"
+
+  tasks:
+
+    - name: Collect Exchange state from Microsoft Graph
+      aac.m365.m365_exchange_facts:
+        tenant_id: "{{ m365_tenant_id }}"
+        client_id: "{{ m365_client_id }}"
+        client_secret: >-
+          {{ m365_client_secret }}
+      register: exchange
+
+    - name: Evaluate CIS Section 4 controls in OPA
+      ansible.builtin.uri:
+        url: "{{ opa_url }}/v1/data/cis_m365/exchange/compliance_report"
+        method: POST
+        body_format: json
+        body:
+          input: "{{ exchange.facts }}"
+        status_code: 200
+      register: opa_response
+
+    - name: Show summary
+      ansible.builtin.debug:
+        msg:
+          - "CIS M365 Section 4 — Exchange"
+          - "Compliant: {{ opa_response.json.result.compliant }}"
+          - "Violations: {{ opa_response.json.result.violation_count }}"
+          - "Detail: {{ opa_response.json.result.violations }}"

@@ -1,0 +1,158 @@
+---
+# =============================================================================
+# AAC - Notify Nagios Compliance Results
+#
+# Pushes the latest AAC compliance assessment results from PostgreSQL into
+# Nagios/Icinga as passive service check results.
+#
+# Two modes:
+#   1. After-assessment notification (called from CIS/NERC-CIP/etc. playbooks)
+#      Pass: framework=cis_rhel9 (or any framework key)
+#   2. Full sweep (run standalone)
+#      Leave framework blank to push all frameworks
+#
+# Passive check flow:
+#   AAP assessment → PostgreSQL → this playbook → send_nsca → Nagios
+#
+# Survey variables:
+#   nsca_host      — Nagios/NSCA server hostname or IP (required)
+#   nsca_port      — NSCA port (default: 5667)
+#   framework      — Only notify this framework (leave blank for all)
+#   warning_pct    — Warning threshold (default: 90)
+#   critical_pct   — Critical threshold (default: 75)
+#
+# AAP Job Template: "AAC - Notify Nagios Compliance Results"
+# Credentials: Ansible Vault (ID 8)
+# Inventory: Compliance Infrastructure (ID 4), limit: localhost
+# =============================================================================
+
+- name: Push AAC Compliance Results to Nagios
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    # nsca_host: <set via extra_vars / survey / inventory>   # default ''
+    # nsca_port: <set via extra_vars / survey / inventory>   # default '5667'
+    # framework: <set via extra_vars / survey>   # self-reference here recursed when unset; consumers default to ''
+    # warning_pct: <set via extra_vars / survey / inventory>   # default '90'
+    # critical_pct: <set via extra_vars / survey / inventory>   # default '75'
+
+  vars_files:
+    - ../vars/site_config.yml
+
+  tasks:
+
+    - name: Fail if nsca_host not provided
+      fail:
+        msg: "nsca_host is required — provide the Nagios/NSCA server address"
+      when: (nsca_host | default('', true)) | trim == ''
+
+    - name: Validate framework variable (alphanumeric + underscore only)
+      fail:
+        msg: >-
+          Invalid framework value '{{ framework }}' — must match ^[A-Za-z0-9_]*$
+          to prevent SQL injection. Leave blank to query all frameworks.
+      when:
+        - (framework | default('', true)) | trim != ''
+        - framework is not match('^[A-Za-z0-9_]+$')
+
+    # ── Fetch latest compliance results from PostgreSQL ───────────────────────
+    # Use parameterized query when filtering by framework to prevent injection.
+    - name: Get latest compliance results from PostgreSQL (all frameworks)
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_user: "postgres"
+        login_password: "{{ compliance_db_password }}"
+        login_db: compliance
+        query: |
+          SELECT DISTINCT ON (hostname, framework)
+              hostname, framework, compliance_percentage,
+              passed_controls, failed_controls, total_controls, violations,
+              evaluation_timestamp
+          FROM compliance_results
+          WHERE hostname IS NOT NULL
+            AND framework IS NOT NULL
+          ORDER BY hostname, framework, evaluation_timestamp DESC
+      register: compliance_rows_all
+      when: (framework | default('', true)) | trim == ''
+
+    - name: Get latest compliance results from PostgreSQL (single framework)
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_user: "postgres"
+        login_password: "{{ compliance_db_password }}"
+        login_db: compliance
+        query: |
+          SELECT DISTINCT ON (hostname, framework)
+              hostname, framework, compliance_percentage,
+              passed_controls, failed_controls, total_controls, violations,
+              evaluation_timestamp
+          FROM compliance_results
+          WHERE hostname IS NOT NULL
+            AND framework = %(fw)s
+          ORDER BY hostname, framework, evaluation_timestamp DESC
+        named_args:
+          fw: "{{ framework }}"
+      register: compliance_rows_filtered
+      when: (framework | default('', true)) | trim != ''
+
+    - name: Merge query results
+      set_fact:
+        compliance_rows: >-
+          {{ compliance_rows_all if (framework | default('', true)) | trim == ''
+             else compliance_rows_filtered }}
+
+    - name: Fail if no results found
+      fail:
+        msg: >-
+          No compliance results found in PostgreSQL
+          {{ '(framework: ' ~ framework ~ ')' if (framework | default('', true)) != '' else '' }}.
+          Run a compliance assessment first.
+      when: compliance_rows.rowcount == 0
+
+    - name: Show results to be sent
+      debug:
+        msg: "Sending {{ compliance_rows.rowcount }} compliance results to Nagios at {{ (nsca_host | default('', true)) }}"
+
+    # ── Classify each result and build passive check payload ─────────────────
+    # Thresholds computed in Jinja (no bc dependency in EE).
+    # Actual send_nsca call is delegated to the controller host where
+    # nagios-nsca-client is installed. If not installed, the task is skipped
+    # with a warning — this integration is optional.
+    - name: Classify compliance result and send passive check
+      shell: >
+        printf "%s\t%s\t%d\t%s\n"
+        "{{ item.hostname }}"
+        "AAC Compliance - {{ item.framework }}"
+        "{{ 0 if item.compliance_percentage | float >= (warning_pct | default('90', true)) | float
+            else (1 if item.compliance_percentage | float >= (critical_pct | default('75', true)) | float
+            else 2) }}"
+        "{{ 'OK' if item.compliance_percentage | float >= (warning_pct | default('90', true)) | float
+            else ('WARNING' if item.compliance_percentage | float >= (critical_pct | default('75', true)) | float
+            else 'CRITICAL') }}:
+        {{ item.framework }} -- {{ item.compliance_percentage }}%
+        ({{ item.passed_controls }}/{{ item.total_controls }} controls) |
+        compliance_score={{ item.compliance_percentage }}%;{{ (warning_pct | default('90', true)) }};{{ (critical_pct | default('75', true)) }}
+        controls_failed={{ item.failed_controls }}"
+        | send_nsca -H {{ (nsca_host | default('', true)) }} -p {{ (nsca_port | default('5667', true)) }} -d "$(printf '\t')"
+      args:
+        executable: /bin/bash
+      delegate_to: "{{ aac_ssh_delegate }}"
+      loop: "{{ compliance_rows.query_result }}"
+      loop_control:
+        label: "{{ item.hostname }}/{{ item.framework }} ({{ item.compliance_percentage }}%)"
+      register: nsca_results
+      ignore_errors: true
+
+    # ── Summary ───────────────────────────────────────────────────────────────
+    - name: Count successes and failures
+      set_fact:
+        nsca_sent:   "{{ nsca_results.results | selectattr('rc', 'eq', 0) | list | length }}"
+        nsca_failed: "{{ nsca_results.results | selectattr('rc', 'ne', 0) | list | length }}"
+
+    - name: Show Nagios notification summary
+      debug:
+        msg:
+          - "Sent {{ nsca_sent }} / {{ compliance_rows.rowcount }} results to Nagios at {{ (nsca_host | default('', true)) }}:{{ (nsca_port | default('5667', true)) }}"
+          - "{{ 'Failed: ' ~ nsca_failed ~ ' results could not be sent' if nsca_failed | int > 0 else 'All results sent successfully' }}"

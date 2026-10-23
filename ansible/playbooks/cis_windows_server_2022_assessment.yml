@@ -1,0 +1,325 @@
+---
+# cis_windows_server_2022_assessment.yml — CIS Windows Server 2022 Compliance Assessment
+#
+# Connects to Windows host(s) via WinRM, collects facts via PowerShell,
+# evaluates against CIS Microsoft Windows Server 2022 Benchmark v5.1.0 via OPA,
+# and stores results to PostgreSQL.
+#
+# AAP Job Template: "CIS Windows Server 2022 Assessment" (ID 13)
+# Credentials: Ansible Vault + Windows Compliance Lab (ID 7)
+# EE: AAC Compliance EE (has pywinrm, community.postgresql)
+# Inventory: Compliance Infrastructure — limit: compliance-lab-windows2022
+
+- name: CIS Windows Server 2022 Compliance Assessment
+  hosts: "{{ target_hosts | default('all') }}"
+  gather_facts: true
+
+  vars_files:
+    - [ "../vars/vault_secrets.yml", "../vars/empty_fallback.yml" ]
+    - ../vars/site_config.yml
+
+  vars:
+    pg_password:         "{{ compliance_db_password }}"
+    opa_server_url:      "{{ opa_security_url }}"
+    # Survey / extra_vars: cis_windows_level (1 or 2, default 2),
+    # cis_windows_next_generation (default false), cis_windows_attestations
+    # ([{control_id, attested_by, attested_on, evidence_ref}] for 1.2.3 / 2.3.11.6).
+    report_dir:          "{{ playbook_dir }}/../../reports"
+    timestamp:           "{{ ansible_date_time.iso8601_basic_short }}"
+
+  tasks:
+
+    # ── Setup ─────────────────────────────────────────────────────────────────
+
+    - name: Ensure report directory exists
+      file:
+        path: "{{ report_dir }}"
+        state: directory
+        mode: '0755'
+      delegate_to: localhost
+      run_once: true
+
+    - name: Verify Windows Server 2022
+      assert:
+        that:
+          - ansible_os_family == "Windows"
+        fail_msg: "This playbook requires Windows. Detected: {{ ansible_os_family }}"
+        success_msg: "Confirmed Windows: {{ ansible_distribution }}"
+
+    # ── Fact collection ───────────────────────────────────────────────────────
+    # Driven by the manifest the policy generator writes beside the policy
+    # (policies/benchmarks/cis/windows_server_2022_modular/data/collector_manifest.json):
+    # every registry value, audit subcategory and secedit key the 406 evaluated
+    # recommendations read, so the list cannot drift from the policy. Facts are
+    # raw values in the shape the Windows STIG modules also read
+    # (registry[<HKLM path>][<value name>]); the comparisons live in the policy.
+    # A collection step that fails yields {} for its input, which the policy
+    # reports as NOT ASSESSED and counts as failed -- never as a pass.
+
+    - name: Load the collector manifest from the policies submodule
+      ansible.builtin.set_fact:
+        _cis_manifest: "{{ (lookup('ansible.builtin.file', playbook_dir ~ '/../../policies/benchmarks/cis/windows_server_2022_modular/data/collector_manifest.json') | from_json).collector_manifest }}"
+
+    - name: Read the server role (Win32_ComputerSystem.DomainRole)
+      ansible.windows.win_shell: (Get-CimInstance -ClassName Win32_ComputerSystem).DomainRole
+      register: domain_role_raw
+      changed_when: false
+      failed_when: false
+
+    - name: Collect registry values (HKLM)
+      ansible.windows.win_shell: |
+        $items = @'
+        {{ _cis_manifest.registry | to_json }}
+        '@ | ConvertFrom-Json
+        $out = [System.Collections.Hashtable]::new([System.StringComparer]::Ordinal)
+        foreach ($pair in $items) {
+          $path = [string]$pair[0]; $name = [string]$pair[1]
+          $key = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey($path.Substring($path.IndexOf([char]92) + 1))
+          if ($null -eq $key) { continue }
+          $val = $key.GetValue($name, $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+          if ($null -ne $val) {
+            if (-not $out.ContainsKey($path)) { $out[$path] = @{} }
+            switch ($key.GetValueKind($name).ToString()) {
+              'MultiString' { $out[$path][$name] = @($val) }
+              'DWord'       { $out[$path][$name] = [BitConverter]::ToUInt32([BitConverter]::GetBytes([int32]$val), 0) }
+              'QWord'       { $out[$path][$name] = [int64]$val }
+              'Binary'      { }
+              default       { $out[$path][$name] = [string]$val }
+            }
+          }
+          $key.Close()
+        }
+        $out | ConvertTo-Json -Depth 6 -Compress
+      register: registry_raw
+      changed_when: false
+      failed_when: false
+
+    - name: Collect per-user policy values (loaded S-1-5-21 user hives)
+      ansible.windows.win_shell: |
+        $items = @'
+        {{ _cis_manifest.registry_users | to_json }}
+        '@ | ConvertFrom-Json
+        $out = @{}
+        foreach ($hiveKey in (Get-ChildItem -Path 'Registry::HKEY_USERS')) {
+          $sid = $hiveKey.PSChildName
+          if ($sid -notmatch '^S-1-5-21-[0-9-]+$') { continue }
+          $hive = [System.Collections.Hashtable]::new([System.StringComparer]::Ordinal)
+          foreach ($pair in $items) {
+            $path = [string]$pair[0]; $name = [string]$pair[1]
+            $key = [Microsoft.Win32.Registry]::Users.OpenSubKey("$sid\$path")
+            if ($null -eq $key) { continue }
+            $val = $key.GetValue($name)
+            if ($null -ne $val) {
+              if (-not $hive.ContainsKey($path)) { $hive[$path] = @{} }
+              if ($key.GetValueKind($name).ToString() -eq 'DWord') {
+                $hive[$path][$name] = [BitConverter]::ToUInt32([BitConverter]::GetBytes([int32]$val), 0)
+              } else { $hive[$path][$name] = [string]$val }
+            }
+            $key.Close()
+          }
+          $out[$sid] = $hive
+        }
+        $out | ConvertTo-Json -Depth 6 -Compress
+      register: registry_users_raw
+      changed_when: false
+      failed_when: false
+
+    - name: Collect advanced audit policy (auditpol /backup, system policy only, by subcategory GUID)
+      ansible.windows.win_shell: |
+        # The backup also carries per-user policy rows for the same GUIDs, so
+        # only rows for the system-wide policy are kept. Their Policy Target
+        # label is localized, so it is read from `auditpol /get /r` (which,
+        # without /user, reports system policy only) instead of assuming
+        # "System". Columns are named positionally because the CSV headings are
+        # localized too. If the label cannot be established, or a GUID is still
+        # ambiguous, the GUID is left out: the policy reports it not assessed,
+        # never compliant. Lab-run check: /get /r columns are Machine Name,
+        # Policy Target, Subcategory, Subcategory GUID, Inclusion, Exclusion.
+        $out = @{}
+        $labels = @(auditpol /get /category:* /r | Where-Object { $_ -ne '' } | Select-Object -Skip 1 |
+          ConvertFrom-Csv -Header 'MachineName','PolicyTarget','Subcategory','SubcategoryGuid','InclusionSetting','ExclusionSetting' |
+          Where-Object { $_.SubcategoryGuid } | ForEach-Object { $_.PolicyTarget } | Sort-Object -Unique)
+        if ($labels.Count -eq 1 -and $labels[0]) {
+          $system = $labels[0]
+          $tmp = Join-Path $env:TEMP ("aac_auditpol_{0}.csv" -f [guid]::NewGuid())
+          auditpol /backup /file:$tmp | Out-Null
+          $seen = @{}
+          Import-Csv -Path $tmp -Header 'MachineName','PolicyTarget','Subcategory','SubcategoryGuid','InclusionSetting','ExclusionSetting','SettingValue' | Select-Object -Skip 1 |
+            Where-Object { $_.SubcategoryGuid -and $_.PolicyTarget -ceq $system } | ForEach-Object {
+              $guid = $_.SubcategoryGuid.ToLower()
+              if ($seen.ContainsKey($guid)) { $seen[$guid] = $null } else { $seen[$guid] = [int]$_.SettingValue }
+            }
+          Remove-Item -Path $tmp -Force -ErrorAction SilentlyContinue
+          foreach ($guid in $seen.Keys) { if ($null -ne $seen[$guid]) { $out[$guid] = $seen[$guid] } }
+        }
+        $out | ConvertTo-Json -Depth 3 -Compress
+      register: audit_policy_raw
+      changed_when: false
+      failed_when: false
+
+    - name: Collect account policy and user rights (secedit /export)
+      ansible.windows.win_shell: |
+        $tmp = Join-Path $env:TEMP ("aac_secedit_{0}.inf" -f [guid]::NewGuid())
+        secedit /export /cfg $tmp /areas SECURITYPOLICY USER_RIGHTS /quiet | Out-Null
+        $sa = @{}; $pr = @{}; $section = ''
+        foreach ($line in (Get-Content -Path $tmp -Encoding Unicode)) {
+          if ($line -match '^\[(.+)\]$') { $section = $Matches[1]; continue }
+          if ($line -notmatch '^\s*([^=]+?)\s*=\s*(.*)$') { continue }
+          $k = $Matches[1]; $v = $Matches[2].Trim()
+          if ($section -eq 'System Access') {
+            if ($v -match '^-?\d+$') { $sa[$k] = [int64]$v } else { $sa[$k] = $v }
+          } elseif ($section -eq 'Privilege Rights') {
+            $pr[$k] = @($v -split ',' | ForEach-Object { $_.Trim().TrimStart('*') } | Where-Object { $_ })
+          }
+        }
+        Remove-Item -Path $tmp -Force -ErrorAction SilentlyContinue
+        @{ system_access = $sa; privilege_rights = $pr } | ConvertTo-Json -Depth 4 -Compress
+      register: secedit_raw
+      changed_when: false
+      failed_when: false
+
+    # ── Build OPA Input Payload ────────────────────────────────────────────────
+
+    - name: Parse collected data
+      ansible.builtin.set_fact:
+        _domain_role:    "{{ domain_role_raw.stdout | trim | int if domain_role_raw.rc | default(1) == 0 and (domain_role_raw.stdout | trim) is match('^[0-9]+$') else -1 }}"
+        _registry:       "{{ registry_raw.stdout       | from_json if registry_raw.rc       | default(1) == 0 else {} }}"
+        _registry_users: "{{ registry_users_raw.stdout | from_json if registry_users_raw.rc | default(1) == 0 else {} }}"
+        _audit_policy:   "{{ audit_policy_raw.stdout   | from_json if audit_policy_raw.rc   | default(1) == 0 else {} }}"
+        _secedit:        "{{ secedit_raw.stdout        | from_json if secedit_raw.rc        | default(1) == 0 else {} }}"
+
+    # DomainRole 4 or 5 is a domain controller; 0-3 (workstation, standalone
+    # or member server) take the member-server profile. If the role could not
+    # be read it is left out, and the policy reports the role-specific
+    # recommendations as not assessed.
+    - name: Build OPA input payload
+      ansible.builtin.set_fact:
+        opa_input:
+          cis_profile: >-
+            {{ {'level': cis_windows_level | default(2) | int,
+                'next_generation': cis_windows_next_generation | default(false) | bool}
+               | combine({'role': 'domain_controller' if (_domain_role | int) in [4, 5] else 'member_server'}
+                         if (_domain_role | int) >= 0 else {}) }}
+          registry:       "{{ _registry }}"
+          registry_users: "{{ _registry_users }}"
+          audit_policy:   "{{ _audit_policy }}"
+          secedit:        "{{ _secedit }}"
+          attestations:   "{{ cis_windows_attestations | default([]) }}"
+
+    - name: Save OPA input JSON locally
+      copy:
+        content: "{{ opa_input | to_nice_json }}"
+        dest: "{{ report_dir }}/{{ inventory_hostname }}_windows_2022_facts_{{ timestamp }}.json"
+      delegate_to: localhost
+
+    # ── OPA Evaluation ─────────────────────────────────────────────────────────
+
+    - name: Query OPA — CIS Windows Server 2022
+      uri:
+        use_proxy: false
+        url: "{{ opa_server_url }}/v1/data/cis_windows_server_2022/main/compliance_report"
+        method: POST
+        body_format: json
+        body:
+          input: "{{ opa_input }}"
+        return_content: true
+        status_code: 200
+        validate_certs: false
+      register: opa_response
+      delegate_to: localhost
+      failed_when: false
+
+    - name: Refuse to fabricate a result when OPA did not answer
+      ansible.builtin.assert:
+        that:
+          - (opa_response.status | default(-1)) == 200
+          - opa_response.json.result is defined
+          - opa_response.json.result.total_controls is defined
+          - opa_response.json.result.assessment_coverage_percentage is defined
+          - opa_response.json.result.sections_not_assessed is defined
+        fail_msg: >-
+          OPA did not return an evaluation (status
+          {{ opa_response.status | default('no connection') }} from
+          {{ opa_server_url }}). Refusing to continue: the previous behaviour
+          treated this as an empty result, which zero violations turned into a
+          perfect compliance_results row -- a 100% score fabricated from a
+          connection failure, stored as evidence and signed. No answer from the
+          policy engine means NO ASSESSMENT, never a clean one.
+          OPA said: {{ (opa_response.json | default(opa_response.content | default(opa_response.msg | default('nothing')))) | to_json | truncate(600) }}
+
+    - name: Parse OPA response
+      set_fact:
+        compliance_result: "{{ opa_response.json.result }}"
+
+    - name: Normalize violations to list of dicts
+      set_fact:
+        cis_violations: >-
+          {%- set viols = [] -%}
+          {%- for v in (compliance_result.violations | default([])) -%}
+            {%- if v is mapping -%}
+              {%- set _ = viols.append(v) -%}
+            {%- else -%}
+              {%- set _ = viols.append({'message': v | string, 'severity': 'high', 'control_id': ''}) -%}
+            {%- endif -%}
+          {%- endfor -%}
+          {{ viols }}
+
+    # Every number comes from OPA's gated report (controls_basis = the
+    # recommendations in scope for input.cis_profile; anything not assessed
+    # or not attested counts as failed).
+    # The previous (177 - violations) / 177 arithmetic is gone.
+    - name: Take compliance figures from the OPA report
+      set_fact:
+        violation_count:      "{{ compliance_result.failed_controls | default(cis_violations | length) | int }}"
+        compliance_score_pct: "{{ compliance_result.compliance_percentage | default(0) | float }}"
+        passed_controls:      "{{ compliance_result.passed_controls | default(0) | int }}"
+        cis_total_controls:   "{{ compliance_result.total_controls | int }}"
+        sections_not_assessed: "{{ compliance_result.sections_not_assessed | default([]) }}"
+        assessment_coverage_pct: "{{ compliance_result.assessment_coverage_percentage | default(0) | int }}"
+
+    # ── Store to PostgreSQL ────────────────────────────────────────────────────
+
+    - name: Store results to PostgreSQL
+      include_role:
+        name: aac_store_results
+      vars:
+        aac_result_framework:       "cis_windows_2022"
+        aac_result_policy_name:     "CIS Windows Server 2022"
+        aac_result_policy_version:  "CIS Microsoft Windows Server 2022 Benchmark v5.1.0"
+        aac_result_total_controls:  "{{ cis_total_controls | int }}"
+        aac_result_violations:      "{{ cis_violations }}"
+        aac_result_failed_controls: "{{ violation_count | int }}"
+        aac_result_passed_controls: "{{ passed_controls | int }}"
+        aac_result_compliance_pct:  "{{ compliance_score_pct | float }}"
+        aac_result_metadata:
+          hostname:           "{{ inventory_hostname }}"
+          ip_address:         "{{ ansible_ip_addresses[0] | default('N/A') }}"
+          assessment_time:    "{{ ansible_date_time.iso8601 }}"
+          os_distribution:    "{{ ansible_distribution }}"
+          os_family:          "{{ ansible_os_family }}"
+          architecture:       "{{ ansible_architecture }}"
+          domain:             "{{ ansible_domain | default('WORKGROUP') }}"
+          section_compliance: "{{ compliance_result.section_results | default(compliance_result.section_compliance | default({})) }}"
+          controls_basis:     "{{ compliance_result.controls_basis | default('') }}"
+          assessment_coverage_percentage: "{{ assessment_coverage_pct | int }}"
+          sections_not_assessed: "{{ sections_not_assessed }}"
+          cis_profile:        "{{ compliance_result.profile | default({}) }}"
+          benchmark_total_controls: "{{ compliance_result.benchmark_total_controls | default(408) }}"
+          evaluation_endpoint: "main/compliance_report"
+          opa_server:         "{{ opa_server_url }}"
+        aac_result_opa_server: "{{ opa_server_url }}"
+
+    # ── Summary ────────────────────────────────────────────────────────────────
+
+    - name: Compliance assessment complete
+      debug:
+        msg:
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "  CIS Windows Server 2022 Assessment (v5.1.0)"
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "  Host         : {{ inventory_hostname }}"
+          - "  OS           : {{ ansible_distribution }}"
+          - "  Compliance   : {{ compliance_score_pct }}%  ({{ passed_controls }}/{{ cis_total_controls }} controls)"
+          - "  Violations   : {{ violation_count }}"
+          - "  Dashboard    : {{ grafana_url }}/d/aac-compliance-001"
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

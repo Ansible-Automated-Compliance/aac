@@ -1,0 +1,16 @@
+---
+# redhat.satellite is CERTIFIED content: it resolves from Automation Hub, not
+# public Galaxy. The build needs an ansible.cfg with the Automation Hub server
+# and a valid offline token (AAP credential "Red Hat Automation Hub (certified)").
+collections:
+  - name: redhat.satellite
+    version: ">=5.0.0"
+
+  # Shared with the rest of AAC — the pre-check writes findings to the
+  # compliance database and reads AAC facts.
+  - name: community.postgresql
+    version: ">=3.0.0"
+  - name: ansible.posix
+    version: ">=1.5.0"
+  - name: ansible.utils
+    version: ">=2.10.0"

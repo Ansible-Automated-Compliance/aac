@@ -1,0 +1,21 @@
+[Unit]
+Description=AAC Grafana (:3000)
+After=network-online.target aac-postgresql.service
+
+[Container]
+Image=registry.redhat.io/rhel9/grafana:latest
+ContainerName=aac-grafana
+Network=host
+Volume=compliance_grafanadata:/var/lib/grafana
+Environment=GF_SECURITY_ADMIN_USER=admin
+Environment=GF_SERVER_HTTP_ADDR=0.0.0.0
+Environment=GF_SERVER_PORT=3000
+Environment=GF_SERVER_ROOT_URL=http://<aac-host>:3000
+Environment=GF_INSTALL_PLUGINS=grafana-postgresql-datasource
+Secret=grafana_admin_password,type=env,target=GF_SECURITY_ADMIN_PASSWORD
+
+[Service]
+Restart=always
+
+[Install]
+WantedBy=default.target

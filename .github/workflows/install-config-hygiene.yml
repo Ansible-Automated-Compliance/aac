@@ -1,0 +1,273 @@
+name: Install Config Hygiene
+
+# Why this exists
+# ---------------
+# The Ansible Validation gate covers `ansible/playbooks/*.yml`. A customer
+# installs from `install/`, runs demos from `demos/`, and operators run
+# `scripts/` — none of which that gate can see, because none of them are
+# playbooks. That is where one environment's addresses and passwords were
+# still shipping: lab IPs in five install READMEs, the maintainer's Grafana
+# password in twenty files, and an AAP admin password in a copy-paste command
+# a customer was told to run.
+#
+# It also catches the defect no content scan can express: a config file that
+# is listed in .gitignore AND tracked by git. Git ignores .gitignore for files
+# it already tracks, so the entry does nothing and the file keeps shipping.
+# That is how `ansible/vars/site_config.yml` pointed every clone at the
+# maintainer lab for months.
+#
+# The rules live in the shared policy library
+# (policies/enforcement/repo/install_hygiene.rego) and carry 24 unit tests, so
+# the gate is tested rather than merely written. The policy is generic; every
+# site-specific value below is supplied as input.
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  PYTHON_VERSION: '3.11'
+
+jobs:
+  hygiene:
+    name: Install config hygiene
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          submodules: recursive   # the policy lives in policies/
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install OPA
+        run: |
+          # $RUNNER_TEMP, not /usr/local/bin: self-hosted runners don't
+          # run as root, and hosted runners honor GITHUB_PATH the same way.
+          curl -sSL -o "$RUNNER_TEMP/opa" \
+            https://openpolicyagent.org/downloads/v1.10.0/opa_linux_amd64_static
+          chmod +x "$RUNNER_TEMP/opa"
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/opa" version
+
+      # ── 1. No operator config file may be tracked ─────────────────────────
+      # Cheapest check and the one that closes the actual root cause.
+      - name: Operator config stays untracked
+        shell: bash +e {0}
+        run: |
+          POLICY=policies/enforcement/repo/install_hygiene.rego
+          [ -f "$POLICY" ] || { echo "FAIL: $POLICY not found — submodule not checked out?"; exit 1; }
+
+          python - > /tmp/tracked.json <<'PY'
+          import json, subprocess
+          tracked = subprocess.run(["git", "ls-files"], capture_output=True,
+                                   text=True, check=True).stdout.split()
+          print(json.dumps({
+              "tracked_files": tracked,
+              # These hold ONE environment's values. Only their .example
+              # templates belong in git.
+              "must_be_untracked": [
+                  "ansible/vars/site_config.yml",
+                  "ansible/vars/vault_secrets.yml",
+                  "install/aac-install-inventory",
+              ],
+          }))
+          PY
+
+          n=$(python -c "import json;print(len(json.load(open('/tmp/tracked.json'))['tracked_files']))")
+          echo "checking $n tracked files"
+          # Tripwire: an empty or tiny file list means git ls-files failed and
+          # the step would pass without having checked anything.
+          if [ "$n" -lt 200 ]; then
+            echo "FAIL: only $n tracked files seen — expected thousands."
+            echo "git ls-files did not work; this step would otherwise pass vacuously."
+            exit 1
+          fi
+
+          out=$(opa eval -d "$POLICY" -i /tmp/tracked.json \
+                'data.aac.repo.install_hygiene.tracking_violation' --format raw 2>/dev/null)
+          count=$(printf '%s' "$out" | python -c "import sys,json;print(len(json.load(sys.stdin)))" 2>/dev/null || echo 0)
+          if [ "$count" -gt 0 ]; then
+            printf '%s' "$out" | python -c "import sys,json;[print('  '+v) for v in json.load(sys.stdin)]"
+            echo
+            echo "FAIL: $count operator config file(s) tracked by git."
+            exit 1
+          fi
+          echo "OK: no operator config files are tracked"
+
+      # ── 2. No project-level collection requirements ───────────────────────
+      # A `collections/requirements.yml` in an AAP project is installed AT
+      # PROJECT-SYNC TIME by a sidecar running as ROOT, into the project cache
+      # that the controller task container reads as `awx`. The root-owned
+      # directories it leaves cannot be removed by awx, the next sync dies in
+      # shutil.rmtree, the project goes to `error`, and EVERY job template using
+      # it then fails at elapsed 0.07 before running anything.
+      #
+      # That took the lab down repeatedly for months. The workaround (delete the
+      # controller task pod) was applied over and over; the file that caused it
+      # stayed. It is now deleted, and this step is what stops it coming back --
+      # collections/README.md explains the reasoning, but a README is not a
+      # guarantee.
+      #
+      # Collections belong in the EXECUTION ENVIRONMENT
+      # (ansible/execution-environments/aac-compliance-ee/requirements.yml),
+      # where they ship inside the image and no root-owned file is ever written
+      # into the project cache.
+      - name: No project-level collection requirements
+        shell: bash +e {0}
+        run: |
+          found=0
+          for f in collections/requirements.yml collections/requirements.yaml; do
+            if git ls-files --error-unmatch "$f" >/dev/null 2>&1; then
+              echo "::error file=$f::project-level collection requirements are installed as root at sync time"
+              echo "FAIL: $f is tracked."
+              found=1
+            fi
+          done
+          if [ "$found" -eq 1 ]; then
+            echo
+            echo "AAP installs this file's collections at project-sync time in a sidecar"
+            echo "running as root, into the shared project cache. The awx user then cannot"
+            echo "clean it, the next sync fails in shutil.rmtree, and every job template"
+            echo "using the project fails at elapsed 0.07 before running anything."
+            echo
+            echo "Add the collection to the execution environment instead:"
+            echo "  ansible/execution-environments/aac-compliance-ee/requirements.yml"
+            echo "See collections/README.md."
+            exit 1
+          fi
+          echo "OK: no tracked project-level collection requirements"
+
+      # ── 2. No site addresses or credentials in the shipped surface ────────
+      # Internal markdown links must resolve — the old documentation index
+      # carried 67 dead links before this gate existed (handover audit v1.1).
+      - name: Doc links resolve
+        run: python3 scripts/check_doc_links.py
+
+      - name: No site addresses or credentials in shipped files
+        shell: bash +e {0}
+        env:
+          # Banned-credential literals come from a secret, never tracked source.
+          BANNED_CREDENTIALS: ${{ secrets.BANNED_CREDENTIALS }}
+          LAB_ADDRESSES: ${{ secrets.LAB_ADDRESSES }}
+        run: |
+          POLICY=policies/enforcement/repo/install_hygiene.rego
+          # GitHub masks only the whole secret, not its comma-split parts — mask each.
+          IFS=',' read -ra _bc <<< "${BANNED_CREDENTIALS:-}"
+          for _c in "${_bc[@]}"; do [ -n "$_c" ] && echo "::add-mask::$_c"; done
+
+          python - > /tmp/files.jsonl <<'PY'
+          import json, subprocess
+
+          # Scope: everything a customer or operator actually runs, PLUS the
+          # repo-root front-door files (Phase 5 widening, 2026-09-01). `docs/`
+          # remains excluded from the hard gate — it is prose about the
+          # environments and is being triaged via the stale-doc banners; a
+          # separate report-only step below gives it visibility.
+          ROOTS = ("ansible/", "install/", "scripts/",
+                   "extensions/", "grafana/",
+                   "README.md", "CONTRIBUTING.md", "CODE_OF_CONDUCT.md",
+                   "SECURITY.md", "RELEASING.md", "CHANGELOG.md",
+                   "CLAUDE.md", "install_config.example.yml")
+
+          # Allowlisted paths, set explicitly rather than pattern-guessed.
+          #   profiles/lab.yml        the lab profile IS the lab's addresses
+          #   vault_secrets.lab.yml*  the lab's own credential file
+          # mac-aap moved to contrib/ (2026-08-31, restructure Phase 4):
+          # contrib/ is the declared UNSUPPORTED lab-tooling tier and sits
+          # outside this gate's scan scope by design — the old allowlist
+          # exemption is gone rather than hidden. See contrib/README.md
+          # and install/SUPPORT_MATRIX.md.
+          #   CLAUDE.md               the operator instruction doc — it is ABOUT
+          #                           the lab and names it deliberately; moves
+          #                           out of the customer tree at the repo split
+          #   scripts/validate_rego_library.py
+          #                           a hygiene checker must name the needles
+          #                           it searches for (same self-exemption the
+          #                           install_hygiene policy grants its own
+          #                           default address list)
+          ALLOW = ["ansible/vars/profiles/lab.yml",
+                   "ansible/vars/vault_secrets.lab.yml",
+                   "CLAUDE.md",
+                   "scripts/validate_rego_library.py"]
+
+          # Lab addresses are injected from the LAB_ADDRESSES Actions secret
+          # (comma-separated) so this guard file does not disclose them.
+          import os
+          LAB_ADDRESSES = [a.strip() for a in os.environ.get("LAB_ADDRESSES", "").split(",") if a.strip()]
+          # Credentials that were found shipped in this repository. The list is
+          # explicit rather than pattern-based: a pattern that guesses what looks
+          # like a password flags half the corpus. AAC-CFG-004 catches the
+          # structural case (a secret with a fallback default) regardless of the
+          # literal, so this list only has to name what has actually leaked.
+          # Deliberately NOT listed: the Ansible Vault password found hardcoded in
+          # bootstrap_rhpds_environment.yml. Naming it here would put it back into
+          # a tracked file; AAC-CFG-004 catches it structurally instead.
+          # Banned-credential literals are injected from the BANNED_CREDENTIALS
+          # Actions secret (comma-separated), so this guard file does not itself
+          # disclose the values it detects. Empty if the secret is unset — the
+          # structural AAC-CFG-004 check (secret-with-fallback-default) still applies.
+          BANNED_CREDENTIALS = [c.strip() for c in os.environ.get("BANNED_CREDENTIALS", "").split(",") if c.strip()]
+
+          tracked = subprocess.run(["git", "ls-files"], capture_output=True,
+                                   text=True, check=True).stdout.split()
+          n = 0
+          for p in tracked:
+              if not p.startswith(ROOTS):
+                  continue
+              try:
+                  text = open(p, encoding="utf-8").read()
+              except (UnicodeDecodeError, FileNotFoundError, IsADirectoryError):
+                  continue          # binary or gone; nothing to scan
+              n += 1
+              print(json.dumps({
+                  "path": p,
+                  "lines": [{"n": i, "text": t}
+                            for i, t in enumerate(text.splitlines(), 1)],
+                  "lab_addresses": LAB_ADDRESSES,
+                  "banned_credentials": BANNED_CREDENTIALS,
+                  "allowlist": ALLOW,
+              }))
+          import sys
+          print(f"prepared {n} files", file=sys.stderr)
+          PY
+
+          scanned=$(wc -l < /tmp/files.jsonl | tr -d ' ')
+          echo "scanning $scanned files against the install hygiene policy"
+
+          # Tripwire, same reasoning as every other gate here: a step that
+          # silently stops scanning must fail, not pass. A previous gate in
+          # this repo reported "checked 221" while running nothing.
+          if [ "$scanned" -lt 100 ]; then
+            echo "FAIL: only $scanned files reached the policy — expected several hundred."
+            echo "The input builder is broken; this step would otherwise pass vacuously."
+            exit 1
+          fi
+
+          violations=0
+          while IFS= read -r line; do
+            out=$(printf '%s' "$line" | opa eval -d "$POLICY" -I \
+                  'data.aac.repo.install_hygiene.violation' --format raw 2>/dev/null)
+            n=$(printf '%s' "$out" | python -c "import sys,json;print(len(json.load(sys.stdin)))" 2>/dev/null || echo 0)
+            [ "$n" -gt 0 ] 2>/dev/null || continue
+            violations=$((violations + n))
+            printf '%s' "$out" | python -c "import sys,json;[print('  '+v) for v in json.load(sys.stdin)]"
+          done < /tmp/files.jsonl
+
+          echo
+          if [ "$violations" -gt 0 ]; then
+            echo "FAIL: $violations hygiene violation(s) across $scanned files"
+            echo
+            echo "Every value that differs between environments belongs in the"
+            echo "install inventory (install/aac-install-inventory.example), not"
+            echo "in a playbook, script or README."
+            exit 1
+          fi
+          echo "OK: no site addresses or credentials across $scanned shipped files"

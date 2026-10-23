@@ -1,0 +1,4 @@
+# Build-time only; keeps psycopg2 and requests happy on ubi/creator bases.
+gcc [platform:rpm compile]
+python3-devel [platform:rpm compile]
+libpq-devel [platform:rpm compile]

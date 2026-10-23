@@ -1,0 +1,278 @@
+---
+# CIP-010 R1 — BES Cyber System Configuration Baseline Capture
+#
+# Captures the current configuration state of a BES Cyber System and stores
+# it as the approved baseline in PostgreSQL. On subsequent runs, diffs the
+# current state against the stored baseline and reports deviations.
+#
+# CIP-010 R1 Requirements addressed:
+#   R1.1 — Develop a baseline configuration (operating system, commercial software,
+#           custom software, logical network access points, security patches)
+#   R1.2 — Authorize and document changes that deviate from the baseline
+#   R1.3 — Update the baseline within 30 days of completing a change
+#
+# AAP Template: "AAC - CIP-010 Baseline Capture" (seeded separately)
+#
+# Variables:
+#   target_host      - BES Cyber System hostname/IP to baseline
+#   baseline_mode    - 'capture' (store new baseline) or 'check' (diff against stored)
+#   authorized_change_ticket - Change ticket number for R1.2 authorization (optional)
+
+- name: CIP-010 R1 BES Cyber System Baseline Capture
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    # Connection: compliance_db_* (this playbook's historical names) or the
+    # site_config / inventory names pg_*; no in-cluster literal (see
+    # roles/aac_store_results/defaults).
+    db_host: "{{ compliance_db_host | default(pg_host | default('localhost', true), true) }}"
+    db_name: "{{ compliance_db_name | default(pg_db | default('compliance', true), true) }}"
+    db_user: "{{ compliance_db_user | default(pg_user | default('postgres', true), true) }}"
+    db_password: "{{ compliance_db_password | default(pg_password | default('', true), true) }}"
+    # target_host: <set via extra_vars / survey / inventory>   # default 'localhost'
+    # baseline_mode: <set via extra_vars / survey / inventory>   # default 'check'
+    change_ticket: "{{ authorized_change_ticket | default('') }}"
+    assessment_timestamp: "{{ lookup('pipe', 'date -u +%Y-%m-%dT%H:%M:%SZ') }}"
+    assessment_date: "{{ lookup('pipe', 'date +%Y%m%d_%H%M%S') }}"
+
+  vars_files:
+    - [ "../vars/vault_secrets.yml", "../vars/empty_fallback.yml" ]
+
+  tasks:
+
+    - name: Collect baseline facts from BES Cyber System
+      ansible.builtin.setup:
+        gather_subset:
+          - hardware
+          - network
+          - virtual
+      delegate_to: "{{ (target_host | default('localhost', true)) }}"
+      delegate_facts: true
+      register: collected_facts
+      ignore_errors: true
+
+    - name: Collect installed packages
+      ansible.builtin.shell: rpm -qa --queryformat '%{NAME}|%{VERSION}|%{RELEASE}\n' | sort
+      delegate_to: "{{ (target_host | default('localhost', true)) }}"
+      register: installed_packages
+      changed_when: false
+      ignore_errors: true
+
+    - name: Collect running services
+      ansible.builtin.shell: systemctl list-units --type=service --state=running --no-legend | awk '{print $1}'
+      delegate_to: "{{ (target_host | default('localhost', true)) }}"
+      register: running_services
+      changed_when: false
+      ignore_errors: true
+
+    - name: Collect listening ports
+      ansible.builtin.shell: ss -tlnp | awk 'NR>1 {print $4}' | sort -u
+      delegate_to: "{{ (target_host | default('localhost', true)) }}"
+      register: listening_ports
+      changed_when: false
+      ignore_errors: true
+      become: true
+
+    - name: Collect applied security patches
+      ansible.builtin.shell: rpm -qa --queryformat '%{NAME}|%{VERSION}\n' | grep -i 'security\|patch\|errata' | sort
+      delegate_to: "{{ (target_host | default('localhost', true)) }}"
+      register: security_patches
+      changed_when: false
+      ignore_errors: true
+
+    - name: Collect network interfaces and IPs
+      ansible.builtin.shell: ip -o addr show | awk '{print $2, $4}' | sort
+      delegate_to: "{{ (target_host | default('localhost', true)) }}"
+      register: network_interfaces
+      changed_when: false
+      ignore_errors: true
+
+    - name: Build baseline snapshot
+      ansible.builtin.set_fact:
+        current_baseline:
+          host: "{{ (target_host | default('localhost', true)) }}"
+          captured_at: "{{ assessment_timestamp }}"
+          os_info:
+            distribution: "{{ hostvars[(target_host | default('localhost', true))].ansible_distribution | default('unknown') }}"
+            version: "{{ hostvars[(target_host | default('localhost', true))].ansible_distribution_version | default('unknown') }}"
+            kernel: "{{ hostvars[(target_host | default('localhost', true))].ansible_kernel | default('unknown') }}"
+          installed_packages: "{{ installed_packages.stdout_lines | default([]) }}"
+          running_services: "{{ running_services.stdout_lines | default([]) }}"
+          listening_ports: "{{ listening_ports.stdout_lines | default([]) }}"
+          security_patches: "{{ security_patches.stdout_lines | default([]) }}"
+          network_interfaces: "{{ network_interfaces.stdout_lines | default([]) }}"
+          authorized_change_ticket: "{{ change_ticket }}"
+
+    # The stored baseline lives in the evidence table's real columns
+    # (hostname / metadata / evaluation_timestamp). The pre-2026 query read
+    # host / details / captured_at, which never existed in the shipped schema,
+    # so every check-mode run failed and the capture never found its own row.
+    - name: Retrieve stored baseline from PostgreSQL
+      community.postgresql.postgresql_query:
+        login_host: "{{ db_host }}"
+        login_user: "{{ db_user }}"
+        login_password: "{{ db_password | default(omit, true) }}"
+        login_db: "{{ db_name }}"
+        query: >
+          SELECT metadata, evaluation_timestamp
+          FROM compliance_results
+          WHERE framework = 'cip_010_baseline'
+            AND hostname = %s
+          ORDER BY evaluation_timestamp DESC, id DESC
+          LIMIT 1
+        positional_args:
+          - "{{ (target_host | default('localhost', true)) }}"
+      register: stored_baseline
+
+    - name: Capture mode — store new baseline
+      when: (baseline_mode | default('check', true)) == 'capture' or (stored_baseline.query_result | default([])) | length == 0
+      block:
+
+        # One row through the product's single authoritative INSERT (hash
+        # chain, append-only writer, waiver query). The capture is one
+        # control — "an approved baseline exists" — so the row passes the
+        # fail-closed nonempty gate instead of writing total_controls = 0.
+        - name: Store baseline to PostgreSQL
+          ansible.builtin.include_role:
+            name: aac_store_results
+          vars:
+            # The role's own connection names — never pg_* here: db_host is
+            # defaulted FROM pg_host, so passing pg_host: "{{ db_host }}" into
+            # the role recurses (job 6200).
+            aac_result_pg_host: "{{ db_host }}"
+            aac_result_pg_db: "{{ db_name }}"
+            aac_result_pg_user: "{{ aac_evidence_writer_user | default(db_user, true) }}"
+            aac_result_pg_password: >-
+              {{ compliance_writer_password
+                 if (aac_evidence_writer_user | default('', true) | length > 0)
+                 else db_password }}
+            aac_waivers_enabled: false
+            aac_result_policy_name: "CIP-010 R1.1 baseline capture"
+            aac_result_policy_version: "CIP-010 R1.1"
+            aac_result_total_controls: 1
+            aac_result_violations: []
+            aac_result_hostname: "{{ (target_host | default('localhost', true)) }}"
+            aac_result_framework: "cip_010_baseline"
+            aac_result_compliant: true
+            aac_result_metadata: "{{ current_baseline | combine({'trigger': (change_ticket if change_ticket else 'initial_capture')}) }}"
+
+        - name: Baseline captured
+          ansible.builtin.debug:
+            msg: |
+              ✅ CIP-010 R1.1 Baseline captured for {{ (target_host | default('localhost', true)) }}
+              Timestamp : {{ assessment_timestamp }}
+              Packages  : {{ current_baseline.installed_packages | length }}
+              Services  : {{ current_baseline.running_services | length }}
+              Ports     : {{ current_baseline.listening_ports | length }}
+              Stored to PostgreSQL for audit evidence.
+
+    - name: Check mode — diff against stored baseline
+      when: (baseline_mode | default('check', true)) == 'check' and (stored_baseline.query_result | default([])) | length > 0
+      block:
+
+        - name: Parse stored baseline
+          ansible.builtin.set_fact:
+            stored: "{{ stored_baseline.query_result[0].metadata }}"
+
+        - name: Compute package deviations
+          ansible.builtin.set_fact:
+            packages_added: "{{ current_baseline.installed_packages | difference(stored.installed_packages | default([])) }}"
+            packages_removed: "{{ stored.installed_packages | default([]) | difference(current_baseline.installed_packages) }}"
+            services_added: "{{ current_baseline.running_services | difference(stored.running_services | default([])) }}"
+            services_removed: "{{ stored.running_services | default([]) | difference(current_baseline.running_services) }}"
+            ports_added: "{{ current_baseline.listening_ports | difference(stored.listening_ports | default([])) }}"
+            ports_removed: "{{ stored.listening_ports | default([]) | difference(current_baseline.listening_ports) }}"
+
+        - name: Build deviation report
+          ansible.builtin.set_fact:
+            deviations:
+              packages_added: "{{ packages_added }}"
+              packages_removed: "{{ packages_removed }}"
+              services_added: "{{ services_added }}"
+              services_removed: "{{ services_removed }}"
+              ports_added: "{{ ports_added }}"
+              ports_removed: "{{ ports_removed }}"
+            has_deviations: >-
+              {{ (packages_added | length > 0) or (packages_removed | length > 0) or
+                 (services_added | length > 0) or (services_removed | length > 0) or
+                 (ports_added | length > 0) or (ports_removed | length > 0) }}
+
+        - name: Print deviation report
+          ansible.builtin.debug:
+            msg: |
+              ╔══════════════════════════════════════════════════════╗
+              ║        CIP-010 R1 BASELINE DEVIATION REPORT          ║
+              ╚══════════════════════════════════════════════════════╝
+
+              Host          : {{ (target_host | default('localhost', true)) }}
+              Baseline Date : {{ stored_baseline.query_result[0].evaluation_timestamp }}
+              Check Date    : {{ assessment_timestamp }}
+
+              {% if has_deviations %}
+              ⚠️  DEVIATIONS DETECTED — CIP-010 R1.2 Authorization Required
+              {% else %}
+              ✅  No deviations from approved baseline
+              {% endif %}
+
+              Packages Added   ({{ packages_added | length }}): {{ packages_added | join(', ') if packages_added else 'none' }}
+              Packages Removed ({{ packages_removed | length }}): {{ packages_removed | join(', ') if packages_removed else 'none' }}
+              Services Added   ({{ services_added | length }}): {{ services_added | join(', ') if services_added else 'none' }}
+              Services Removed ({{ services_removed | length }}): {{ services_removed | join(', ') if services_removed else 'none' }}
+              Ports Added      ({{ ports_added | length }}): {{ ports_added | join(', ') if ports_added else 'none' }}
+              Ports Removed    ({{ ports_removed | length }}): {{ ports_removed | join(', ') if ports_removed else 'none' }}
+
+        - name: Build the deviation violations list (one entry per deviating dimension)
+          ansible.builtin.set_fact:
+            deviation_violations: >-
+              {{ (['packages added: ' ~ (packages_added | join(', '))] if packages_added | length > 0 else [])
+                 + (['packages removed: ' ~ (packages_removed | join(', '))] if packages_removed | length > 0 else [])
+                 + (['services added: ' ~ (services_added | join(', '))] if services_added | length > 0 else [])
+                 + (['services removed: ' ~ (services_removed | join(', '))] if services_removed | length > 0 else [])
+                 + (['ports changed: +' ~ (ports_added | join(', ')) ~ ' -' ~ (ports_removed | join(', '))] if (ports_added | length > 0 or ports_removed | length > 0) else []) }}
+
+        - name: Store deviation check to PostgreSQL
+          ansible.builtin.include_role:
+            name: aac_store_results
+          vars:
+            # The role's own connection names — never pg_* here: db_host is
+            # defaulted FROM pg_host, so passing pg_host: "{{ db_host }}" into
+            # the role recurses (job 6200).
+            aac_result_pg_host: "{{ db_host }}"
+            aac_result_pg_db: "{{ db_name }}"
+            aac_result_pg_user: "{{ aac_evidence_writer_user | default(db_user, true) }}"
+            aac_result_pg_password: >-
+              {{ compliance_writer_password
+                 if (aac_evidence_writer_user | default('', true) | length > 0)
+                 else db_password }}
+            aac_waivers_enabled: false
+            aac_result_policy_name: "CIP-010 R1.2 deviation check"
+            aac_result_policy_version: "CIP-010 R1.2"
+            aac_result_total_controls: 5
+            aac_result_violations: "{{ deviation_violations }}"
+            aac_result_hostname: "{{ (target_host | default('localhost', true)) }}"
+            aac_result_framework: "cip_010_check"
+            aac_result_compliant: "{{ not has_deviations }}"
+            aac_result_metadata:
+              current: "{{ current_baseline }}"
+              baseline: "{{ stored }}"
+              deviations: "{{ deviations }}"
+              authorized_change_ticket: "{{ change_ticket }}"
+              trigger: "{{ change_ticket if change_ticket else compliance_trigger | default('scheduled_check') }}"
+
+        - name: Publish the check outcome for workflows
+          ansible.builtin.set_stats:
+            data:
+              cip010_has_deviations: "{{ has_deviations | bool }}"
+              cip010_unauthorized: "{{ (has_deviations | bool) and not change_ticket }}"
+              cip010_evidence_row_id: "{{ aac_result_id | default('') }}"
+            per_host: false
+
+        - name: Fail if unauthorized deviations detected
+          ansible.builtin.fail:
+            msg: >
+              CIP-010 R1.2 VIOLATION: Configuration deviations detected on {{ (target_host | default('localhost', true)) }}
+              with no authorized change ticket. Review deviations above and obtain
+              change authorization before the 30-day CIP-010 R1.3 deadline.
+          when: has_deviations and not change_ticket

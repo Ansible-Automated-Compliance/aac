@@ -1,0 +1,41 @@
+# Least-privilege RBAC so AAP automation (the aac-demo-runner service account,
+# used by the "OpenShift In-Cluster" credential) can deploy the routing policies
+# and persist a durable rollback-pause into the opa-routing ConfigMap.
+#
+# Scope is pinned to the two named objects only: it can patch the routing-policy
+# ConfigMap and roll out the opa-routing Deployment, nothing else in aac-policy.
+#
+# Apply as a cluster-admin:
+#   oc apply -f ansible/opa-routing/deploy/rbac.yaml
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: opa-routing-config-writer
+  namespace: aac-policy
+rules:
+  # ConfigMap: merge-PATCH only (both playbooks patch and verify from the PATCH
+  # response — no full replace/update, no separate read).
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["routing-policy"]
+    verbs: ["patch"]
+  # Deployment: PATCH to roll, GET to wait for the rollout to become Ready.
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    resourceNames: ["opa-routing"]
+    verbs: ["get", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: opa-routing-config-writer
+  namespace: aac-policy
+subjects:
+  - kind: ServiceAccount
+    name: aac-demo-runner
+    namespace: aap-operator
+roleRef:
+  kind: Role
+  name: opa-routing-config-writer
+  apiGroup: rbac.authorization.k8s.io

@@ -1,0 +1,705 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>PaC and AAC — What Support Covers Today, and What It Takes to Cover the Rest</title>
+<style>
+    @page {
+        size: letter;
+        margin: 0.75in;
+    }
+
+    body {
+        font-family: "Red Hat Text", "Liberation Sans", "Helvetica Neue", Helvetica, Arial, sans-serif;
+        color: #151515;
+        background-color: #FFFFFF;
+        line-height: 1.5;
+        font-size: 9.5pt;
+        margin: 0 auto;
+        max-width: 850px;
+        padding: 20px;
+    }
+
+    /* Red Hat Header Block */
+    .rh-header {
+        border-bottom: 3px solid #EE0000;
+        padding-bottom: 12px;
+        margin-bottom: 20px;
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-end;
+    }
+
+    .rh-brand {
+        font-family: "Red Hat Display", "Overpass", sans-serif;
+        font-weight: 700;
+        font-size: 13pt;
+        color: #EE0000;
+        letter-spacing: -0.5px;
+        text-transform: uppercase;
+    }
+
+    .rh-doc-meta {
+        font-size: 8.5pt;
+        color: #6A6E73;
+        text-align: right;
+    }
+
+    .slide-section {
+        border: 1px solid #D2D2D2;
+        border-radius: 4px;
+        margin-bottom: 24px;
+        background-color: #FFFFFF;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.04);
+        overflow: hidden;
+        page-break-inside: avoid;
+    }
+
+    .slide-header {
+        background-color: #F5F5F5;
+        border-bottom: 1px solid #D2D2D2;
+        padding: 10px 16px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+    }
+
+    .slide-title {
+        font-family: "Red Hat Display", "Overpass", sans-serif;
+        font-size: 12pt;
+        font-weight: 700;
+        color: #151515;
+        margin: 0;
+    }
+
+    .slide-number {
+        font-family: "Red Hat Mono", monospace;
+        font-size: 8pt;
+        background-color: #E0E0E0;
+        color: #151515;
+        padding: 2px 6px;
+        border-radius: 2px;
+        font-weight: bold;
+    }
+
+    .slide-body {
+        padding: 16px;
+    }
+
+    /* Document Title Block (Slide 1) */
+    .title-card {
+        background-color: #151515;
+        color: #FFFFFF;
+        padding: 24px;
+        border-radius: 4px;
+        margin-bottom: 24px;
+        border-left: 6px solid #EE0000;
+    }
+
+    .title-card h1 {
+        font-family: "Red Hat Display", sans-serif;
+        font-size: 18pt;
+        font-weight: 700;
+        color: #FFFFFF;
+        margin: 0 0 12px 0;
+        line-height: 1.25;
+    }
+
+    .title-card .authors {
+        font-size: 10pt;
+        color: #D2D2D2;
+        margin-bottom: 4px;
+    }
+
+    .title-card .date-version {
+        font-family: "Red Hat Mono", monospace;
+        font-size: 8.5pt;
+        color: #8A8D90;
+    }
+
+    .title-card .definition-box {
+        margin-top: 16px;
+        padding-top: 16px;
+        border-top: 1px solid #3C3F42;
+        font-size: 9.5pt;
+        line-height: 1.4;
+    }
+
+    /* Headings */
+    h2 {
+        font-family: "Red Hat Display", "Overpass", sans-serif;
+        color: #151515;
+        font-size: 11pt;
+        font-weight: 700;
+        margin-top: 0;
+        margin-bottom: 10px;
+        border-bottom: 1px solid #EE0000;
+        padding-bottom: 4px;
+    }
+
+    p {
+        margin-top: 0;
+        margin-bottom: 10px;
+    }
+
+    strong {
+        font-family: "Red Hat Text", sans-serif;
+        font-weight: 700;
+        color: #151515;
+    }
+
+    /* Callout Boxes */
+    .callout-box {
+        background-color: #F0F0F0;
+        border-left: 4px solid #EE0000;
+        padding: 10px 14px;
+        margin-bottom: 12px;
+        border-radius: 0 4px 4px 0;
+    }
+
+    .callout-box-blue {
+        background-color: #F2F7FC;
+        border-left: 4px solid #0066CC;
+        padding: 10px 14px;
+        margin-bottom: 12px;
+        border-radius: 0 4px 4px 0;
+    }
+
+    /* Tables */
+    table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-top: 8px;
+        margin-bottom: 12px;
+        font-size: 9pt;
+    }
+
+    th {
+        background-color: #212529;
+        color: #FFFFFF;
+        font-family: "Red Hat Display", sans-serif;
+        font-weight: 700;
+        text-align: left;
+        padding: 6px 10px;
+        border: 1px solid #212529;
+    }
+
+    td {
+        padding: 6px 10px;
+        border: 1px solid #D2D2D2;
+        vertical-align: top;
+    }
+
+    tr:nth-child(even) {
+        background-color: #F8F9FA;
+    }
+
+    /* Code & Technical Flow Blocks */
+    pre, code {
+        font-family: "Red Hat Mono", "Liberation Mono", Consolas, Monaco, monospace;
+    }
+
+    pre {
+        background-color: #151515;
+        color: #F0F0F0;
+        padding: 12px;
+        border-radius: 4px;
+        overflow-x: auto;
+        font-size: 8.5pt;
+        line-height: 1.4;
+        margin-top: 8px;
+        margin-bottom: 12px;
+    }
+
+    /* Lists */
+    ul, ol {
+        margin-top: 0;
+        margin-bottom: 10px;
+        padding-left: 20px;
+    }
+
+    li {
+        margin-bottom: 6px;
+    }
+
+    /* Status Badges */
+    .badge {
+        display: inline-block;
+        padding: 2px 6px;
+        font-size: 7.5pt;
+        font-weight: 700;
+        text-transform: uppercase;
+        border-radius: 2px;
+    }
+
+    .badge-yes {
+        background-color: #3E8635;
+        color: #FFFFFF;
+    }
+
+    .badge-no {
+        background-color: #C9190B;
+        color: #FFFFFF;
+    }
+
+    .badge-info {
+        background-color: #0066CC;
+        color: #FFFFFF;
+    }
+
+    /* Footer */
+    .rh-footer {
+        margin-top: 30px;
+        border-top: 1px solid #D2D2D2;
+        padding-top: 10px;
+        font-size: 8pt;
+        color: #6A6E73;
+        display: flex;
+        justify-content: space-between;
+    }
+
+    .img-container {
+        text-align: center;
+        margin: 12px 0;
+        background-color: #FAFAFA;
+        border: 1px solid #E0E0E0;
+        padding: 8px;
+        border-radius: 4px;
+    }
+
+    .img-container img {
+        max-width: 100%;
+        height: auto;
+    }
+</style>
+</head>
+<body>
+
+<div class="rh-header">
+    <div class="rh-brand">Red Hat Enterprise Architecture</div>
+    <div class="rh-doc-meta">
+        <strong>Ansible Automated Compliance (AAC)</strong><br>
+        Support Boundary Analysis
+    </div>
+</div>
+
+<!-- SLIDE 1: Title -->
+<div class="title-card">
+    <h1>PaC and AAC — What Support Covers Today, and What It Takes to Cover the Rest</h1>
+    <div class="authors"><strong>Authors:</strong> Tim Coulter &amp; Juan Medina | Claude (Anthropic)</div>
+    <div class="date-version">2026-08-31 · v1.7</div>
+    <div class="definition-box">
+        <strong>What is AAC?</strong><br>
+        AAC = Policy-as-Code (PaC) + three OPA servers + a database + the policy library. While PaC keeps your automation in policy, AAC extends that protection—maintaining historical compliance records, standardizing compliance libraries, and establishing governance that proves infrastructure posture.
+    </div>
+</div>
+
+<!-- SLIDE 2: Agenda -->
+<div class="slide-section">
+    <div class="slide-header">
+        <div class="slide-title">Agenda &amp; Core Objectives</div>
+        <div class="slide-number">SLIDE 02</div>
+    </div>
+    <div class="slide-body">
+        <div class="callout-box">
+            <strong>Objective:</strong> Obtain feedback and strategic direction from Red Hat Support regarding support boundaries, documentation requirements, and code tiering.
+        </div>
+
+        <h2>Key Discussion Topics</h2>
+        <ul>
+            <li><strong>Current Scope:</strong> What Support currently agrees to cover within the product surface.</li>
+            <li><strong>Support Requirements:</strong> Documentation, code structure, and diagnostic formats needed to set Support up for success during support calls.</li>
+        </ul>
+
+        <h2>Presentation Structure</h2>
+        <ol>
+            <li><strong>The Problems AAC Solves:</strong> Why this platform was built.</li>
+            <li><strong>The AAC Architecture:</strong> PaC as the supported baseline; what AAC adds (3 OPA instances + DB + policy library).</li>
+            <li><strong>What Support Covers Today:</strong> Component-by-component coverage breakdown.</li>
+            <li><strong>Discussion — Covering the Rest:</strong> The Galaxy model tiers and operational requirements.</li>
+        </ol>
+    </div>
+</div>
+
+<!-- SLIDE 3: The Problems AAC Solves -->
+<div class="slide-section">
+    <div class="slide-header">
+        <div class="slide-title">The Problems AAC Solves</div>
+        <div class="slide-number">SLIDE 03</div>
+    </div>
+    <div class="slide-body">
+        <table>
+            <thead>
+                <tr>
+                    <th style="width: 40%;">Legacy / Industry Challenge</th>
+                    <th style="width: 60%;">AAC Solution</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td><strong>Manual, Expensive Audits:</strong> Audit evidence relies on screenshots, spreadsheets, and interviews repeated every cycle.</td>
+                    <td><strong>Durable Records:</strong> Every assessment produces a durable, scored, cosign-signed record verifiable offline.</td>
+                </tr>
+                <tr>
+                    <td><strong>Tool Silos per Framework:</strong> CIS, STIG, NIST, ISO 27001, PCI-DSS, SOX, NERC-CIP, and IEC 62443 are operated separately.</td>
+                    <td><strong>Unified Engine:</strong> 50+ frameworks supported on one engine, using one language and one evidence store.</td>
+                </tr>
+                <tr>
+                    <td><strong>Unmonitored Drift:</strong> Nothing watches systems between audit cycles; unauthorized changes surface months later.</td>
+                    <td><strong>Continuous Baselining:</strong> Baselines configurations, detects unauthorized change, and tracks trend history.</td>
+                </tr>
+                <tr>
+                    <td><strong>Ungoverned Automation:</strong> Playbooks, Terraform plans, container images, and AI changes reach production unchecked.</td>
+                    <td><strong>Multi-Gate Enforcement:</strong> Gates changes at git check-in, runtime, and audit sweep.</td>
+                </tr>
+            </tbody>
+        </table>
+        <div class="callout-box-blue">
+            <strong>Platform Native:</strong> All capabilities execute natively on the platform customers already run: <strong>Ansible Automation Platform (AAP)</strong>.
+        </div>
+    </div>
+</div>
+
+<!-- SLIDE 4: What PaC Is -->
+<div class="slide-section">
+    <div class="slide-header">
+        <div class="slide-title">What Policy-as-Code (PaC) Is</div>
+        <div class="slide-number">SLIDE 04</div>
+    </div>
+    <div class="slide-body">
+        <p><strong>Supported Red Hat Product Feature:</strong> Generally Available (GA) in AAP 2.5.5; fully documented in AAP 2.5, 2.6, and 2.7.</p>
+
+        <h2>Architecture &amp; Mechanics</h2>
+        <ul>
+            <li><strong>AAP + OPA Integration:</strong> The AAP Controller invokes an external Open Policy Agent (OPA) server to evaluate Rego policy before a job launches.</li>
+            <li><strong>UI-Configured Settings:</strong> Managed via first-class Controller settings (<code>OPA_HOST</code>, <code>OPA_PORT</code>, TLS/auth, 1.5s timeout, 2 retries).</li>
+            <li><strong>Flexible Scope:</strong> Policies are associated at the Organization, Inventory, or Job Template level.</li>
+        </ul>
+
+        <div class="callout-box">
+            <strong>Customer Responsibility:</strong> Under standard PaC, the customer provides the <strong>OPA server infrastructure</strong> and writes the <strong>Rego policies</strong> (Red Hat supplies 12 example policies).
+        </div>
+    </div>
+</div>
+
+<!-- SLIDE 5: How PaC Works -->
+<div class="slide-section">
+    <div class="slide-header">
+        <div class="slide-title">How PaC Works (Execution Path)</div>
+        <div class="slide-number">SLIDE 05</div>
+    </div>
+    <div class="slide-body">
+<pre>User launches job
+      │
+      ▼
+AAP Controller builds job-context JSON
+      │
+      ▼
+OPA evaluates policy ───► POST /v1/data/&lt;policy&gt; [1.5s timeout]
+      │
+      ▼
+Returns Decision ───────► { "allowed": false, "violations": ["..."] }
+      │
+      ├─► allowed     ──► Job runs
+      └─► not allowed ──► Job blocked</pre>
+
+        <h2>Key Operational Characteristics</h2>
+        <ul>
+            <li><strong>Synchronous Launch Gate:</strong> Executes directly on the launch path; delivers a policy decision in under 2 seconds.</li>
+            <li><strong>Metadata Inspection Only:</strong> Input is limited to job metadata; PaC never sees playbook contents.</li>
+            <li><strong>Stateless Execution:</strong> Nothing is persisted; the decision gates the launch and is discarded.</li>
+        </ul>
+    </div>
+</div>
+
+<!-- SLIDE 6: What AAC Is -->
+<div class="slide-section">
+    <div class="slide-header">
+        <div class="slide-title">What AAC Is</div>
+        <div class="slide-number">SLIDE 06</div>
+    </div>
+    <div class="slide-body">
+        <div class="callout-box-blue">
+            <strong>Formula:</strong> <code>AAC = PaC + 3 Domain OPA Instances + PostgreSQL Evidence DB</code>.<br>
+            Uses the same engine, same language (Rego), and same API as PaC, while adding historical persistence and pre-built content.
+        </div>
+
+        <h2>Core Extensions</h2>
+        <ul>
+            <li><strong>Three Domain-Split OPA Servers:</strong>
+                <ul>
+                    <li><code>opa-security</code>: CIS, NIST, STIG</li>
+                    <li><code>opa-compliance</code>: ISO 27001, SOC 2, PCI-DSS, SOX, FISMA, Digital Sovereignty</li>
+                    <li><code>opa-ot</code>: NERC-CIP, AMI, IEC 62443</li>
+                </ul>
+            </li>
+            <li><strong>Playbook-Level Fact Evaluation:</strong> AAP jobs collect system facts (~180 KB/system) and POST evaluations to <code>/v1/data/&lt;framework&gt;/compliance_report</code>.</li>
+            <li><strong>Persistent Historical Evidence:</strong> Stores every evaluation as a durable, timestamped, scored PostgreSQL row, cosign-signed for offline audit verification.</li>
+            <li><strong>Pre-Built Policy Library:</strong> Includes 550+ curated policy files across ~24 framework families (compared to PaC's blank page).</li>
+        </ul>
+    </div>
+</div>
+
+<!-- SLIDE 7: How AAC Works -->
+<div class="slide-section">
+    <div class="slide-header">
+        <div class="slide-title">How AAC Works (Assessment Path)</div>
+        <div class="slide-number">SLIDE 07</div>
+    </div>
+    <div class="slide-body">
+<pre>Managed Systems (RHEL / Windows / Cloud / OT / OpenShift)
+      │
+      ▼
+AAP job collects facts (~180 KB per system)
+      │
+      ▼
+OPA evaluates framework ───► POST /v1/data/&lt;framework&gt;/compliance_report
+      │                       └─► Yields per-control results, scores, violations
+      ▼
+PostgreSQL stores row   ───► Grafana dashboards
+      │                 ───► PDF / DOCX auditor reports
+      ▼
+cosign-signed certification record (offline-verifiable)</pre>
+
+        <h2>Key Operational Characteristics</h2>
+        <ul>
+            <li><strong>Asynchronous Assessment:</strong> Operates off the launch path; takes seconds to minutes per framework.</li>
+            <li><strong>Full Persistence:</strong> Stores long-term trends, quarter-over-quarter posture, and a complete chain of evidence.</li>
+        </ul>
+    </div>
+</div>
+
+<!-- SLIDE 8: The AAC Architecture Diagram -->
+<div class="slide-section">
+    <div class="slide-header">
+        <div class="slide-title">AAC Architecture &amp; Surface Map</div>
+        <div class="slide-number">SLIDE 08</div>
+    </div>
+    <div class="slide-body">
+        <div class="img-container">
+            <img src="aac_architecture.png" alt="AAC Architecture Diagram">
+        </div>
+        <p style="font-size: 8.5pt; color: #6A6E73; text-align: center;">
+            <strong>Legend:</strong> Red Border = Supported Red Hat Product Surface | Blue Border = AAC Content Tier | Gray = Customer Infrastructure
+        </p>
+    </div>
+</div>
+
+<!-- SLIDE 9: Side by Side Comparison -->
+<div class="slide-section">
+    <div class="slide-header">
+        <div class="slide-title">Side-by-Side Architectural Comparison</div>
+        <div class="slide-number">SLIDE 09</div>
+    </div>
+    <div class="slide-body">
+        <table>
+            <thead>
+                <tr>
+                    <th>Capability / Attribute</th>
+                    <th>Policy-as-Code (PaC)</th>
+                    <th>Ansible Automated Compliance (AAC)</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td><strong>Engine / Language / API</strong></td>
+                    <td>OPA · Rego · v1</td>
+                    <td>OPA · Rego · v1 (Identical)</td>
+                </tr>
+                <tr>
+                    <td><strong>Invocation Point</strong></td>
+                    <td>Controller UI — Pre-launch gate</td>
+                    <td>Playbooks — Post-fact collection</td>
+                </tr>
+                <tr>
+                    <td><strong>Evaluation Scope</strong></td>
+                    <td>Job metadata</td>
+                    <td>Facts collected from the estate</td>
+                </tr>
+                <tr>
+                    <td><strong>OPA Instances</strong></td>
+                    <td>1 (Customer-provided)</td>
+                    <td>3 (Domain-split)</td>
+                </tr>
+                <tr>
+                    <td><strong>Decision Persisted?</strong></td>
+                    <td>No — discarded post-launch</td>
+                    <td>Yes — PostgreSQL, signed</td>
+                </tr>
+                <tr>
+                    <td><strong>Policy Content</strong></td>
+                    <td>Customer-written (12 examples)</td>
+                    <td>550+ policy library available</td>
+                </tr>
+                <tr>
+                    <td><strong>Blocks Non-Compliant Jobs</strong></td>
+                    <td>Yes — unbypassable launch gate</td>
+                    <td>Yes — content-enforced</td>
+                </tr>
+                <tr>
+                    <td><strong>Inspects Playbooks / TF / K8s</strong></td>
+                    <td>No — structurally cannot</td>
+                    <td>Yes</td>
+                </tr>
+                <tr>
+                    <td><strong>Proves Estate Compliance</strong></td>
+                    <td>No</td>
+                    <td>Yes</td>
+                </tr>
+            </tbody>
+        </table>
+        <div class="callout-box">
+            <strong>Architectural Boundary:</strong> Neither absorbs the other. They represent distinct operational gates and should both be executed in enterprise environments.
+        </div>
+    </div>
+</div>
+
+<!-- SLIDE 10: What Support Covers Today -->
+<div class="slide-section">
+    <div class="slide-header">
+        <div class="slide-title">What Support Covers Today</div>
+        <div class="slide-number">SLIDE 10</div>
+    </div>
+    <div class="slide-body">
+        <table>
+            <thead>
+                <tr>
+                    <th>Component</th>
+                    <th>Covered?</th>
+                    <th>Support Basis / Notes</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td><strong>RHEL</strong></td>
+                    <td><span class="badge badge-yes">Yes</span></td>
+                    <td>Standard product support</td>
+                </tr>
+                <tr>
+                    <td><strong>AAP (Controller, EEs, Templates)</strong></td>
+                    <td><span class="badge badge-yes">Yes</span></td>
+                    <td>Standard product support</td>
+                </tr>
+                <tr>
+                    <td><strong>PaC Enforcement Feature</strong></td>
+                    <td><span class="badge badge-yes">Yes</span></td>
+                    <td>Product feature, GA in AAP 2.5.5</td>
+                </tr>
+                <tr>
+                    <td><strong>OPA Invocation from AAP</strong></td>
+                    <td><span class="badge badge-yes">Yes</span></td>
+                    <td>Productized PaC pattern</td>
+                </tr>
+                <tr>
+                    <td><strong>PostgreSQL Database</strong></td>
+                    <td><span class="badge badge-yes">Yes</span></td>
+                    <td>Supported as an AAP dependency engine</td>
+                </tr>
+                <tr>
+                    <td><strong>OPA Server Instances (x3)</strong></td>
+                    <td><span class="badge badge-no">No</span></td>
+                    <td>Customer-provided infrastructure (same under PaC)</td>
+                </tr>
+                <tr>
+                    <td><strong>Rego Policy Library (550+)</strong></td>
+                    <td><span class="badge badge-no">No</span></td>
+                    <td>Unsupported content (Subject to Galaxy tiering)</td>
+                </tr>
+                <tr>
+                    <td><strong>Playbooks / Delivery Layer</strong></td>
+                    <td><span class="badge badge-no">No</span></td>
+                    <td>Platform-team / Customer owned content</td>
+                </tr>
+                <tr>
+                    <td><strong>Grafana Dashboards</strong></td>
+                    <td><span class="badge badge-no">No</span></td>
+                    <td>Optional presentation layer (replaceable)</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <h2>Triage Flow Boundary</h2>
+        <p><strong>Standard Support (Layers 1–3):</strong> AAP health → EE configuration → OPA network reachability.<br>
+        <strong>Content Domain (Layers 4–7):</strong> Policies loaded → Framework resolution → PostgreSQL schema → Output accuracy.</p>
+    </div>
+</div>
+
+<!-- SLIDE 11: Covering the Rest: Galaxy Model -->
+<div class="slide-section">
+    <div class="slide-header">
+        <div class="slide-title">Covering the Rest: The Galaxy Tiering Model</div>
+        <div class="slide-number">SLIDE 11</div>
+    </div>
+    <div class="slide-body">
+        <p>Rego policy libraries follow the established <strong>Ansible Collections (Galaxy) model</strong>:</p>
+
+        <table>
+            <thead>
+                <tr>
+                    <th>Tier</th>
+                    <th>Hosting Location</th>
+                    <th>Support Level</th>
+                    <th>Current AAC Status</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td><strong>Community</strong></td>
+                    <td>Ansible Galaxy / Git</td>
+                    <td>Community-supported (No SLA / No Entitlement)</td>
+                    <td><span class="badge badge-info">Current State</span> (Public, Apache-2.0)</td>
+                </tr>
+                <tr>
+                    <td><strong>Validated</strong></td>
+                    <td>Automation Hub</td>
+                    <td>Red Hat tested against matrix</td>
+                    <td>Target Next Rung</td>
+                </tr>
+                <tr>
+                    <td><strong>Certified</strong></td>
+                    <td>Automation Hub</td>
+                    <td>Full Red Hat Product Support with SLAs</td>
+                    <td>Long-term Target</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <h2>Requirements to Advance Above Community Tier</h2>
+        <ul>
+            <li><strong>Technical Standards:</strong> Bounded scope, Semantic Versioning (SemVer), signed releases, automated CI testing, and diagnostic bundle generation.</li>
+            <li><strong>Organizational Ownership:</strong> Named owning team with a defined defect SLA, lifecycle policy, CVE response plan, and license reconciliation.</li>
+        </ul>
+
+        <div class="callout-box">
+            <strong>The Maintenance Treadmill:</strong> Compliance frameworks churn continuously (CIS benchmarks update, NERC reissues standards). Whoever owns a tier above Community owns the maintenance treadmill.
+        </div>
+    </div>
+</div>
+
+<!-- SLIDE 12: Next Steps & Path Forward -->
+<div class="slide-section">
+    <div class="slide-header">
+        <div class="slide-title">Path Forward &amp; Action Items</div>
+        <div class="slide-number">SLIDE 12</div>
+    </div>
+    <div class="slide-body">
+        <h2>Component Maturity Analysis</h2>
+        <ul>
+            <li><strong>Policy Library (550+ Policies):</strong> Product-grade maturity; 540+ automated tests gated in CI. Ready for Validated tiering.</li>
+            <li><strong>Delivery Layer:</strong> Currently a reference implementation (9 tests, no CI). Should remain explicitly out-of-scope for product support (Customer/Consulting-owned).</li>
+        </ul>
+
+        <div class="callout-box-blue">
+            <strong>The Core Question for Support Leadership:</strong><br>
+            Not <em>“Can AAC be supported?”</em>, but rather <strong>“Which tier does each content component belong in, and what is the required bar to advance it to the next tier?”</strong>
+        </div>
+    </div>
+</div>
+
+<div class="rh-footer">
+    <div>Red Hat Internal / Architecture &amp; Support Review</div>
+    <div>v1.7 · August 2026</div>
+</div>
+
+</body>
+</html>

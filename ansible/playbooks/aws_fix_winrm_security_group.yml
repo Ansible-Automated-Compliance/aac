@@ -1,0 +1,95 @@
+---
+# Fix WinRM Security Group Rules
+# Adds ports 5985-5986 for WinRM connectivity
+
+- name: Add WinRM ports to security group
+  hosts: localhost
+  gather_facts: no
+  connection: local
+
+  vars:
+    aws_region: us-east-1
+    lab_name: "compliance-lab"
+
+  tasks:
+    - name: Find Windows instance by tag
+      amazon.aws.ec2_instance_info:
+        region: "{{ aws_region }}"
+        filters:
+          "tag:Name": "{{ lab_name }}-windows2022"
+          "instance-state-name": "running"
+      register: instance_info
+
+    - name: Fail if instance not found
+      fail:
+        msg: "No running instance found with tag Name={{ lab_name }}-windows2022"
+      when: instance_info.instances | length == 0
+
+    - name: Extract security group info
+      set_fact:
+        sg_id: "{{ instance_info.instances[0].security_groups[0].group_id }}"
+        vpc_id: "{{ instance_info.instances[0].vpc_id }}"
+
+    - name: Display security group
+      debug:
+        msg: "Security Group: {{ sg_id }} in VPC: {{ vpc_id }}"
+
+    - name: Get current security group details
+      amazon.aws.ec2_security_group_info:
+        region: "{{ aws_region }}"
+        filters:
+          group-id: "{{ sg_id }}"
+      register: sg_info
+
+    # Restrict WinRM/RDP to the lab's own egress IP rather than the whole
+    # internet. Override winrm_source_cidr explicitly if needed; otherwise
+    # auto-detect the controller's public egress (the pod NATs out through
+    # this same host IP, so the assessment still connects).
+    - name: Detect controller public egress IP
+      uri:
+        use_proxy: false
+        url: https://api.ipify.org
+        return_content: yes
+      register: egress_ip
+      when: winrm_source_cidr is not defined
+      ignore_errors: yes
+
+    - name: Set WinRM source CIDR (restricted, not 0.0.0.0/0)
+      set_fact:
+        winrm_source_cidr: >-
+          {{ winrm_source_cidr
+             | default((egress_ip.content | trim) ~ '/32' if (egress_ip is defined and egress_ip.content is defined) else '0.0.0.0/0') }}
+
+    - name: Warn if source could not be restricted
+      debug:
+        msg: "WARNING: winrm_source_cidr fell back to 0.0.0.0/0 — set winrm_source_cidr to your admin /32."
+      when: winrm_source_cidr == '0.0.0.0/0'
+
+    - name: Update security group with WinRM HTTPS and RDP ports
+      amazon.aws.ec2_security_group:
+        name: "{{ sg_info.security_groups[0].group_name }}"
+        description: "{{ sg_info.security_groups[0].description }}"
+        vpc_id: "{{ vpc_id }}"
+        region: "{{ aws_region }}"
+        purge_rules: false
+        rules:
+          - proto: tcp
+            from_port: 5985
+            to_port: 5985
+            cidr_ip: "{{ winrm_source_cidr }}"
+            rule_desc: WinRM HTTP (basic — lab assessment port, source-restricted)
+          - proto: tcp
+            from_port: 5986
+            to_port: 5986
+            cidr_ip: "{{ winrm_source_cidr }}"
+            rule_desc: WinRM HTTPS
+          - proto: tcp
+            from_port: 3389
+            to_port: 3389
+            cidr_ip: "{{ winrm_source_cidr }}"
+            rule_desc: RDP
+      register: sg_update
+
+    - name: Show result
+      debug:
+        msg: "Security group updated. Rules added for WinRM HTTP (5985), HTTPS (5986), and RDP (3389)"

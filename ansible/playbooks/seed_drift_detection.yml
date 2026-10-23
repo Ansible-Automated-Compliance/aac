@@ -1,0 +1,405 @@
+---
+# seed_drift_detection.yml — Create Phase 2 drift detection AAP templates + workflow
+#
+# Creates:
+#   Template 64+: AAC - Detect Fact Drift
+#   Template 65+: AAC - Authorize Change
+#   Template 66+: AAC - Drift Report
+#   Workflow:     AAC - Collect and Assess
+#                 (Collect Facts → Detect Drift → Evaluate Stored Facts)
+#
+# AAP Job Template: "AAC - Seed Drift Detection"
+# Credentials: Ansible Vault
+
+- name: Seed Phase 2 drift detection templates and workflow
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - ../vars/site_config.yml
+
+  vars:
+    aap_api: "{{ aap_url }}/api/controller/v2"
+    aap_token: "{{ aap_token }}"
+    aap_headers:
+      Authorization: "Bearer {{ aap_token }}"
+      Content-Type: "application/json"
+
+  tasks:
+
+    # ── Resolve object IDs ────────────────────────────────────────────────────
+
+    - name: Look up inventory ID
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/inventories/?name={{ aap_inventory_name | urlencode }}"
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+      register: inv_lookup
+    - set_fact:
+        inventory_id: "{{ inv_lookup.json.results[0].id }}"
+
+    - name: Look up EE ID
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/execution_environments/?name={{ aap_ee_name | urlencode }}"
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+      register: ee_lookup
+    - set_fact:
+        ee_id: "{{ ee_lookup.json.results[0].id }}"
+
+    - name: Look up vault credential ID
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/credentials/?name={{ aap_vault_credential_name | urlencode }}&credential_type__kind=vault"
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+      register: vault_cred_lookup
+    - set_fact:
+        vault_cred_id: "{{ vault_cred_lookup.json.results[0].id }}"
+
+    - name: Look up project ID
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/projects/?name={{ aap_project_name | urlencode }}"
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+      register: project_lookup
+    - set_fact:
+        project_id: "{{ project_lookup.json.results[0].id }}"
+
+    # ── Resolve existing template IDs we need for the workflow ────────────────
+
+    - name: Look up 'AAC - Collect Facts' template ID
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/job_templates/?name=AAC+-+Collect+Facts"
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+      register: collect_jt_lookup
+    - set_fact:
+        collect_jt_id: "{{ collect_jt_lookup.json.results[0].id }}"
+
+    - name: Look up 'AAC - Evaluate Stored Facts' template ID
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/job_templates/?name=AAC+-+Evaluate+Stored+Facts"
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+      register: evaluate_jt_lookup
+    - set_fact:
+        evaluate_jt_id: "{{ evaluate_jt_lookup.json.results[0].id }}"
+
+    # ── Create drift templates ────────────────────────────────────────────────
+
+    - name: Create or get 'AAC - Detect Fact Drift'
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/job_templates/"
+        method: POST
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+        body_format: json
+        body:
+          name: "AAC - Detect Fact Drift"
+          description: >
+            Compares the two most recent fact snapshots per host using a Python diff
+            engine. Stores structured diffs (path, type, severity) in fact_changes
+            with is_authorized=false pending review. Security-relevant changes
+            (SSH, PAM, auditd, sudo, firewall, SELinux) are flagged by severity.
+            Automatically marks remediation_status as needs_reassessment for hosts
+            with security-relevant drift. No SSH required.
+          job_type: run
+          inventory: "{{ inventory_id | int }}"
+          project: "{{ project_id | int }}"
+          playbook: ansible/playbooks/detect_fact_drift.yml
+          execution_environment: "{{ ee_id | int }}"
+          survey_enabled: true
+        status_code: [200, 201]
+      register: detect_jt
+    - set_fact:
+        detect_jt_id: "{{ detect_jt.json.id }}"
+
+    - name: Create or get 'AAC - Authorize Change'
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/job_templates/"
+        method: POST
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+        body_format: json
+        body:
+          name: "AAC - Authorize Change"
+          description: >
+            Marks a fact_changes record as authorized (approved by security team).
+            Requires change_id from the drift report and authorized_by (approver name).
+            Optionally accepts change_ticket and notes. Logs the action to
+            remediation_actions for audit trail. The authorized change will no
+            longer appear in the unauthorized drift report.
+          job_type: run
+          inventory: "{{ inventory_id | int }}"
+          project: "{{ project_id | int }}"
+          playbook: ansible/playbooks/authorize_change.yml
+          execution_environment: "{{ ee_id | int }}"
+          survey_enabled: true
+        status_code: [200, 201]
+      register: authorize_jt
+    - set_fact:
+        authorize_jt_id: "{{ authorize_jt.json.id }}"
+
+    - name: Create or get 'AAC - Drift Report'
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/job_templates/"
+        method: POST
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+        body_format: json
+        body:
+          name: "AAC - Drift Report"
+          description: >
+            Shows unauthorized configuration changes, change frequency by host,
+            hosts missing a baseline, and (optionally) authorized change history.
+            For each unauthorized change, shows severity, affected security paths,
+            and compliance impact. Use 'AAC - Authorize Change' to review items.
+          job_type: run
+          inventory: "{{ inventory_id | int }}"
+          project: "{{ project_id | int }}"
+          playbook: ansible/playbooks/drift_report.yml
+          execution_environment: "{{ ee_id | int }}"
+          survey_enabled: true
+        status_code: [200, 201]
+      register: drift_report_jt
+    - set_fact:
+        drift_report_jt_id: "{{ drift_report_jt.json.id }}"
+
+    # ── Attach vault credential to all three ─────────────────────────────────
+
+    - name: Attach vault credential to new templates
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/job_templates/{{ item }}/credentials/"
+        method: POST
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+        body_format: json
+        body:
+          id: "{{ vault_cred_id | int }}"
+        status_code: [200, 201, 204]
+      loop:
+        - "{{ detect_jt_id }}"
+        - "{{ authorize_jt_id }}"
+        - "{{ drift_report_jt_id }}"
+      failed_when: false
+
+    # ── Add surveys ───────────────────────────────────────────────────────────
+
+    - name: Add survey to 'AAC - Detect Fact Drift'
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/job_templates/{{ detect_jt_id }}/survey_spec/"
+        method: POST
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+        body_format: json
+        body:
+          name: "Detect Fact Drift Survey"
+          description: ""
+          spec:
+            - question_name: Target Hostname
+              question_description: "Hostname to check or 'all' for all stored hosts"
+              variable: target_hostname
+              type: text
+              default: "all"
+              required: false
+            - question_name: Re-assess on Drift
+              question_description: "Update remediation_status to needs_reassessment when security-relevant drift is found"
+              variable: reassess_on_drift
+              type: multiplechoice
+              choices: "true\nfalse"
+              default: "true"
+              required: false
+        status_code: [200, 201]
+      failed_when: false
+
+    - name: Add survey to 'AAC - Authorize Change'
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/job_templates/{{ authorize_jt_id }}/survey_spec/"
+        method: POST
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+        body_format: json
+        body:
+          name: "Authorize Change Survey"
+          description: "Get the change_id from 'AAC - Drift Report'"
+          spec:
+            - question_name: Change ID
+              question_description: "fact_changes.id from the drift report"
+              variable: change_id
+              type: integer
+              required: true
+            - question_name: Authorized By
+              question_description: "Your name or username"
+              variable: authorized_by
+              type: text
+              required: true
+            - question_name: Change Ticket
+              question_description: "ServiceNow/Jira ticket reference (optional)"
+              variable: change_ticket
+              type: text
+              default: ""
+              required: false
+            - question_name: Notes
+              question_description: "Why this change was authorized"
+              variable: notes
+              type: textarea
+              default: ""
+              required: false
+        status_code: [200, 201]
+      failed_when: false
+
+    - name: Add survey to 'AAC - Drift Report'
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/job_templates/{{ drift_report_jt_id }}/survey_spec/"
+        method: POST
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+        body_format: json
+        body:
+          name: "Drift Report Survey"
+          description: ""
+          spec:
+            - question_name: Hostname Filter
+              question_description: "Specific hostname or 'all'"
+              variable: report_hostname
+              type: text
+              default: "all"
+              required: false
+            - question_name: Days Back
+              question_description: "How many days of history to show"
+              variable: days_back
+              type: integer
+              default: 30
+              required: false
+            - question_name: Include Authorized Changes
+              question_description: "Show authorized change history as well"
+              variable: include_resolved
+              type: multiplechoice
+              choices: "false\ntrue"
+              default: "false"
+              required: false
+        status_code: [200, 201]
+      failed_when: false
+
+    # ── Create the 'AAC - Collect and Assess' workflow ────────────────────────
+    # Nodes: Collect Facts → Detect Drift → Evaluate Stored Facts
+
+    - name: Create 'AAC - Collect and Assess' workflow
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/workflow_job_templates/"
+        method: POST
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+        body_format: json
+        body:
+          name: "AAC - Collect and Assess"
+          description: >
+            Full compliance workflow: SSH to collect facts → detect drift vs
+            previous snapshot → evaluate stored facts against all policies.
+            Run on a schedule to maintain continuous compliance posture.
+            Only Collect Facts requires SSH; subsequent steps run from stored data.
+          organization: 1
+          inventory: "{{ inventory_id | int }}"
+        status_code: [200, 201]
+      register: workflow
+
+    - name: Create workflow node 1 — Collect Facts
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/workflow_job_templates/{{ workflow.json.id }}/workflow_nodes/"
+        method: POST
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+        body_format: json
+        body:
+          unified_job_template: "{{ collect_jt_id | int }}"
+          identifier: collect_facts
+        status_code: [200, 201]
+      register: node1
+
+    - name: Create workflow node 2 — Detect Drift
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/workflow_job_templates/{{ workflow.json.id }}/workflow_nodes/"
+        method: POST
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+        body_format: json
+        body:
+          unified_job_template: "{{ detect_jt_id | int }}"
+          identifier: detect_drift
+        status_code: [200, 201]
+      register: node2
+
+    - name: Create workflow node 3 — Evaluate Stored Facts
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/workflow_job_templates/{{ workflow.json.id }}/workflow_nodes/"
+        method: POST
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+        body_format: json
+        body:
+          unified_job_template: "{{ evaluate_jt_id | int }}"
+          identifier: evaluate_facts
+        status_code: [200, 201]
+      register: node3
+
+    - name: Link node 1 → node 2 on success
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/workflow_job_template_nodes/{{ node1.json.id }}/success_nodes/"
+        method: POST
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+        body_format: json
+        body: "{{ {'id': node2.json.id | int} }}"
+        status_code: [200, 201, 204]
+
+    - name: Link node 2 → node 3 on success
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/workflow_job_template_nodes/{{ node2.json.id }}/success_nodes/"
+        method: POST
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+        body_format: json
+        body: "{{ {'id': node3.json.id | int} }}"
+        status_code: [200, 201, 204]
+
+    # ── Summary ───────────────────────────────────────────────────────────────
+
+    - name: Seed complete
+      debug:
+        msg:
+          - "✅ Phase 2 drift detection templates and workflow created"
+          - ""
+          - "  Template {{ detect_jt_id }}:     AAC - Detect Fact Drift"
+          - "  Template {{ authorize_jt_id }}:     AAC - Authorize Change"
+          - "  Template {{ drift_report_jt_id }}:     AAC - Drift Report"
+          - "  Workflow {{ workflow.json.id }}:     AAC - Collect and Assess"
+          - "    └─ Collect Facts ({{ collect_jt_id }}) → Detect Drift ({{ detect_jt_id }}) → Evaluate ({{ evaluate_jt_id }})"
+          - ""
+          - "  DAILY WORKFLOW:"
+          - "  1. Schedule 'AAC - Collect and Assess' (runs all three steps)"
+          - "  2. Review 'AAC - Drift Report' for unauthorized changes"
+          - "  3. Run 'AAC - Authorize Change' for each approved change"
+          - ""
+          - "  REAL-TIME COMPLEMENT:"
+          - "  EDA rulebook extensions/eda/rulebooks/compliance_drift_detection.yml watches"
+          - "  critical files and triggers immediate re-assessment on change."

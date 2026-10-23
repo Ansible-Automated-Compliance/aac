@@ -1,0 +1,292 @@
+---
+# patch_assurance.yml — test the host before returning it to service
+#
+# Implements docs/patch_remediation_lifecycle.md Stage 10 (assurance ladder).
+#
+# THE LADDER (§design position 3):
+#   A0  version compare       — is the fixed version actually installed?   BUILT
+#   A1  service health        — is the service up and listening?           BUILT HERE
+#   A2  functional probe      — does it do its job?                        NOT BUILT
+#   A3  integration           — do its dependants still work?              NOT BUILT
+#   A4  compliance re-assess  — does it still pass its controls?           NOT BUILT
+#
+# A0 and A1 are what this playbook does. A2-A4 are recorded as NOT ATTEMPTED
+# rather than silently omitted, because "assurance passed" that only means
+# "the package version changed" is the kind of claim that destroys trust the
+# first time a patched service is quietly broken.
+#
+# THE DISTINCTION THAT MATTERS: a failed PATCH and a failed SERVICE after a
+# successful patch are different problems needing different recovery levels
+# (R1 package downgrade vs R2/R3 config restore or snapshot). This playbook
+# reports which one occurred, and that verdict drives the change record's
+# terminal outcome.
+#
+# AAP Job Template: "AAC - Patch Assurance (A0/A1)"
+# Credentials: Ansible Vault + Machine    EE: AAC Compliance EE
+
+# See the note in patch_backup.yml. Falling back to localhost here is the worst of
+# the three: assurance would check the execution environment and report the PATCHED
+# HOST healthy, closing the change record on evidence from the wrong machine.
+- name: Require a target host before anything runs
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Refuse to run without an explicit target
+      ansible.builtin.assert:
+        that:
+          - (target_host | default('', true) | length > 0) or (target_hostname | default('', true) | length > 0)
+        fail_msg: >-
+          target_host is not set. This play will NOT fall back to localhost:
+          falling back runs against the execution environment instead of the host
+          being patched, which produces a recovery point, an install or an
+          assurance pass for the wrong machine. Set target_host explicitly.
+
+- name: Assurance checks on the patched host  # Falls back to a SENTINEL that matches no host in any inventory — never
+  # 'localhost', because a localhost fallback is what silently ran these plays
+  # inside the execution environment. The gate play above is the real control and
+  # stops the run with a clear message; this is the second line of defence and it
+  # resolves to nothing rather than to the wrong machine.
+  #
+  # A sentinel rather than an empty string because `syntax-check` is unskippable
+  # in ansible-lint: an empty `hosts` is a fatal lint error, and excluding these
+  # files to excuse it would drop lint coverage from the very playbooks that
+  # carried the Jinja defect.
+  hosts: "{{ target_host | default('', true) or target_hostname | default('', true) or '__no_target_host_set__' }}"
+  gather_facts: true
+  become: true
+
+  vars:
+    services_to_check: "{{ assurance_services | default([]) }}"
+
+  tasks:
+
+    - name: A0 — collect installed package versions
+      ansible.builtin.package_facts:
+        manager: auto
+
+    - name: A1 — check service health
+      ansible.builtin.service_facts:
+
+    - name: Publish the observed state to the controller
+      ansible.builtin.set_fact:
+        observed_packages: "{{ ansible_facts.packages }}"
+        observed_services: "{{ ansible_facts.services | default({}) }}"
+
+
+- name: Evaluate and record the assurance verdict
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - [ "../vars/vault_secrets.yml", "../vars/empty_fallback.yml" ]
+    - ../vars/site_config.yml
+
+  vars:
+    pg_port: "{{ compliance_db_port | default(5432) }}"
+    pg_db: "compliance"
+    pg_user: "postgres"
+    pg_password: "{{ compliance_db_password }}"
+    target_host: "{{ target_hostname | default('') }}"
+    cve_id: "{{ cve | default('') }}"
+    ticket_id: "{{ patch_ticket_id | default(none) }}"
+    dry: "{{ dry_run | default('yes') }}"
+
+  tasks:
+
+    - name: Ensure the assurance schema exists
+      community.postgresql.postgresql_script:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        path: "{{ playbook_dir }}/../files/patch_change_schema.sql"
+
+    - name: Read the expected fix versions
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: |
+          SELECT product, installed_version, fixed_version
+            FROM patch_worklist
+           WHERE hostname = %(host)s
+             AND (%(cve)s = '' OR cve_id = %(cve)s)
+             AND fixed_version IS NOT NULL AND fixed_version <> ''
+        named_args:
+          host: "{{ target_host }}"
+          cve: "{{ cve_id }}"
+      register: expected
+
+    # A0 can only assess items that HAVE a fix version. Items skipped by the
+    # install node for lack of one are invisible to the verdict — so count them
+    # explicitly. Otherwise a partial patch reports 'patched' while components
+    # remain exposed with their SLA clock running.
+    - name: Count work items with no known fix (invisible to A0)
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: |
+          SELECT count(*) AS skipped,
+                 string_agg(DISTINCT product, ', ' ORDER BY product) AS products
+            FROM patch_worklist
+           WHERE hostname = %(host)s
+             AND (%(cve)s = '' OR cve_id = %(cve)s)
+             AND (fixed_version IS NULL OR fixed_version = '')
+        named_args:
+          host: "{{ target_host }}"
+          cve: "{{ cve_id }}"
+      register: skipped
+
+    # -------------------------------------------------------------------------
+    # A0 — did the fixed version actually land?
+    # -------------------------------------------------------------------------
+    # NOTE: the commentary below is deliberately OUTSIDE the Jinja expression.
+    # `#` is not a comment inside `{{ ... }}` — Jinja fails the whole template with
+    # "unexpected char '#'", and because this node had never run (backup failed
+    # upstream every time), the break sat here unnoticed.
+    #
+    # A missing package key must produce a FAILED check, not an undefined-key
+    # error. Packages get renamed, split or removed by the very patch being
+    # assured, so absence is an expected outcome to report rather than a crash.
+    - name: A0 — compare installed against expected
+      ansible.builtin.set_fact:
+        a0_results: >-
+          {{ a0_results | default([]) + [{
+               'product': item.product,
+               'expected': item.fixed_version,
+               'observed': (hostvars[target_host].observed_packages[item.product][0].version
+                            if item.product in (hostvars[target_host].observed_packages | default({}))
+                            else 'not installed'),
+               'passed': (item.product in (hostvars[target_host].observed_packages | default({}))
+                          and (hostvars[target_host].observed_packages[item.product][0].version
+                               is version(item.fixed_version, '>=')))
+             }] }}
+      loop: "{{ expected.query_result }}"
+      loop_control:
+        label: "{{ item.product }}"
+      when: hostvars[target_host].observed_packages is defined
+
+    - name: A0 verdict
+      ansible.builtin.set_fact:
+        a0_passed: "{{ (a0_results | default([]) | length > 0) and
+                       (a0_results | default([]) | rejectattr('passed') | list | length == 0) }}"
+
+    # -------------------------------------------------------------------------
+    # A1 — is the service actually running?
+    # -------------------------------------------------------------------------
+    - name: A1 — evaluate service health
+      ansible.builtin.set_fact:
+        a1_results: >-
+          {{ a1_results | default([]) + [{
+               'service': svc,
+               'state': (hostvars[target_host].observed_services[svc].state | default('absent')),
+               'passed': ((hostvars[target_host].observed_services[svc].state | default('')) == 'running')
+             }] }}
+      loop: "{{ assurance_services | default([]) }}"
+      loop_control:
+        loop_var: svc
+      when: hostvars[target_host].observed_services is defined
+
+    - name: A1 verdict
+      ansible.builtin.set_fact:
+        a1_passed: "{{ (a1_results | default([]) | rejectattr('passed') | list | length == 0) }}"
+        a1_attempted: "{{ (assurance_services | default([]) | length) > 0 }}"
+
+    # -------------------------------------------------------------------------
+    # The verdict that drives recovery level
+    # -------------------------------------------------------------------------
+    - name: Determine the terminal outcome
+      ansible.builtin.set_fact:
+        assurance_outcome: >-
+          {%- if dry | bool -%}dry_run
+          {%- elif not a0_passed -%}patch_failed
+          {%- elif a1_attempted and not a1_passed -%}service_failed_after_patch
+          {%- else -%}patched
+          {%- endif -%}
+
+    - name: Record A0 results
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: |
+          INSERT INTO patch_assurance_results
+            (hostname, cve_id, ticket_id, level, check_name, passed, detail)
+          VALUES (%(host)s, NULLIF(%(cve)s,''), %(tid)s, 'A0', %(chk)s, %(ok)s, %(detail)s)
+        named_args:
+          host: "{{ target_host }}"
+          cve: "{{ cve_id }}"
+          tid: "{{ ticket_id if ticket_id else None }}"
+          chk: "version_compare:{{ item.product }}"
+          ok: "{{ item.passed }}"
+          detail: "expected >= {{ item.expected }}, observed {{ item.observed }}"
+      loop: "{{ a0_results | default([]) }}"
+      loop_control:
+        label: "A0 {{ item.product }}"
+
+    - name: Record A1 results
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: |
+          INSERT INTO patch_assurance_results
+            (hostname, cve_id, ticket_id, level, check_name, passed, detail)
+          VALUES (%(host)s, NULLIF(%(cve)s,''), %(tid)s, 'A1', %(chk)s, %(ok)s, %(detail)s)
+        named_args:
+          host: "{{ target_host }}"
+          cve: "{{ cve_id }}"
+          tid: "{{ ticket_id if ticket_id else None }}"
+          chk: "service_health:{{ item.service }}"
+          ok: "{{ item.passed }}"
+          detail: "state={{ item.state }}"
+      loop: "{{ a1_results | default([]) }}"
+      loop_control:
+        label: "A1 {{ item.service }}"
+
+    - name: Publish the outcome to downstream workflow nodes
+      ansible.builtin.set_stats:
+        data:
+          patch_assurance_outcome: "{{ assurance_outcome }}"
+
+    - name: Assurance summary
+      ansible.builtin.debug:
+        msg:
+          - "──────────────────────────────────────────────────────────"
+          - "ASSURANCE — {{ target_host }}"
+          - "──────────────────────────────────────────────────────────"
+          - "A0 version compare : {{ 'PASS' if a0_passed else 'FAIL' }} ({{ a0_results | default([]) | length }} checked)"
+          - "A1 service health  : {{ ('PASS' if a1_passed else 'FAIL') if a1_attempted else 'not attempted (no services declared)' }}"
+          - "A2 functional      : NOT BUILT"
+          - "A3 integration     : NOT BUILT"
+          - "A4 compliance      : NOT BUILT"
+          - "──────────────────────────────────────────────────────────"
+          - "{{ 'NOT ASSESSED: ' ~ skipped.query_result[0].skipped ~ ' work item(s) had no known fix version and were skipped by the install node (' ~ (skipped.query_result[0].products | default('none')) ~ '). They remain EXPOSED and their SLA clock is still running. A0 says nothing about them.' if (skipped.query_result[0].skipped | int) > 0 else 'All work items for this host carried a fix version — none were skipped.' }}"
+          - "──────────────────────────────────────────────────────────"
+          - "Outcome: {{ assurance_outcome }}{{ ' (PARTIAL — see NOT ASSESSED above)' if (skipped.query_result[0].skipped | int) > 0 and assurance_outcome == 'patched' else '' }}"
+          - "──────────────────────────────────────────────────────────"
+          - "{{ 'patch_failed → recovery level R1 (package downgrade from the manifest).' if assurance_outcome == 'patch_failed' else '' }}"
+          - "{{ 'service_failed_after_patch → the package IS correct but the service is not healthy. R1 will not help; this needs R2/R3.' if assurance_outcome == 'service_failed_after_patch' else '' }}"
+          - "{{ 'Assurance passed at A0/A1 only. That is not proof the application works.' if assurance_outcome == 'patched' else '' }}"
+          - "──────────────────────────────────────────────────────────"
+
+    - name: Fail the node when assurance did not pass
+      ansible.builtin.fail:
+        msg: >-
+          Assurance outcome '{{ assurance_outcome }}'. Failing this node deliberately so the
+          workflow takes its failure path — but note the undrain and close-ticket nodes are
+          wired on ALWAYS edges and will still run. The host will be returned to service and
+          the change record closed with this outcome recorded.
+      when: assurance_outcome in ['patch_failed', 'service_failed_after_patch']

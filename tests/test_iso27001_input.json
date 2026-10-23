@@ -1,0 +1,268 @@
+{
+  "access_control": {
+    "policy": {
+      "documented": true,
+      "approved": true,
+      "communicated": true
+    },
+    "access_rules": {
+      "defined": true,
+      "enforced": true
+    }
+  },
+  "user_management": {
+    "registration": {
+      "formal_process": true,
+      "authorization_required": true,
+      "documented": true
+    },
+    "unauthorized_users": [],
+    "provisioning": {
+      "least_privilege": true,
+      "role_based": true,
+      "approval_required": true,
+      "automated_tools": true
+    }
+  },
+  "privileged_access": {
+    "allocation_restricted": true,
+    "regular_review": true,
+    "monitoring_enabled": true,
+    "multi_factor_auth": true,
+    "shared_accounts": []
+  },
+  "authentication": {
+    "password_policy": {
+      "min_length": 12,
+      "complexity_required": true,
+      "expiry_enabled": true,
+      "history_count": 15,
+      "lockout_enabled": true
+    },
+    "mfa": {
+      "enabled": true,
+      "required_for_admin": true,
+      "required_for_remote": true
+    },
+    "secrets": {
+      "encrypted_storage": true,
+      "access_controlled": true,
+      "regular_rotation": true,
+      "secure_transmission": true
+    }
+  },
+  "cryptography": {
+    "policy": {
+      "documented": true,
+      "approved": true,
+      "communicated": true,
+      "regularly_reviewed": true,
+      "approved_algorithms": ["AES", "RSA", "ECC"],
+      "key_management_addressed": true,
+      "encryption_requirements": true
+    },
+    "approved_algorithms": ["AES", "RSA", "ECC", "SHA256", "TLS1.3"],
+    "algorithms_in_use": ["AES", "RSA", "ECC", "SHA256", "TLS1.3"],
+    "quantum_resistance": {
+      "assessment_completed": true,
+      "migration_plan": true,
+      "timeline_defined": true
+    }
+  },
+  "access_review": {
+    "regular_schedule": true,
+    "management_approval": true,
+    "documented_results": true,
+    "remediation_tracked": true,
+    "frequency_days": 90
+  },
+  "access_removal": {
+    "immediate_termination": true,
+    "role_change_adjustment": true,
+    "automated_process": true,
+    "verification_required": true
+  },
+  "user_responsibilities": {
+    "password_protection": true,
+    "unattended_sessions": true,
+    "clear_desk_policy": true,
+    "training_completed": true
+  },
+  "system_access": {
+    "need_to_know": true,
+    "role_based_control": true,
+    "data_classification_enforced": true,
+    "segregation_of_duties": true
+  },
+  "logon": {
+    "user_identification_required": true,
+    "authentication_required": true,
+    "session_timeout_configured": true,
+    "failed_attempt_lockout": true,
+    "warning_message_displayed": true,
+    "session_timeout_minutes": 20,
+    "max_failed_attempts": 3
+  },
+  "password_system": {
+    "centralized_management": true,
+    "policy_enforcement": true,
+    "secure_storage": true,
+    "change_notification": true,
+    "temporary_passwords_controlled": true
+  },
+  "privileged_utilities": {
+    "restricted_access": true,
+    "logging_enabled": true,
+    "approval_required": true,
+    "monitoring_active": true
+  },
+  "source_code": {
+    "version_control": true,
+    "access_restricted": true,
+    "change_approval": true,
+    "backup_protected": true,
+    "audit_trail": true
+  },
+  "key_management": {
+    "generation": {
+      "random_source_secure": true,
+      "approved_algorithms": true,
+      "sufficient_entropy": true,
+      "documented_process": true
+    },
+    "approved_algorithms": ["RSA", "AES", "ECC"],
+    "key_specifications": [
+      {"algorithm": "RSA", "min_length": 2048},
+      {"algorithm": "AES", "min_length": 256}
+    ],
+    "distribution": {
+      "encrypted_channels": true,
+      "authentication_required": true,
+      "integrity_protected": true
+    },
+    "storage": {
+      "hardware_security_modules": true,
+      "access_controlled": true,
+      "audit_logged": true,
+      "backup_encrypted": true
+    },
+    "usage": {
+      "purpose_specific": true,
+      "access_restricted": true,
+      "audit_logged": true
+    },
+    "rotation": {
+      "regular_schedule": true,
+      "automated_process": true,
+      "emergency_procedures": true,
+      "max_lifetime_days": 365
+    },
+    "destruction": {
+      "secure_deletion": true,
+      "verification_required": true,
+      "documented_process": true,
+      "audit_logged": true
+    }
+  },
+  "encryption": {
+    "data_at_rest": {
+      "enabled": true,
+      "strong_algorithms": true,
+      "key_management_integrated": true
+    },
+    "filesystem": {
+      "full_disk_encryption": true,
+      "secure_boot": true
+    },
+    "application_data": {
+      "sensitive_fields": true,
+      "configuration_files": true
+    },
+    "data_in_transit": {
+      "tls_enforced": true,
+      "minimum_tls_version": "1.3",
+      "certificate_validation": true,
+      "perfect_forward_secrecy": true
+    }
+  },
+  "network": {
+    "ssh": {
+      "protocol_version": 2,
+      "strong_ciphers": true,
+      "key_based_auth": true
+    },
+    "https": {
+      "enforced": true,
+      "hsts_enabled": true,
+      "secure_cookies": true
+    },
+    "vpn": {
+      "strong_encryption": true,
+      "certificate_based": true
+    }
+  },
+  "api": {
+    "tls_required": true,
+    "token_encryption": true,
+    "payload_encryption": true,
+    "certificate_pinning": true
+  },
+  "database": {
+    "encryption": {
+      "at_rest": true,
+      "in_transit": true,
+      "key_rotation": true,
+      "transparent_encryption": true
+    },
+    "connections": {
+      "ssl_required": true,
+      "certificate_validation": true
+    }
+  },
+  "backup": {
+    "encryption": {
+      "enabled": true,
+      "separate_keys": true,
+      "key_escrow": true,
+      "integrity_verification": true
+    }
+  },
+  "certificates": {
+    "trusted_ca_only": true,
+    "regular_renewal": true,
+    "revocation_checking": true,
+    "secure_storage": true,
+    "lifecycle": {
+      "automated_renewal": true,
+      "expiry_monitoring": true,
+      "secure_generation": true
+    }
+  },
+  "digital_signatures": {
+    "code_signing": true,
+    "document_signing": true,
+    "timestamp_verification": true,
+    "non_repudiation": true
+  },
+  "pki": {
+    "certificate_authority": {
+      "trusted": true,
+      "audited": true
+    },
+    "certificate_policies": {
+      "documented": true
+    },
+    "certificate_revocation": {
+      "crl_available": true,
+      "ocsp_enabled": true
+    }
+  },
+  "hsm": {
+    "available": true,
+    "key_generation": true,
+    "key_storage": true,
+    "cryptographic_operations": true,
+    "tamper_protection": true,
+    "fips_140_2_level": 3
+  }
+}

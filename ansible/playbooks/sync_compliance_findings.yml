@@ -1,0 +1,48 @@
+---
+# AAC - Sync Compliance Findings
+#
+# Derives the first-class FINDINGS layer from stored compliance_results
+# evidence: every violation becomes an identified issue keyed by
+# (framework, control_id, subject) with state — open, waived, or resolved —
+# where resolution only ever happens because a NEWER assessment showed the
+# control passing (verified by rescan).
+#
+# This is the layer that answers with TARGETS instead of percentages:
+#   blast radius   SELECT * FROM findings_blast_radius WHERE control_id = 'CIS 1.1.1';
+#   system targets SELECT * FROM findings_system_targets WHERE subject = 'host01';
+#   by reference   SELECT * FROM findings_ref_radius WHERE ref_value = 'CCE-90638-3';
+#
+# Report-only with respect to evidence: reads compliance_results, writes only
+# the derived compliance_findings table (+ views), never touches evidence rows.
+# Run after assessments (or on a schedule) to keep the findings current.
+#
+# ── Variables (see the role README for the full table) ───────────────
+#   findings_lookback_days  window of assessments to sync from (default 90)
+#   findings_framework      restrict to one framework key ('' = all)
+#
+# ── AAP Job Template ─────────────────────────────────────────────────
+#   "AAC - Sync Compliance Findings" — EE: AAC Compliance EE, hosts:
+#   localhost (PostgreSQL only).
+
+- name: Sync the derived findings layer from stored evidence
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+
+  tasks:
+    - name: Load site configuration when present
+      ansible.builtin.include_vars: "{{ item }}"
+      with_first_found:
+        - files: ["../vars/site_config.yml"]
+          skip: true
+
+    - name: Load vault secrets when present
+      ansible.builtin.include_vars: "{{ item }}"
+      with_first_found:
+        - files: ["../vars/vault_secrets.yml"]
+          skip: true
+
+    - name: Derive findings
+      ansible.builtin.include_role:
+        name: aac_findings_sync

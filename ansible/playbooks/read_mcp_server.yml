@@ -1,0 +1,23 @@
+---
+- name: Read MCP server source
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Read server.py
+      shell: cat /opt/aap-mcp-server/server.py
+      register: server_py
+      changed_when: false
+
+    - name: Show server.py
+      debug:
+        msg: "{{ server_py.stdout }}"
+
+    - name: List /opt/aap-mcp-server/
+      shell: ls -la /opt/aap-mcp-server/
+      register: ls_out
+      changed_when: false
+
+    - name: Show directory listing
+      debug:
+        msg: "{{ ls_out.stdout }}"

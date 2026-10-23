@@ -1,0 +1,82 @@
+---
+# rotation_post_backup.yml — Step 7 of AAC Credential Rotation Workflow
+#
+# Takes a final backup after all credentials have been rotated and validated,
+# then cleans up the secure temp directory used for credential handoff.
+#
+# Part of workflow: "AAC - Rotate Credentials"
+
+- name: Post-Rotation Backup and Cleanup
+  hosts: localhost
+  connection: local
+  gather_facts: true
+
+  vars_files:
+    - ../vars/site_config.yml
+
+  vars:
+    # aap_host: <set via extra_vars / survey / inventory>   # default aac_host
+    aap_user:     "{{ aap_ssh_user }}"
+    rotation_dir: "/tmp/aac_cred_rotation"
+    project_dir:  "/home/{{ aap_user }}/aap/controller/data/projects/_11__compliance_automation"
+
+  tasks:
+
+    - name: Take post-rotation backup (vault + PostgreSQL)
+      shell: >
+        bash {{ project_dir }}/scripts/backup.sh
+        --dest ~/aac-backups
+      delegate_to: "{{ (aap_host | default(aac_host)) }}"
+      register: backup_result
+      changed_when: false
+
+    - name: Validate post-rotation backup
+      shell: >
+        bash {{ project_dir }}/scripts/backup.sh
+        --validate-only
+        --dest ~/aac-backups
+      delegate_to: "{{ (aap_host | default(aac_host)) }}"
+      register: validate_result
+      changed_when: false
+
+    - name: Securely remove rotation temp directory
+      file:
+        path: "{{ rotation_dir }}"
+        state: absent
+      delegate_to: "{{ (aap_host | default(aac_host)) }}"
+      become: true
+
+    - name: Confirm temp directory removed
+      stat:
+        path: "{{ rotation_dir }}"
+      register: rotation_dir_stat
+      delegate_to: "{{ (aap_host | default(aac_host)) }}"
+
+    - name: Assert temp directory is gone
+      assert:
+        that: not rotation_dir_stat.stat.exists
+        fail_msg: "Rotation temp directory still exists — manual cleanup required: rm -rf {{ rotation_dir }}"
+        success_msg: "Rotation temp directory securely removed"
+
+    - name: Rotation workflow complete
+      debug:
+        msg:
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "  AAC Credential Rotation — COMPLETE"
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "  ✅ All credentials rotated and validated"
+          - "  ✅ Vault updated and committed to git"
+          - "  ✅ Post-rotation backup taken and verified"
+          - "  ✅ Temp files securely removed"
+          - ""
+          - "  Next steps:"
+          - "  1. If MCP token was rotated: update ~/.claude.json on your Mac"
+          - "     python3 -c \""
+          - "     import json, os"
+          - "     with open(os.path.expanduser('~/.claude.json'),'r') as f: d=json.load(f)"
+          - "     d['projects']['<path-to-aac-repo>']['mcpServers']['aap']"
+          - "       ['headers']['Authorization'] = 'Bearer <new-token-from-mcp.env>'"
+          - "     with open(os.path.expanduser('~/.claude.json'),'w') as f: json.dump(d,f,indent=2)"
+          - "     \""
+          - "  2. Restart Claude Code to establish a fresh MCP session"
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

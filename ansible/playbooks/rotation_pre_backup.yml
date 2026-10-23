@@ -1,0 +1,59 @@
+---
+# rotation_pre_backup.yml — Step 1 of AAC Credential Rotation Workflow
+#
+# Creates a secure temp directory for credential handoff between nodes,
+# then backs up the current vault before any rotation begins.
+#
+# Part of workflow: "AAC - Rotate Credentials"
+
+- name: Pre-Rotation Backup
+  hosts: localhost
+  connection: local
+  gather_facts: true
+
+  vars_files:
+    - ../vars/site_config.yml
+
+  vars:
+    # aap_host: <set via extra_vars / survey / inventory>   # default aac_host
+    aap_user: "{{ aap_ssh_user }}"
+    rotation_dir: "/tmp/aac_cred_rotation"
+    project_dir: "/home/{{ aap_user }}/aap/controller/data/projects/_11__compliance_automation"
+
+  tasks:
+
+    - name: Create secure rotation temp directory
+      file:
+        path: "{{ rotation_dir }}"
+        state: directory
+        mode: "0700"
+        owner: "{{ aap_user }}"
+      delegate_to: "{{ (aap_host | default(aac_host)) }}"
+      become: true
+
+    - name: Write rotation session metadata
+      copy:
+        dest: "{{ rotation_dir }}/session.env"
+        mode: "0600"
+        content: |
+          ROTATION_DATE={{ ansible_date_time.date }}
+          ROTATION_TIME={{ ansible_date_time.time }}
+          ROTATION_HOST={{ (aap_host | default(aac_host)) }}
+      delegate_to: "{{ (aap_host | default(aac_host)) }}"
+      become: true
+
+    - name: Backup vault before rotation
+      shell: >
+        bash {{ project_dir }}/scripts/backup.sh
+        --skip-postgres
+        --dest ~/aac-backups/pre-rotation
+      delegate_to: "{{ (aap_host | default(aac_host)) }}"
+      register: backup_result
+      changed_when: false
+
+    - name: Backup summary
+      debug:
+        msg:
+          - "✅ Pre-rotation backup complete"
+          - "✅ Rotation temp directory created: {{ rotation_dir }}"
+          - "   Workflow is ready to proceed with credential rotation"

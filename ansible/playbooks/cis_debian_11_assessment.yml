@@ -1,0 +1,267 @@
+---
+# CIS Debian 11 LTS Compliance Assessment Playbook
+# This playbook collects system facts and evaluates them against CIS Debian 11 policies in OPA
+
+- name: CIS Debian 11 Compliance Assessment
+  hosts: all
+  gather_facts: yes
+  become: yes
+
+  vars:
+    opa_server_url: "{{ opa_security_url }}"
+    # report_dir: <set via extra_vars / survey / inventory>   # default '/tmp/compliance_assessments'
+    target_platform: "debian_11"
+    compliance_framework: "cis"
+
+  pre_tasks:
+    - name: Verify this is Debian 11
+      assert:
+        that:
+          - ansible_distribution == "Debian"
+          - ansible_distribution_version is version('11', '>=')
+          - ansible_distribution_version is version('11', '<')
+        fail_msg: "This playbook is designed for Debian 11 LTS only. Detected: {{ ansible_distribution }} {{ ansible_distribution_version }}"
+        success_msg: "Debian 11 LTS detected - proceeding with assessment"
+
+    - name: Ensure report directory exists
+      file:
+        path: "{{ (report_dir | default('/tmp/compliance_assessments', true)) }}"
+        state: directory
+        mode: '0755'
+      delegate_to: localhost
+      become: no
+
+  tasks:
+    # ==========================================================================
+    # SECTION 1.1: FILESYSTEM CONFIGURATION
+    # ==========================================================================
+
+    - name: Collect filesystem module information
+      shell: |
+        echo "{"
+        for module in cramfs freevxfs jffs2 hfs hfsplus udf; do
+          loaded=$(lsmod | grep -q "^$module " && echo "true" || echo "false")
+          disabled=$(grep -q "install $module /bin/true" /etc/modprobe.d/*.conf 2>/dev/null && echo "true" || echo "false")
+          echo "  \"$module\": {\"loaded\": $loaded, \"disabled\": $disabled},"
+        done
+        echo "  \"dummy\": {}"
+        echo "}"
+      register: filesystem_modules_raw
+      changed_when: false
+
+    - name: Collect mount information
+      shell: mount | grep -v '^/dev/loop'
+      register: mount_info_raw
+      changed_when: false
+
+    - name: Collect USB storage status
+      shell: |
+        echo "{"
+        echo "  \"loaded\": $(lsmod | grep -q '^usb_storage ' && echo 'true' || echo 'false'),"
+        echo "  \"disabled\": $(grep -q 'install usb-storage /bin/true' /etc/modprobe.d/*.conf 2>/dev/null && echo 'true' || echo 'false')"
+        echo "}"
+      register: usb_storage_raw
+      changed_when: false
+
+    # ==========================================================================
+    # SECTION 1.4: BOOT LOADER CONFIGURATION
+    # ==========================================================================
+
+    - name: Check bootloader configuration
+      shell: |
+        if [ -f /boot/grub/grub.cfg ]; then
+          stat -c '{"path":"/boot/grub/grub.cfg","mode":"%a","user":"%U","group":"%G"}' /boot/grub/grub.cfg
+        else
+          echo '{"path":"","mode":"","user":"","group":""}'
+        fi
+      register: bootloader_config_raw
+      changed_when: false
+
+    # ==========================================================================
+    # SECTION 1.5: ADDITIONAL PROCESS HARDENING
+    # ==========================================================================
+
+    - name: Check AppArmor status
+      shell: |
+        if command -v apparmor_status >/dev/null 2>&1; then
+          apparmor_status --json 2>/dev/null || echo '{"profiles":{},"processes":{}}'
+        else
+          echo '{"error":"apparmor_status not found"}'
+        fi
+      register: apparmor_status_raw
+      changed_when: false
+
+    # ==========================================================================
+    # SECTION 2: SERVICES
+    # ==========================================================================
+
+    - name: List enabled services
+      shell: systemctl list-unit-files --type=service --state=enabled --no-pager | grep -v '^UNIT' | awk '{print $1}'
+      register: enabled_services_raw
+      changed_when: false
+
+    # ==========================================================================
+    # SECTION 3: NETWORK CONFIGURATION
+    # ==========================================================================
+
+    - name: Collect network parameters
+      shell: |
+        echo "{"
+        for param in net.ipv4.ip_forward net.ipv4.conf.all.send_redirects net.ipv4.conf.default.accept_source_route; do
+          value=$(sysctl -n $param 2>/dev/null || echo "0")
+          echo "  \"$param\": $value,"
+        done
+        echo "  \"dummy\": 0"
+        echo "}"
+      register: network_params_raw
+      changed_when: false
+
+    - name: Check firewall status (UFW)
+      shell: |
+        if command -v ufw >/dev/null 2>&1; then
+          echo '{"installed": true, "status": "'$(ufw status | head -1 | awk '{print $2}')'"}'
+        else
+          echo '{"installed": false, "status": "not_installed"}'
+        fi
+      register: ufw_status_raw
+      changed_when: false
+
+    # ==========================================================================
+    # SECTION 4: LOGGING AND AUDITING
+    # ==========================================================================
+
+    - name: Check rsyslog status
+      shell: systemctl is-enabled rsyslog 2>/dev/null || echo "not-found"
+      register: rsyslog_status_raw
+      changed_when: false
+
+    - name: Check auditd status
+      shell: systemctl is-active auditd 2>/dev/null || echo "inactive"
+      register: auditd_status_raw
+      changed_when: false
+
+    # ==========================================================================
+    # SECTION 5: ACCESS, AUTHENTICATION, AUTHORIZATION
+    # ==========================================================================
+
+    - name: Collect SSH configuration
+      shell: sshd -T 2>/dev/null || echo "error"
+      register: sshd_config_raw
+      changed_when: false
+
+    - name: Collect PAM configuration
+      shell: |
+        echo "{"
+        if [ -f /etc/security/pwquality.conf ]; then
+          echo "  \"pwquality\": \"$(cat /etc/security/pwquality.conf | grep -v '^#' | grep -v '^$' | tr '\n' ';')\","
+        fi
+        if [ -f /etc/login.defs ]; then
+          echo "  \"login_defs\": \"$(grep -E '^(PASS_MAX_DAYS|PASS_MIN_DAYS|PASS_WARN_AGE)' /etc/login.defs | tr '\n' ';')\","
+        fi
+        echo "  \"dummy\": \"\""
+        echo "}"
+      register: pam_config_raw
+      changed_when: false
+
+    - name: Check sudo configuration
+      shell: |
+        if [ -f /etc/sudoers ]; then
+          stat -c '{"path":"/etc/sudoers","mode":"%a","user":"%U","group":"%G"}' /etc/sudoers
+        else
+          echo '{"path":"","mode":"","user":"","group":""}'
+        fi
+      register: sudo_config_raw
+      changed_when: false
+
+    # ==========================================================================
+    # SECTION 6: SYSTEM MAINTENANCE
+    # ==========================================================================
+
+    - name: Check important file permissions
+      shell: |
+        echo "["
+        for file in /etc/passwd /etc/shadow /etc/group /etc/gshadow; do
+          if [ -f $file ]; then
+            stat -c '{"file":"'$file'","mode":"%a","user":"%U","group":"%G"},' $file
+          fi
+        done
+        echo '{"file":"dummy","mode":"","user":"","group":""}]'
+      register: file_permissions_raw
+      changed_when: false
+
+    # ==========================================================================
+    # BUILD COMPLIANCE FACTS
+    # ==========================================================================
+
+    - name: Parse collected facts into structured format
+      set_fact:
+        compliance_facts:
+          system_info:
+            hostname: "{{ ansible_hostname }}"
+            distribution: "{{ ansible_distribution }}"
+            distribution_version: "{{ ansible_distribution_version }}"
+            kernel: "{{ ansible_kernel }}"
+            architecture: "{{ ansible_architecture }}"
+          disabled_filesystem_modules:
+            modules: "{{ filesystem_modules_raw.stdout | from_json }}"
+          mount_info:
+            raw: "{{ mount_info_raw.stdout }}"
+          usb_storage_disabled: "{{ usb_storage_raw.stdout | from_json }}"
+          bootloader_config: "{{ bootloader_config_raw.stdout | from_json }}"
+          apparmor_status: "{{ apparmor_status_raw.stdout | from_json }}"
+          enabled_services:
+            services: "{{ enabled_services_raw.stdout_lines }}"
+          network_params: "{{ network_params_raw.stdout | from_json }}"
+          ufw_status: "{{ ufw_status_raw.stdout | from_json }}"
+          rsyslog_status: "{{ rsyslog_status_raw.stdout }}"
+          auditd_status: "{{ auditd_status_raw.stdout }}"
+          sshd_config:
+            raw: "{{ sshd_config_raw.stdout }}"
+          pam_config: "{{ pam_config_raw.stdout | from_json }}"
+          sudo_config: "{{ sudo_config_raw.stdout | from_json }}"
+          file_permissions: "{{ file_permissions_raw.stdout | from_json }}"
+
+    - name: Save collected facts to file
+      copy:
+        content: "{{ compliance_facts | to_nice_json }}"
+        dest: "{{ (report_dir | default('/tmp/compliance_assessments', true)) }}/{{ ansible_hostname }}_debian_11_facts_{{ ansible_date_time.iso8601_basic_short }}.json"
+      delegate_to: localhost
+      become: no
+
+    # ==========================================================================
+    # EVALUATE AGAINST OPA POLICIES
+    # ==========================================================================
+
+    - name: Query OPA for compliance assessment
+      uri:
+        use_proxy: false
+        url: "{{ opa_server_url }}/v1/data/cis_debian_11/compliance_assessment"
+        method: POST
+        body_format: json
+        body:
+          input: "{{ compliance_facts }}"
+        return_content: yes
+      register: opa_assessment
+      delegate_to: localhost
+      become: no
+
+    - name: Save compliance report
+      copy:
+        content: "{{ opa_assessment.json.result | to_nice_json }}"
+        dest: "{{ (report_dir | default('/tmp/compliance_assessments', true)) }}/{{ ansible_hostname }}_debian_11_compliance_report_{{ ansible_date_time.iso8601_basic_short }}.json"
+      delegate_to: localhost
+      become: no
+
+    - name: Display compliance summary
+      debug:
+        msg:
+          - "============================================"
+          - "CIS Debian 11 Compliance Assessment"
+          - "============================================"
+          - "Hostname: {{ ansible_hostname }}"
+          - "Overall Compliance: {{ opa_assessment.json.result.compliance_summary.overall_compliance }}"
+          - "Compliance Percentage: {{ opa_assessment.json.result.compliance_summary.compliance_percentage }}%"
+          - "Total Violations: {{ opa_assessment.json.result.compliance_summary.total_violations }}"
+          - "Risk Level: {{ opa_assessment.json.result.compliance_summary.risk_level }}"
+          - "============================================"
+          - "Report saved to: {{ (report_dir | default('/tmp/compliance_assessments', true)) }}/{{ ansible_hostname }}_debian_11_compliance_report_{{ ansible_date_time.iso8601_basic_short }}.json"

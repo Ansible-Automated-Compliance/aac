@@ -1,0 +1,172 @@
+---
+# verify_patch_closure.yml — prove the exposure actually closed
+#
+# Stage 12 of the patch lifecycle, and the difference between a patching
+# *process* and a patching *programme*:
+#
+#   "we deployed the patch"          a report of an ACTION
+#   "the finding no longer matches"  proof of an OUTCOME
+#
+# An auditor asks for the second. Nothing in this playbook trusts the
+# remediation job's own success report — it re-measures the host and compares
+# what is installed NOW against what was installed when the finding was raised
+# and against the version that fixes it.
+#
+# Without this loop the platform's belief about the estate silently drifts from
+# reality, and the next CVE match is computed against stale inventory.
+#
+# ORDER MATTERS. This playbook does not collect facts itself; it compares
+# `patch_worklist` against `installed_inventory`. Run fact collection and
+# `refresh_inventory_catalog.yml` first, or you will be comparing the worklist
+# against the very snapshot that produced it and every finding will look
+# unchanged. The freshness guard below refuses to run in that case.
+#
+# AAP Job Template: "AAC - Verify Patch Closure"
+# Credentials: Ansible Vault
+# EE: AAC Compliance EE (community.postgresql)
+# Schedule: after each remediation window, and weekly as a standing check.
+
+- name: Re-measure the estate and prove which exposures closed
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - [ "../vars/vault_secrets.yml", "../vars/empty_fallback.yml" ]
+    - ../vars/site_config.yml
+
+  vars:
+    pg_port: "{{ compliance_db_port | default(5432) }}"
+    pg_db: "compliance"
+    pg_user: "postgres"
+    pg_password: "{{ compliance_db_password }}"
+    # Refuse to verify against inventory older than this. Set to 0 to override
+    # deliberately (e.g. re-running a historical verification).
+    #
+    # Reads the same `max_inventory_age` survey field that
+    # identify_affected_components.yml uses, because two nodes of the same
+    # workflow silently interpreting one control differently is worse than
+    # either value on its own -- a presenter who raised the limit to get past
+    # identification had no way to know verification was still using 24.
+    #
+    # The DEFAULT stays deliberately stricter than identification's. Matching a
+    # work list against week-old inventory is tolerable; proving a fix landed
+    # against week-old inventory is not, because the snapshot that produced the
+    # work list is the same one being used to confirm it changed. Raising this
+    # weakens exactly the check that makes closure evidence worth anything.
+    max_inventory_age_hours: "{{ max_inventory_age | default(24) | int }}"
+
+  tasks:
+    - name: Ensure the closure-evidence schema exists
+      community.postgresql.postgresql_script:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        path: "{{ playbook_dir }}/../files/patch_closure_schema.sql"
+
+    # The whole method depends on the inventory being NEWER than the worklist.
+    # Verifying against the same snapshot that produced the findings would
+    # report every one as unchanged — a false "still exposed" that is worse than
+    # not running at all, because it looks like a result.
+    - name: Check inventory freshness against the worklist
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: >-
+          SELECT
+            (SELECT max(last_seen_at) FROM installed_inventory) AS inventory_at,
+            (SELECT max(pulled_at)    FROM patch_worklist)      AS worklist_at,
+            (SELECT count(*)          FROM patch_worklist)      AS work_items,
+            EXTRACT(EPOCH FROM (now() - (SELECT max(last_seen_at)
+                     FROM installed_inventory)))/3600           AS inventory_age_hours
+      register: freshness
+
+    - name: Nothing to verify
+      ansible.builtin.debug:
+        msg: >-
+          patch_worklist is empty — there are no findings to verify. Run
+          "AAC - Pull Patch Worklist (Portal)" first.
+      when: (freshness.query_result[0].work_items | int) == 0
+
+    - name: Stop when there is no work
+      ansible.builtin.meta: end_play
+      when: (freshness.query_result[0].work_items | int) == 0
+
+    - name: Refuse to verify against stale inventory
+      ansible.builtin.assert:
+        that:
+          - freshness.query_result[0].inventory_at is not none
+          - (max_inventory_age_hours | int) == 0 or
+            (freshness.query_result[0].inventory_age_hours | float) <= (max_inventory_age_hours | int)
+        fail_msg: >-
+          Inventory is {{ freshness.query_result[0].inventory_age_hours | default('unknown') | round(1) }}
+          hours old (limit {{ max_inventory_age_hours }}h). Verifying now would
+          compare the worklist against the same snapshot that produced it and
+          report every finding as unchanged. Run fact collection and
+          "AAC - Refresh Inventory Catalog (patch intelligence)" first, then
+          re-run. Override with max_inventory_age_hours=0 only when
+          deliberately re-verifying historical data.
+        success_msg: >-
+          Inventory is {{ freshness.query_result[0].inventory_age_hours | round(1) }}h
+          old — fresh enough to verify {{ freshness.query_result[0].work_items }} findings.
+
+    - name: Re-measure and record closure evidence
+      community.postgresql.postgresql_script:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        path: "{{ playbook_dir }}/../files/patch_closure_verify.sql"
+
+    - name: Read back this verification round
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: >-
+          WITH latest AS (
+            SELECT * FROM patch_closure_evidence
+             WHERE verified_at = (SELECT max(verified_at) FROM patch_closure_evidence)
+          )
+          SELECT
+            count(*)                                             AS verified,
+            count(*) FILTER (WHERE outcome='closed_exact')        AS closed_exact,
+            count(*) FILTER (WHERE outcome='closed_removed')      AS closed_removed,
+            count(*) FILTER (WHERE outcome='changed_review')      AS changed_review,
+            count(*) FILTER (WHERE outcome='still_exposed')       AS still_exposed,
+            count(*) FILTER (WHERE outcome='host_absent')         AS host_absent,
+            count(*) FILTER (WHERE outcome='still_exposed' AND kev_member) AS kev_still_exposed
+          FROM latest
+      register: result
+
+    - name: Summary
+      vars:
+        r: "{{ result.query_result[0] }}"
+      ansible.builtin.debug:
+        msg:
+          - "Verified {{ r.verified }} findings by re-measuring the estate."
+          - "PROVEN CLOSED: {{ r.closed_exact }} at the fixed version, {{ r.closed_removed }} by product removal"
+          - "STILL EXPOSED: {{ r.still_exposed }} — the remediation did not take effect{{ ' (' ~ r.kev_still_exposed ~ ' KEV-listed)' if (r.kev_still_exposed | int) > 0 else '' }}"
+          - "NEEDS REVIEW: {{ r.changed_review }} — version moved but does not equal the fix. Deliberately NOT counted as closed; a string comparison cannot tell a newer fixed build from an unrelated upgrade"
+          - "UNPROVABLE: {{ r.host_absent }} host(s) no longer report inventory — confirm decommissioned rather than silently failing"
+          - "Evidence appended to patch_closure_evidence (append-only; one row per finding per verification)."
+
+    # A KEV-listed finding that survived remediation is the single most
+    # actionable line this playbook can produce — actively exploited, and the
+    # fix demonstrably did not land.
+    - name: Escalate KEV findings that survived remediation
+      ansible.builtin.debug:
+        msg: >-
+          ESCALATE: {{ result.query_result[0].kev_still_exposed }} KEV-listed
+          finding(s) are still exposed after remediation. These are actively
+          exploited in the wild and the patch did not take effect. Investigate
+          before the next change window.
+      when: (result.query_result[0].kev_still_exposed | int) > 0

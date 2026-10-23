@@ -1,0 +1,26 @@
+---
+# The platform itself: gateway, controller, EDA and Private Automation Hub, sized
+# for a single-node OpenShift Local cluster. Lightspeed (the in-product assistant)
+# is off: it needs about 6 GiB and a model endpoint, and an evaluation does not.
+# Apply after the operator's CSV shows Succeeded:
+#   oc apply -f install/openshift-local/manifests/20-aap.yaml
+apiVersion: aap.ansible.com/v1alpha1
+kind: AnsibleAutomationPlatform
+metadata:
+  name: aap
+  namespace: aap-operator
+spec:
+  route_tls_termination_mechanism: Edge
+  redis_mode: standalone
+  controller:
+    disabled: false
+  eda:
+    disabled: false
+  hub:
+    disabled: false
+    storage_type: file
+    file_storage_size: 5Gi
+    # CRC's hostpath provisioner serves a single node; ReadWriteOnce is enough.
+    file_storage_access_mode: ReadWriteOnce
+  lightspeed:
+    disabled: true

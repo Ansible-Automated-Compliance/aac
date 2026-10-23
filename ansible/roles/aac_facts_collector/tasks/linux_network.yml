@@ -1,0 +1,64 @@
+---
+# linux_network.yml — Collect network configuration facts
+
+- name: Get listening ports
+  shell: |
+    ss -tlnpu 2>/dev/null || netstat -tlnpu 2>/dev/null || echo ""
+  register: listening_ports_raw
+  changed_when: false
+  failed_when: false
+
+- name: Get firewall rules
+  shell: |
+    if command -v firewall-cmd &>/dev/null && firewall-cmd --state &>/dev/null 2>&1; then
+      echo "TYPE:firewalld"
+      firewall-cmd --list-all 2>/dev/null
+    elif command -v ufw &>/dev/null; then
+      echo "TYPE:ufw"
+      ufw status verbose 2>/dev/null
+    else
+      echo "TYPE:iptables"
+      iptables -L -n -v 2>/dev/null || echo "no iptables"
+    fi
+  register: firewall_raw
+  changed_when: false
+  failed_when: false
+
+- name: Get network interfaces detail
+  shell: |
+    ip -j addr show 2>/dev/null || ip addr show 2>/dev/null || echo ""
+  register: ip_addr_raw
+  changed_when: false
+  failed_when: false
+
+- name: Get routing table
+  shell: |
+    ip route show 2>/dev/null || route -n 2>/dev/null || echo ""
+  register: routing_raw
+  changed_when: false
+  failed_when: false
+
+- name: Get IPv4/IPv6 forwarding state
+  shell: |
+    echo "ipv4_forwarding=$(sysctl -n net.ipv4.ip_forward 2>/dev/null || echo unknown)"
+    echo "ipv6_forwarding=$(sysctl -n net.ipv6.conf.all.forwarding 2>/dev/null || echo unknown)"
+  register: forwarding_raw
+  changed_when: false
+  failed_when: false
+
+- name: Set network facts
+  set_fact:
+    aac_network:
+      interfaces:       "{{ ansible_interfaces | default([]) }}"
+      default_ipv4:     "{{ ansible_default_ipv4 | default({}) }}"
+      default_ipv6:     "{{ ansible_default_ipv6 | default({}) }}"
+      dns_nameservers:  "{{ ansible_dns.nameservers | default([]) }}"
+      dns_search:       "{{ ansible_dns.search | default([]) }}"
+      listening_ports:  "{{ listening_ports_raw.stdout_lines | default([]) }}"
+      firewall_raw:     "{{ firewall_raw.stdout | default('') }}"
+      routing_raw:      "{{ routing_raw.stdout | default('') }}"
+      forwarding_raw:   "{{ forwarding_raw.stdout | default('') }}"
+      ip_addr_raw:      "{{ ip_addr_raw.stdout | default('') }}"
+      hostname:         "{{ ansible_hostname }}"
+      fqdn:             "{{ ansible_fqdn }}"
+      domain:           "{{ ansible_domain | default('') }}"

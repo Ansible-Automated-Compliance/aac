@@ -1,0 +1,56 @@
+---
+# aac_opa_containers role defaults
+# Override any of these in group_vars, host_vars, or the calling play's vars block.
+
+# OPA container image
+aac_opa_image: "docker.io/openpolicyagent/opa:latest"
+
+# Base directory on aac_host where policy sub-directories are created.
+aac_opa_policy_base_dir: "/etc/opa"
+
+# Set to false to skip systemd unit generation/enablement.
+aac_opa_generate_systemd: true
+
+# HAProxy image used when any container type has replicas > 1.
+# HAProxy is not available in registry.access.redhat.com; docker.io is used intentionally.
+aac_opa_haproxy_image: "docker.io/haproxy:lts-alpine"
+
+# Directory on aac_host where generated HAProxy config files are written.
+aac_opa_haproxy_config_dir: "/etc/opa/haproxy"
+
+# ── Container definitions ─────────────────────────────────────────────────────
+#
+# replicas (default 1):
+#   1 → single container on `port` (canonical). No HAProxy.
+#   N → N containers on sequential backend ports, HAProxy on `port` (canonical).
+#       Callers always use the canonical port — HAProxy is transparent.
+#
+# backend_base_port: first port for replica instances when replicas > 1.
+#   Ranges must not overlap across container types.
+#   security:   8191–8200  (up to 10 replicas)
+#   compliance: 8201–8210
+#   ot:         8211–8220
+#
+# Policies are loaded separately by AAP Template 27 (AAC - Load OPA Policies).
+
+aac_opa_containers:
+  - name: opa-security
+    port: 8181
+    policy_subdir: security
+    description: "CIS Benchmarks, NIST, STIGs"
+    replicas: 1
+    backend_base_port: 8191
+
+  - name: opa-compliance
+    port: 8182
+    policy_subdir: compliance
+    description: "ISO 27001, SOC 2, PCI-DSS, SOX, FISMA, Sentinel, Governance"
+    replicas: 1
+    backend_base_port: 8201
+
+  - name: opa-ot
+    port: 8183
+    policy_subdir: ot
+    description: "NERC-CIP, AI Governance, AMI, Threat Detection"
+    replicas: 1
+    backend_base_port: 8211

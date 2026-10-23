@@ -1,0 +1,19 @@
+---
+# Initialize PostgreSQL Container and Compliance Schema
+# Deploys the PostgreSQL 15 container and creates all compliance tables:
+#   compliance_results, compliance_facts, host_facts, sidecar_datasets
+#
+# Usage: Run via AAP job template "Initialize PostgreSQL Database" (ID 23)
+# Credentials required: Ansible Vault
+
+- name: Initialize PostgreSQL Container and Schema
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - ../vars/site_config.yml
+    - [ "../vars/vault_secrets.yml", "../vars/empty_fallback.yml" ]
+
+  roles:
+    - role: aac_compliance_db

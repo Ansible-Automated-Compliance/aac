@@ -1,0 +1,68 @@
+{
+  "repository": "ansible-automated-compliance/aac",
+  "branch": "main",
+  "commit": "14a1926",
+  "audit_year": 2026,
+  "audit_month": 3,
+  "playbooks": [
+    {
+      "path": "ansible/playbooks/cis_rhel9_assessment.yml",
+      "metadata": {
+        "author": "Platform Security Team <platform-security@company.com>",
+        "purpose": "Collect CIS RHEL 9 compliance facts and evaluate against OPA policy",
+        "version": "2.1.0",
+        "date_modified": "2026-02-15",
+        "owner_team": "platform-security",
+        "contact": "platform-security@company.com",
+        "last_reviewed": "2026-02-15"
+      },
+      "plays": [
+        {
+          "name": "Collect CIS RHEL 9 compliance facts",
+          "hosts": "rhel9_servers",
+          "tasks": [
+            { "name": "Gather system facts for CIS assessment", "tags": ["facts", "cis"] },
+            { "name": "Check filesystem mount options", "tags": ["filesystem", "cis"] },
+            { "name": "Verify SSH daemon configuration", "tags": ["ssh", "cis"] },
+            { "name": "Assess PAM password policy settings", "tags": ["pam", "cis"] },
+            { "name": "Validate auditd logging rules", "tags": ["audit", "cis"] }
+          ]
+        },
+        {
+          "name": "Submit facts to OPA and store results in PostgreSQL",
+          "hosts": "localhost",
+          "tasks": [
+            { "name": "Post collected facts to OPA for evaluation", "tags": ["opa", "evaluate"] },
+            { "name": "Store compliance result in PostgreSQL", "tags": ["postgresql", "store"] },
+            { "name": "Generate HTML compliance report", "tags": ["report"] }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "ansible/playbooks/sentinel_validate_ansible.yml",
+      "metadata": {
+        "author": "DevSecOps Team <devsecops@company.com>",
+        "purpose": "Validate Ansible playbooks against Sentinel policy before allowing git merge",
+        "version": "1.3.0",
+        "date_modified": "2026-03-01",
+        "owner_team": "devsecops",
+        "contact": "devsecops@company.com",
+        "last_reviewed": "2026-03-01"
+      },
+      "plays": [
+        {
+          "name": "Validate playbook against Sentinel Ansible policy",
+          "hosts": "localhost",
+          "tasks": [
+            { "name": "Read playbook file from repository checkout", "tags": ["read"] },
+            { "name": "Convert YAML playbook to JSON for OPA evaluation", "tags": ["transform"] },
+            { "name": "Submit playbook JSON to OPA sentinel endpoint", "tags": ["opa", "sentinel"] },
+            { "name": "Parse OPA response and extract violations", "tags": ["parse"] },
+            { "name": "Fail job if policy violations detected", "tags": ["enforce"] }
+          ]
+        }
+      ]
+    }
+  ]
+}

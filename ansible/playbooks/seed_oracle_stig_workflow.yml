@@ -1,0 +1,382 @@
+---
+# =============================================================================
+# seed_oracle_stig_workflow.yml
+#
+# Creates (or recreates) the "AAC - Oracle STIG Assessment and Export" workflow
+# and the job templates it needs. Idempotent — safe to re-run. Objects are
+# resolved by NAME; ids drift between installs.
+#
+#   00 Sync project
+#        ↓ success
+#   01 STIG Linux Assessment (RHEL / Oracle Linux)     — the OS host(s)
+#        ↓ always (an Open finding is a result, not a failure)
+#   02 STIG Oracle Database 19c Assessment             — the instance
+#        ↓ always
+#   03 Export OSCAL Assessment Results (stig_oracle_linux_9)
+#        ↓ always
+#   04 Export OSCAL Assessment Results (stig_oracle_database_19c)
+#        ↓ always
+#   05 Export SARIF Assessment Results (stig_oracle_linux_9)
+#        ↓ always
+#   06 Export SARIF Assessment Results (stig_oracle_database_19c)
+#
+# Prerequisites on the controller: the `stigs` loader key loaded on opa-security
+# ("AAC - Load OPA Policies"), the six Oracle keys in site_config.yml
+# (opa_framework_map + opa_framework_path) or supplied as extra_vars, and the
+# OS / database hosts in the inventory with the machine credential below. Set
+# the LIMIT at launch (ask_limit_on_launch) to the Oracle host(s); the
+# assessments are host-reaching and would otherwise run on the whole inventory.
+#
+# Run via AAP Job Template: "AAC - Seed Oracle STIG Workflow"
+# Credentials: Ansible Vault   EE: AAC Compliance EE   Inventory: Compliance Infrastructure, limit: localhost
+# =============================================================================
+
+- name: Seed the Oracle STIG assessment workflow
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    aap_api: "{{ aap_url }}/api/controller/v2"
+    aap_api_token: "{{ aap_token_override | default(aap_token | default('', true), true) }}"
+
+    workflow_name: "AAC - Oracle STIG Assessment and Export"
+    project_name: "Compliance Automation"
+    inventory_name: "Compliance Infrastructure"
+    ee_name: "AAC Compliance EE"
+    vault_credential_name: "Ansible Vault"
+    machine_credential_name: "Compliance SSH Credential"
+
+    oracle_templates:
+      - name: "AAC - STIG Linux Assessment (RHEL / Oracle Linux)"
+        needs_machine: true
+        playbook: "ansible/playbooks/stig_linux_assessment.yml"
+        description: "DISA STIG for RHEL 8/9 and Oracle Linux 8/9 — collect, map, evaluate at OPA, store (fail-closed)"
+        manage: true
+      - name: "AAC - STIG Oracle Database 19c Assessment"
+        needs_machine: true
+        playbook: "ansible/playbooks/stig_oracle_database_19c_assessment.yml"
+        description: "DISA STIG Oracle Database 19c V1R6 — the STIG's own queries as SYSDBA, attestations from the site, evaluate at OPA, store"
+        manage: true
+      # The exporters run on localhost inside the EE and get the Vault
+      # credential only (least privilege — no host access). The file they write
+      # lives for the job; its path is in the job's set_stats. To keep a copy on
+      # the AAC host, attach the machine credential to these two templates by
+      # hand and set the exporter's SCP variables — not granted here.
+      - name: "AAC - Export OSCAL Assessment Results"
+        playbook: "ansible/playbooks/export_oscal_assessment.yml"
+        description: "compliance_results → NIST OSCAL assessment-results JSON"
+        manage: true
+      - name: "AAC - Export SARIF Assessment Results"
+        playbook: "ansible/playbooks/export_sarif_assessment.yml"
+        description: "compliance_results → SARIF 2.1.0 for code scanning"
+        manage: true
+
+    workflow_survey:
+      name: "Oracle STIG Assessment"
+      description: "Assess an Oracle Linux (or RHEL) host and an Oracle Database 19c instance against the DISA STIGs, then export OSCAL and SARIF"
+      spec:
+        - question_name: "ORACLE_HOME on the database host"
+          variable: "oracle_home"
+          type: "text"
+          required: false
+          default: "/u01/app/oracle/product/19.0.0/dbhome_1"
+        - question_name: "ORACLE_SID"
+          variable: "oracle_sid"
+          type: "text"
+          required: false
+          default: "ORCL"
+        - question_name: "Oracle software owner (OS user that can run sqlplus / as sysdba)"
+          variable: "oracle_os_user"
+          type: "text"
+          required: false
+          default: "oracle"
+        - question_name: "Previously collected Oracle facts file (blank = collect from the instance; the shipped synthetic fixture is tests/stig_mapper/fixture_oracle19c_raw.json)"
+          question_description: >-
+            Use only when no instance is reachable. The stored row is marked facts_source=file.
+          variable: "oracle_facts_file"
+          type: "text"
+          required: false
+          default: ""
+        - question_name: "Export output directory (on the execution node)"
+          variable: "output_dir"
+          type: "text"
+          required: false
+          default: "/tmp/aac_exports"
+
+  tasks:
+    # site_config.yml is gitignored and absent from a synced project checkout;
+    # aap_url / aap_token may arrive as extra_vars instead.
+    - name: Load optional local config
+      ansible.builtin.include_vars: "{{ item }}"
+      with_first_found:
+        - files: ["{{ playbook_dir }}/../vars/site_config.yml", "{{ playbook_dir }}/../vars/vault_secrets.yml"]
+          skip: true
+      no_log: true
+
+    - name: Fail early without an AAP URL
+      ansible.builtin.fail:
+        msg: "aap_url is not set. Provide it in site_config.yml or as an extra_var."
+      when: (aap_url | default('', true)) | length == 0
+
+    - name: Fail early without an AAP token
+      ansible.builtin.fail:
+        msg: "aap_token is not set. Provide it in vault_secrets.yml, or pass aap_token_override as an extra_var."
+      when: aap_api_token | length == 0
+
+    - name: Look up dependencies by name
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "{{ aap_api }}/{{ item.path }}/?name={{ item.name | urlencode }}"
+        method: GET
+        headers: { Authorization: "Bearer {{ aap_api_token }}" }
+        validate_certs: false
+        status_code: 200
+      loop:
+        - { key: "project",    path: "projects",               name: "{{ project_name }}" }
+        - { key: "inventory",  path: "inventories",            name: "{{ inventory_name }}" }
+        - { key: "ee",         path: "execution_environments", name: "{{ ee_name }}" }
+        - { key: "credential", path: "credentials",            name: "{{ vault_credential_name }}" }
+        - { key: "machine",    path: "credentials",            name: "{{ machine_credential_name }}" }
+      loop_control:
+        label: "{{ item.key }} = {{ item.name }}"
+      register: deps
+
+    - name: Build a dependency id map
+      ansible.builtin.set_fact:
+        dep_ids: "{{ dep_ids | default({}) | combine({item.item.key: (item.json.results[0].id if item.json.count > 0 else none)}) }}"
+      loop: "{{ deps.results }}"
+      loop_control:
+        label: "{{ item.item.key }}"
+
+    - name: Fail when a dependency is missing
+      ansible.builtin.fail:
+        msg: "Could not resolve {{ item }} by name on this controller."
+      loop: "{{ dep_ids | dict2items | selectattr('value', 'none') | map(attribute='key') | list }}"
+
+    - name: Look up each job template
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "{{ aap_api }}/job_templates/?name={{ item.name | urlencode }}"
+        method: GET
+        headers: { Authorization: "Bearer {{ aap_api_token }}" }
+        validate_certs: false
+        status_code: 200
+      loop: "{{ oracle_templates }}"
+      loop_control:
+        label: "{{ item.name }}"
+      register: jt_lookup
+
+    - name: Create job templates that do not exist
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "{{ aap_api }}/job_templates/"
+        method: POST
+        headers: { Authorization: "Bearer {{ aap_api_token }}", Content-Type: "application/json" }
+        body_format: json
+        body:
+          name: "{{ item.item.name }}"
+          description: "{{ item.item.description }}"
+          job_type: "run"
+          project: "{{ dep_ids.project | int }}"
+          playbook: "{{ item.item.playbook }}"
+          inventory: "{{ dep_ids.inventory | int }}"
+          execution_environment: "{{ dep_ids.ee | int }}"
+          ask_variables_on_launch: true
+          ask_limit_on_launch: true
+          become_enabled: "{{ item.item.needs_machine | default(false) }}"
+          verbosity: 1
+        validate_certs: false
+        status_code: [200, 201]
+      loop: "{{ jt_lookup.results }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+      when:
+        - item.json.count == 0
+        - item.item.manage | bool
+
+    - name: Re-read template ids
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "{{ aap_api }}/job_templates/?name={{ item.name | urlencode }}"
+        method: GET
+        headers: { Authorization: "Bearer {{ aap_api_token }}" }
+        validate_certs: false
+        status_code: 200
+      loop: "{{ oracle_templates }}"
+      loop_control:
+        label: "{{ item.name }}"
+      register: jt_final
+
+    - name: Build the template map
+      ansible.builtin.set_fact:
+        jt: "{{ jt | default({}) | combine({item.item.name: (item.json.results[0].id if item.json.count > 0 else none)}) }}"
+        jt_meta: "{{ jt_meta | default([]) + [{'name': item.item.name, 'id': (item.json.results[0].id if item.json.count > 0 else none), 'needs_machine': item.item.needs_machine | default(false), 'cred_ids': (item.json.results[0].summary_fields.credentials | default([]) | map(attribute='id') | list) if item.json.count > 0 else []}] }}"
+      loop: "{{ jt_final.results }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+
+    - name: Fail when a job template is still missing
+      ansible.builtin.fail:
+        msg: "Job template '{{ item }}' does not exist and was not created."
+      loop: "{{ jt | dict2items | selectattr('value', 'none') | map(attribute='key') | list }}"
+
+    - name: Attach the Vault credential to every template
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "{{ aap_api }}/job_templates/{{ item.id }}/credentials/"
+        method: POST
+        headers: { Authorization: "Bearer {{ aap_api_token }}", Content-Type: "application/json" }
+        body_format: json
+        body: "{{ {'id': dep_ids.credential | int} }}"
+        validate_certs: false
+        status_code: [200, 201, 204]
+      loop: "{{ jt_meta }}"
+      loop_control:
+        label: "vault -> {{ item.name }}"
+      when:
+        - item.id is not none
+        - dep_ids.credential | int not in (item.cred_ids | default([]))
+
+    - name: Attach the Machine credential to the templates that reach a host
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "{{ aap_api }}/job_templates/{{ item.id }}/credentials/"
+        method: POST
+        headers: { Authorization: "Bearer {{ aap_api_token }}", Content-Type: "application/json" }
+        body_format: json
+        body: "{{ {'id': dep_ids.machine | int} }}"
+        validate_certs: false
+        status_code: [200, 201, 204]
+      loop: "{{ jt_meta }}"
+      loop_control:
+        label: "machine -> {{ item.name }}"
+      when:
+        - item.id is not none
+        - item.needs_machine | bool
+        - dep_ids.machine | int not in (item.cred_ids | default([]))
+
+    - name: Look up the workflow
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "{{ aap_api }}/workflow_job_templates/?name={{ workflow_name | urlencode }}"
+        method: GET
+        headers: { Authorization: "Bearer {{ aap_api_token }}" }
+        validate_certs: false
+        status_code: 200
+      register: wf_lookup
+
+    - name: Create the workflow when absent
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "{{ aap_api }}/workflow_job_templates/"
+        method: POST
+        headers: { Authorization: "Bearer {{ aap_api_token }}", Content-Type: "application/json" }
+        body_format: json
+        body:
+          name: "{{ workflow_name }}"
+          description: "DISA STIG for an Oracle Linux (or RHEL) host and an Oracle Database 19c instance, stored as evidence, exported as OSCAL and SARIF"
+          organization: 1
+          inventory: "{{ dep_ids.inventory | int }}"
+          ask_variables_on_launch: true
+          ask_limit_on_launch: true
+          survey_enabled: true
+        validate_certs: false
+        status_code: [200, 201]
+      when: wf_lookup.json.count == 0
+      register: wf_created
+
+    - name: Resolve the workflow id
+      ansible.builtin.set_fact:
+        wf_id: "{{ wf_created.json.id if (wf_lookup.json.count == 0) else wf_lookup.json.results[0].id }}"
+
+    - name: Apply the survey
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "{{ aap_api }}/workflow_job_templates/{{ wf_id }}/survey_spec/"
+        method: POST
+        headers: { Authorization: "Bearer {{ aap_api_token }}", Content-Type: "application/json" }
+        body_format: json
+        body:
+          name: "{{ workflow_survey.name }}"
+          description: "{{ workflow_survey.description }}"
+          spec: "{{ workflow_survey.spec }}"
+        validate_certs: false
+        status_code: [200, 201]
+
+    - name: Read existing workflow nodes
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "{{ aap_api }}/workflow_job_templates/{{ wf_id }}/workflow_nodes/?page_size=100"
+        method: GET
+        headers: { Authorization: "Bearer {{ aap_api_token }}" }
+        validate_certs: false
+        status_code: 200
+      register: existing_nodes
+
+    - name: Delete existing nodes (the graph is rebuilt whole)
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "{{ aap_api }}/workflow_job_template_nodes/{{ item.id }}/"
+        method: DELETE
+        headers: { Authorization: "Bearer {{ aap_api_token }}" }
+        validate_certs: false
+        status_code: [204, 404]
+      loop: "{{ existing_nodes.json.results }}"
+      loop_control:
+        label: "node {{ item.id }}"
+
+    - name: Create the workflow nodes
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "{{ aap_api }}/workflow_job_templates/{{ wf_id }}/workflow_nodes/"
+        method: POST
+        headers: { Authorization: "Bearer {{ aap_api_token }}", Content-Type: "application/json" }
+        body_format: json
+        body: "{{ {'unified_job_template': (dep_ids.project if item.template == '__PROJECT__' else jt[item.template]) | int,
+                   'identifier': item.id,
+                   'extra_data': item.extra | default({})} }}"
+        validate_certs: false
+        status_code: [200, 201]
+      loop:
+        - { id: "00-sync-project",  template: "__PROJECT__" }
+        - { id: "01-stig-linux",    template: "AAC - STIG Linux Assessment (RHEL / Oracle Linux)" }
+        - { id: "02-stig-oracle",   template: "AAC - STIG Oracle Database 19c Assessment" }
+        - { id: "03-oscal-linux",   template: "AAC - Export OSCAL Assessment Results",  extra: { framework: "stig_oracle_linux_9" } }
+        - { id: "04-oscal-oracle",  template: "AAC - Export OSCAL Assessment Results",  extra: { framework: "stig_oracle_database_19c" } }
+        - { id: "05-sarif-linux",   template: "AAC - Export SARIF Assessment Results",  extra: { framework: "stig_oracle_linux_9" } }
+        - { id: "06-sarif-oracle",  template: "AAC - Export SARIF Assessment Results",  extra: { framework: "stig_oracle_database_19c" } }
+      loop_control:
+        label: "{{ item.id }}"
+      register: created_nodes
+
+    - name: Map node identifier to id
+      ansible.builtin.set_fact:
+        node: "{{ node | default({}) | combine({item.item.id: item.json.id}) }}"
+      loop: "{{ created_nodes.results }}"
+      loop_control:
+        label: "{{ item.item.id }} = {{ item.json.id }}"
+
+    - name: Wire the edges (success after the sync; always between assessments and exports)
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "{{ aap_api }}/workflow_job_template_nodes/{{ node[item.from] }}/{{ item.kind }}_nodes/"
+        method: POST
+        headers: { Authorization: "Bearer {{ aap_api_token }}", Content-Type: "application/json" }
+        body_format: json
+        body: "{{ {'id': node[item.to] | int} }}"
+        validate_certs: false
+        status_code: [200, 201, 204]
+      loop:
+        - { from: "00-sync-project", to: "01-stig-linux",   kind: "success" }
+        - { from: "01-stig-linux",   to: "02-stig-oracle",  kind: "always" }
+        - { from: "02-stig-oracle",  to: "03-oscal-linux",  kind: "always" }
+        - { from: "03-oscal-linux",  to: "04-oscal-oracle", kind: "always" }
+        - { from: "04-oscal-oracle", to: "05-sarif-linux",  kind: "always" }
+        - { from: "05-sarif-linux",  to: "06-sarif-oracle", kind: "always" }
+      loop_control:
+        label: "{{ item.from }} -{{ item.kind }}-> {{ item.to }}"
+
+    - name: Seeded
+      ansible.builtin.debug:
+        msg: "Workflow '{{ workflow_name }}' (id {{ wf_id }}) with {{ node | length }} nodes. Launch it from the AAP UI; set the limit to the Oracle host(s)."

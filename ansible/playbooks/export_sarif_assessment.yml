@@ -1,0 +1,202 @@
+---
+# export_sarif_assessment.yml
+#
+# Exports AAC compliance_results from PostgreSQL as SARIF 2.1.0 — the format
+# GitHub code scanning, Azure DevOps, and most IDEs ingest. This puts AAC's
+# post-deploy compliance verdicts in the same finding surface teams already use
+# for their pre-apply IaC scanners (Checkov, Trivy, KICS), giving one timeline
+# from plan-time to runtime.
+#
+# SARIF spec: https://docs.oasis-open.org/sarif/sarif/v2.1.0/sarif-v2.1.0.html
+# Upload to GitHub: actions/upload-sarif, or the code-scanning API.
+#
+# AAP Job Template: "AAC - Export SARIF Assessment Results"
+# Execution Environment: AAC Compliance EE — has community.postgresql
+#
+# Survey variables:
+#   framework        — framework key, e.g. cis_rhel9, nerc_cip, iso27001
+#   hostname         — (optional) filter to a single host; blank = all hosts
+#   output_dir       — where to write the file (default: /tmp/sarif_exports)
+#   max_results      — max rows to export (default: 100)
+
+- name: Export Compliance Assessment Results as SARIF 2.1.0
+  hosts: localhost
+  connection: local
+  gather_facts: true
+
+  vars:
+    aac_tool_version: "1.0.0"
+    export_timestamp: "{{ ansible_date_time.iso8601 }}"
+    # DB connection resolves from optional site_config/vault (loaded below) or
+    # extra_vars; mandatory so a missing value fails loudly, not silently.
+    pg_login_host: "{{ aac_result_pg_host | default(pg_host | default('', true), true) | mandatory }}"
+    pg_login_password: "{{ compliance_db_password | default('') | mandatory }}"
+
+  tasks:
+    # site_config.yml / vault_secrets.yml are gitignored and absent from project
+    # checkouts — load them OPTIONALLY (skip if absent) instead of vars_files,
+    # which would fail the whole play at load time. Every value they supply can
+    # also arrive via extra_vars.
+    - name: Load optional local config
+      ansible.builtin.include_vars: "{{ item }}"
+      with_first_found:
+        - files: ["{{ playbook_dir }}/../vars/site_config.yml"]
+          skip: true
+
+    - name: Load optional local secrets
+      ansible.builtin.include_vars: "{{ item }}"
+      with_first_found:
+        - files: ["{{ playbook_dir }}/../vars/vault_secrets.yml"]
+          skip: true
+
+    # Eager set_fact (not self-referencing vars) — the same Jinja-recursion trap
+    # that bit export_oscal_assessment.yml on its first run.
+    - name: Resolve export parameters (eager, non-recursive)
+      ansible.builtin.set_fact:
+        # extra_vars outrank set_fact, so a null survey value cannot be repaired in
+        # place; resolve an internal copy and use it everywhere below.
+        _framework: "{{ framework | default('cis_rhel9', true) }}"
+        _hostname_filter: "{{ hostname | default('', true) }}"
+        _output_dir: "{{ output_dir | default('/tmp/sarif_exports', true) }}"
+        _max_results: "{{ max_results | default(100, true) | int }}"
+
+    # Path-traversal safe: strip any directory component and reduce to an
+    # allowlist for the FILENAME only. The raw framework/hostname still feed the
+    # SQL as bound parameters, so filtering is unaffected.
+    - name: Sanitize filename components
+      ansible.builtin.set_fact:
+        _fw_safe: "{{ _framework | basename | regex_replace('[^A-Za-z0-9._-]', '_') }}"
+        _host_safe: "{{ (_hostname_filter | basename | regex_replace('[^A-Za-z0-9._-]', '_')) if _hostname_filter else '' }}"
+
+    - name: Build export filename
+      # Single line — a folded scalar (>-) inserts a space where the newline was,
+      # producing "…cis_rhel9 -DATE.sarif". Concatenate on one line instead.
+      ansible.builtin.set_fact:
+        export_filename: "sarif-assessment-{{ _fw_safe }}{{ ('-' + _host_safe) if _host_safe else '' }}-{{ ansible_date_time.date }}.sarif"
+
+    - name: Ensure output directory exists
+      ansible.builtin.file:
+        path: "{{ _output_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Query latest assessment results per host
+      # Parameterized (named_args) — never string-interpolate survey input into
+      # SQL. The optional host filter is expressed as "blank matches all" so the
+      # query stays fully bound with no dynamic WHERE construction.
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_login_host }}"
+        login_user: "{{ pg_user | default('postgres') }}"
+        login_password: "{{ pg_login_password }}"
+        login_db: "{{ pg_database | default('compliance') }}"
+        query: |
+          SELECT DISTINCT ON (hostname)
+            hostname, framework, policy_name, policy_version,
+            total_controls, passed_controls, failed_controls,
+            compliance_percentage, compliant, violations, metadata,
+            evaluation_timestamp
+          FROM compliance_results
+          WHERE framework = %(framework)s
+            AND (%(host)s = '' OR hostname = %(host)s)
+          ORDER BY hostname, evaluation_timestamp DESC
+          LIMIT %(max_rows)s
+        named_args:
+          framework: "{{ _framework }}"
+          host: "{{ _hostname_filter }}"
+          max_rows: "{{ _max_results | int }}"
+      register: assessment_rows
+
+    - name: Fail if no results found
+      ansible.builtin.fail:
+        msg: "No compliance_results found for framework='{{ _framework }}'{{ ' host=' + _hostname_filter if _hostname_filter else '' }}"
+      when: assessment_rows.rowcount == 0
+
+    - name: Build SARIF 2.1.0 document (Python)
+      # command, not script: the script module does not support stdin.
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/../../scripts/sarif_mapper.py"
+        stdin: "{{ assessment_rows.query_result | to_json }}"
+      environment:
+        FRAMEWORK: "{{ _framework }}"
+        TOOL_VERSION: "{{ aac_tool_version }}"
+        EXPORT_TIMESTAMP: "{{ export_timestamp }}"
+      register: sarif_output
+      changed_when: false
+
+    - name: Write SARIF file (inside the EE)
+      ansible.builtin.copy:
+        content: "{{ sarif_output.stdout }}"
+        dest: "{{ _output_dir }}/{{ export_filename | trim }}"
+        mode: "0644"
+
+    # The EE filesystem is ephemeral (CLAUDE.md Known Issue #5). When aac_host is
+    # set, copy the file off the EE to the controller host so it is retrievable.
+    # BEST-EFFORT: the export has already succeeded, so a persistence failure
+    # (no SSH cred, host down) must NOT fail the job — it degrades to EE-local and
+    # is reported honestly in set_stats. Requires an SSH machine credential on the
+    # job template (e.g. "AAC Build Host (aapuser1)").
+    - name: Ensure the artifact directory exists on the controller host
+      ansible.builtin.command:
+        argv:
+          - ssh
+          - -o
+          - StrictHostKeyChecking=no
+          - -o
+          - BatchMode=yes
+          - "{{ aap_ssh_user | default('aapuser1') }}@{{ aac_host }}"
+          # quote: this string is interpreted by the remote shell, and _output_dir is survey input
+          - "mkdir -p {{ _output_dir | quote }}"
+      when: aac_host | default('') | length > 0
+      register: _mkdir
+      changed_when: false
+      failed_when: false
+
+    - name: Copy SARIF to the controller host (best-effort)
+      ansible.builtin.command:
+        argv:
+          - scp
+          - -o
+          - StrictHostKeyChecking=no
+          - -o
+          - BatchMode=yes
+          - "{{ _output_dir }}/{{ export_filename | trim }}"
+          - "{{ aap_ssh_user | default('aapuser1') }}@{{ aac_host }}:{{ (_output_dir ~ '/' ~ (export_filename | trim)) | quote }}"
+      when:
+        - aac_host | default('') | length > 0
+        - _mkdir.rc | default(1) == 0
+      register: _scp
+      changed_when: _scp.rc == 0
+      failed_when: false
+
+    - name: Note if off-host persistence did not succeed
+      ansible.builtin.debug:
+        msg: >-
+          SARIF written in the EE at {{ _output_dir }}/{{ export_filename | trim }}
+          but NOT copied to {{ aac_host }} (rc={{ _scp.rc | default('n/a') }}).
+          Attach an SSH machine credential to retrieve it off-host.
+      when:
+        - aac_host | default('') | length > 0
+        - _scp.rc | default(1) != 0
+
+    - name: Publish output path via set_stats
+      ansible.builtin.set_stats:
+        data:
+          sarif_export_path: "{{ _output_dir }}/{{ export_filename | trim }}"
+          sarif_framework: "{{ _framework }}"
+          sarif_host_count: "{{ assessment_rows.rowcount }}"
+          sarif_persisted_to_host: "{{ aac_host if (aac_host | default('') | length > 0 and (_scp.rc | default(1)) == 0) else 'ee-local-only' }}"
+
+    - name: Export summary
+      ansible.builtin.debug:
+        msg: |
+          ═══════════════════════════════════════════════════════════
+          SARIF Export Complete
+          ═══════════════════════════════════════════════════════════
+          Framework:   {{ _framework }}
+          Hosts:       {{ assessment_rows.rowcount }}
+          Output:      {{ _output_dir }}/{{ export_filename | trim }}
+          Persisted:   {{ (aac_host | default('') | length > 0) | ternary('controller host ' + (aac_host | default('')), 'EE-local only (set aac_host to persist)') }}
+          SARIF ver:   2.1.0
+          ═══════════════════════════════════════════════════════════

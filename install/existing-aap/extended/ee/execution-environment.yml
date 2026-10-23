@@ -1,0 +1,33 @@
+---
+# AAC Compliance Execution Environment
+# To build:
+# ansible-builder build -vvv -t quay.io/<org>/aac-compliance-ee:latest
+# Then push to a registry:
+# podman login quay.io
+# podman push quay.io/<org>/aac-compliance-ee:latest
+
+version: 3
+
+images:
+  base_image:
+    name: registry.redhat.io/ansible-automation-platform-26/ee-supported-rhel9:latest
+
+dependencies:
+  galaxy: requirements.yml
+  python: requirements.txt
+  system: bindep.txt
+  python_interpreter:
+    package_system: python312
+    python_path: /usr/bin/python3.12
+
+options:
+  package_manager_path: /usr/bin/microdnf
+
+additional_build_steps:
+  append_final:
+    - RUN microdnf install -y unzip && microdnf clean all
+    - RUN curl -fsSLo \
+        /usr/local/bin/cosign \
+        https://github.com/sigstore/cosign/releases/download/v2.6.3/cosign-linux-amd64 && \
+      chmod +x /usr/local/bin/cosign && \
+      cosign version | head -20

@@ -1,0 +1,306 @@
+---
+# Seed AAP Job Templates — AAC decisioning-layer reports
+#
+# Registers (create-or-update by name) the report job templates on the
+# controller so a fresh installation can launch them without hand
+# configuration. All of them read the evidence store only; none evaluates
+# policy or writes evidence.
+#
+#   AAC - Sync Compliance Findings        derive the findings layer (identity + state)
+#   AAC - Compliance Findings Workbook    F4: the generic actionable workbook (any framework)
+#   AAC - Compliance Risk Scoring         F1
+#   AAC - Compliance Mitigation Guidance  F2
+#   AAC - Compliance Closure Report       F3
+#   AAC - M365 CIS Findings Report        framework-specific M365 findings report
+#   AAC - M365 CIS Violations Report      framework-specific M365 itemised violations
+#
+# Run once on the AAP that holds the AAC project (idempotent; re-run after
+# changing a survey). Same mechanics as seed_fresh_install_templates.yml.
+# AAP Job Template: "AAC - Seed Report Templates"
+# Credentials: Ansible Vault
+
+- name: Seed AAC report job templates
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - ../vars/site_config.yml
+
+  vars:
+    aap_api: "{{ aap_url }}/api/controller/v2"
+    headers:
+      Authorization: "Bearer {{ aap_token }}"
+      Content-Type: "application/json"
+
+    # Survey questions shared by the generic report templates.
+    _q_framework:
+      question_name: "Framework key"
+      question_description: "opa_framework_map key, e.g. cis_m365_v7, cis_rhel9"
+      variable: report_framework
+      type: text
+      required: true
+      default: "cis_m365_v7"
+    _q_subject:
+      question_name: "Subject (hostname / tenant)"
+      question_description: "Leave blank for every subject with rows in the window"
+      variable: report_subject
+      type: text
+      required: false
+      default: ""
+    _q_lookback:
+      question_name: "Lookback (days)"
+      variable: report_lookback
+      type: integer
+      required: false
+      default: 90
+      min: 1
+      max: 3650
+    _q_publish_host:
+      question_name: "Publish host (optional)"
+      question_description: "scp destination for the outputs; blank = leave in the EE"
+      variable: report_publish_host
+      type: text
+      required: false
+      default: ""
+
+    report_templates:
+      - name: "AAC - Sync Compliance Findings"
+        description: "Derive the first-class findings layer (identity + state) from stored evidence"
+        playbook: "ansible/playbooks/sync_compliance_findings.yml"
+        survey:
+          - question_name: "Framework key ('' = all)"
+            variable: findings_framework
+            type: text
+            required: false
+            default: ""
+          - question_name: "Lookback (days)"
+            variable: findings_lookback_days
+            type: integer
+            required: false
+            default: 90
+            min: 1
+            max: 3650
+
+      - name: "AAC - Compliance Findings Workbook"
+        description: "F4 — generic findings workbook (xlsx/csv/html/md/json): findings, unassessable by cause, decisions, delta, passed"
+        playbook: "ansible/playbooks/compliance_findings_workbook.yml"
+        survey:
+          - "{{ _q_framework }}"
+          - "{{ _q_subject }}"
+          - "{{ _q_lookback }}"
+          - "{{ _q_publish_host }}"
+
+      - name: "AAC - Compliance Risk Scoring"
+        description: "F1 — explainable risk bands for open findings"
+        playbook: "ansible/playbooks/compliance_risk_scoring.yml"
+        survey:
+          - question_name: "Framework key"
+            variable: risk_framework
+            type: text
+            required: true
+            default: "cis_m365_v7"
+          - "{{ _q_publish_host }}"
+
+      - name: "AAC - Compliance Mitigation Guidance"
+        description: "F2 — where/what/how for every open finding"
+        playbook: "ansible/playbooks/compliance_mitigation_guidance.yml"
+        survey:
+          - question_name: "Framework key"
+            variable: mit_framework
+            type: text
+            required: true
+            default: "cis_m365_v7"
+          - "{{ _q_publish_host }}"
+
+      - name: "AAC - Compliance Closure Report"
+        description: "F3 — found → resolved (by rescan) / waived / still open"
+        playbook: "ansible/playbooks/compliance_closure_report.yml"
+        survey:
+          - question_name: "Framework key"
+            variable: closure_framework
+            type: text
+            required: true
+            default: "cis_m365_v7"
+          - question_name: "Lookback (days)"
+            variable: closure_lookback
+            type: integer
+            required: false
+            default: 180
+            min: 1
+            max: 3650
+          - "{{ _q_publish_host }}"
+
+      - name: "AAC - M365 CIS Findings Report"
+        description: "CIS M365 — interpreted, risk-ranked, remediation-paired findings (md/html/exec/csv)"
+        playbook: "ansible/playbooks/m365_cis_findings_report.yml"
+        survey:
+          - question_name: "Tenant (blank = newest)"
+            variable: report_tenant
+            type: text
+            required: false
+            default: ""
+          - question_name: "Lookback (days)"
+            variable: report_lookback
+            type: integer
+            required: false
+            default: 30
+            min: 1
+            max: 3650
+          - "{{ _q_publish_host }}"
+
+      - name: "AAC - M365 CIS Violations Report"
+        description: "CIS M365 — itemised per-control violations from the evidence store"
+        playbook: "ansible/playbooks/m365_cis_violations_report.yml"
+        survey:
+          - question_name: "Tenant (blank = newest)"
+            variable: report_tenant
+            type: text
+            required: false
+            default: ""
+          - question_name: "Lookback (days)"
+            variable: report_lookback
+            type: integer
+            required: false
+            default: 30
+            min: 1
+            max: 3650
+          - "{{ _q_publish_host }}"
+
+  tasks:
+    - name: Look up project ID
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "{{ aap_api }}/projects/?name={{ aap_project_name | urlencode }}"
+        headers: "{{ headers }}"
+        validate_certs: false
+        status_code: 200
+      register: project_lookup
+
+    - name: Look up inventory ID
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "{{ aap_api }}/inventories/?name={{ aap_inventory_name | urlencode }}"
+        headers: "{{ headers }}"
+        validate_certs: false
+        status_code: 200
+      register: inventory_lookup
+
+    - name: Look up EE ID
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "{{ aap_api }}/execution_environments/?name={{ aap_ee_name | urlencode }}"
+        headers: "{{ headers }}"
+        validate_certs: false
+        status_code: 200
+      register: ee_lookup
+
+    - name: Look up vault credential ID
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "{{ aap_api }}/credentials/?name={{ aap_vault_credential_name | urlencode }}&credential_type__kind=vault"
+        headers: "{{ headers }}"
+        validate_certs: false
+        status_code: 200
+      register: vault_cred_lookup
+
+    - name: Require every referenced object to exist
+      ansible.builtin.assert:
+        that:
+          - project_lookup.json.count | int == 1
+          - inventory_lookup.json.count | int == 1
+          - ee_lookup.json.count | int == 1
+          - vault_cred_lookup.json.count | int == 1
+        fail_msg: >-
+          Project '{{ aap_project_name }}', inventory '{{ aap_inventory_name }}',
+          EE '{{ aap_ee_name }}' and vault credential '{{ aap_vault_credential_name }}'
+          must each resolve to exactly one object on the controller.
+
+    - name: Set resolved IDs
+      ansible.builtin.set_fact:
+        project_id: "{{ project_lookup.json.results[0].id }}"
+        inventory_id: "{{ inventory_lookup.json.results[0].id }}"
+        ee_id: "{{ ee_lookup.json.results[0].id }}"
+        vault_cred_id: "{{ vault_cred_lookup.json.results[0].id }}"
+
+    - name: Get existing job templates
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "{{ aap_api }}/job_templates/?page_size=200"
+        headers: "{{ headers }}"
+        validate_certs: false
+        status_code: 200
+      register: existing_templates
+
+    - name: Build existing template name→ID map
+      ansible.builtin.set_fact:
+        existing_map: >-
+          {{ dict(existing_templates.json.results | map(attribute='name') | list |
+             zip(existing_templates.json.results | map(attribute='id') | list)) }}
+
+    - name: Create or update report job templates
+      ansible.builtin.uri:
+        use_proxy: false
+        url: >-
+          {{ aap_api }}/job_templates/{{
+            (existing_map[item.name] | int) ~ '/'
+            if item.name in existing_map else '' }}
+        method: "{{ 'PATCH' if item.name in existing_map else 'POST' }}"
+        headers: "{{ headers }}"
+        validate_certs: false
+        body_format: json
+        body:
+          name: "{{ item.name }}"
+          description: "{{ item.description }}"
+          job_type: "run"
+          inventory: "{{ inventory_id }}"
+          project: "{{ project_id }}"
+          playbook: "{{ item.playbook }}"
+          execution_environment: "{{ ee_id }}"
+          ask_variables_on_launch: false
+          survey_enabled: true
+          extra_vars: "{}"
+        status_code: [200, 201]
+      loop: "{{ report_templates }}"
+      loop_control:
+        label: "{{ item.name }}"
+      register: template_results
+
+    - name: Attach survey to each template
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "{{ aap_api }}/job_templates/{{ item.json.id | int }}/survey_spec/"
+        method: POST
+        headers: "{{ headers }}"
+        validate_certs: false
+        body_format: json
+        body:
+          name: "{{ report_templates[idx].name }} Survey"
+          description: ""
+          spec: "{{ report_templates[idx].survey }}"
+        status_code: [200, 204]
+      loop: "{{ template_results.results }}"
+      loop_control:
+        index_var: idx
+        label: "{{ item.json.name | default('unknown') }}"
+      when: item.json.id is defined
+
+    - name: Attach Vault credential to every template
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "{{ aap_api }}/job_templates/{{ item.json.id | int }}/credentials/"
+        method: POST
+        headers: "{{ headers }}"
+        validate_certs: false
+        body_format: json
+        body:
+          id: "{{ vault_cred_id }}"
+        status_code: [200, 201, 204, 400]   # 400 = already attached
+      loop: "{{ template_results.results }}"
+      loop_control:
+        label: "{{ item.json.name | default('unknown') }}"
+      when: item.json.id is defined
+
+    - name: Report templates seeded
+      ansible.builtin.debug:
+        msg: "{{ template_results.results | map(attribute='json.name') | list }}"

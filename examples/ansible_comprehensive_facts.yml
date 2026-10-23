@@ -1,0 +1,318 @@
+---
+# Comprehensive Ansible playbook demonstrating how gather_facts provides
+# key-value data for all CIS benchmark technologies
+
+- name: Comprehensive CIS Compliance Assessment
+  hosts: all
+  gather_facts: yes
+  vars:
+    opa_endpoint: "http://localhost:8181/v1/data"
+    
+  tasks:
+    # =============================================================================
+    # OPERATING SYSTEMS - Linux/Windows/Unix facts
+    # =============================================================================
+    - name: Extract OS facts for CIS compliance
+      set_fact:
+        os_config:
+          # Basic OS information
+          os_family: "{{ ansible_facts['os_family'] }}"
+          distribution: "{{ ansible_facts['distribution'] }}"
+          distribution_version: "{{ ansible_facts['distribution_version'] }}"
+          kernel: "{{ ansible_facts['kernel'] }}"
+          architecture: "{{ ansible_facts['architecture'] }}"
+          
+          # Security configurations
+          selinux_status: "{{ ansible_facts['selinux']['status'] | default('disabled') }}"
+          firewall_enabled: "{{ ansible_facts['iptables'] is defined or ansible_facts['windows_firewall'] is defined }}"
+          
+          # Filesystem and mounts
+          mounts: "{{ ansible_facts['mounts'] }}"
+          devices: "{{ ansible_facts['devices'] }}"
+          
+          # Network configuration
+          interfaces: "{{ ansible_facts['interfaces'] }}"
+          default_ipv4: "{{ ansible_facts['default_ipv4'] | default({}) }}"
+          default_ipv6: "{{ ansible_facts['default_ipv6'] | default({}) }}"
+          
+          # Services and processes
+          services: "{{ ansible_facts['services'] | default({}) }}"
+          
+          # Users and security
+          user_shell: "{{ ansible_facts['user_shell'] | default('/bin/bash') }}"
+          user_id: "{{ ansible_facts['user_id'] }}"
+          user_gid: "{{ ansible_facts['user_gid'] }}"
+
+    # =============================================================================
+    # CLOUD PROVIDERS - AWS/Azure/GCP metadata and configuration
+    # =============================================================================
+    - name: Gather AWS metadata (when running on AWS)
+      uri:
+        url: "http://169.254.169.254/latest/meta-data/instance-id"
+        timeout: 2
+      register: aws_instance_id
+      failed_when: false
+      when: ansible_facts['virtualization_type'] == "xen" or ansible_facts['system_vendor'] == "Amazon EC2"
+
+    - name: Gather Azure metadata (when running on Azure)
+      uri:
+        url: "http://169.254.169.254/metadata/instance?api-version=2021-02-01"
+        headers:
+          Metadata: "true"
+        timeout: 2
+      register: azure_metadata
+      failed_when: false
+      when: ansible_facts['system_vendor'] == "Microsoft Corporation"
+
+    - name: Extract cloud provider facts
+      set_fact:
+        cloud_config:
+          provider: "{{ 'aws' if aws_instance_id.status == 200 else 'azure' if azure_metadata.status == 200 else 'none' }}"
+          instance_id: "{{ aws_instance_id.content | default(azure_metadata.json.compute.vmId | default('')) }}"
+          region: "{{ ansible_facts['ec2_placement_region'] | default(azure_metadata.json.compute.location | default('')) }}"
+
+    # =============================================================================
+    # SERVER SOFTWARE - Web servers, databases, etc.
+    # =============================================================================
+    - name: Check for Apache HTTP Server
+      shell: |
+        if command -v httpd >/dev/null 2>&1; then
+          httpd -v 2>/dev/null | head -1
+        elif command -v apache2 >/dev/null 2>&1; then
+          apache2 -v 2>/dev/null | head -1
+        else
+          echo "not_installed"
+        fi
+      register: apache_version
+      failed_when: false
+      changed_when: false
+
+    - name: Check for NGINX
+      shell: |
+        if command -v nginx >/dev/null 2>&1; then
+          nginx -v 2>&1 | head -1
+        else
+          echo "not_installed"
+        fi
+      register: nginx_version
+      failed_when: false
+      changed_when: false
+
+    - name: Check for MySQL/MariaDB
+      shell: |
+        if command -v mysql >/dev/null 2>&1; then
+          mysql --version 2>/dev/null | head -1
+        elif command -v mariadb >/dev/null 2>&1; then
+          mariadb --version 2>/dev/null | head -1
+        else
+          echo "not_installed"
+        fi
+      register: mysql_version
+      failed_when: false
+      changed_when: false
+
+    - name: Extract server software facts
+      set_fact:
+        server_software_config:
+          apache:
+            installed: "{{ 'not_installed' not in apache_version.stdout }}"
+            version: "{{ apache_version.stdout if 'not_installed' not in apache_version.stdout else '' }}"
+          nginx:
+            installed: "{{ 'not_installed' not in nginx_version.stdout }}"
+            version: "{{ nginx_version.stdout if 'not_installed' not in nginx_version.stdout else '' }}"
+          mysql:
+            installed: "{{ 'not_installed' not in mysql_version.stdout }}"
+            version: "{{ mysql_version.stdout if 'not_installed' not in mysql_version.stdout else '' }}"
+
+    # =============================================================================
+    # CONTAINER/DEVSECOPS TOOLS - Docker, Kubernetes, etc.
+    # =============================================================================
+    - name: Check for Docker
+      shell: |
+        if command -v docker >/dev/null 2>&1; then
+          docker --version 2>/dev/null
+        else
+          echo "not_installed"
+        fi
+      register: docker_version
+      failed_when: false
+      changed_when: false
+
+    - name: Check for Kubernetes
+      shell: |
+        if command -v kubectl >/dev/null 2>&1; then
+          kubectl version --client --short 2>/dev/null
+        else
+          echo "not_installed"
+        fi
+      register: kubectl_version
+      failed_when: false
+      changed_when: false
+
+    - name: Extract container platform facts
+      set_fact:
+        container_config:
+          docker:
+            installed: "{{ 'not_installed' not in docker_version.stdout }}"
+            version: "{{ docker_version.stdout if 'not_installed' not in docker_version.stdout else '' }}"
+          kubernetes:
+            installed: "{{ 'not_installed' not in kubectl_version.stdout }}"
+            version: "{{ kubectl_version.stdout if 'not_installed' not in kubectl_version.stdout else '' }}"
+
+    # =============================================================================
+    # NETWORK DEVICES - When managing network equipment
+    # =============================================================================
+    - name: Extract network device facts (for network equipment)
+      set_fact:
+        network_device_config:
+          device_type: "{{ ansible_facts['network_os'] | default('server') }}"
+          platform: "{{ ansible_facts['ansible_net_platform'] | default('') }}"
+          version: "{{ ansible_facts['ansible_net_version'] | default('') }}"
+          hostname: "{{ ansible_facts['ansible_net_hostname'] | default(ansible_facts['hostname']) }}"
+          interfaces: "{{ ansible_facts['ansible_net_interfaces'] | default({}) }}"
+      when: ansible_facts['network_os'] is defined
+
+    # =============================================================================
+    # COMPREHENSIVE CIS COMPLIANCE ASSESSMENT
+    # =============================================================================
+    - name: Create comprehensive compliance input
+      set_fact:
+        comprehensive_config:
+          timestamp: "{{ ansible_date_time.iso8601 }}"
+          target_host: "{{ inventory_hostname }}"
+          operating_system: "{{ os_config }}"
+          cloud_provider: "{{ cloud_config }}"
+          server_software: "{{ server_software_config }}"
+          container_platforms: "{{ container_config }}"
+          network_device: "{{ network_device_config | default({}) }}"
+
+    - name: Save comprehensive facts to JSON
+      copy:
+        content: "{{ comprehensive_config | to_nice_json }}"
+        dest: "/tmp/comprehensive_system_facts_{{ inventory_hostname }}.json"
+
+    # =============================================================================
+    # OPA POLICY EVALUATIONS FOR EACH TECHNOLOGY
+    # =============================================================================
+    
+    # Linux OS compliance
+    - name: Check Linux CIS compliance
+      uri:
+        url: "{{ opa_endpoint }}/cis/linux/redhat/filesystem_compliant"
+        method: POST
+        body_format: json
+        body:
+          input: "{{ os_config }}"
+      register: linux_compliance
+      failed_when: false
+      when: ansible_facts['os_family'] == "RedHat"
+
+    # Ubuntu Linux compliance  
+    - name: Check Ubuntu CIS compliance
+      uri:
+        url: "{{ opa_endpoint }}/cis/ubuntu/initial_setup/ubuntu_filesystem_compliant"
+        method: POST
+        body_format: json
+        body:
+          input: "{{ os_config }}"
+      register: ubuntu_compliance
+      failed_when: false
+      when: ansible_facts['distribution'] == "Ubuntu"
+
+    # Windows compliance
+    - name: Check Windows Server compliance
+      uri:
+        url: "{{ opa_endpoint }}/cis/windows/server2022/windows_server_compliant"
+        method: POST
+        body_format: json
+        body:
+          input: "{{ os_config }}"
+      register: windows_compliance
+      failed_when: false
+      when: ansible_facts['os_family'] == "Windows"
+
+    # AWS compliance
+    - name: Check AWS CIS compliance
+      uri:
+        url: "{{ opa_endpoint }}/cis/aws/iam/aws_iam_compliant"
+        method: POST
+        body_format: json
+        body:
+          input: "{{ cloud_config }}"
+      register: aws_compliance
+      failed_when: false
+      when: cloud_config.provider == "aws"
+
+    # Apache compliance
+    - name: Check Apache CIS compliance
+      uri:
+        url: "{{ opa_endpoint }}/cis/server/apache/apache_server_compliant"
+        method: POST
+        body_format: json
+        body:
+          input: "{{ server_software_config }}"
+      register: apache_compliance
+      failed_when: false
+      when: server_software_config.apache.installed
+
+    # Docker compliance
+    - name: Check Docker CIS compliance
+      uri:
+        url: "{{ opa_endpoint }}/cis/docker/host/docker_host_compliant"
+        method: POST
+        body_format: json
+        body:
+          input: "{{ container_config }}"
+      register: docker_compliance
+      failed_when: false
+      when: container_config.docker.installed
+
+    # =============================================================================
+    # COMPLIANCE REPORTING
+    # =============================================================================
+    - name: Generate comprehensive compliance report
+      template:
+        src: comprehensive_compliance_report.j2
+        dest: "/tmp/comprehensive_cis_compliance_{{ inventory_hostname }}.html"
+      vars:
+        all_compliance_results:
+          linux: "{{ linux_compliance.json.result | default('N/A') }}"
+          ubuntu: "{{ ubuntu_compliance.json.result | default('N/A') }}"
+          windows: "{{ windows_compliance.json.result | default('N/A') }}"
+          aws: "{{ aws_compliance.json.result | default('N/A') }}"
+          apache: "{{ apache_compliance.json.result | default('N/A') }}"
+          docker: "{{ docker_compliance.json.result | default('N/A') }}"
+        system_facts: "{{ comprehensive_config }}"
+
+    - name: Display compliance summary
+      debug:
+        msg: |
+          ===============================================
+          CIS COMPLIANCE SUMMARY FOR {{ inventory_hostname }}
+          ===============================================
+          Operating System: {{ ansible_facts['distribution'] }} {{ ansible_facts['distribution_version'] }}
+          Cloud Provider: {{ cloud_config.provider | upper }}
+          
+          COMPLIANCE RESULTS:
+          {% if linux_compliance is defined %}
+          - Linux (RedHat): {{ linux_compliance.json.result | default('UNKNOWN') }}
+          {% endif %}
+          {% if ubuntu_compliance is defined %}
+          - Ubuntu: {{ ubuntu_compliance.json.result | default('UNKNOWN') }}
+          {% endif %}
+          {% if windows_compliance is defined %}
+          - Windows Server: {{ windows_compliance.json.result | default('UNKNOWN') }}
+          {% endif %}
+          {% if aws_compliance is defined %}
+          - AWS: {{ aws_compliance.json.result | default('UNKNOWN') }}
+          {% endif %}
+          {% if apache_compliance is defined %}
+          - Apache: {{ apache_compliance.json.result | default('UNKNOWN') }}
+          {% endif %}
+          {% if docker_compliance is defined %}
+          - Docker: {{ docker_compliance.json.result | default('UNKNOWN') }}
+          {% endif %}
+          
+          Report generated: /tmp/comprehensive_cis_compliance_{{ inventory_hostname }}.html
+          Raw facts: /tmp/comprehensive_system_facts_{{ inventory_hostname }}.json
+          ===============================================

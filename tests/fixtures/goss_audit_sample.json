@@ -1,0 +1,55 @@
+{
+  "results": [
+    {
+      "resource-type": "File",
+      "resource-id": "/etc/ssh/sshd_config",
+      "property": "mode",
+      "result": 0,
+      "successful": true,
+      "title": "5.2.1 Ensure permissions on /etc/ssh/sshd_config are configured",
+      "meta": {"control-id": "5.2.1", "severity": "high"},
+      "expected": ["0600"],
+      "found": ["0600"]
+    },
+    {
+      "resource-type": "Package",
+      "resource-id": "aide",
+      "property": "installed",
+      "result": 1,
+      "successful": false,
+      "title": "1.3.1 Ensure AIDE is installed",
+      "meta": {"control-id": "1.3.1", "severity": "medium"},
+      "expected": ["true"],
+      "found": ["false"]
+    },
+    {
+      "resource-type": "Service",
+      "resource-id": "auditd",
+      "property": "running",
+      "result": 0,
+      "successful": true,
+      "title": "4.1.1.1 Ensure auditd service is enabled and running"
+    },
+    {
+      "resource-type": "Package",
+      "resource-id": "telnet",
+      "property": "installed",
+      "result": 2,
+      "successful": false,
+      "title": "2.2.4 Ensure telnet is not installed (skipped — not applicable)"
+    },
+    {
+      "resource-type": "Command",
+      "resource-id": "sysctl-net.ipv4.ip_forward",
+      "property": "exit-status",
+      "result": 0,
+      "successful": true
+    }
+  ],
+  "summary": {
+    "failed-count": 1,
+    "test-count": 5,
+    "summary-line": "Count: 5, Failed: 1, Duration: 0.123s",
+    "total-duration": 123456789
+  }
+}

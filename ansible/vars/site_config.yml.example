@@ -1,0 +1,215 @@
+---
+# AAC Site Configuration
+# ─────────────────────────────────────────────────────────────────────────────
+# Edit this file before installing AAC at a new site.
+# This is the ONLY file that contains site-specific values.
+# All playbooks, scripts, and demo configs read from here.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Infrastructure host — the server running AAP, OPA, PostgreSQL, Grafana, MCP
+# This is typically your AAP controller host IP or hostname.
+aac_host: "YOUR_AAP_HOST_IP"         # e.g. 192.168.1.10 or aap.example.com
+
+# ─── AAP ─────────────────────────────────────────────────────────────────────
+aap_url: "https://{{ aac_host }}"
+aap_admin_user: "admin"
+aap_ssh_user: "YOUR_SSH_USER"      # OS user for SSH access to aac_host (e.g. aapuser1)
+
+# ─── OPA (3 purpose-specific containers) ─────────────────────────────────────
+# Named variables — use these in playbooks
+opa_security_url:    "http://{{ aac_host }}:8181"   # CIS Benchmarks, NIST, STIGs, OS/Cloud/Container security
+opa_compliance_url:  "http://{{ aac_host }}:8182"   # ISO 27001, SOC 2, PCI-DSS, SOX, FISMA, Sentinel, Corporate
+opa_ot_url:          "http://{{ aac_host }}:8183"   # NERC-CIP, AI Governance, AMI/ICS/OT
+
+# AO decision/routing OPA — a separate instance the Automation Orchestrator
+# golden-image / GPU-flex workflows call. In the CRC/AO deployment it is the
+# opa-routing service in namespace aac-policy; set to your routing OPA's address.
+opa_routing_url:     "http://opa-routing.aac-policy.svc.cluster.local:8181"
+
+# Dict form — for playbooks that need to iterate or look up by name
+opa_endpoints:
+  security:    "http://{{ aac_host }}:8181"
+  compliance:  "http://{{ aac_host }}:8182"
+  ot:          "http://{{ aac_host }}:8183"
+
+# Framework → container mapping — which endpoint handles which framework?
+# Use: opa_framework_map['cis_rhel9'] → 'security' → opa_endpoints['security']
+opa_framework_path:
+  stig_windows_server_2022: stig/windows_server_2022
+  stig_windows_server_2025: stig/windows_server_2025
+  stig_windows_11: stig/windows_11
+  stig_ubuntu_2204: stig/ubuntu_22_04
+  stig_amazon_linux_2023: stig/amazon_linux_2023
+  stig_sles_15: stig/sles_15
+  stig_postgresql_16: stig/postgresql_16
+  stig_ms_sql_2016: stig/ms_sql_2016
+  stig_apache_2_4: stig/apache_2_4_unix
+  stig_cisco_ios_xe_router: stig/cisco_ios_xe_router
+  stig_vsphere_8_esxi: stig/vmware_vsphere_8
+  stig_kubernetes:   stig/kubernetes
+  stig_openshift_4:  stig/openshift_4
+  stig_rke2:         stig/rke2
+  # The Linux and Oracle STIG packages sit under data.stig.<platform>; without
+  # these entries the generic path (data.stig_rhel9) resolves to nothing and
+  # OPA answers {} (the generic playbook then fails closed).
+  stig_rhel9:        stig/rhel_9
+  stig_rhel8:        stig/rhel_8
+  stig_oracle_linux_9:      stig/oracle_linux_9
+  stig_oracle_linux_8:      stig/oracle_linux_8
+  stig_oracle_database_19c: stig/oracle_database_19c
+  stig_oracle_mysql_8:      stig/oracle_mysql_8
+
+opa_framework_map:
+  # opa-security (:8181)
+  cis_rhel9:              security
+  cis_rhel8:              security
+  cis_rhel10:             security
+  cis_ubuntu_2204:        security
+  cis_ubuntu_2004:        security
+  cis_ubuntu_2404:        security
+  cis_debian_11:          security
+  cis_rocky_linux_8:      security
+  cis_rocky_linux_9:      security
+  cis_amazon_linux_2023:  security
+  cis_windows_2022:       security
+  cis_windows_2019:       security
+  cis_vyos:               security
+  cis_pfsense:            security
+  cis_gcp:                security
+  cis_docker:             security
+  cis_kubernetes:         security
+  cis_aws:                security
+  cis_azure:              security
+  cis_cloud:              security
+  cis_vmware:             security
+  cis_openshift:          security
+  cis_aks:                security
+  cis_eks:                security
+  cis_gke:                security
+  scuba_m365:             security
+  zero_trust:             security
+  nist_ssdf:              security
+  nsa_cisa_k8s:           security
+  k8s_pss:                security
+  nist_800_53:            security
+  nist_csf:               security
+  stig_rhel9:             security
+  stig_rhel8:             security
+  stig_windows:           security
+  stig_kubernetes:        security
+  stig_openshift_4:       security
+  stig_rke2:              security
+  stig_windows_server_2022: security
+  stig_windows_server_2025: security
+  stig_windows_11:        security
+  stig_ubuntu_2204:       security
+  stig_amazon_linux_2023: security
+  stig_sles_15:           security
+  stig_postgresql_16:     security
+  stig_ms_sql_2016:       security
+  stig_apache_2_4:        security
+  stig_cisco_ios_xe_router: security
+  stig_vsphere_8_esxi:    security
+  stig_oracle_linux_9:      security
+  stig_oracle_linux_8:      security
+  stig_oracle_database_19c: security
+  stig_oracle_mysql_8:      security
+  cis_oci:                security
+  crypto_miner_detection: security
+  cisa_cpg:               security
+  # opa-compliance (:8182)
+  iso27001:               compliance
+  soc2:                   compliance
+  pci_dss:                compliance
+  sox:                    compliance
+  fisma:                  compliance
+  hipaa:                  compliance
+  cmmc:                   compliance
+  fedramp:                compliance
+  gdpr:                   compliance
+  corporate:              compliance
+  cis_controls_v8:        compliance
+  sentinel_ansible:       compliance
+  sentinel_terraform:     compliance
+  sentinel_dockerfile:    compliance
+  sentinel_kubernetes:    compliance
+  digital_sovereignty:    compliance
+  ncsc_caf:               compliance
+  dora:                   compliance
+  nis2:                   compliance
+  sec_cyber:              compliance
+  ny_dfs:                 compliance
+  swift_csp:              compliance
+  hitrust:                compliance
+  cfr_part_11:            compliance
+  cra:                    compliance
+  tisax:                  compliance
+  csa_ccm:                compliance
+  iso27701:               compliance
+  nist_800_171:           compliance
+  ccpa:                   compliance
+  ferpa:                  compliance
+  coppa:                  compliance
+  cjis:                   compliance
+  pqc:                    compliance   # PQC Readiness (EO 14412, FIPS 203/204/205, CNSA 2.0)
+  irs_1075:               compliance
+  essential_eight:        compliance
+  cyber_essentials:       compliance
+  bsi_c5:                 compliance
+  eu_ai_act:              compliance
+  glba:                   compliance
+  itar:                   compliance
+  cobit:                  compliance
+  iso_42001:              compliance
+  estate_continuity:      compliance   # governance class: also loads into opa-ot
+  # opa-ot (:8183)
+  nerc_cip:               ot
+  iec_62443:              ot
+  ami_nist_ir7628:        ot
+  ami_device:             ot
+  ami_headend:            ot
+  ai_governance:          ot
+  nist_ai_rmf:            ot
+  nist_800_82:            ot
+  tsa_pipeline:           ot
+
+# ─── PostgreSQL ───────────────────────────────────────────────────────────────
+pg_host: "{{ aac_host }}"
+pg_port: 5432
+pg_db: "compliance"
+pg_user: "postgres"
+# Evidence writer. When set, aac_store_results / aac_store_certification store
+# evidence as this INSERT+SELECT-only role (created by aac_compliance_db when the
+# vault has compliance_writer_password) instead of as pg_user, so no assessment
+# run can rewrite history. Leave unset on first install; set it once the DB role
+# has run. See docs/EVIDENCE_IMMUTABILITY.md.
+# aac_evidence_writer_user: "compliance_writer"
+# pg_password — stored in ansible/vars/vault_secrets.yml (never here)
+
+# ─── Grafana ──────────────────────────────────────────────────────────────────
+grafana_host: "{{ aac_host }}"
+grafana_url: "http://{{ aac_host }}:3000"
+grafana_port: 3000
+
+# ─── MCP Server ───────────────────────────────────────────────────────────────
+mcp_url: "http://{{ aac_host }}:8004"
+mcp_port: 8004
+mcp_image: "{{ aac_host }}/aap-mcp-server:v1.0"
+
+# ─── Smart Meter Simulator (AMI demo) ────────────────────────────────────────
+smart_meter_electric_url: "http://{{ aac_host }}:8085"
+smart_meter_gas_url: "http://{{ aac_host }}:8086"
+smart_meter_water_url: "http://{{ aac_host }}:8087"
+
+# ─── Git Repository ───────────────────────────────────────────────────────────
+git_repo_url: "https://github.com/YOUR_ORG/YOUR_REPO.git"
+git_branch: "main"
+aap_project_name: "Compliance Automation"
+
+# ─── AAP Object Names (used for name-based lookups in seed playbooks) ─────────
+aap_inventory_name: "Compliance Infrastructure"
+aap_ee_name: "AAC Compliance EE"
+aap_vault_credential_name: "Ansible Vault"
+aap_ssh_credential_name: "Compliance SSH Credential"
+aap_aws_credential_name: "AWS Compliance Lab"
+aap_scm_credential_name: "GitHub SCM"

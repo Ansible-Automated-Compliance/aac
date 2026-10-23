@@ -1,0 +1,140 @@
+---
+# MITRE HDF/OHDF ingestion — fold a Heimdall Data Format evaluation into AAC.
+#
+# HDF (the MITRE SAF "Heimdall Data Format") is a universal security-result
+# schema: `saf convert` normalizes 30+ scanners (Prowler, Nessus, Burp, Snyk,
+# Twistlock, Zap, OpenSCAP, …) and every InSpec profile onto one NIST-tagged
+# JSON shape. This playbook ingests one HDF file as a first-class AAC finding —
+# waiver-aware, evidence-provenanced, historically tracked, visible in the heat
+# map and dashboards — so any scanner in the SAF ecosystem lands in the same
+# program as native AAC assessments, with its NIST 800-53 / CCI crosswalk kept.
+#
+# This is a CONTROLLER-SIDE FILE INGEST, not a per-host scan: HDF is produced
+# elsewhere (a pipeline, an InSpec run, a `saf convert`) and handed to AAC. So
+# the play runs on localhost and the asset the evidence belongs to MUST be named
+# explicitly — an HDF file does not reliably carry the scanned hostname, and the
+# evidence-provenance resolver refuses `localhost` / EE pod names on purpose.
+#
+# ── What it does NOT do ──────────────────────────────────────────────
+#   - It does not run a scanner or `saf convert`. Point hdf_path at an HDF file
+#     that already exists on the controller.
+#   - It does not map HDF controls onto a NEW framework — it carries the NIST/CCI
+#     tags HDF already has, so a later crosswalk needs no re-ingest.
+#
+# ── Variables ────────────────────────────────────────────────────────
+#   hdf_path         (required) path to the HDF JSON on the controller.
+#   hdf_target_host  (required) the asset the result belongs to. NOT localhost.
+#   framework_label  compliance_results.framework key. Default derived from the
+#                    primary HDF profile name (e.g. hdf_xccdf_org_ssgproject...).
+#   source_tool      label for the originating scanner (e.g. "prowler", "nessus",
+#                    "inspec"). Default "hdf" — record it when you know it.
+#   record_to_db     true|false. Default true.
+#
+# ── AAP Job Template ─────────────────────────────────────────────────
+#   "AAC - MITRE HDF Ingest"
+
+- name: MITRE HDF ingestion — parse an HDF evaluation and record it as an AAC finding
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - ../vars/site_config.yml
+
+  vars:
+    # hdf_path: <set via extra_vars / survey / inventory>
+    # hdf_target_host: <set via extra_vars / survey / inventory>
+    # framework_label: <set via extra_vars / survey / inventory>
+    source_tool: "hdf"
+    record_to_db: true
+    _parser: "{{ playbook_dir }}/../../scripts/hdf_parse.py"
+
+  tasks:
+    - name: Require an hdf_path
+      ansible.builtin.assert:
+        that: (hdf_path | default('', true)) | length > 0
+        fail_msg: "hdf_path is required (path to the HDF JSON on the controller)."
+
+    - name: Require an explicit target host that is not localhost
+      # HDF carries no reliable asset identity, and the evidence-provenance
+      # resolver refuses localhost / EE pod names — so the operator must name
+      # the asset this evidence belongs to.
+      ansible.builtin.assert:
+        that:
+          - (hdf_target_host | default('', true)) | length > 0
+          - (hdf_target_host | default('', true)) | lower not in ['localhost', '127.0.0.1', '::1']
+        fail_msg: >-
+          hdf_target_host is required and must name the real asset assessed —
+          not localhost. An HDF file does not identify the host it describes.
+
+    - name: Confirm the HDF file exists on the controller
+      ansible.builtin.stat:
+        path: "{{ (hdf_path | default('', true)) }}"
+      register: _hdf_stat
+
+    - name: Fail with a clear message if the HDF file is missing
+      ansible.builtin.fail:
+        msg: "HDF file not found on the controller: {{ (hdf_path | default('', true)) }}"
+      when: not _hdf_stat.stat.exists
+
+    - name: Parse the HDF evaluation (deterministic)
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ _parser }}"
+          - "{{ (hdf_path | default('', true)) }}"
+      register: _parsed_raw
+      changed_when: false
+
+    - name: Load parsed results
+      ansible.builtin.set_fact:
+        _hdf: "{{ _parsed_raw.stdout | from_json }}"
+
+    - name: Derive framework label when none supplied
+      ansible.builtin.set_fact:
+        framework_label: >-
+          {{ ('hdf_' + ((_hdf.profiles[0].name | default('evaluation'))
+              | regex_replace('[^A-Za-z0-9]', '_'))) | truncate(90, true, '') }}
+      when: (framework_label | default('', true)) | length == 0
+
+    - name: Summary
+      ansible.builtin.debug:
+        msg:
+          - "MITRE HDF ingest — {{ (hdf_target_host | default('', true)) }}"
+          - "  file:      {{ (hdf_path | default('', true)) }}"
+          - "  tool:      {{ source_tool }}   hdf/inspec version: {{ _hdf.hdf_version }}"
+          - "  platform:  {{ _hdf.platform.name }} {{ _hdf.platform.release }}"
+          - "  framework: {{ (framework_label | default('', true)) }}"
+          - "  evaluated: {{ _hdf.total_evaluated }}  (passed {{ _hdf.passed }}, failed {{ _hdf.failed }})"
+          - "  neutral:   not_reviewed {{ _hdf.by_status.not_reviewed }}, no_impact {{ _hdf.by_status.no_impact }}, waived {{ _hdf.by_status.waived }}"
+          - "  score:     {{ _hdf.compliance_pct }}%  (strict {{ _hdf.compliance_pct_strict }}%)"
+          - "  {{ '✓ COMPLIANT' if _hdf.compliant else '✗ NON-COMPLIANT' }}"
+
+    - name: Record HDF result to compliance_results (waiver-aware)
+      ansible.builtin.include_role:
+        name: aac_store_results
+      vars:
+        aac_result_hostname:        "{{ (hdf_target_host | default('', true)) }}"
+        aac_result_policy_name:     "MITRE HDF ({{ source_tool }}) {{ (framework_label | default('', true)) }}"
+        aac_result_framework:       "{{ (framework_label | default('', true)) }}"
+        aac_result_policy_version:  "{{ _hdf.profiles[0].version | default('') }}"
+        aac_result_total_controls:  "{{ _hdf.total_evaluated | int }}"
+        aac_result_passed_controls: "{{ _hdf.passed | int }}"
+        aac_result_failed_controls: "{{ _hdf.failed | int }}"
+        aac_result_compliance_pct:  "{{ _hdf.compliance_pct | float }}"
+        aac_result_violations: "{{ _hdf.failed_rules }}"
+        aac_result_metadata:
+          tool: "{{ source_tool }}"
+          ingest_format: "MITRE HDF/OHDF (ingested by AAC)"
+          hdf_version: "{{ _hdf.hdf_version }}"
+          platform: "{{ _hdf.platform }}"
+          profiles: "{{ _hdf.profiles }}"
+          by_status: "{{ _hdf.by_status }}"
+          compliance_pct_strict: "{{ _hdf.compliance_pct_strict }}"
+          not_reviewed: "{{ _hdf.by_status.not_reviewed }}"
+          no_impact: "{{ _hdf.by_status.no_impact }}"
+          waived_controls: "{{ _hdf.waived }}"
+          framework: "{{ (framework_label | default('', true)) }}"
+          compliant: "{{ _hdf.compliant }}"
+        aac_result_opa_server: "{{ opa_security_url | default(opa_server_url | default('', true), true) }}"
+      when: record_to_db | bool

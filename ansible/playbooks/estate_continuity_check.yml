@@ -1,0 +1,527 @@
+---
+# =============================================================================
+# AAC Estate Continuity Check
+#
+# Finds assets that have disappeared or stopped answering, and tells them
+# apart from assets that were retired on purpose. The decision is made by the
+# OPA policy `estate_continuity.main` (rego library,
+# governance/estate_continuity); this playbook only gathers its inputs, stores
+# the verdicts and keeps the registry.
+#
+# For every host it assembles:
+#   in_inventory           is it still in one of the AAP inventories checked?
+#   provider_state         what the provider says (EC2 today: running /
+#                          stopped / terminated / absent); "unknown" elsewhere
+#   hours_since_evaluated  age of its newest compliance_results row
+#   last_attempt           outcome of the last job that targeted it
+#                          (AAP job host summary: unreachable / failed / ok)
+#   retirement             a decommission record: ansible/vars/decisions/
+#                          estate_continuity.yml, or one already in the registry
+#   removal_event          a host delete in AAP's activity stream, with the actor
+#
+# Silence is never retirement. A host that vanishes without a decommission
+# record is a finding, even when someone's name is on the deletion.
+#
+# The registry (host_registry, ansible/files/host_registry_schema.sql) is what
+# remembers a host after the inventory and the provider have forgotten it. It
+# is seeded from the inventory on the first run, so disappearances are caught
+# from that run on. Seeding it from old evidence is opt-in
+# (estate_continuity_seed_from_evidence), because evidence rows can carry
+# execution-context names (pod names, blank hostnames) instead of the asset.
+#
+# Evidence: one compliance_results row per host, framework
+# 'estate_continuity', compliant = the host's state is not a finding.
+#
+# Inputs: pg_host (+ pg_port/pg_db/pg_user), pg_password or
+# compliance_db_password, opa_compliance_url (or opa_endpoints + the framework
+# map), aap_token. The seeder writes the connection values onto the template
+# from an install profile.
+#
+# Credentials (AAP): Ansible Vault, AAC Compliance DB Password, AAP Token
+# (extra_vars), and an AWS credential when estate_continuity_aws_regions is set.
+# AAP Job Template: "AAC - Estate Continuity Check"
+# =============================================================================
+
+- name: AAC Estate Continuity Check
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - [ "../vars/vault_secrets.yml", "../vars/empty_fallback.yml" ]
+
+  vars:
+    framework: "estate_continuity"
+    estate_continuity_inventories: ["Compliance Infrastructure"]
+    # Passed to the policy as input.config; empty = the policy defaults
+    # (freshness 26 h, stale after 52 h, stopped hosts in scope).
+    estate_continuity_config: {}
+    # Regions to ask EC2 about the instance ids the inventory and registry know.
+    # Empty = no provider lookup; provider_state is then "unknown".
+    estate_continuity_aws_regions: []
+    estate_continuity_removal_lookback_days: 30
+    estate_continuity_seed_from_evidence: false
+    estate_continuity_evidence_lookback_days: 90
+    estate_continuity_retirements_file: "{{ playbook_dir }}/../vars/decisions/estate_continuity.yml"
+    estate_continuity_store: true
+    estate_continuity_fail_on_findings: false
+    _validate_certs: "{{ aap_validate_certs | default(false) | bool }}"
+
+  tasks:
+
+    # ── Configuration ────────────────────────────────────────────────────
+
+    - name: Load optional local config (operator machine only)
+      ansible.builtin.include_vars: "{{ item }}"
+      with_first_found:
+        - files: ["{{ playbook_dir }}/../vars/site_config.yml"]
+          skip: true
+
+    - name: Resolve controller URL, token and database connection
+      ansible.builtin.set_fact:
+        _aap_url: >-
+          {{ (lookup('env', 'CONTROLLER_HOST') | default(lookup('env', 'AWX_HOST'), true)
+              if (lookup('env', 'JOB_ID') | length > 0)
+              else aap_url | default('')) | regex_replace('/+$', '') }}
+        _aap_token: "{{ aap_token | default('', true) }}"
+        _pg_host: "{{ pg_host | mandatory }}"
+        _pg_port: "{{ pg_port | default(5432, true) }}"
+        _pg_db: "{{ pg_db | default('compliance', true) }}"
+        _pg_user: "{{ pg_user | default('postgres', true) }}"
+        _pg_password: "{{ pg_password | default(compliance_db_password | default(''), true) | mandatory }}"
+      no_log: true
+
+    - name: Require a controller URL and token
+      ansible.builtin.assert:
+        that:
+          - _aap_url | length > 0
+          - _aap_token | length > 0
+        fail_msg: >-
+          A controller URL (the job environment inside AAP, aap_url outside it)
+          and aap_token (the "AAP Token (extra_vars)" credential) are required.
+        quiet: true
+
+    - name: Set API base and headers
+      ansible.builtin.set_fact:
+        _api: "{{ _aap_url }}/api/controller/v2"
+        _headers:
+          Authorization: "Bearer {{ _aap_token }}"
+      no_log: true
+
+    - name: Use the compliance OPA when its URL is given directly
+      ansible.builtin.set_fact:
+        opa_server_url: "{{ opa_compliance_url }}"
+      when: opa_server_url is not defined and opa_compliance_url is defined
+
+    - name: Otherwise resolve the OPA endpoint from the framework map
+      ansible.builtin.include_tasks: ../tasks/resolve_opa_url.yml
+      when: opa_server_url is not defined
+
+    - name: Ensure the registry table exists
+      community.postgresql.postgresql_query:
+        login_host: "{{ _pg_host }}"
+        login_port: "{{ _pg_port }}"
+        login_db: "{{ _pg_db }}"
+        login_user: "{{ _pg_user }}"
+        login_password: "{{ _pg_password }}"
+        query: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/../files/host_registry_schema.sql') }}"
+
+    # ── 1. The AAP inventories ───────────────────────────────────────────
+
+    - name: Resolve each inventory by name (exactly one match)
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "{{ _api }}/inventories/?name={{ item | urlencode }}"
+        headers: "{{ _headers }}"
+        validate_certs: "{{ _validate_certs }}"
+      loop: "{{ estate_continuity_inventories }}"
+      register: _inv_lookup
+      failed_when: _inv_lookup.json.count | default(0) != 1
+
+    - name: Read the hosts of each inventory
+      ansible.builtin.uri:
+        use_proxy: false
+        # 200 is the controller's page cap; the assert below refuses a
+        # truncated read rather than reporting the unread hosts as missing.
+        url: "{{ _api }}/inventories/{{ item.json.results[0].id }}/hosts/?page_size=200&order_by=name"
+        headers: "{{ _headers }}"
+        validate_certs: "{{ _validate_certs }}"
+      loop: "{{ _inv_lookup.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+      register: _inv_hosts
+
+    - name: Refuse a truncated inventory read
+      ansible.builtin.assert:
+        that: item.json.next is none
+        fail_msg: >-
+          Inventory "{{ item.item.item }}" has {{ item.json.count }} hosts, more than one
+          page. Paging is not implemented yet; a partial read would report the
+          unread hosts as missing.
+        quiet: true
+      loop: "{{ _inv_hosts.results }}"
+      loop_control:
+        label: "{{ item.item.item }}"
+
+    - name: Index inventory hosts
+      ansible.builtin.set_fact:
+        _inventory: "{{ _inventory | default({}) | combine({item.1.name: {
+            'id': item.1.id,
+            'inventory': item.0.item.item,
+            'vars': (item.1.variables | default('', true) | from_yaml) or {}
+          }}) }}"
+      loop: "{{ _inv_hosts.results | subelements('json.results') }}"
+      loop_control:
+        label: "{{ item.1.name }}"
+
+    - name: Read each host's last job outcome
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "{{ _api }}/hosts/{{ item.value.id }}/job_host_summaries/?order_by=-id&page_size=1"
+        headers: "{{ _headers }}"
+        validate_certs: "{{ _validate_certs }}"
+      loop: "{{ _inventory | default({}) | dict2items }}"
+      loop_control:
+        label: "{{ item.key }}"
+      register: _summaries
+
+    - name: Read host deletions from the activity stream
+      ansible.builtin.uri:
+        use_proxy: false
+        # The newest 200 host deletions; the lookback window is applied below to
+        # the ages PostgreSQL computes, so no clock arithmetic happens here.
+        url: "{{ _api }}/activity_stream/?object1=host&operation=delete&order_by=-timestamp&page_size=200"
+        headers: "{{ _headers }}"
+        validate_certs: "{{ _validate_certs }}"
+      register: _deletions
+
+    # ── 2. The registry, the evidence and the decommission records ──────
+
+    - name: Read the registry
+      community.postgresql.postgresql_query:
+        login_host: "{{ _pg_host }}"
+        login_port: "{{ _pg_port }}"
+        login_db: "{{ _pg_db }}"
+        login_user: "{{ _pg_user }}"
+        login_password: "{{ _pg_password }}"
+        query: |
+          SELECT hostname, provider, provider_ref, provider_region, lifecycle_state,
+                 retired_ref, retired_by,
+                 EXTRACT(EPOCH FROM (now() - first_seen_at)) / 3600.0 AS first_seen_hours,
+                 EXTRACT(EPOCH FROM (now() - retired_at)) / 3600.0    AS retired_hours
+            FROM host_registry
+      register: _registry
+
+    - name: Read the newest evaluation per host
+      community.postgresql.postgresql_query:
+        login_host: "{{ _pg_host }}"
+        login_port: "{{ _pg_port }}"
+        login_db: "{{ _pg_db }}"
+        login_user: "{{ _pg_user }}"
+        login_password: "{{ _pg_password }}"
+        query: |
+          SELECT hostname,
+                 EXTRACT(EPOCH FROM (now() - max(evaluation_timestamp))) / 3600.0 AS hours
+            FROM compliance_results
+           WHERE framework <> 'estate_continuity'
+             AND hostname IS NOT NULL AND hostname <> ''
+             AND evaluation_timestamp > now() - make_interval(days => %(days)s)
+           GROUP BY hostname
+        named_args:
+          days: "{{ estate_continuity_evidence_lookback_days | int }}"
+      register: _evidence
+
+    - name: Load the decommission records (optional file)
+      ansible.builtin.include_vars:
+        file: "{{ estate_continuity_retirements_file }}"
+        name: _retirements_file
+      when: estate_continuity_retirements_file is file
+
+    - name: Convert every timestamp to an age in hours (PostgreSQL does the clock)
+      community.postgresql.postgresql_query:
+        login_host: "{{ _pg_host }}"
+        login_port: "{{ _pg_port }}"
+        login_db: "{{ _pg_db }}"
+        login_user: "{{ _pg_user }}"
+        login_password: "{{ _pg_password }}"
+        query: |
+          SELECT e->>'k' AS k,
+                 EXTRACT(EPOCH FROM (now() - (e->>'ts')::timestamptz)) / 3600.0 AS hours
+            FROM jsonb_array_elements(%(items)s::jsonb) AS e
+           WHERE coalesce(e->>'ts', '') <> ''
+        named_args:
+          items: >-
+            {%- set out = [] -%}
+            {%- for r in _summaries.results | default([]) -%}
+            {%-   set s = r.json.results | default([]) | first | default({}) -%}
+            {%-   if s.created is defined -%}{%- set _ = out.append({'k': 'attempt:' ~ r.item.key, 'ts': s.created}) -%}{%- endif -%}
+            {%- endfor -%}
+            {%- for d in _deletions.json.results | default([]) -%}
+            {%-   set _ = out.append({'k': 'removal:' ~ loop.index0, 'ts': d.timestamp}) -%}
+            {%- endfor -%}
+            {%- for r in (_retirements_file | default({})).retirements | default([]) -%}
+            {%-   set _ = out.append({'k': 'retired:' ~ r.hostname | default(''), 'ts': r.date | default('') | string}) -%}
+            {%- endfor -%}
+            {{ out | to_json }}
+      register: _ages
+
+    - name: Index the ages
+      ansible.builtin.set_fact:
+        _age: "{{ dict(_ages.query_result | map(attribute='k') | zip(_ages.query_result | map(attribute='hours') | map('float'))) }}"
+
+    # ── 3. The provider (EC2) ────────────────────────────────────────────
+
+    - name: Collect the EC2 instance ids the inventory and registry know
+      ansible.builtin.set_fact:
+        _ec2_ids: >-
+          {{ ((_inventory | default({})).values() | map(attribute='vars') | selectattr('instance_id', 'defined')
+               | map(attribute='instance_id') | list)
+             + (_registry.query_result | selectattr('provider', 'equalto', 'aws_ec2')
+               | map(attribute='provider_ref') | select | list) | unique }}
+
+    - name: Ask EC2 for those instances
+      amazon.aws.ec2_instance_info:
+        region: "{{ item }}"
+        filters:
+          instance-id: "{{ _ec2_ids }}"
+      loop: "{{ estate_continuity_aws_regions if (_ec2_ids | length > 0) else [] }}"
+      register: _ec2
+
+    - name: Index EC2 states (an id EC2 no longer returns is absent)
+      ansible.builtin.set_fact:
+        _ec2_state_json: >-
+          {%- set m = {} -%}
+          {%- for r in _ec2.results | default([]) -%}
+          {%-   for i in r.instances | default([]) -%}
+          {%-     set n = i.state.name -%}
+          {%-     set _ = m.update({i.instance_id: ('running' if n in ['pending', 'running']
+                                      else 'stopped' if n in ['stopping', 'stopped']
+                                      else 'terminated')}) -%}
+          {%-   endfor -%}
+          {%- endfor -%}
+          {{ m | to_json }}
+        _ec2_asked: "{{ (_ec2.results | default([]) | length) > 0 }}"
+
+    - name: Parse the EC2 index
+      ansible.builtin.set_fact:
+        _ec2_state: "{{ _ec2_state_json | from_json }}"
+
+    # ── 4. Assemble the policy input ─────────────────────────────────────
+
+    - name: Assemble one record per host
+      ansible.builtin.set_fact:
+        _hosts_input_json: >-
+          {%- set reg = {} -%}
+          {%- for r in _registry.query_result -%}{%- set _ = reg.update({r.hostname: r}) -%}{%- endfor -%}
+          {%- set ev = {} -%}
+          {%- for r in _evidence.query_result -%}{%- set _ = ev.update({r.hostname: r.hours | float}) -%}{%- endfor -%}
+          {%- set sums = {} -%}
+          {%- for r in _summaries.results | default([]) -%}
+          {%-   set s = r.json.results | default([]) | first | default({}) -%}
+          {%-   if s.id is defined -%}
+          {%-     set _ = sums.update({r.item.key: ('unreachable' if (s.dark | default(0) | int) > 0
+                                       else 'failed' if (s.failures | default(0) | int) > 0 else 'ok')}) -%}
+          {%-   endif -%}
+          {%- endfor -%}
+          {%- set rem = {} -%}
+          {%- for d in _deletions.json.results | default([]) -%}
+          {%-   set nm = (d.changes | default({})).name | default((d.summary_fields.host | default([{}]) | first).name | default('')) -%}
+          {%-   set hrs = _age.get('removal:' ~ loop.index0) -%}
+          {%-   if nm and nm not in rem and hrs is not none and hrs <= (estate_continuity_removal_lookback_days | int) * 24 -%}
+          {%-     set ev_ = {'source': 'aap_activity_stream', 'hours_ago': hrs} -%}
+          {%-     if d.summary_fields.actor.username | default('') -%}{%- set _ = ev_.update({'by': d.summary_fields.actor.username}) -%}{%- endif -%}
+          {%-     set _ = rem.update({nm: ev_}) -%}
+          {%-   endif -%}
+          {%- endfor -%}
+          {%- set ret = {} -%}
+          {%- for r in (_retirements_file | default({})).retirements | default([]) -%}
+          {%-   set _ = ret.update({r.hostname | default(''): {'declared': true, 'ref': r.ref | default(''), 'by': r.by | default(''),
+                                                         'hours_ago': _age.get('retired:' ~ r.hostname | default(''))}}) -%}
+          {%- endfor -%}
+          {%- set names = (_inventory | default({})).keys() | list -%}
+          {%- for n, r in reg.items() -%}
+          {%-   if n not in names and r.lifecycle_state != 'retired' -%}{%- set _ = names.append(n) -%}{%- endif -%}
+          {%- endfor -%}
+          {%- if estate_continuity_seed_from_evidence | bool -%}
+          {%-   for n in ev.keys() -%}{%- if n not in names -%}{%- set _ = names.append(n) -%}{%- endif -%}{%- endfor -%}
+          {%- endif -%}
+          {%- set out = [] -%}
+          {%- for n in names | sort -%}
+          {%-   set inv = (_inventory | default({})).get(n) -%}
+          {%-   set r = reg.get(n, {}) -%}
+          {%-   set iid = (inv.vars.instance_id if inv and inv.vars.instance_id is defined else r.provider_ref | default(none)) -%}
+          {%-   set is_ec2 = (inv and inv.vars.instance_id is defined) or r.provider | default('') == 'aws_ec2' -%}
+          {%-   set h = {'name': n, 'in_inventory': inv is not none,
+                         'provider': 'aws_ec2' if is_ec2 else 'none',
+                         'provider_state': (_ec2_state.get(iid, 'absent') if (is_ec2 and _ec2_asked | bool) else 'unknown')} -%}
+          {%-   if n in ev -%}{%- set _ = h.update({'hours_since_evaluated': ev[n]}) -%}{%- endif -%}
+          {%-   if r.first_seen_hours is defined and r.first_seen_hours is not none -%}
+          {%-     set _ = h.update({'hours_since_first_seen': r.first_seen_hours | float}) -%}
+          {%-   else -%}
+          {%-     set _ = h.update({'hours_since_first_seen': 0}) -%}
+          {%-   endif -%}
+          {%-   if n in sums -%}{%- set _ = h.update({'last_attempt': {'outcome': sums[n], 'hours_ago': _age.get('attempt:' ~ n)}}) -%}{%- endif -%}
+          {%-   if n in ret -%}
+          {%-     set _ = h.update({'retirement': ret[n]}) -%}
+          {%-   elif r.retired_ref | default(none) -%}
+          {%-     set _ = h.update({'retirement': {'declared': true, 'ref': r.retired_ref, 'by': r.retired_by | default(''),
+                                                   'hours_ago': r.retired_hours | float}}) -%}
+          {%-   endif -%}
+          {%-   if n in rem and inv is none -%}{%- set _ = h.update({'removal_event': rem[n]}) -%}{%- endif -%}
+          {%-   set _ = out.append(h) -%}
+          {%- endfor -%}
+          {{ out | to_json }}
+
+    - name: Parse the host records
+      ansible.builtin.set_fact:
+        _hosts_input: "{{ _hosts_input_json | from_json }}"
+
+    # ── 5. Decide ────────────────────────────────────────────────────────
+
+    - name: Ask the policy
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "{{ opa_server_url }}/v1/data/estate_continuity/main/compliance_report"
+        method: POST
+        body_format: json
+        body:
+          input:
+            config: "{{ estate_continuity_config }}"
+            hosts: "{{ _hosts_input }}"
+        return_content: true
+        timeout: 60
+      register: _opa
+
+    - name: Refuse an empty policy answer (policy not loaded)
+      ansible.builtin.assert:
+        that:
+          - _opa.json.result is defined
+          - _opa.json.result.hosts is defined
+        fail_msg: >-
+          OPA at {{ opa_server_url }} returned no estate_continuity report — the
+          policy is not loaded. Run "AAC - Load OPA Policies" first. Nothing was stored.
+        quiet: true
+
+    - name: Keep the report
+      ansible.builtin.set_fact:
+        _report: "{{ _opa.json.result }}"
+
+    # ── 6. Store the evidence, then update the registry ─────────────────
+
+    - name: Resolve provenance
+      ansible.builtin.include_tasks: ../tasks/resolve_evidence_provenance.yml
+      vars:
+        evidence_subject: "estate"
+      when: estate_continuity_store | bool
+
+    - name: Store one evidence row per host
+      community.postgresql.postgresql_query:
+        login_host: "{{ _pg_host }}"
+        login_port: "{{ _pg_port }}"
+        login_db: "{{ _pg_db }}"
+        # evidence write: the least-privilege writer when configured (docs/EVIDENCE_IMMUTABILITY.md)
+        login_user: "{{ aac_evidence_writer_user | default(_pg_user, true) }}"
+        login_password: >-
+          {{ compliance_writer_password
+             if (aac_evidence_writer_user | default('', true) | length > 0)
+             else _pg_password }}
+        query: |
+          INSERT INTO compliance_results (
+            hostname, framework, policy_name, policy_version,
+            total_controls, passed_controls, failed_controls,
+            compliance_percentage, compliant, violations, metadata, evaluation_timestamp,
+            policy_sha, project_sha
+          ) VALUES (
+            %(hostname)s, 'estate_continuity', 'estate_continuity.main', %(version)s,
+            1, %(passed)s, %(failed)s, %(pct)s, %(compliant)s,
+            %(violations)s::jsonb, %(metadata)s::jsonb, NOW(),
+            NULLIF(%(policy_sha)s, ''), NULLIF(%(project_sha)s, '')
+          )
+        named_args:
+          hostname: "{{ item.name }}"
+          version: "{{ _report.version }}"
+          passed: "{{ 0 if item.finding else 1 }}"
+          failed: "{{ 1 if item.finding else 0 }}"
+          pct: "{{ 0 if item.finding else 100 }}"
+          compliant: "{{ not item.finding }}"
+          violations: "{{ ([item.reason] if item.finding else []) | to_json }}"
+          metadata: "{{ item | combine({'config': _report.config, 'run_states': _report.states}) | to_json }}"
+          policy_sha: "{{ aac_policy_sha | default('') }}"
+          project_sha: "{{ aac_project_sha | default('') }}"
+      loop: "{{ _report.hosts }}"
+      loop_control:
+        label: "{{ item.name }}: {{ item.state }}"
+      when: estate_continuity_store | bool
+
+    - name: Update the registry
+      community.postgresql.postgresql_query:
+        login_host: "{{ _pg_host }}"
+        login_port: "{{ _pg_port }}"
+        login_db: "{{ _pg_db }}"
+        login_user: "{{ _pg_user }}"
+        login_password: "{{ _pg_password }}"
+        query: |
+          INSERT INTO host_registry AS r (
+            hostname, last_seen_in_inventory_at, inventory_name, provider, provider_ref,
+            lifecycle_state, retired_at, retired_ref, retired_by)
+          VALUES (
+            %(hostname)s,
+            CASE WHEN %(in_inventory)s THEN now() END,
+            NULLIF(%(inventory)s, ''), %(provider)s, NULLIF(%(provider_ref)s, ''),
+            %(state)s,
+            CASE WHEN %(state)s = 'retired' THEN now() - make_interval(secs => %(retired_hours)s * 3600) END,
+            NULLIF(%(retired_ref)s, ''), NULLIF(%(retired_by)s, ''))
+          ON CONFLICT (hostname) DO UPDATE SET
+            last_seen_in_inventory_at = COALESCE(EXCLUDED.last_seen_in_inventory_at, r.last_seen_in_inventory_at),
+            inventory_name  = COALESCE(EXCLUDED.inventory_name, r.inventory_name),
+            provider        = EXCLUDED.provider,
+            provider_ref    = COALESCE(EXCLUDED.provider_ref, r.provider_ref),
+            state_since     = CASE WHEN r.lifecycle_state = EXCLUDED.lifecycle_state THEN r.state_since ELSE now() END,
+            lifecycle_state = EXCLUDED.lifecycle_state,
+            retired_at      = COALESCE(EXCLUDED.retired_at, r.retired_at),
+            retired_ref     = COALESCE(EXCLUDED.retired_ref, r.retired_ref),
+            retired_by      = COALESCE(EXCLUDED.retired_by, r.retired_by),
+            updated_at      = now()
+        named_args:
+          hostname: "{{ item.name }}"
+          in_inventory: "{{ item.name in (_inventory | default({})) }}"
+          inventory: "{{ ((_inventory | default({})).get(item.name) or {}).get('inventory', '') }}"
+          provider: "{{ item.provider }}"
+          provider_ref: >-
+            {{ ((((_inventory | default({})).get(item.name) or {}).get('vars') or {}).get('instance_id', '')) }}
+          state: "{{ item.state }}"
+          retired_hours: >-
+            {{ ((_hosts_input | selectattr('name', 'equalto', item.name) | first).retirement | default({})).hours_ago | default(0, true) | float }}
+          retired_ref: >-
+            {{ ((_hosts_input | selectattr('name', 'equalto', item.name) | first).retirement | default({})).ref | default('') }}
+          retired_by: >-
+            {{ ((_hosts_input | selectattr('name', 'equalto', item.name) | first).retirement | default({})).by | default('') }}
+      loop: "{{ _report.hosts }}"
+      loop_control:
+        label: "{{ item.name }}: {{ item.state }}"
+      when:
+        - estate_continuity_store | bool
+        - item.state != 'invalid_record'
+
+    # ── 7. Report ────────────────────────────────────────────────────────
+
+    - name: Publish the run summary
+      ansible.builtin.set_stats:
+        data:
+          estate_continuity_compliant: "{{ _report.compliant }}"
+          estate_continuity_states: "{{ _report.states | dict2items | selectattr('value', 'gt', 0) | items2dict }}"
+          estate_continuity_findings: "{{ _report.violation_count }}"
+
+    - name: Estate continuity summary
+      ansible.builtin.debug:
+        msg: "{{ ['Hosts: ' ~ _report.hosts_evaluated ~ ' · findings: ' ~ _report.violation_count
+                  ~ ' · advisories: ' ~ _report.advisory_count, '']
+                 + (_report.hosts | map(attribute='state') | zip(_report.hosts | map(attribute='reason'))
+                    | map('join', ' — ') | list) }}"
+
+    - name: Fail on findings (opt-in)
+      ansible.builtin.fail:
+        msg: "{{ _report.violation_count }} estate-continuity finding(s); see the summary above."
+      when:
+        - estate_continuity_fail_on_findings | bool
+        - not (_report.compliant | bool)

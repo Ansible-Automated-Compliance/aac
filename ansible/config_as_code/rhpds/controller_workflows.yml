@@ -1,0 +1,108 @@
+---
+# AAC Workflow Job Templates — RHPDS Configuration
+#
+# Three workflows:
+#   1. AAC_GoldenImage_Enforcement  — drift check → rollback → helpdesk ticket
+#   2. AAC_DS_FullAssessment        — DS assessment → PDF report
+#   3. AAC_NERC_FullAudit           — NERC-CIP report → PDF evidence
+
+controller_workflows:
+
+  # ── Golden Image Enforcement (mitigation) ─────────────────────────────────────
+  # Triggered by EDA webhook when drift is detected on demo-rhel9.
+  # Serial mitigation chain, all on success:
+  #   Check → NotifyHelpDesk → Rollback → Check (verify) → CloseHelpdeskTicket
+  # Any node failure halts the chain — the open ticket stays open for review.
+
+  - name: AAC_GoldenImage_Enforcement
+    description: "EDA-triggered mitigation: Check → Notify HelpDesk → Rollback → re-Check → Close Ticket (serial, success-only)"
+    organization: "{{ aac_organization }}"
+    ask_variables_on_launch: true
+    simplified_workflow_nodes:
+
+      - identifier: check
+        unified_job_template: AAC_GoldenImage_Check
+        credentials: []
+        success_nodes:
+          - notify
+        failure_nodes: []
+        always_nodes: []
+
+      - identifier: notify
+        unified_job_template: AAC_GoldenImage_NotifyHelpDesk
+        credentials: []
+        success_nodes:
+          - rollback
+        failure_nodes: []
+        always_nodes: []
+
+      - identifier: rollback
+        unified_job_template: AAC_GoldenImage_Rollback
+        credentials: []
+        success_nodes:
+          - check_verify
+        failure_nodes: []
+        always_nodes: []
+
+      - identifier: check_verify
+        unified_job_template: AAC_GoldenImage_Check
+        credentials: []
+        success_nodes:
+          - close
+        failure_nodes: []
+        always_nodes: []
+
+      - identifier: close
+        unified_job_template: AAC_GoldenImage_CloseHelpdeskTicket
+        credentials: []
+        success_nodes: []
+        failure_nodes: []
+        always_nodes: []
+
+  # ── Digital Sovereignty — Assessment + PDF ────────────────────────────────────
+  # Run together during the DS demo: assess → generate PDF evidence.
+
+  - name: AAC_DS_FullAssessment
+    description: "DS: 10-domain OPA assessment → PostgreSQL → PDF evidence report"
+    organization: "{{ aac_organization }}"
+    ask_variables_on_launch: true
+    simplified_workflow_nodes:
+
+      - identifier: assess
+        unified_job_template: AAC_DS_Assessment
+        credentials: []
+        success_nodes:
+          - pdf
+        failure_nodes: []
+        always_nodes: []
+
+      - identifier: pdf
+        unified_job_template: AAC_DS_GeneratePDF
+        credentials: []
+        success_nodes: []
+        failure_nodes: []
+        always_nodes: []
+
+  # ── NERC-CIP Full Audit ───────────────────────────────────────────────────────
+  # Nightly or on-demand: full CIP-002–015 + INSM report → PDF evidence.
+
+  - name: AAC_NERC_FullAudit
+    description: "NERC-CIP: CIP-002 through CIP-015 + INSM → PostgreSQL → PDF evidence"
+    organization: "{{ aac_organization }}"
+    ask_variables_on_launch: true
+    simplified_workflow_nodes:
+
+      - identifier: report
+        unified_job_template: AAC_NERC_CIPReport
+        credentials: []
+        success_nodes:
+          - pdf
+        failure_nodes: []
+        always_nodes: []
+
+      - identifier: pdf
+        unified_job_template: AAC_NERC_GeneratePDF
+        credentials: []
+        success_nodes: []
+        failure_nodes: []
+        always_nodes: []

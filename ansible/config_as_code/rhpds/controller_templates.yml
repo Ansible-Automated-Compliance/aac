@@ -1,0 +1,295 @@
+---
+# AAC Job Templates — RHPDS Configuration
+#
+# Organized by demo group. All templates share:
+#   inventory:            Compliance Infrastructure
+#   project:              Compliance Automation
+#   execution_environment: AAC Compliance EE
+#   credentials:          [Ansible Vault, AAC Demo Host (SSH)]
+#
+# Templates that only run on localhost (no SSH to demo host) omit
+# AAC Demo Host (SSH) from credentials and use limit: localhost.
+
+# ─── Shared defaults (referenced via YAML anchor) ────────────────────────────
+_defaults: &defaults
+  job_type: run
+  inventory: Compliance Infrastructure
+  organization: "{{ aac_organization }}"
+  project: Compliance Automation
+  execution_environment: AAC Compliance EE
+  credentials:
+    - Ansible Vault
+    - AAC Demo Host (SSH)
+  ask_variables_on_launch: true
+
+_local_only: &local_only
+  job_type: run
+  inventory: Compliance Infrastructure
+  organization: "{{ aac_organization }}"
+  project: Compliance Automation
+  execution_environment: AAC Compliance EE
+  credentials:
+    - Ansible Vault
+  ask_variables_on_launch: true
+
+controller_templates:
+
+  # ── Infrastructure ──────────────────────────────────────────────────────────
+
+  - <<: *local_only
+    name: AAC_Infra_LoadOPAPolicies
+    description: "Reload the OPA engines from the git checkout (demo build: every framework)"
+    playbook: ansible/playbooks/load_opa_policies.yml
+    # Demo opt-in: an RHPDS demo loads every framework. Customer installs load
+    # the selection (source=database, the loader default). Launch variables are
+    # accepted so a scoped, additive load (source=extra_vars) can run.
+    ask_variables_on_launch: true
+    extra_vars:
+      source: all
+
+  - <<: *local_only
+    name: AAC_Infra_DeployOPAContainers
+    description: "Recreate opa-security :8181, opa-compliance :8182, opa-ot :8183"
+    playbook: ansible/playbooks/deploy_opa_containers.yml
+    ask_variables_on_launch: false
+
+  - <<: *local_only
+    name: AAC_Infra_InitPostgreSQL
+    description: "Deploy PostgreSQL and initialize compliance DB schema (4 tables)"
+    playbook: ansible/playbooks/postgres_database_init.yml
+    ask_variables_on_launch: false
+
+  - <<: *local_only
+    name: AAC_Infra_BackupDatabase
+    description: "pg_dump compliance DB + vault → ~/aac-backups (run before any schema change)"
+    playbook: ansible/playbooks/backup_compliance_db.yml
+    ask_variables_on_launch: false
+
+  - <<: *local_only
+    name: AAC_Infra_RestoreDatabase
+    description: "Restore compliance DB from latest backup in ~/aac-backups"
+    playbook: ansible/playbooks/restore_compliance_db.yml
+    ask_variables_on_launch: true
+
+  - <<: *defaults
+    name: AAC_Infra_SeedRHPDSDatabase
+    description: "Dump local compliance DB → SCP → restore on EC2 demo host (RHPDS demo prep)"
+    playbook: ansible/playbooks/seed_rhpds_database.yml
+    ask_variables_on_launch: true
+
+  - <<: *local_only
+    name: AAC_Infra_DeployAllDashboards
+    description: "Deploy all 6 Grafana compliance dashboards (AMI, NERC-CIP, DS, CAF, AAC, Tech Debt)"
+    playbook: ansible/playbooks/deploy_grafana_dashboard.yml
+    ask_variables_on_launch: false
+
+  - <<: *local_only
+    name: AAC - Verify Installation
+    description: "GO/NO-GO health check — OPA, PostgreSQL, MCP, smart meters"
+    playbook: ansible/playbooks/verify_installation.yml
+    ask_variables_on_launch: false
+
+  # ── Demo: Comply (Sentinel) ─────────────────────────────────────────────────
+
+  - <<: *local_only
+    name: AAC_Comply_ValidateAnsible
+    description: "Comply demo: validate non-compliant Ansible playbook → DENY"
+    playbook: ansible/playbooks/aac_comply_validate_ansible.yml
+
+  - <<: *local_only
+    name: AAC_Comply_AnsibleDeny
+    description: "Comply demo: Ansible DENY path (non-compliant example)"
+    playbook: ansible/playbooks/aac_comply_validate_ansible.yml
+
+  - <<: *local_only
+    name: AAC_Comply_AnsibleAllow
+    description: "Comply demo: Ansible ALLOW path (compliant example)"
+    playbook: ansible/playbooks/aac_comply_validate_ansible.yml
+
+  - <<: *local_only
+    name: AAC_Comply_ValidateTerraform
+    description: "Comply demo: validate non-compliant Terraform plan → DENY"
+    playbook: ansible/playbooks/aac_comply_validate_terraform.yml
+
+  - <<: *local_only
+    name: AAC_Comply_TerraformDeny
+    description: "Comply demo: Terraform DENY path (non-compliant plan)"
+    playbook: ansible/playbooks/aac_comply_validate_terraform.yml
+
+  - <<: *local_only
+    name: AAC_Comply_AuditSweep
+    description: "Comply demo: audit sweep across all automation artifacts"
+    playbook: ansible/playbooks/aac_comply_audit_sweep.yml
+    ask_variables_on_launch: false
+
+  # ── Demo: Golden Image ──────────────────────────────────────────────────────
+
+  - <<: *defaults
+    name: AAC_GoldenImage_CloseHelpdeskTicket
+    description: "Close the open ticket after rollback re-check confirms baseline. Node 5 (final)."
+    playbook: ansible/playbooks/close_helpdesk_ticket.yml
+    ask_variables_on_launch: false
+    extra_vars:
+      aac_host: PENDING_EC2_IP
+      pg_host: PENDING_EC2_IP
+      aap_ssh_user: ec2-user
+
+  # ── Demo: AMI / NERC-CIP ────────────────────────────────────────────────────
+
+  - <<: *local_only
+    name: AAC_AMI_DeploySmartMeters
+    description: "Deploy smart meter simulator containers (electric :8085, gas :8086, water :8087)"
+    playbook: playbooks/smart_meter/deploy_smart_meter_containers.yml
+    ask_variables_on_launch: false
+
+  - <<: *local_only
+    name: AAC_AMI_DeployGrafana
+    description: "Deploy/update Grafana compliance dashboard"
+    playbook: ansible/playbooks/deploy_grafana_dashboard.yml
+    ask_variables_on_launch: false
+
+  - <<: *local_only
+    name: AAC_NERC_CIPReport
+    description: "NERC-CIP: CIP-002 through CIP-015 + INSM compliance report → PostgreSQL"
+    playbook: ansible/playbooks/nerc_cip_compliance_report.yml
+
+  - <<: *local_only
+    name: AAC_NERC_GeneratePDF
+    description: "NERC-CIP: Generate audit-ready PDF evidence report"
+    playbook: ansible/playbooks/nerc_cip_pdf_report.yml
+    ask_variables_on_launch: false
+
+  - <<: *local_only
+    name: AAC_NERC_RemediationReport
+    description: "NERC/AMI: Remediation prioritization report"
+    playbook: ansible/playbooks/nerc_ami_remediation_report.yml
+    ask_variables_on_launch: false
+
+  - <<: *local_only
+    name: AAC_NERC_CIP010Baseline
+    description: "CIP-010: Capture or check configuration baseline"
+    playbook: ansible/playbooks/cip_010_baseline_capture.yml
+
+  - <<: *local_only
+    name: AAC_NERC_CIP008Incident
+    description: "CIP-008: Incident response — collect BES forensic evidence → PostgreSQL"
+    playbook: ansible/playbooks/cip_008_incident_response.yml
+
+  # ── Demo: Digital Sovereignty ────────────────────────────────────────────────
+
+  - <<: *local_only
+    name: AAC_DS_Assessment
+    description: "Digital Sovereignty: 10-domain assessment → OPA → PostgreSQL"
+    playbook: ansible/playbooks/digital_sovereignty_assessment.yml
+    survey_enabled: true
+
+  - <<: *local_only
+    name: AAC_DS_GeneratePDF
+    description: "Digital Sovereignty: Generate audit PDF evidence report"
+    playbook: ansible/playbooks/ds_pdf_report.yml
+    ask_variables_on_launch: false
+
+  # ── Demo: NCSC CAF 4.0 ──────────────────────────────────────────────────────
+
+  # ── New Frameworks (generic assessment) ─────────────────────────────────────
+  # Each template pins its framework key via extra_vars so launching without
+  # a survey prompt is safe. Surveys prompt only for runtime inputs
+  # (assessment_input, target_hostname). OPA container resolved automatically
+  # from opa_framework_map in site_config.yml.
+
+  - <<: *local_only
+    name: AAC_Framework_DORA
+    description: "EU DORA (Regulation 2022/2554): digital operational resilience assessment → OPA :8182 → PostgreSQL"
+    playbook: ansible/playbooks/generic_framework_assessment.yml
+    extra_vars:
+      framework: dora
+    survey_enabled: true
+
+  - <<: *local_only
+    name: AAC_Framework_NIS2
+    description: "EU NIS2 (Directive 2022/2555): network and information security assessment → OPA :8182 → PostgreSQL"
+    playbook: ansible/playbooks/generic_framework_assessment.yml
+    extra_vars:
+      framework: nis2
+    survey_enabled: true
+
+  - <<: *local_only
+    name: AAC_Framework_NIST80082
+    description: "NIST SP 800-82 Rev 3: OT/ICS/SCADA security assessment → OPA :8183 → PostgreSQL"
+    playbook: ansible/playbooks/generic_framework_assessment.yml
+    extra_vars:
+      framework: nist_800_82
+    survey_enabled: true
+
+  - <<: *local_only
+    name: AAC_Framework_NYDFS
+    description: "NY DFS 23 NYCRR Part 500: financial services cybersecurity assessment → OPA :8182 → PostgreSQL"
+    playbook: ansible/playbooks/generic_framework_assessment.yml
+    extra_vars:
+      framework: ny_dfs
+    survey_enabled: true
+
+  - <<: *local_only
+    name: AAC_Framework_SECCyber
+    description: "SEC Cybersecurity Disclosure Rules: public company cyber assessment → OPA :8182 → PostgreSQL"
+    playbook: ansible/playbooks/generic_framework_assessment.yml
+    extra_vars:
+      framework: sec_cyber
+    survey_enabled: true
+
+  - <<: *local_only
+    name: AAC_Framework_SWIFTCSP
+    description: "SWIFT CSP: financial messaging security assessment → OPA :8182 → PostgreSQL"
+    playbook: ansible/playbooks/generic_framework_assessment.yml
+    extra_vars:
+      framework: swift_csp
+    survey_enabled: true
+
+  - <<: *local_only
+    name: AAC_Framework_HITRUST
+    description: "HITRUST CSF v11.3: healthcare information security assessment → OPA :8182 → PostgreSQL"
+    playbook: ansible/playbooks/generic_framework_assessment.yml
+    extra_vars:
+      framework: hitrust
+    survey_enabled: true
+
+  - <<: *local_only
+    name: AAC_Framework_TISAX
+    description: "TISAX: automotive trusted information security assessment → OPA :8182 → PostgreSQL"
+    playbook: ansible/playbooks/generic_framework_assessment.yml
+    extra_vars:
+      framework: tisax
+    survey_enabled: true
+
+  - <<: *local_only
+    name: AAC_Framework_CFRPart11
+    description: "FDA 21 CFR Part 11: electronic records and signatures assessment → OPA :8182 → PostgreSQL"
+    playbook: ansible/playbooks/generic_framework_assessment.yml
+    extra_vars:
+      framework: cfr_part_11
+    survey_enabled: true
+
+  - <<: *local_only
+    name: AAC_Framework_CISGCP
+    description: "CIS GCP Foundation v2.0: Google Cloud security benchmark → OPA :8181 → PostgreSQL"
+    playbook: ansible/playbooks/generic_framework_assessment.yml
+    extra_vars:
+      framework: cis_gcp
+    survey_enabled: true
+
+  # ── Technical Debt ───────────────────────────────────────────────────────────
+
+  - <<: *local_only
+    name: AAC - Technical Debt Assessment
+    description: "Technical debt scoring across all compliance domains → PostgreSQL + Grafana"
+    playbook: ansible/playbooks/technical_debt_assessment.yml
+    survey_enabled: true
+
+  # ── Bootstrap ────────────────────────────────────────────────────────────────
+
+  - <<: *local_only
+    name: AAC - Bootstrap RHPDS Environment
+    description: "Idempotent full environment bootstrap via infra.aap_configuration (re-run safe)"
+    playbook: ansible/config_as_code/rhpds/rhpds_bootstrap.yml
+    ask_variables_on_launch: true
+    survey_enabled: true

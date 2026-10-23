@@ -1,0 +1,283 @@
+---
+# seed_windows_hardening_workflow.yml
+#
+# Creates 4 hardening job templates + 1 assessment template + 1 workflow
+# in local AAP for modular, domain-owned Windows Server 2022 CIS hardening.
+#
+# Domain model:
+#   IAM team       → harden_account_policies   (51 controls)
+#   SecOps team    → harden_audit_policy        (45 controls)
+#   Infra team     → harden_system_services     (48 controls)
+#   Security Eng.  → harden_endpoint_security   (24 controls)
+#   Assessment     → cis_windows_server_2022_assessment (measure before/after)
+#
+# Run from local AAP: Template "AAC - Seed Windows Hardening Workflow"
+# Or run directly: ansible-playbook seed_windows_hardening_workflow.yml
+
+- name: Seed Windows Server 2022 Hardening Templates and Workflow
+  hosts: localhost
+  gather_facts: false
+  connection: local
+
+  vars_files:
+    - ../vars/site_config.yml
+
+  vars:
+    # aac_host comes from ../vars/site_config.yml — do not hardcode it here
+    aac_token:        "{{ aap_token }}"
+    aac_api:          "{{ aap_url }}/api/controller/v2"
+    inventory_id:     4       # Compliance Infrastructure
+    project_id:       11      # Compliance Automation (GitHub)
+    ee_id:            6       # AAC Compliance EE v1.2.0
+    vault_cred_id:    8       # Ansible Vault
+    windows_cred_id:  7       # Windows Compliance Lab (Administrator)
+
+    hardening_templates:
+      - name: "CIS Windows 2022 Harden - Account Policies"
+        description: >
+          IAM domain: password policy, account lockout, user rights assignment,
+          security options. Covers 51 CIS controls. Safe to run — does NOT
+          disable or rename the Administrator account (WinRM compatibility).
+        playbook: "ansible/playbooks/hardening/windows_server_2022/harden_account_policies.yml"
+        extra_vars: ""
+
+      - name: "CIS Windows 2022 Harden - Audit Policy"
+        description: >
+          SecOps domain: advanced audit policy subcategories and event log
+          sizes/retention. Covers 45 CIS controls. No reboot required.
+        playbook: "ansible/playbooks/hardening/windows_server_2022/harden_audit_policy.yml"
+        extra_vars: ""
+
+      - name: "CIS Windows 2022 Harden - Services & Registry"
+        description: >
+          Infrastructure domain: disable unnecessary services, registry-based
+          hardening (SMBv1, LLMNR, NTLM, RDP, source routing). Covers 48 CIS
+          controls. Uses survey vars require_iis/ftp/iscsi/rds/ssh_server/snmp.
+        playbook: "ansible/playbooks/hardening/windows_server_2022/harden_system_services.yml"
+        extra_vars: |
+          require_iis: false
+          require_ftp: false
+          require_iscsi: false
+          require_rds: false
+          require_ssh_server: false
+          require_snmp: false
+
+      - name: "CIS Windows 2022 Harden - Endpoint Security"
+        description: >
+          Security Engineering domain: Windows Defender AV, ASR rules,
+          Controlled Folder Access, Network Protection, firewall profiles,
+          BitLocker policy. Covers 18 Defender + 6 BitLocker policy controls.
+        playbook: "ansible/playbooks/hardening/windows_server_2022/harden_endpoint_security.yml"
+        extra_vars: ""
+
+  tasks:
+
+    - name: Authenticate to AAP controller
+      uri:
+        use_proxy: false
+        url: "{{ aap_url }}/api/gateway/v1/tokens/"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ aac_token }}"
+          Content-Type: application/json
+        body_format: json
+        body:
+          description: "Windows hardening seed script"
+          application: null
+          scope: "write"
+        validate_certs: false
+        status_code: [200, 201]
+      register: auth_result
+      ignore_errors: true
+
+    - name: Set controller token
+      set_fact:
+        ctrl_token: "{{ aac_token }}"
+
+    # ── Create hardening job templates ─────────────────────────────────────────
+
+    - name: Create hardening job templates
+      uri:
+        use_proxy: false
+        url: "{{ aac_api }}/job_templates/"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ ctrl_token }}"
+          Content-Type: application/json
+        body_format: json
+        body:
+          name:            "{{ item.name }}"
+          description:     "{{ item.description }}"
+          job_type:        "run"
+          inventory:       "{{ inventory_id }}"
+          project:         "{{ project_id }}"
+          playbook:        "{{ item.playbook }}"
+          execution_environment: "{{ ee_id }}"
+          extra_vars:      "{{ item.extra_vars }}"
+          ask_limit_on_launch: true
+          ask_variables_on_launch: false
+          become_enabled:  false
+        validate_certs: false
+        status_code: [200, 201]
+      register: template_results
+      loop: "{{ hardening_templates }}"
+      failed_when: false
+
+    - name: Store created template IDs
+      set_fact:
+        created_template_ids: "{{ template_results.results | map(attribute='json.id') | list }}"
+
+    # ── Attach credentials to each template ───────────────────────────────────
+
+    - name: Attach vault credential to hardening templates
+      uri:
+        use_proxy: false
+        url: "{{ aac_api }}/job_templates/{{ item }}/credentials/"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ ctrl_token }}"
+          Content-Type: application/json
+        body_format: json
+        body:
+          id: "{{ vault_cred_id }}"
+        validate_certs: false
+        status_code: [200, 201, 204]
+      loop: "{{ created_template_ids }}"
+      when: item is not none
+      failed_when: false
+
+    - name: Attach Windows credential to hardening templates
+      uri:
+        use_proxy: false
+        url: "{{ aac_api }}/job_templates/{{ item }}/credentials/"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ ctrl_token }}"
+          Content-Type: application/json
+        body_format: json
+        body:
+          id: "{{ windows_cred_id }}"
+        validate_certs: false
+        status_code: [200, 201, 204]
+      loop: "{{ created_template_ids }}"
+      when: item is not none
+      failed_when: false
+
+    # ── Look up the existing assessment template ───────────────────────────────
+
+    - name: Find existing CIS Windows assessment template
+      uri:
+        use_proxy: false
+        url: "{{ aac_api }}/job_templates/?name=CIS+Windows+Server+2022+Assessment"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ ctrl_token }}"
+        validate_certs: false
+        status_code: 200
+      register: assessment_lookup
+
+    - name: Set assessment template ID
+      set_fact:
+        assessment_template_id: "{{ (assessment_lookup.json.results | first).id }}"
+      when: assessment_lookup.json.count | default(0) > 0
+
+    # ── Create hardening workflow ──────────────────────────────────────────────
+
+    - name: Create CIS Windows Hardening workflow template
+      uri:
+        use_proxy: false
+        url: "{{ aac_api }}/workflow_job_templates/"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ ctrl_token }}"
+          Content-Type: application/json
+        body_format: json
+        body:
+          name: "CIS Windows 2022 - Full Hardening Workflow"
+          description: >
+            Runs all 4 domain-scoped CIS hardening playbooks in sequence then
+            re-runs the assessment to measure the compliance score improvement.
+            Domain order: Account Policies → Audit Policy → Services/Registry →
+            Endpoint Security → Assessment (before/after comparison).
+          organization: 1
+          ask_limit_on_launch: true
+        validate_certs: false
+        status_code: [200, 201]
+      register: wf_result
+      failed_when: false
+
+    - name: Set workflow ID
+      set_fact:
+        wf_id: "{{ wf_result.json.id }}"
+      when: wf_result.json.id is defined
+
+    # ── Wire workflow nodes ────────────────────────────────────────────────────
+
+    - name: Build workflow node list
+      set_fact:
+        wf_node_template_ids: "{{ created_template_ids + ([assessment_template_id] if assessment_template_id is defined else []) }}"
+
+    - name: Create workflow nodes
+      uri:
+        use_proxy: false
+        url: "{{ aac_api }}/workflow_job_templates/{{ wf_id }}/workflow_nodes/"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ ctrl_token }}"
+          Content-Type: application/json
+        body_format: json
+        body:
+          unified_job_template: "{{ item }}"
+          extra_data: {}
+        validate_certs: false
+        status_code: [200, 201]
+      register: node_results
+      loop: "{{ wf_node_template_ids }}"
+      when: wf_id is defined and item is not none
+      failed_when: false
+
+    - name: Store node IDs
+      set_fact:
+        node_ids: "{{ node_results.results | selectattr('json.id', 'defined') | map(attribute='json.id') | list }}"
+      when: node_results is defined
+
+    - name: Chain workflow nodes sequentially
+      uri:
+        use_proxy: false
+        url: "{{ aac_api }}/workflow_job_template_nodes/{{ node_ids[item_index] }}/success_nodes/"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ ctrl_token }}"
+          Content-Type: application/json
+        body_format: json
+        body:
+          id: "{{ node_ids[item_index + 1] }}"
+        validate_certs: false
+        status_code: [200, 201, 204]
+      loop: "{{ range(node_ids | length - 1) | list }}"
+      loop_control:
+        loop_var: item_index
+      when: node_ids is defined and node_ids | length > 1
+      failed_when: false
+
+    # ── Summary ────────────────────────────────────────────────────────────────
+
+    - name: Summary
+      debug:
+        msg:
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "  Windows Server 2022 CIS Hardening — Seeding Complete"
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "  Templates created:"
+          - "    - CIS Windows 2022 Harden - Account Policies   (IAM)"
+          - "    - CIS Windows 2022 Harden - Audit Policy        (SecOps)"
+          - "    - CIS Windows 2022 Harden - Services & Registry (Infrastructure)"
+          - "    - CIS Windows 2022 Harden - Endpoint Security   (Security Engineering)"
+          - "  Workflow: CIS Windows 2022 - Full Hardening Workflow"
+          - "  Template IDs: {{ created_template_ids }}"
+          - "  Workflow ID:  {{ wf_id | default('N/A') }}"
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "  Next: Run the assessment first (baseline), then the workflow,"
+          - "        then the assessment again to measure improvement."
+          - "  Expected: 11.1% (current) → 88%+ after full hardening"
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

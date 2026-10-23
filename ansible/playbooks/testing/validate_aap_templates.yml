@@ -1,0 +1,104 @@
+---
+# Validate AAP Job Templates for Demo
+# Checks that required job templates exist in AAP
+#
+# Usage:
+#   ansible-playbook tests/validate_aap_templates.yml \
+#     -e aap_token=<your_token> \
+#     -e cluster_domain=<your_cluster>
+
+- name: Validate AAP Job Templates
+  hosts: localhost
+  connection: local
+  gather_facts: yes
+
+  vars:
+    cluster_domain: "{{ lookup('env', 'CLUSTER_DOMAIN') | default(rhpds_cluster | default(undef(), true), true) | mandatory(msg='Set CLUSTER_DOMAIN, rhpds_cluster, or cluster_domain') }}"
+    aap_controller_url: "https://aap-controller-aap.apps.{{ cluster_domain }}"
+    aap_token: "{{ lookup('env', 'AAP_TOKEN') | default('') }}"
+
+    # Required job templates for the demo
+    required_templates:
+      - name: "CIS RHEL 9 Assessment"
+        pattern: "CIS.*RHEL.*9"
+      - name: "CIS Benchmark Report"
+        pattern: "CIS.*Benchmark.*Report"
+      - name: "OPA Policy Deployment"
+        pattern: "OPA.*Policy|Deploy.*OPA"
+      - name: "Compliance Assessment"
+        pattern: "Compliance.*Assessment|Assessment"
+
+  tasks:
+    - name: Validate AAP token is provided
+      fail:
+        msg: "AAP token required. Set AAP_TOKEN env var or pass -e aap_token=<token>"
+      when: (aap_token | default('', true)) == ''
+
+    - name: Get job templates from AAP
+      uri:
+        use_proxy: false
+        url: "{{ aap_controller_url }}/api/controller/v2/job_templates/"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ aap_token }}"
+        validate_certs: no
+        status_code: 200
+      register: job_templates_response
+
+    - name: Extract template names
+      set_fact:
+        existing_templates: "{{ job_templates_response.json.results | map(attribute='name') | list }}"
+        template_count: "{{ job_templates_response.json.count }}"
+
+    - name: Display existing templates
+      debug:
+        msg: |
+          Found {{ template_count }} job templates in AAP:
+          {% for t in existing_templates %}
+          - {{ t }}
+          {% endfor %}
+
+    - name: Check for required templates
+      set_fact:
+        template_check_results: >-
+          {{
+            template_check_results | default([]) + [{
+              'name': item.name,
+              'pattern': item.pattern,
+              'found': existing_templates | select('search', item.pattern) | list | length > 0,
+              'matches': existing_templates | select('search', item.pattern) | list
+            }]
+          }}
+      loop: "{{ required_templates }}"
+
+    - name: Count passed and failed checks
+      set_fact:
+        templates_found: "{{ template_check_results | selectattr('found', 'equalto', true) | list | length }}"
+        templates_missing: "{{ template_check_results | selectattr('found', 'equalto', false) | list | length }}"
+
+    - name: Display template validation results
+      debug:
+        msg: |
+
+          =====================================================
+          AAP JOB TEMPLATE VALIDATION
+          =====================================================
+
+          {% for check in template_check_results %}
+          [{{ 'PASS' if check.found else 'FAIL' }}] {{ check.name }}
+          {% if check.found %}
+                   └─ Matched: {{ check.matches | join(', ') }}
+          {% else %}
+                   └─ Pattern not found: {{ check.pattern }}
+          {% endif %}
+          {% endfor %}
+
+          =====================================================
+          SUMMARY: {{ templates_found }}/{{ required_templates | length }} required templates found
+          Total templates in AAP: {{ template_count }}
+          =====================================================
+
+    - name: Fail if templates missing
+      fail:
+        msg: "{{ templates_missing }} required template(s) not found in AAP"
+      when: templates_missing | int > 0 and (strict_mode | default(false) | bool)

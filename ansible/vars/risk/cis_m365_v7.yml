@@ -1,0 +1,38 @@
+---
+# F1 risk config — CIS Microsoft 365 Foundations v7.0.0.
+# Framework-specific knowledge as DATA (the scoring logic is generic code in
+# scripts/risk_score.py). Used as the base when a finding carries no severity
+# (M365 findings are message-based and have severity = NULL).
+framework: cis_m365_v7
+
+# Control criticality by control-id prefix (dotted-segment match, longest
+# wins). Higher = more consequential control domain.
+criticality:
+  "1.1": 4      # privileged / administrative accounts
+  "5.1.1": 4
+  "5.1.2": 4    # identity governance (app registration, tenant creation)
+  "5.1.6": 4
+  "5.2": 4      # authentication methods / MFA / conditional access
+  "5.1.3": 3
+  "5.1.4": 3
+  "5.1.5": 3    # application consent
+  "2": 3        # Defender / threat protection
+  "6.5": 3      # Exchange Online authentication
+  "6.1": 3      # mailbox auditing
+  "3": 3        # Purview / data protection
+  "1.2": 2      # group / account hygiene
+  "1.3": 2      # service configuration
+  "6": 2
+  "7": 2
+  "8": 2
+  "9": 2
+  "_default": 2
+
+# Optional keyword elevators matched against the finding title.
+elevators:
+  - {match: "global admin", bump: 2, reason: "affects global administrators"}
+  - {match: "legacy auth|modern authentication|basic auth", bump: 2, reason: "permits legacy authentication (bypasses CA/MFA)"}
+  - {match: "\\bMFA\\b|multifactor|multi-factor", bump: 2, reason: "weakens multifactor authentication"}
+  - {match: "consent", bump: 1, reason: "consent / consent-phishing exposure"}
+  - {match: "external|outside the organization|anonymous", bump: 1, reason: "external exposure"}
+  - {match: "audit", bump: 1, reason: "affects audit/evidence capture"}

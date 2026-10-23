@@ -1,0 +1,227 @@
+---
+# Rebuild the "AAC - Nightly Fact Collection" workflow
+#
+# Flow:
+#   [Start Compliance Lab]
+#        ↓ success (parallel fan-out)
+#   [Gather Facts (All Systems)]  [Gather Network Facts]
+#        ↓ success (either completes → Stop; Stop runs even if one fails)
+#   [Stop Compliance Lab]
+#
+# Workflow ID: 98
+# JT IDs: 96=Start Compliance Lab, 80=Gather Facts (All Systems),
+#          84=Gather Network Facts, 97=Stop Compliance Lab
+
+- name: Rebuild Nightly Fact Collection Workflow
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - [ "../vars/vault_secrets.yml", "../vars/empty_fallback.yml" ]
+    - ../vars/site_config.yml
+
+  vars:
+    aap_token: "{{ vault_aap_local_mcp_token }}"
+    wf_id:     98
+    jt_start:  96    # AAC - Start Compliance Lab
+    jt_gather: 80    # AAC - Gather Facts (All Systems)
+    jt_network: 84   # AAC - Gather Network Facts
+    jt_stop:   97    # AAC - Stop Compliance Lab
+
+  tasks:
+
+    # -------------------------------------------------------------------------
+    # Delete existing nodes (idempotent rebuild)
+    # -------------------------------------------------------------------------
+    - name: Get existing workflow nodes
+      uri:
+        use_proxy: false
+        url: "{{ aap_url }}/api/controller/v2/workflow_job_templates/{{ wf_id }}/workflow_nodes/?page_size=50"
+        headers:
+          Authorization: "Bearer {{ aap_token }}"
+        validate_certs: false
+      register: existing_nodes
+
+    - name: Delete existing nodes
+      uri:
+        use_proxy: false
+        url: "{{ aap_url }}/api/controller/v2/workflow_job_template_nodes/{{ item.id }}/"
+        method: DELETE
+        headers:
+          Authorization: "Bearer {{ aap_token }}"
+        validate_certs: false
+        status_code: [200, 204]
+      loop: "{{ existing_nodes.json.results }}"
+
+    # -------------------------------------------------------------------------
+    # Create nodes
+    # -------------------------------------------------------------------------
+    - name: Node 1 — Start Compliance Lab
+      uri:
+        use_proxy: false
+        url: "{{ aap_url }}/api/controller/v2/workflow_job_templates/{{ wf_id }}/workflow_nodes/"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ aap_token }}"
+          Content-Type: "application/json"
+        validate_certs: false
+        body_format: json
+        body:
+          unified_job_template: "{{ jt_start }}"
+          all_parents_must_converge: false
+        status_code: [200, 201]
+      register: node_start
+
+    - name: Node 2a — Gather Facts (All Systems)
+      uri:
+        use_proxy: false
+        url: "{{ aap_url }}/api/controller/v2/workflow_job_templates/{{ wf_id }}/workflow_nodes/"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ aap_token }}"
+          Content-Type: "application/json"
+        validate_certs: false
+        body_format: json
+        body:
+          unified_job_template: "{{ jt_gather }}"
+          all_parents_must_converge: false
+        status_code: [200, 201]
+      register: node_gather
+
+    - name: Node 2b — Gather Network Facts
+      uri:
+        use_proxy: false
+        url: "{{ aap_url }}/api/controller/v2/workflow_job_templates/{{ wf_id }}/workflow_nodes/"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ aap_token }}"
+          Content-Type: "application/json"
+        validate_certs: false
+        body_format: json
+        body:
+          unified_job_template: "{{ jt_network }}"
+          all_parents_must_converge: false
+        status_code: [200, 201]
+      register: node_network
+
+    - name: Node 3 — Stop Compliance Lab
+      uri:
+        use_proxy: false
+        url: "{{ aap_url }}/api/controller/v2/workflow_job_templates/{{ wf_id }}/workflow_nodes/"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ aap_token }}"
+          Content-Type: "application/json"
+        validate_certs: false
+        body_format: json
+        body:
+          unified_job_template: "{{ jt_stop }}"
+          all_parents_must_converge: false   # Stop even if one gather fails
+        status_code: [200, 201]
+      register: node_stop
+
+    # -------------------------------------------------------------------------
+    # Connect nodes
+    # -------------------------------------------------------------------------
+    - name: Start → Gather Facts (success)
+      uri:
+        use_proxy: false
+        url: "{{ aap_url }}/api/controller/v2/workflow_job_template_nodes/{{ node_start.json.id }}/success_nodes/"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ aap_token }}"
+          Content-Type: "application/json"
+        validate_certs: false
+        body_format: json
+        body:
+          id: "{{ node_gather.json.id }}"
+        status_code: [200, 204]
+
+    - name: Start → Gather Network Facts (success)
+      uri:
+        use_proxy: false
+        url: "{{ aap_url }}/api/controller/v2/workflow_job_template_nodes/{{ node_start.json.id }}/success_nodes/"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ aap_token }}"
+          Content-Type: "application/json"
+        validate_certs: false
+        body_format: json
+        body:
+          id: "{{ node_network.json.id }}"
+        status_code: [200, 204]
+
+    - name: Gather Facts → Stop Lab (success)
+      uri:
+        use_proxy: false
+        url: "{{ aap_url }}/api/controller/v2/workflow_job_template_nodes/{{ node_gather.json.id }}/success_nodes/"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ aap_token }}"
+          Content-Type: "application/json"
+        validate_certs: false
+        body_format: json
+        body:
+          id: "{{ node_stop.json.id }}"
+        status_code: [200, 204]
+
+    - name: Gather Network Facts → Stop Lab (success)
+      uri:
+        use_proxy: false
+        url: "{{ aap_url }}/api/controller/v2/workflow_job_template_nodes/{{ node_network.json.id }}/success_nodes/"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ aap_token }}"
+          Content-Type: "application/json"
+        validate_certs: false
+        body_format: json
+        body:
+          id: "{{ node_stop.json.id }}"
+        status_code: [200, 204]
+
+    # Also wire failure paths to Stop (so lab always shuts down)
+    - name: Gather Facts → Stop Lab (failure)
+      uri:
+        use_proxy: false
+        url: "{{ aap_url }}/api/controller/v2/workflow_job_template_nodes/{{ node_gather.json.id }}/failure_nodes/"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ aap_token }}"
+          Content-Type: "application/json"
+        validate_certs: false
+        body_format: json
+        body:
+          id: "{{ node_stop.json.id }}"
+        status_code: [200, 204]
+
+    - name: Gather Network Facts → Stop Lab (failure)
+      uri:
+        use_proxy: false
+        url: "{{ aap_url }}/api/controller/v2/workflow_job_template_nodes/{{ node_network.json.id }}/failure_nodes/"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ aap_token }}"
+          Content-Type: "application/json"
+        validate_certs: false
+        body_format: json
+        body:
+          id: "{{ node_stop.json.id }}"
+        status_code: [200, 204]
+
+    # -------------------------------------------------------------------------
+    # Done
+    # -------------------------------------------------------------------------
+    - name: "=== Workflow Rebuilt ==="
+      debug:
+        msg:
+          - "Workflow: AAC - Nightly Fact Collection (ID: {{ wf_id }})"
+          - ""
+          - "  [Start Compliance Lab]"
+          - "        ↓ success (parallel)"
+          - "  [Gather Facts (All Systems)]  [Gather Network Facts]"
+          - "        ↓ success OR failure (always stops lab)"
+          - "  [Stop Compliance Lab]"
+          - ""
+          - "  Schedule: Nightly (configure in AAP Schedules)"
+          - "View: {{ aap_url }}/#/workflows/{{ wf_id }}"

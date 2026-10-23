@@ -1,0 +1,175 @@
+---
+# Store Compliance Results in PostgreSQL
+# This playbook stores compliance assessment results with violations
+# Linked to facts via foreign key for historical trending
+
+- name: Store Compliance Results in PostgreSQL
+  hosts: localhost
+  gather_facts: no
+  connection: local
+
+  vars_files:
+    - ../vars/site_config.yml
+    - [ "../vars/vault_secrets.yml", "../vars/empty_fallback.yml" ]
+
+  vars:
+    # Input variables
+    report_file: "{{ report_dir | default('/home/' + aap_ssh_user + '/compliance/reports') }}/{{ inventory_hostname }}_compliance_report_{{ timestamp }}.json"
+    report_dir: "/home/{{ aap_ssh_user }}/compliance/reports"
+
+    # facts_id passed from previous workflow step via set_stats
+    # Will be available in hostvars or as environment variable
+
+  tasks:
+    - name: Verify report file exists
+      stat:
+        path: "{{ report_file }}"
+      register: report_stat
+      failed_when: not report_stat.stat.exists
+
+    - name: Load compliance report from JSON
+      slurp:
+        src: "{{ report_file }}"
+      register: report_content
+
+    - name: Parse compliance report
+      set_fact:
+        compliance_report: "{{ report_content.content | b64decode | from_json }}"
+
+    - name: Extract compliance summary
+      set_fact:
+        policy_name: "{{ compliance_report.assessment_metadata.benchmark | default('CIS RHEL 9') }}"
+        policy_version: "1.0.0"
+        total_controls: "{{ compliance_report.compliance_summary.total_controls | int }}"
+        total_violations: "{{ compliance_report.compliance_summary.total_violations | int }}"
+        compliance_score: "{{ compliance_report.compliance_summary.compliance_score | float }}"
+        violations_list: "{{ compliance_report.violations | default([]) }}"
+
+    - name: Calculate passed/failed controls
+      set_fact:
+        passed_controls: "{{ total_controls - total_violations }}"
+        failed_controls: "{{ total_violations }}"
+
+    - name: Get system_id and facts_id from workflow artifact or environment
+      set_fact:
+        system_id: "{{ system_id | default(lookup('env', 'SYSTEM_ID') | default('1', true)) }}"
+        facts_id: "{{ facts_id | default(lookup('env', 'FACTS_ID') | default('1', true)) }}"
+
+    - name: Prepare violations JSON for PostgreSQL
+      set_fact:
+        violations_json_escaped: "{{ violations_list | to_json | regex_replace(\"'\", \"''\") | regex_replace('\"', '\\\"') }}"
+
+    - name: Prepare metadata JSON
+      set_fact:
+        metadata_json: "{{ compliance_report.assessment_metadata | to_json | regex_replace(\"'\", \"''\") | regex_replace('\"', '\\\"') }}"
+
+    - name: Look up or create compliance framework
+      shell: |
+        podman exec postgresql psql -U postgres -d compliance_automation -tc "
+        SELECT id FROM compliance_frameworks WHERE framework_code = '{{ policy_name | lower | regex_replace(' ', '_') }}';
+        "
+      register: framework_lookup
+      changed_when: false
+
+    - name: Set framework_id (default to 1 if not found)
+      set_fact:
+        framework_id: "{{ framework_lookup.stdout | trim | default('1', true) }}"
+
+    - name: Calculate compliance score percentage
+      set_fact:
+        is_compliant: "{{ (total_violations | int) == 0 }}"
+
+    - name: Insert compliance assessment into PostgreSQL
+      shell: |
+        podman exec postgresql psql -U postgres -d compliance_automation -c "
+        INSERT INTO compliance_assessments (
+          system_id,
+          framework_id,
+          assessment_date,
+          assessment_type,
+          assessment_scope,
+          is_compliant,
+          compliance_score,
+          total_controls_evaluated,
+          controls_passed,
+          controls_failed,
+          findings,
+          violations,
+          assessed_by
+        ) VALUES (
+          {{ system_id }},
+          {{ framework_id }},
+          NOW(),
+          'automated',
+          'full',
+          {{ is_compliant | lower }},
+          {{ compliance_score }},
+          {{ total_controls }},
+          {{ passed_controls }},
+          {{ failed_controls }},
+          '{{ metadata_json }}'::jsonb,
+          '{{ violations_json_escaped }}'::jsonb,
+          '{{ lookup("env", "TOWER_USER_NAME") | default("ansible", true) }}'
+        )
+        RETURNING id;
+        "
+      register: result_insert
+      changed_when: true
+
+    - name: Extract result_id from SQL output
+      set_fact:
+        result_id: "{{ result_insert.stdout_lines[-2] | trim }}"
+
+    - name: Record audit trail for assessment
+      shell: |
+        podman exec postgresql psql -U postgres -d compliance_automation -c "
+        INSERT INTO audit_log (
+          event_timestamp,
+          event_type,
+          system_id,
+          assessment_id,
+          framework_id,
+          event_description,
+          event_metadata,
+          triggered_by,
+          trigger_source,
+          status
+        ) VALUES (
+          NOW(),
+          'assessment_completed',
+          {{ system_id }},
+          {{ result_id }},
+          {{ framework_id }},
+          'Compliance assessment completed',
+          '{\"policy\": \"{{ policy_name }}\", \"compliance_score\": {{ compliance_score }}, \"violations\": {{ total_violations }}, \"facts_id\": {{ facts_id }}}'::jsonb,
+          '{{ lookup("env", "TOWER_USER_NAME") | default("ansible", true) }}',
+          'aap_workflow',
+          'success'
+        );
+        "
+      changed_when: true
+
+    - name: Set workflow output statistics
+      set_stats:
+        data:
+          result_id: "{{ result_id }}"
+          compliance_score: "{{ compliance_score }}"
+          total_violations: "{{ total_violations }}"
+          total_controls: "{{ total_controls }}"
+        per_host: no
+
+    - name: Display compliance storage summary
+      debug:
+        msg:
+          - "✓ Compliance assessment stored successfully"
+          - "  Assessment ID: {{ result_id }}"
+          - "  System ID: {{ system_id }}"
+          - "  Facts ID: {{ facts_id }}"
+          - "  Framework ID: {{ framework_id }}"
+          - "  Policy: {{ policy_name }} {{ policy_version }}"
+          - "  Compliance Score: {{ compliance_score }}%"
+          - "  Compliant: {{ is_compliant }}"
+          - "  Total Controls: {{ total_controls }}"
+          - "  Passed: {{ passed_controls }}"
+          - "  Failed: {{ failed_controls }}"
+          - "  Violations: {{ total_violations }}"

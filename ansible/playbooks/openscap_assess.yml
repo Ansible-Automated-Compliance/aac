@@ -1,0 +1,71 @@
+---
+# OpenSCAP Assessment — ingest OpenSCAP scan results as AAC findings.
+#
+# Runs `oscap xccdf eval` on each target host against an operator-supplied (or
+# auto-detected SSG) datastream + profile, fetches the XCCDF result XML back to
+# the EE, parses it deterministically (scripts/openscap_xccdf_parse.py), and
+# records the result in compliance_results via the aac_store_results role — so
+# OpenSCAP results become first-class AAC findings: waiver-aware, evidence-
+# provenanced, historically tracked, and visible in the heat map and dashboards.
+#
+# This is the transition on-ramp for customers already using OpenSCAP: keep your
+# validated scans, gain the AAC program around them. It reuses OpenSCAP's depth
+# rather than reimplementing it.
+#
+# The pipeline lives in two reusable roles (extracted from this playbook):
+#   aac_oscap_scan    scan the target, fetch the XCCDF results, clean up
+#   aac_oscap_ingest  parse + store; also ingests externally produced
+#                     XCCDF/ARF files (oscap-podman, CIS-CAT Pro, …) when
+#                     given oscap_results_file directly
+#
+# ── What it does NOT do ──────────────────────────────────────────────
+#   - It does not map OpenSCAP rules to a control framework (CIS/STIG/800-53).
+#     Results are ingested faithfully under their own framework key; the parsed
+#     output captures each rule's CCE/CCI idents so a control crosswalk can be
+#     added later without re-scanning.
+#   - It does not install content. The target must have `openscap-scanner` and a
+#     datastream present (SSG ships `scap-security-guide`).
+#
+# ── Variables (see the role READMEs for the full tables) ─────────────
+#   profile_id       (required) XCCDF profile, e.g.
+#                    xccdf_org.ssgproject.content_profile_stig
+#   datastream_path  Datastream file on the target. Default: auto-detected SSG
+#                    path for the host's distro/major version.
+#   tailoring_path   (optional) XCCDF tailoring file on the target.
+#   framework_label  compliance_results.framework key. Default derived from the
+#                    profile (e.g. openscap_stig). Override to taste.
+#   record_to_db     true|false. Default true.
+#
+# ── AAP Job Template ─────────────────────────────────────────────────
+#   "AAC - OpenSCAP Assessment"
+#   Inventory: the hosts to scan.  EE: AAC Compliance EE (needs no oscap on the
+#   EE — oscap runs on the target; the EE only parses XML + writes to PG).
+
+- name: OpenSCAP assessment — run oscap on targets and ingest results
+  hosts: "{{ target_hosts | default('all') }}"
+  become: true
+  gather_facts: true
+
+  vars_files:
+    - ../vars/site_config.yml
+
+  vars:
+    # profile_id: <set via extra_vars / survey / inventory>
+    # datastream_path: <set via extra_vars / survey / inventory>
+    # tailoring_path: <set via extra_vars / survey / inventory>
+    # framework_label: <set via extra_vars / survey / inventory>
+    record_to_db: true
+
+  tasks:
+    - name: Scan the host with OpenSCAP
+      ansible.builtin.include_role:
+        name: aac_oscap_scan
+
+    # Controller-side: the fetched file lives in the EE, and the compliance DB
+    # is reached from the EE — not the scanned host.
+    - name: Parse and record the result
+      ansible.builtin.include_role:
+        name: aac_oscap_ingest
+        apply:
+          delegate_to: localhost
+          become: false

@@ -1,0 +1,40 @@
+---
+# Default variables for gather_firewalld_detailed role
+
+# Expected firewall backend
+expected_backend: "nftables"
+
+# Allowed essential services (CIS recommended)
+allowed_essential_services:
+  - ssh
+  - dhcpv6-client
+
+# Services that should generally be blocked unless specifically needed
+potentially_dangerous_services:
+  - ftp
+  - tftp
+  - telnet
+  - http
+  - https
+  - samba
+  - nfs
+  - rpc-bind
+  - mountd
+  - mysql
+  - postgresql
+  - vnc-server
+  - x11
+
+# Conflicting firewall packages
+conflicting_packages:
+  - iptables-services
+  - nftables
+
+# Check if firewalld is masking nftables
+check_service_masking: true
+
+# Minimum acceptable zones configuration
+require_default_zone: true
+
+# Check for panic mode
+check_panic_mode: true

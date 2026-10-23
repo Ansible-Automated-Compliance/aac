@@ -1,0 +1,22 @@
+---
+galaxy_info:
+  author: Tim Coulter & Claude
+  description: Deploy the read-only AAC Compliance-State API that feeds compliance state as runtime authorization context to EnforceAuth
+  company: Compliance Automation
+  license: Apache-2.0
+  min_ansible_version: 2.14
+  platforms:
+    - name: EL
+      versions:
+        - 8
+        - 9
+  galaxy_tags:
+    - aac
+    - enforceauth
+    - opa
+    - authorization
+    - compliance
+    - containers
+    - podman
+
+dependencies: []

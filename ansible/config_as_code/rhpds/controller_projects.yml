@@ -1,0 +1,17 @@
+---
+# AAC Projects
+
+controller_projects:
+
+  - name: Compliance Automation
+    description: "AAC — CIS, FISMA, ISO 27001, NIST, PCI-DSS, SOC 2, NERC-CIP, NCSC CAF"
+    organization: "{{ aac_organization }}"
+    scm_type: git
+    scm_url: "https://github.com/ansible-automated-compliance/aac.git"
+    scm_branch: main
+    scm_clean: 'no'
+    scm_delete_on_update: 'no'
+    scm_update_on_launch: 'no'
+    scm_track_submodules: true      # policies/ submodule (ynotbhatc/rego_policy_libraries)
+    credential: GitHub PAT
+    execution_environment: AAC Compliance EE

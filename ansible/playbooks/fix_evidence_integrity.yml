@@ -1,0 +1,178 @@
+---
+# fix_evidence_integrity.yml — make the evidence corpus attributable and fail-closed
+#
+# Implements findings 3 and 4 of docs/AAC_EVIDENCE_QUALITY_ASSESSMENT.md:
+#   - `framework` was documented NOT NULL but is nullable; 906 rows (33%) landed
+#     unattributed and nothing complained.
+#   - Nothing rejects an empty result at the storage boundary, so a framework
+#     returning `{}` appends rows claiming zero controls. An assessment that found
+#     nothing and one that never ran currently produce identical rows.
+#
+# DEFAULTS TO DRY RUN. It reports exactly what it would change and exits without
+# touching anything. Pass apply=true to commit.
+#
+# It takes a dated backup table before any schema change (CLAUDE.md rule 7), and it
+# never deletes or rewrites a verdict — backfill only fills in what was missing, and
+# every touched row records the correction in `metadata._integrity_fix` so the
+# correction is itself auditable.
+#
+# AAP Job Template: "AAC - Fix Evidence Integrity"
+# Credentials: Ansible Vault    EE: AAC Compliance EE
+# Survey: apply (yes/no, default no)
+
+- name: Repair evidence attribution and add the fail-closed storage gate
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - [ "../vars/vault_secrets.yml", "../vars/empty_fallback.yml" ]
+    - ../vars/site_config.yml
+
+  vars:
+    pg_port: "{{ compliance_db_port | default(5432) }}"
+    pg_db: "compliance"
+    pg_user: "postgres"
+    pg_password: "{{ compliance_db_password }}"
+    do_apply: "{{ apply | default(false) | bool }}"
+
+  tasks:
+
+    - name: Measure the corpus before any change
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: |
+          SELECT count(*)                                                    AS total,
+                 count(*) FILTER (WHERE framework IS NULL)                   AS unattributed,
+                 count(*) FILTER (WHERE total_controls IS NULL
+                                     OR total_controls = 0)                  AS empty_results,
+                 count(*) FILTER (WHERE hostname = 'localhost')              AS no_subject,
+                 (SELECT is_nullable FROM information_schema.columns
+                   WHERE table_name='compliance_results'
+                     AND column_name='framework')                            AS framework_nullable,
+                 (SELECT count(*) FROM pg_constraint
+                   WHERE conname='compliance_results_nonempty')              AS gate_present
+            FROM compliance_results
+      register: before
+
+    - name: Before
+      vars:
+        b: "{{ before.query_result[0] }}"
+      ansible.builtin.debug:
+        msg:
+          - "──────────────────────────────────────────────────────────"
+          - "EVIDENCE CORPUS — BEFORE"
+          - "──────────────────────────────────────────────────────────"
+          - "Total rows                 : {{ b.total }}"
+          - "Unattributed (framework NULL): {{ b.unattributed }}"
+          - "Empty results (0 controls) : {{ b.empty_results }}"
+          - "No subject (localhost)     : {{ b.no_subject }}   <- finding 1, NOT fixed here"
+          - "framework column nullable  : {{ b.framework_nullable }}"
+          - "Fail-closed gate present   : {{ 'yes' if b.gate_present | int > 0 else 'no' }}"
+          - "──────────────────────────────────────────────────────────"
+
+    - name: Show which producers would be attributed
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: |
+          SELECT policy_name, count(*) AS rows
+            FROM compliance_results WHERE framework IS NULL
+           GROUP BY 1 ORDER BY 2 DESC
+      register: producers
+
+    - name: Producers awaiting attribution
+      ansible.builtin.debug:
+        var: producers.query_result
+
+    - name: DRY RUN — stop before changing anything
+      when: not do_apply
+      ansible.builtin.debug:
+        msg:
+          - "DRY RUN. Nothing was changed."
+          - "Re-run with apply=true to backfill attribution, enforce NOT NULL,"
+          - "and add the fail-closed gate. A dated backup table is taken first."
+
+    - name: Stop here unless applying
+      ansible.builtin.meta: end_play
+      when: not do_apply
+
+    # -------------------------------------------------------------------------
+    - name: Add provenance columns and reporting views
+      community.postgresql.postgresql_script:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        path: "{{ playbook_dir }}/../files/evidence_provenance.sql"
+
+    - name: Apply the integrity fix
+      community.postgresql.postgresql_script:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        path: "{{ playbook_dir }}/../files/evidence_integrity_fix.sql"
+      register: applied
+
+    - name: Measure the corpus after
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: |
+          SELECT count(*)                                          AS total,
+                 count(*) FILTER (WHERE framework IS NULL)         AS unattributed,
+                 count(*) FILTER (WHERE framework='unclassified')  AS unclassified,
+                 count(DISTINCT framework)                         AS frameworks,
+                 (SELECT is_nullable FROM information_schema.columns
+                   WHERE table_name='compliance_results'
+                     AND column_name='framework')                  AS framework_nullable,
+                 (SELECT count(*) FROM pg_constraint
+                   WHERE conname='compliance_results_nonempty')    AS gate_present,
+                 (SELECT count(*) FROM evidence_integrity_exceptions) AS open_exceptions,
+                 (SELECT count(*) FROM evidence_provenance_gaps)      AS producers_without_provenance
+            FROM compliance_results
+      register: after
+
+    - name: After
+      vars:
+        a: "{{ after.query_result[0] }}"
+        b: "{{ before.query_result[0] }}"
+      ansible.builtin.debug:
+        msg:
+          - "──────────────────────────────────────────────────────────"
+          - "EVIDENCE CORPUS — AFTER"
+          - "──────────────────────────────────────────────────────────"
+          - "Total rows                : {{ a.total }} (was {{ b.total }} — must match; nothing is deleted)"
+          - "Unattributed              : {{ a.unattributed }} (was {{ b.unattributed }})"
+          - "Marked 'unclassified'     : {{ a.unclassified }}"
+          - "Distinct frameworks       : {{ a.frameworks }}"
+          - "framework nullable        : {{ a.framework_nullable }} (was {{ b.framework_nullable }})"
+          - "Fail-closed gate          : {{ 'PRESENT' if a.gate_present | int > 0 else 'MISSING' }}"
+          - "Open integrity exceptions : {{ a.open_exceptions }}"
+          - "Producers lacking provenance: {{ a.producers_without_provenance }}  (see evidence_provenance_gaps)"
+          - "──────────────────────────────────────────────────────────"
+          - "Grandfathered rows are left visible on purpose — they are the"
+          - "evidence that this gap existed. Review them with:"
+          - "  SELECT * FROM evidence_integrity_exceptions;"
+          - "──────────────────────────────────────────────────────────"
+
+    - name: Fail if any row was lost
+      ansible.builtin.fail:
+        msg: >-
+          Row count changed from {{ before.query_result[0].total }} to
+          {{ after.query_result[0].total }}. This playbook must never delete a verdict.
+          Restore from the dated compliance_results_bk_* table and investigate.
+      when: after.query_result[0].total | int != before.query_result[0].total | int

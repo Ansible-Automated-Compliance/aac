@@ -1,0 +1,689 @@
+---
+# =============================================================================
+# seed_mythos_patch_workflow.yml
+#
+# Creates (or recreates) the "AAC - Mythos Patch Lifecycle" workflow template,
+# plus every job template it needs. Idempotent — safe to re-run.
+#
+# THE DEMO PREMISE: Claude Mythos (Anthropic, Project Glasswing, 2026-04-07)
+# found 10,000+ high/critical vulnerabilities in weeks. Finding is now cheap and
+# effectively unlimited; patch capacity did not grow to match. The bottleneck
+# moved to TARGETING, SAFE EXECUTION and PROOF OF CLOSURE.
+#
+# THE CLAIM: AAC identifies the SYSTEMS and TECHNOLOGY COMPONENTS that need the
+# patch — driven by the product catalog, from observed inventory.
+#
+# Workflow flow — 12 nodes:
+#
+#   01 Gather Facts (All Systems)         — observe the estate
+#        ↓ success
+#   02 Refresh Inventory Catalog          — rebuild the catalog (the spine)
+#        ↓ success ──────────────┬──────────────────────────┐
+#                                ↓                          ↓
+#   03 Refresh Support Status           04 Identify Affected Components
+#      (will a fix ever exist?)            (which systems + components?)
+#                                            ↓ success
+#   05 Open Change Record ─→ 06 Backup ─→ 07 Drain from LB ─→ 08 Install + Reboot
+#                                                                  ⇓ ALWAYS
+#                                                            09 Assurance (A0/A1)
+#                                                                  ⇓ ALWAYS
+#                                                            10 Undrain — back in service
+#                                                                  ⇓ ALWAYS
+#                                                            11 Verify Patch Closure
+#                                                                  ⇓ ALWAYS
+#                                                            12 Close Change Record
+#
+# Nodes 03 and 04 fan out from the catalog because both read it and neither needs
+# the other. Node 03 answers "will a fix ever exist"; node 04 answers "who is
+# affected". Independent questions about the same catalog.
+#
+# ** WHY NODES 09-12 ARE ON *ALWAYS* EDGES **
+# Once a host is DRAINED, every remaining step must run whatever happens. A
+# drained asset left drained is the most common operational mistake in patch
+# automation — the run "finished", the ticket closed, and a host silently carries
+# no traffic for weeks. Wiring this into the GRAPH rather than into conditional
+# logic inside a playbook means it survives a playbook crashing outright.
+#
+# Node 09 runs even after a failed install because that is what distinguishes
+# `patch_failed` from `service_failed_after_patch` — different recovery levels
+# (R1 package downgrade vs R2/R3 config restore or snapshot).
+#
+# Implements docs/patch_remediation_lifecycle.md Stages 1-5, 7b, 8-10, 12.
+# STILL NOT COVERED (§12) — do not present these as working: risk tiering in OPA
+# (Stage 6), backup depth beyond a package manifest (7a), assurance A2-A4,
+# automatic rollback R1-R3 and golden-image R4 (Stage 11), debt/heat-map
+# recalculation (§5). Providers for ticketing and traffic are STUBS: the
+# contracts are real and the flow is exercised end to end, but no ServiceNow
+# instance and no load balancer is contacted.
+#
+# Run via AAP Job Template: "AAC - Seed Mythos Patch Workflow"
+# Credentials: Ansible Vault (ID 5)   EE: AAC Compliance EE (ID 4)
+# Inventory: Compliance Infrastructure (ID 2), limit: localhost
+# =============================================================================
+
+- name: Seed the Mythos Patch Lifecycle workflow
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - ../vars/site_config.yml
+
+  vars:
+    aap_api: "{{ aap_url }}/api/controller/v2"
+    # NOTE: deliberately NOT named aap_token. Defining aap_token in terms of
+    # aap_token is self-referential and Ansible resolves it as a recursive loop
+    # when no outer definition exists. The RHPDS seeder gets away with the same
+    # pattern only because site_config.yml happens to define aap_token there.
+    aap_api_token: "{{ aap_token_override | default(aap_token | default('', true), true) }}"
+
+    workflow_name: "AAC - Mythos Patch Lifecycle"
+    project_name: "Compliance Automation"
+    inventory_name: "Compliance Infrastructure"
+    ee_name: "AAC Compliance EE"
+    vault_credential_name: "Ansible Vault"
+    # Nodes 06/08/09 target a managed host directly, so they need a Machine
+    # credential in addition to the Vault one. Without it they fail at
+    # "Gathering Facts" with Permission denied (publickey).
+    machine_credential_name: "Compliance SSH Credential"
+
+    # Job templates this workflow needs. Created if absent, updated if present.
+    patch_templates:
+      - name: "AAC - Gather Facts (All Systems)"
+        playbook: "ansible/playbooks/aac_gather_facts.yml"
+        description: "Observe the estate — full installed-software inventory per host"
+        manage: false        # pre-existing; never redefine it here
+      - name: "AAC - Refresh Inventory Catalog (patch intelligence)"
+        playbook: "ansible/playbooks/refresh_inventory_catalog.yml"
+        description: "Rebuild installed_inventory + inventory_catalog from host_facts_latest"
+        manage: true
+      - name: "AAC - Refresh Support Status (EOL exposure)"
+        playbook: "ansible/playbooks/refresh_support_status.yml"
+        description: "Resolve technology lifecycle — components where no patch will ever exist"
+        manage: true
+      - name: "AAC - Identify Affected Components (catalog match)"
+        playbook: "ansible/playbooks/identify_affected_components.yml"
+        description: "Catalog-driven CVE match — which systems and components need the patch"
+        manage: true
+      - name: "AAC - Patch Change Record (open/close)"
+        playbook: "ansible/playbooks/patch_change_record.yml"
+        description: "Open or close the change record — Stage 5 change-record adapter"
+        manage: true
+      - name: "AAC - Patch Backup (pre-change)"
+        needs_machine: true
+        playbook: "ansible/playbooks/patch_backup.yml"
+        description: "Capture the pre-change package manifest — recovery level R1"
+        manage: true
+      - name: "AAC - Patch Traffic Control (drain/undrain)"
+        playbook: "ansible/playbooks/patch_traffic_control.yml"
+        description: "Take the host out of / back into the load balancer — Stage 7b"
+        manage: true
+      - name: "AAC - Patch Install"
+        needs_machine: true
+        playbook: "ansible/playbooks/patch_install.yml"
+        description: "Install the resolved fix version and reboot if required"
+        manage: true
+      - name: "AAC - Patch Assurance (A0/A1)"
+        needs_machine: true
+        playbook: "ansible/playbooks/patch_assurance.yml"
+        description: "Version compare + service health before returning to service"
+        manage: true
+      - name: "AAC - Verify Patch Closure"
+        playbook: "ansible/playbooks/verify_patch_closure.yml"
+        description: "Re-measure the estate and prove the exposure actually closed"
+        manage: true
+      - name: "AAC - Simulate Patch Risk and Heat Map"
+        playbook: "ansible/playbooks/simulate_patch_lifecycle.yml"
+        description: "Score exposure and rebuild the Technical Debt & Coverage heat map"
+        manage: true
+
+    workflow_survey:
+      name: "Mythos Patch Lifecycle"
+      description: "Identify affected systems and components, then remediate and prove closure"
+      spec:
+        - question_name: "CVE IDs (comma-separated, blank = all known CVEs)"
+          question_description: >-
+            Restrict identification to specific CVEs, e.g. CVE-2026-4878,CVE-2025-5914.
+            Leave blank to match every CVE currently in cve_events_received.
+          variable: "cve_ids"
+          type: "text"
+          required: false
+          default: ""
+        - question_name: "Dry run (assess and identify only, apply nothing)"
+          question_description: >-
+            Yes = walk the identification and generation path without changing any
+            managed system. Recommended for a demo and for first runs.
+          variable: "dry_run"
+          type: "multiplechoice"
+          choices: "yes\nno"
+          required: true
+          default: "yes"
+        - question_name: "Maximum inventory age (hours)"
+          question_description: >-
+            Identification refuses to run against inventory older than this. Matching
+            stale facts manufactures false confidence.
+          variable: "max_inventory_age"
+          type: "integer"
+          required: false
+          default: 168
+        - question_name: "Target host (must be in the inventory and the work list)"
+          question_description: >-
+            The host to patch. Nodes 06-10 target it directly, so it must exist in the
+            inventory AND carry work items. Check with:
+            SELECT hostname, count(*) FROM patch_worklist GROUP BY 1;
+          variable: "target_hostname"
+          type: "text"
+          # Required, with a working default.
+          #
+          # This was `required: false` with an empty default, so a presenter who
+          # accepted the survey defaults got a run that died at node 6 of 14 --
+          # "target_host must be set" -- after the first five nodes had already
+          # spent ~90s looking like the demo was working. Every successful run
+          # of this workflow passed the host explicitly; none of them used the
+          # survey as shipped.
+          # Optional, but with a WORKING default.
+          #
+          # It was `required: false` with an empty default, so a presenter who
+          # accepted the survey defaults got a run that died at node 6 of 14 --
+          # "target_host must be set" -- after the first five nodes had already
+          # spent ~90s looking like the demo was working. Every successful run
+          # of this workflow passed the host explicitly; none used the survey
+          # as shipped.
+          #
+          # Deliberately NOT `required: true`: that makes AAP reject any API
+          # launch that omits it, which breaks automation. Optional-with-default
+          # fixes the presenter path AND lets an API launch inherit the default.
+          required: false
+          default: "{{ mythos_default_target_host | default('compliance-lab-rhel9') }}"
+
+  tasks:
+
+    - name: Fail early without an AAP token
+      ansible.builtin.fail:
+        msg: >-
+          aap_token is not set. Provide it in vault_secrets.yml, or pass
+          aap_token_override as an extra_var when running from another controller.
+      when: aap_api_token | length == 0
+
+    # -------------------------------------------------------------------------
+    # Resolve the objects the templates depend on
+    # -------------------------------------------------------------------------
+    - name: Look up dependencies by name
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "{{ aap_api }}/{{ item.path }}/?name={{ item.name | urlencode }}"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ aap_api_token }}"
+        validate_certs: false
+        status_code: 200
+      loop:
+        - { key: "project",    path: "projects",               name: "{{ project_name }}" }
+        - { key: "inventory",  path: "inventories",            name: "{{ inventory_name }}" }
+        - { key: "ee",         path: "execution_environments", name: "{{ ee_name }}" }
+        - { key: "credential", path: "credentials",            name: "{{ vault_credential_name }}" }
+        - { key: "machine",    path: "credentials",            name: "{{ machine_credential_name }}" }
+      loop_control:
+        label: "{{ item.key }} = {{ item.name }}"
+      register: deps
+
+    - name: Build a dependency id map
+      ansible.builtin.set_fact:
+        dep_ids: >-
+          {{ dep_ids | default({}) | combine({
+               item.item.key: (item.json.results[0].id if item.json.count > 0 else none)
+             }) }}
+      loop: "{{ deps.results }}"
+      loop_control:
+        label: "{{ item.item.key }}"
+
+    - name: Fail when a dependency is missing
+      ansible.builtin.fail:
+        msg: >-
+          Could not resolve {{ item }} by name. Check it exists on this controller —
+          object IDs drift between installs, which is why this playbook resolves by
+          name rather than hardcoding them.
+      loop: "{{ dep_ids | dict2items | selectattr('value', 'none') | map(attribute='key') | list }}"
+
+    - name: Show resolved dependencies
+      ansible.builtin.debug:
+        msg: "project={{ dep_ids.project }} inventory={{ dep_ids.inventory }} ee={{ dep_ids.ee }} vault_cred={{ dep_ids.credential }}"
+
+    # -------------------------------------------------------------------------
+    # Job templates
+    # -------------------------------------------------------------------------
+    - name: Look up each job template
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "{{ aap_api }}/job_templates/?name={{ item.name | urlencode }}"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ aap_api_token }}"
+        validate_certs: false
+        status_code: 200
+      loop: "{{ patch_templates }}"
+      loop_control:
+        label: "{{ item.name }}"
+      register: jt_lookup
+
+    - name: Create job templates that do not exist
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "{{ aap_api }}/job_templates/"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ aap_api_token }}"
+          Content-Type: "application/json"
+        body_format: json
+        body:
+          name: "{{ item.item.name }}"
+          description: "{{ item.item.description }}"
+          job_type: "run"
+          project: "{{ dep_ids.project | int }}"
+          playbook: "{{ item.item.playbook }}"
+          inventory: "{{ dep_ids.inventory | int }}"
+          execution_environment: "{{ dep_ids.ee | int }}"
+          ask_variables_on_launch: true
+          ask_limit_on_launch: true
+          verbosity: 1
+        validate_certs: false
+        status_code: [200, 201]
+      loop: "{{ jt_lookup.results }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+      when:
+        - item.json.count == 0
+        - item.item.manage | bool
+      register: jt_created
+
+    - name: Re-read template ids for credential attachment
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "{{ aap_api }}/job_templates/?name={{ item.name | urlencode }}"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ aap_api_token }}"
+        validate_certs: false
+        status_code: 200
+      loop: "{{ patch_templates }}"
+      loop_control:
+        label: "{{ item.name }}"
+      register: jt_pass1
+
+    - name: Build the pass-1 id list
+      ansible.builtin.set_fact:
+        jt_ids_pass1: >-
+          {{ jt_ids_pass1 | default([]) + [{
+               'name': item.item.name,
+               'id': (item.json.results[0].id if item.json.count > 0 else none),
+               'needs_machine': item.item.needs_machine | default(false),
+               'cred_ids': (item.json.results[0].summary_fields.credentials
+                            | default([]) | map(attribute='id') | list
+                            if item.json.count > 0 else [])
+             }] }}
+      loop: "{{ jt_pass1.results }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+
+    - name: Attach the Vault credential to every managed template
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "{{ aap_api }}/job_templates/{{ item.id }}/credentials/"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ aap_api_token }}"
+          Content-Type: "application/json"
+        body_format: json
+        body: "{{ {'id': dep_ids.credential | int} }}"
+        validate_certs: false
+        status_code: [200, 201, 204]
+      loop: "{{ jt_ids_pass1 }}"
+      loop_control:
+        label: "vault -> {{ item.name }}"
+      when:
+        - item.id is not none
+        # AAP permits only ONE vault credential per template unless each carries a
+        # distinct vault_id. Re-POSTing one that is already attached returns 400,
+        # which is why this must be a skip and not a blind attach.
+        - dep_ids.credential | int not in (item.cred_ids | default([]))
+
+    - name: Attach a Machine credential to templates that target a managed host
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "{{ aap_api }}/job_templates/{{ item.id }}/credentials/"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ aap_api_token }}"
+          Content-Type: "application/json"
+        body_format: json
+        body: "{{ {'id': dep_ids.machine | int} }}"
+        validate_certs: false
+        status_code: [200, 201, 204]
+      loop: "{{ jt_ids_pass1 }}"
+      loop_control:
+        label: "machine -> {{ item.name }}"
+      when:
+        - item.id is not none
+        - item.needs_machine | default(false) | bool
+        - dep_ids.machine | int not in (item.cred_ids | default([]))
+
+    - name: Re-read every job template id
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "{{ aap_api }}/job_templates/?name={{ item.name | urlencode }}"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ aap_api_token }}"
+        validate_certs: false
+        status_code: 200
+      loop: "{{ patch_templates }}"
+      loop_control:
+        label: "{{ item.name }}"
+      register: jt_final
+
+    - name: Build the template id map
+      ansible.builtin.set_fact:
+        jt: >-
+          {{ jt | default({}) | combine({
+               item.item.name: (item.json.results[0].id if item.json.count > 0 else none)
+             }) }}
+      loop: "{{ jt_final.results }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+
+    - name: Fail when a required job template is still missing
+      ansible.builtin.fail:
+        msg: >-
+          Job template '{{ item }}' does not exist and was not created.
+          '{{ item }}' is marked manage:false, meaning it is expected to pre-exist
+          on this controller — create it before seeding the workflow.
+      loop: "{{ jt | dict2items | selectattr('value', 'none') | map(attribute='key') | list }}"
+
+    # -------------------------------------------------------------------------
+    # Workflow job template
+    # -------------------------------------------------------------------------
+    - name: Look up the workflow
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "{{ aap_api }}/workflow_job_templates/?name={{ workflow_name | urlencode }}"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ aap_api_token }}"
+        validate_certs: false
+        status_code: 200
+      register: wf_lookup
+
+    - name: Create the workflow when absent
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "{{ aap_api }}/workflow_job_templates/"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ aap_api_token }}"
+          Content-Type: "application/json"
+        body_format: json
+        body:
+          name: "{{ workflow_name }}"
+          description: >-
+            Mythos premise: finding vulnerabilities is now cheap and unlimited.
+            AAC identifies the systems and technology components that need the
+            patch — from the observed product catalog — then proves closure.
+          organization: 1
+          inventory: "{{ dep_ids.inventory | int }}"
+          ask_variables_on_launch: true
+          survey_enabled: true
+        validate_certs: false
+        status_code: [200, 201]
+      when: wf_lookup.json.count == 0
+      register: wf_created
+
+    - name: Resolve the workflow id
+      ansible.builtin.set_fact:
+        wf_id: "{{ wf_created.json.id if (wf_lookup.json.count == 0) else wf_lookup.json.results[0].id }}"
+
+    - name: Apply the survey
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "{{ aap_api }}/workflow_job_templates/{{ wf_id }}/survey_spec/"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ aap_api_token }}"
+          Content-Type: "application/json"
+        body_format: json
+        body:
+          name: "{{ workflow_survey.name }}"
+          description: "{{ workflow_survey.description }}"
+          spec: "{{ workflow_survey.spec }}"
+        validate_certs: false
+        status_code: [200, 201]
+
+    # -------------------------------------------------------------------------
+    # Rebuild the node graph from scratch — partial edits leave orphan links
+    # -------------------------------------------------------------------------
+    - name: Read existing workflow nodes
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "{{ aap_api }}/workflow_job_templates/{{ wf_id }}/workflow_nodes/?page_size=100"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ aap_api_token }}"
+        validate_certs: false
+        status_code: 200
+      register: existing_nodes
+
+    - name: Delete existing nodes
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "{{ aap_api }}/workflow_job_template_nodes/{{ item.id }}/"
+        method: DELETE
+        headers:
+          Authorization: "Bearer {{ aap_api_token }}"
+        validate_certs: false
+        status_code: [204, 404]
+      loop: "{{ existing_nodes.json.results }}"
+      loop_control:
+        label: "node {{ item.id }}"
+
+    # -------------------------------------------------------------------------
+    # Nodes. Identifiers are stable so the graph can be reasoned about.
+    # -------------------------------------------------------------------------
+    - name: Create the workflow nodes
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "{{ aap_api }}/workflow_job_templates/{{ wf_id }}/workflow_nodes/"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ aap_api_token }}"
+          Content-Type: "application/json"
+        body_format: json
+        # Single Jinja expression so unified_job_template stays an int (see above).
+        body: "{{ {'unified_job_template': (dep_ids.project if item.template == '__PROJECT__'
+                                             else jt[item.template]) | int,
+                   'identifier': item.id,
+                   'extra_data': item.extra | default({})} }}"
+        validate_certs: false
+        status_code: [200, 201]
+      loop:
+        # Node 00 syncs the project ONCE for the whole run. Without it, the
+        # alternative is scm_update_on_launch on the project, which makes EVERY
+        # template sync — 13 syncs for this workflow — and couples every node to
+        # a sync failure. It also churns the awx project cache, which is what
+        # leaves undeletable root-owned stage dirs behind and eventually kills
+        # jobs at elapsed 0.0s. One sync per demo, at the front, is correct.
+        - { id: "00-sync-project",     template: "__PROJECT__" }
+        - { id: "01-gather-facts",     template: "AAC - Gather Facts (All Systems)" }
+        - { id: "02-refresh-catalog",  template: "AAC - Refresh Inventory Catalog (patch intelligence)" }
+        - { id: "03-support-status",   template: "AAC - Refresh Support Status (EOL exposure)" }
+        - { id: "04-identify",         template: "AAC - Identify Affected Components (catalog match)" }
+        - { id: "05-open-ticket",      template: "AAC - Patch Change Record (open/close)",
+            extra: { action: "open" } }
+        - { id: "06-backup",           template: "AAC - Patch Backup (pre-change)" }
+        - { id: "07-drain",            template: "AAC - Patch Traffic Control (drain/undrain)",
+            extra: { action: "drain" } }
+        - { id: "08-install",          template: "AAC - Patch Install" }
+        - { id: "09-assurance",        template: "AAC - Patch Assurance (A0/A1)" }
+        - { id: "10-undrain",          template: "AAC - Patch Traffic Control (drain/undrain)",
+            extra: { action: "undrain" } }
+        - { id: "11-verify-closure",   template: "AAC - Verify Patch Closure" }
+        - { id: "12-close-ticket",     template: "AAC - Patch Change Record (open/close)",
+            extra: { action: "close" } }
+        - { id: "13-heatmap",          template: "AAC - Simulate Patch Risk and Heat Map" }
+      loop_control:
+        label: "{{ item.id }}"
+      register: created_nodes
+
+    - name: Map node identifier to id
+      ansible.builtin.set_fact:
+        node: >-
+          {{ node | default({}) | combine({ item.item.id: item.json.id }) }}
+      loop: "{{ created_nodes.results }}"
+      loop_control:
+        label: "{{ item.item.id }} = {{ item.json.id }}"
+
+    # -------------------------------------------------------------------------
+    # SUCCESS edges — the happy path only
+    # -------------------------------------------------------------------------
+    - name: Wire the success edges
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "{{ aap_api }}/workflow_job_template_nodes/{{ node[item.from] }}/success_nodes/"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ aap_api_token }}"
+          Content-Type: "application/json"
+        body_format: json
+        body: "{{ {'id': node[item.to] | int} }}"
+        validate_certs: false
+        status_code: [200, 201, 204]
+      loop:
+        - { from: "00-sync-project",    to: "01-gather-facts" }
+        - { from: "01-gather-facts",    to: "02-refresh-catalog" }
+        - { from: "02-refresh-catalog", to: "03-support-status" }
+        - { from: "02-refresh-catalog", to: "04-identify" }
+        - { from: "04-identify",        to: "05-open-ticket" }
+        - { from: "05-open-ticket",     to: "06-backup" }
+        - { from: "06-backup",          to: "07-drain" }
+        - { from: "07-drain",           to: "08-install" }
+      loop_control:
+        label: "{{ item.from }} -> {{ item.to }} (on success)"
+
+    # -------------------------------------------------------------------------
+    # ALWAYS edges — the safety-critical half.
+    #
+    # Once a host is DRAINED, every remaining step must run whatever happens.
+    # A drained asset left drained is the most common operational mistake in
+    # patch automation: the run "finished", the ticket closed, and a host
+    # silently carries no traffic for weeks.
+    #
+    # Making this structural in the graph — rather than conditional logic inside
+    # a playbook — means it survives a playbook crashing outright.
+    #
+    #   08 -> 09  always: test even after a failed install. That is what
+    #                     distinguishes patch_failed from service_failed_after_patch,
+    #                     which are DIFFERENT recovery levels (R1 vs R2/R3).
+    #   09 -> 10  always: RETURN TO SERVICE even when assurance failed.
+    #   10 -> 11  always: prove closure even if undrain reported a problem.
+    #   11 -> 12  always: close the change record on every path.
+    #
+    # Each always edge has exactly ONE parent, so nothing fans out and fires
+    # undrain more than once. Undrain is idempotent regardless.
+    # -------------------------------------------------------------------------
+    # -------------------------------------------------------------------------
+    # FAILURE edges — the ticket must close on EVERY path, not just after drain.
+    #
+    # Found the hard way: node 06 failed, nodes 07-13 sat on success edges and
+    # never ran, and the change record opened at node 05 was left orphaned open.
+    # The always-chain only starts at 08, so a failure between ticket-open and
+    # drain escaped it entirely.
+    #
+    #   06 backup  FAILS -> 12 close ticket.  Deliberately NOT onward to drain
+    #                       or install: patching with no recovery point is the
+    #                       one thing the backup node exists to prevent.
+    #   07 drain   FAILS -> 10 undrain.  Drain may have partially applied, so
+    #                       the host must be put back before anything closes.
+    # -------------------------------------------------------------------------
+    - name: Wire the failure edges
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "{{ aap_api }}/workflow_job_template_nodes/{{ node[item.from] }}/failure_nodes/"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ aap_api_token }}"
+          Content-Type: "application/json"
+        body_format: json
+        body: "{{ {'id': node[item.to] | int} }}"
+        validate_certs: false
+        status_code: [200, 201, 204]
+      loop:
+        - { from: "05-open-ticket", to: "12-close-ticket" }
+        - { from: "06-backup",      to: "12-close-ticket" }
+        - { from: "07-drain",       to: "10-undrain" }
+      loop_control:
+        label: "{{ item.from }} -> {{ item.to }} (ON FAILURE)"
+
+    - name: Wire the always edges
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "{{ aap_api }}/workflow_job_template_nodes/{{ node[item.from] }}/always_nodes/"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ aap_api_token }}"
+          Content-Type: "application/json"
+        body_format: json
+        body: "{{ {'id': node[item.to] | int} }}"
+        validate_certs: false
+        status_code: [200, 201, 204]
+      loop:
+        - { from: "08-install",       to: "09-assurance" }
+        - { from: "09-assurance",     to: "10-undrain" }
+        - { from: "10-undrain",       to: "11-verify-closure" }
+        - { from: "11-verify-closure", to: "12-close-ticket" }
+        # Rebuilding the map after closure is what makes Stage 12 mean
+        # "the map no longer shows this exposure" rather than "the playbook exited 0".
+        - { from: "12-close-ticket",   to: "13-heatmap" }
+      loop_control:
+        label: "{{ item.from }} -> {{ item.to }} (ALWAYS)"
+
+    - name: Summary
+      ansible.builtin.debug:
+        msg:
+          - "──────────────────────────────────────────────────────────────"
+          - "Workflow : {{ workflow_name }} (id {{ wf_id }})"
+          - "Launch   : {{ aap_url }}/#/templates/workflow_job_template/{{ wf_id }}"
+          - "──────────────────────────────────────────────────────────────"
+          - "SUCCESS path:"
+          - "  00 Sync Project -> 01 Gather Facts -> 02 Refresh Catalog"
+          - "  02 Refresh Catalog -> 03 Support Status  +  04 Identify Affected"
+          - "  04 Identify -> 05 Open Ticket -> 06 Backup -> 07 Drain -> 08 Install"
+          - ""
+          - "FAILURE path (so the change record always closes):"
+          - "  05/06 fail -> 12 Close Ticket      07 fail -> 10 Undrain"
+          - ""
+          - "ALWAYS path (runs whatever happens, once the host is drained):"
+          - "  08 Install -> 09 Assurance -> 10 Undrain -> 11 Verify Closure"
+          - "  -> 12 Close Ticket -> 13 Rebuild Heat Map"
+          - "──────────────────────────────────────────────────────────────"
+          - "Node 04 is the core claim: which SYSTEMS and COMPONENTS need the"
+          - "patch, matched against the observed product catalog."
+          - ""
+          - "Nodes 10 and 12 are on ALWAYS edges deliberately. A drained asset"
+          - "left drained is the most common operational mistake in patch"
+          - "automation. Verify after any run:"
+          - "  SELECT * FROM patch_traffic_stranded;   -- must be empty"
+          - ""
+          - "PREREQUISITE for nodes 04-12: cve_events_received must be populated"
+          - "(currently 0 rows). Node 04 fails loudly on an empty CVE store"
+          - "rather than reporting zero affected components, which would read"
+          - "as 'you are clean' when it means 'we never looked'."
+          - ""
+          - "PREREQUISITE for node 08: patch_worklist.fixed_version must be"
+          - "resolved. Vendor remediation enrichment is NOT built, so node 08"
+          - "will refuse rather than falling back to 'update to latest'."
+          - ""
+          - "STUB PROVIDERS: ticketing writes to helpdesk_tickets; traffic"
+          - "control records state only. No ServiceNow, no load balancer."
+          - ""
+          - "NOT covered (§12): risk tiering (6), backup depth beyond a package"
+          - "manifest (7a), assurance A2-A4, rollback R1-R4 (11), heat-map"
+          - "recalculation. Do not present these as working."
+          - "──────────────────────────────────────────────────────────────"

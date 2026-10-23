@@ -1,0 +1,187 @@
+---
+# zift_demo.yml — Extract embedded authorization → enforce via AAC's OPA
+#
+# Runs Zift's structural scan on a code path, extracts the discovered
+# authorization patterns into Rego (one file per source file with hits),
+# and PUTs each generated policy into opa-security. Downstream requests
+# can then be evaluated against `input.user` etc. via the standard OPA
+# data API.
+#
+# Pipeline:
+#   application code → zift scan  → findings.json
+#                    → zift extract → out/<file>.rego (one per source file)
+#                    → OPA PUT (loop) → policies live in opa-security
+#
+# Requires the aac-zift-ee execution environment (built via
+# ansible/playbooks/build_zift_ee.yml). This playbook does NOT rebuild
+# the EE — if `zift --version` fails, launch the build job first.
+#
+# CLI reference (verified against zift v0.2.3):
+#   zift scan {path} -f json -o findings.json
+#     → writes {version, scan_root, headline, findings[], summary} JSON
+#   zift extract -i findings.json --engine rego \
+#                --output-dir OUT --policy-prefix PREFIX
+#     → writes OUT/<source_stem>.rego, package = PREFIX.<source_stem>
+#     → 0 findings → prints "No findings to extract." and exits 0 (no files)
+
+- name: Zift Demo — extract embedded authz into Rego and load into OPA
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - ../../../ansible/vars/site_config.yml
+
+  vars:
+    # Directory (inside the EE) to scan. Defaults to the mounted repo
+    # checkout. Point this at a customer codebase mount for real use.
+    zift_scan_root:      "/runner/project"
+    zift_engine:         "rego"            # rego | cedar
+    zift_policy_prefix:  "zift.extracted"  # OPA package prefix (dotted)
+    zift_target_opa_url: "{{ opa_security_url }}"  # from site_config
+
+    # Working files inside the EE (ephemeral — /tmp resets per run).
+    zift_workdir:          "/tmp/zift_demo"
+    zift_findings_file:    "{{ zift_workdir }}/findings.json"
+    zift_output_dir:       "{{ zift_workdir }}/out"
+
+  tasks:
+
+    # ── Preflight ────────────────────────────────────────────────────────────
+    - name: Verify Zift is available in the EE
+      ansible.builtin.command: zift --version
+      register: _zift_version
+      changed_when: false
+
+    - name: Show Zift version
+      ansible.builtin.debug:
+        msg: "Zift version: {{ _zift_version.stdout }}"
+
+    - name: Assert scan root exists and is a directory
+      ansible.builtin.stat:
+        path: "{{ zift_scan_root }}"
+      register: _scan_root_stat
+
+    - name: Fail fast if scan root is missing
+      ansible.builtin.fail:
+        msg: >-
+          Scan root {{ zift_scan_root }} does not exist or is not a directory.
+          Set zift_scan_root to a path inside the EE (typically /runner/project
+          or a mounted customer code directory).
+      when: not _scan_root_stat.stat.exists or not _scan_root_stat.stat.isdir
+
+    - name: Prepare fresh workdir
+      ansible.builtin.file:
+        path: "{{ zift_workdir }}"
+        state: absent
+
+    - name: Recreate workdir
+      ansible.builtin.file:
+        path: "{{ zift_output_dir }}"
+        state: directory
+        mode: '0755'
+
+    # ── Structural scan ──────────────────────────────────────────────────────
+    - name: Run Zift structural scan (deterministic, no LLM)
+      ansible.builtin.command: >-
+        zift scan {{ zift_scan_root }}
+        -f json
+        -o {{ zift_findings_file }}
+      register: _zift_scan
+      changed_when: true
+
+    - name: Parse findings JSON
+      ansible.builtin.set_fact:
+        _findings_doc: "{{ lookup('file', zift_findings_file) | from_json }}"
+
+    - name: Show scan summary
+      ansible.builtin.debug:
+        msg:
+          - "Scan root:      {{ zift_scan_root }}"
+          - "Total findings: {{ _findings_doc.summary.total_findings | default(0) }}"
+          - "By category:    {{ _findings_doc.summary.by_category | default({}) }}"
+          - "First 5:        {{ (_findings_doc.findings | default([]))[:5] }}"
+
+    - name: Note when no authz patterns were found
+      ansible.builtin.debug:
+        msg: >-
+          Zift found 0 structural authorization patterns in {{ zift_scan_root }}.
+          Point zift_scan_root at code with role checks, permission guards, or
+          auth annotations (TypeScript/NestJS, Python/Flask/Django, Java/Spring,
+          Go/Gin, Ruby/Rails, C#/ASP.NET, etc.) to see the migration flow.
+          Skipping extract + OPA-load steps.
+      when: (_findings_doc.summary.total_findings | default(0) | int) == 0
+
+    # ── Extract to Rego (only if findings exist) ─────────────────────────────
+    - name: Extract Rego policies from findings
+      ansible.builtin.command: >-
+        zift extract
+        -i {{ zift_findings_file }}
+        --engine {{ zift_engine }}
+        --output-dir {{ zift_output_dir }}
+        --policy-prefix {{ zift_policy_prefix }}
+      register: _zift_extract
+      changed_when: true
+      when: (_findings_doc.summary.total_findings | default(0) | int) > 0
+
+    - name: Discover generated policy files
+      ansible.builtin.find:
+        paths: "{{ zift_output_dir }}"
+        patterns: "*.rego"
+        recurse: true
+      register: _generated_files
+      when: (_findings_doc.summary.total_findings | default(0) | int) > 0
+
+    - name: Preview first generated policy
+      ansible.builtin.command: >-
+        head -n 40 {{ _generated_files.files[0].path }}
+      register: _rego_preview
+      changed_when: false
+      when:
+        - (_findings_doc.summary.total_findings | default(0) | int) > 0
+        - (_generated_files.files | default([])) | length > 0
+
+    - name: Show preview of first generated policy
+      ansible.builtin.debug:
+        msg: "{{ _rego_preview.stdout_lines }}"
+      when:
+        - (_findings_doc.summary.total_findings | default(0) | int) > 0
+        - (_generated_files.files | default([])) | length > 0
+
+    # ── Load into OPA ────────────────────────────────────────────────────────
+    # Each generated .rego file becomes one OPA policy id, named
+    # <policy_prefix_slug>_<source_stem> — dots in the prefix are replaced
+    # so the id is a valid URL path segment.
+    - name: PUT each extracted policy into OPA
+      ansible.builtin.uri:
+        use_proxy: false
+        url: >-
+          {{ zift_target_opa_url }}/v1/policies/{{
+            zift_policy_prefix | replace('.', '_')
+          }}_{{ item.path | basename | splitext | first }}
+        method: PUT
+        headers:
+          Content-Type: text/plain
+        src: "{{ item.path }}"
+        status_code: [200]
+      loop: "{{ _generated_files.files | default([]) }}"
+      loop_control:
+        label: "{{ item.path | basename }}"
+      register: _opa_puts
+      when: (_findings_doc.summary.total_findings | default(0) | int) > 0
+
+    # ── Summary ──────────────────────────────────────────────────────────────
+    - name: Summary
+      ansible.builtin.debug:
+        msg:
+          - "✅ Zift → OPA pipeline complete"
+          - "   Scanned:      {{ zift_scan_root }}"
+          - "   Findings:     {{ _findings_doc.summary.total_findings | default(0) }}"
+          - "   By category:  {{ _findings_doc.summary.by_category | default({}) }}"
+          - "   Engine:       {{ zift_engine }}"
+          - "   Policy prefix: {{ zift_policy_prefix }}"
+          - "   Generated files: {{ (_generated_files.files | default([])) | map(attribute='path') | map('basename') | list }}"
+          - "   OPA URL:      {{ zift_target_opa_url }}"
+          - "   Query a loaded policy with:"
+          - "     curl -X POST {{ zift_target_opa_url }}/v1/data/{{ zift_policy_prefix | replace('.', '/') }}/<source_stem> \\"
+          - "       -H 'Content-Type: application/json' -d '{\"input\": {\"user\": {\"role\": \"admin\"}}}'"

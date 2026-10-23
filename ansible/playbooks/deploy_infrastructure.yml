@@ -1,0 +1,66 @@
+---
+# deploy_infrastructure.yml — Single-click AAC infrastructure deployment
+#
+# Deploys the full AAC infrastructure stack in sequence:
+#   1. PostgreSQL container + full schema (aac_compliance_db role)
+#   2. Three OPA containers (aac_opa_containers role)
+#   3. MCP server container (aac_mcp_server role)
+#
+# After this completes:
+#   - Load policies:  "AAC - Load OPA Policies" (ID 27)
+#   - Rotate MCP auth: Template 40 (AAC - Rotate MCP Token)
+#
+# AAP Job Template: "AAC - Deploy Infrastructure" (ID 80)
+# Credentials: Ansible Vault + SSH (aapuser1 machine credential)
+# EE: AAC Compliance EE
+# Inventory: localhost
+
+- name: Deploy AAC Infrastructure — PostgreSQL
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - ../vars/site_config.yml
+    - [ "../vars/vault_secrets.yml", "../vars/empty_fallback.yml" ]
+
+  roles:
+    - role: aac_compliance_db
+
+- name: Deploy AAC Infrastructure — OPA Containers
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - ../vars/site_config.yml
+    - [ "../vars/vault_secrets.yml", "../vars/empty_fallback.yml" ]
+
+  roles:
+    - role: aac_opa_containers
+
+- name: Deploy AAC Infrastructure — MCP Server
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - ../vars/site_config.yml
+    - [ "../vars/vault_secrets.yml", "../vars/empty_fallback.yml" ]
+
+  pre_tasks:
+    # The endpoint defaults (external_aap_url, external_opa_compliance_url)
+    # live in the environment profile, not site_config. Load it when one is
+    # selected; a site_config-only deployment must set them itself (or -e).
+    - name: Load the environment profile (when env_profile is set)
+      # tags: always on the include AND its tasks (apply), or a run limited
+      # with --tags aac_mcp would skip the profile and fail on its URLs.
+      ansible.builtin.include_tasks:
+        file: ../tasks/load_install_profile.yml
+        apply:
+          tags: [always]
+      tags: [always]
+      when: env_profile | default('', true) | length > 0
+
+  roles:
+    - role: aac_mcp_server

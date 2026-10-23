@@ -1,0 +1,105 @@
+---
+# aws_start_compliance_lab.yml — Start compliance lab AWS instances
+#
+# Starts all EC2 instances tagged Name=compliance-lab*, then CONFIRMS the
+# transition to running via an authoritative re-describe and prints their
+# current public IPs.
+#
+# Why the re-describe: under amazon.aws on the EE's Ansible (2.16.3) the
+# amazon.aws.ec2_instance module returns STALE, pre-action data — it reports
+# state=stopped / public IP N/A even after issuing the start, and its own
+# `wait` does not reliably confirm the transition. amazon.aws.ec2_instance_info
+# is reliable, so we issue the start with wait:false and poll ec2_instance_info
+# with `until` until the started instances actually report running. All state
+# and IPs shown to the operator come from that fresh describe, never from the
+# start module's return value.
+#
+# AAP Job Template: "AAC - Start Compliance Lab"
+# Credentials:      AWS Compliance Lab (ID 5), Ansible Vault
+# EE:               AAC Compliance EE
+
+- name: Start AWS Compliance Lab Instances
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    aws_region: "us-east-1"
+    lab_name_filter: "compliance-lab*"
+
+  tasks:
+
+    - name: Find stopped compliance lab instances
+      amazon.aws.ec2_instance_info:
+        region: "{{ aws_region }}"
+        filters:
+          "tag:Name": "{{ lab_name_filter }}"
+          "instance-state-name": ["stopped", "stopping"]
+      register: stopped_instances
+
+    - name: Record instance IDs to start
+      ansible.builtin.set_fact:
+        starting_ids: "{{ stopped_instances.instances | map(attribute='instance_id') | list }}"
+
+    - name: Show instances to start
+      ansible.builtin.debug:
+        msg: "Found {{ starting_ids | length }} stopped instance(s): {{ stopped_instances.instances | map(attribute='tags.Name') | list }}"
+
+    - name: Issue start (do not rely on module wait/return — see header)
+      amazon.aws.ec2_instance:
+        region: "{{ aws_region }}"
+        instance_ids: "{{ starting_ids }}"
+        state: running
+        wait: false
+      when: starting_ids | length > 0
+
+    - name: Wait until started instances report running (authoritative describe)
+      amazon.aws.ec2_instance_info:
+        region: "{{ aws_region }}"
+        instance_ids: "{{ starting_ids }}"
+      register: running_info
+      until: >-
+        (running_info.instances | default([])
+         | selectattr('state.name', 'equalto', 'running')
+         | list | length) == (starting_ids | length)
+      retries: 30
+      delay: 10
+      when: starting_ids | length > 0
+
+    - name: Collect authoritative running-instance facts
+      ansible.builtin.set_fact:
+        lab_running: "{{ running_info.instances | default([]) if (starting_ids | length > 0) else [] }}"
+
+    - name: Wait for SSH (port 22) on Linux instances with a public IP
+      ansible.builtin.wait_for:
+        host: "{{ item.public_ip_address }}"
+        port: 22
+        timeout: 300
+        delay: 5
+      loop: "{{ lab_running }}"
+      loop_control:
+        label: "{{ item.tags.Name | default(item.instance_id) }}"
+      # Windows uses WinRM (5985), not SSH — never wait on 22 for it, and keep
+      # this non-fatal so a slow-booting host doesn't fail the whole job.
+      failed_when: false
+      when:
+        - item.public_ip_address is defined
+        - item.public_ip_address | length > 0
+        - (item.tags.OSType | default('linux')) != 'windows'
+        - (item.tags.Name | default('')) is not search('(?i)windows')
+
+    - name: Show running instances (authoritative, fresh describe)
+      ansible.builtin.debug:
+        msg:
+          - "Instance: {{ item.tags.Name | default(item.instance_id) }}"
+          - "  ID:         {{ item.instance_id }}"
+          - "  Public IP:  {{ item.public_ip_address | default('N/A') }}"
+          - "  State:      {{ item.state.name }}"
+      loop: "{{ lab_running }}"
+      loop_control:
+        label: "{{ item.tags.Name | default(item.instance_id) }}"
+
+    - name: No instances to start
+      ansible.builtin.debug:
+        msg: "All compliance lab instances are already running (or none exist)."
+      when: starting_ids | length == 0

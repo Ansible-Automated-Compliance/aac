@@ -1,0 +1,51 @@
+---
+# linux_filesystem.yml — Collect filesystem and file permission facts
+
+- name: Get mount points with options
+  shell: findmnt -J 2>/dev/null || cat /proc/mounts 2>/dev/null || echo ""
+  register: mounts_raw
+  changed_when: false
+  failed_when: false
+
+- name: Check world-writable files in critical paths
+  shell: |
+    find /etc /usr/local/bin /usr/local/sbin -xdev -type f \
+      -perm -0002 2>/dev/null | head -20 || echo ""
+  register: world_writable_raw
+  changed_when: false
+  failed_when: false
+
+- name: Check SUID/SGID files
+  shell: |
+    find / -xdev \( -perm -4000 -o -perm -2000 \) -type f 2>/dev/null \
+      | grep -v proc | head -30 || echo ""
+  register: suid_sgid_raw
+  changed_when: false
+  failed_when: false
+
+- name: Check critical file permissions
+  stat:
+    path: "{{ item }}"
+  loop:
+    - /etc/passwd
+    - /etc/shadow
+    - /etc/group
+    - /etc/gshadow
+    - /etc/ssh/sshd_config
+    - /etc/sudoers
+    - /boot/grub2/grub.cfg
+    - /boot/grub/grub.cfg
+  register: critical_file_stats
+  failed_when: false
+
+- name: Set filesystem facts
+  set_fact:
+    aac_filesystem:
+      mounts:             "{{ ansible_mounts | default([]) }}"
+      mounts_raw:         "{{ mounts_raw.stdout | default('') }}"
+      world_writable:     "{{ world_writable_raw.stdout_lines | default([]) | select | list }}"
+      suid_sgid_files:    "{{ suid_sgid_raw.stdout_lines | default([]) | select | list }}"
+      critical_files: >-
+        {{ critical_file_stats.results | selectattr('stat', 'defined')
+           | map(attribute='stat') | list
+           | json_query('[].{path: path, mode: mode, uid: uid, gid: gid, pw_name: pw_name, gr_name: gr_name}') }}

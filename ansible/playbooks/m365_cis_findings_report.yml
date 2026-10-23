@@ -1,0 +1,247 @@
+---
+# AAC - M365 CIS Findings Report (interpreted, risk-ranked, remediation-paired)
+#
+# The decisioning-layer report for CIS Microsoft 365: turns stored assessment
+# results into a report a decision-maker can PRESENT. Unlike the raw
+# violations report, every finding here carries a DERIVED, EXPLAINABLE risk
+# band (never "UNKNOWN") and a concrete remediation (where to fix it, what to
+# do), ordered by risk rather than by section — plus a plain-language posture
+# verdict. Evidence gaps are shown separately: not failures, not passes.
+#
+# The interpretation is scripts/m365_findings_report.py (unit-tested; risk
+# model + mitigation guidance). This playbook owns only DB access and file
+# plumbing. It reads the evidence store for ONE tenant and writes nothing to
+# the database. Runs wherever the evidence store is — the AAC lab or a
+# customer POC environment; assessment data never leaves that environment.
+#
+# ── Variables ────────────────────────────────────────────────────────
+#   report_framework   framework key (default: cis_m365_v7)
+#   report_tenant      tenant (hostname column). Default: newest stored row's
+#                      tenant — never mixes tenants in one report.
+#   report_lookback    days of history to consider (default: 30)
+#   report_output_dir  EE-local output directory (default: /tmp)
+#   report_catalog     path to the CIS M365 index JSON (default: the copy
+#                      shipped in the policy submodule)
+#   report_publish_host / report_publish_user / report_publish_dir
+#                      optional scp publication of the outputs (same contract
+#                      as the other AAC report playbooks)
+#
+# ── AAP Job Template ─────────────────────────────────────────────────
+#   "AAC - M365 CIS Findings Report" — EE: AAC Compliance EE, hosts:
+#   localhost (reads PostgreSQL only).
+
+- name: M365 CIS interpreted findings report from the evidence store
+  hosts: localhost
+  connection: local
+  gather_facts: true
+  become: false
+
+  vars:
+    report_framework: "cis_m365_v7"
+    # report_tenant: <set via extra_vars / survey / inventory>
+    report_lookback: 30
+    report_output_dir: "/tmp"
+    report_catalog: "{{ playbook_dir }}/../../policies/benchmarks/cis/saas/m365_v7/data/cis_m365_v7_index.json"
+    report_tag: "{{ report_framework }}-{{ ansible_date_time.date }}"
+    report_md: "{{ report_output_dir }}/m365_findings_report-{{ report_tag }}.md"
+    report_html: "{{ report_output_dir }}/m365_findings_report-{{ report_tag }}.html"
+    report_exec: "{{ report_output_dir }}/m365_executive_summary-{{ report_tag }}.html"
+    report_csv: "{{ report_output_dir }}/m365_results_export-{{ report_tag }}.csv"
+
+  tasks:
+    - name: Load site configuration when present
+      ansible.builtin.include_vars: "{{ item }}"
+      with_first_found:
+        - files: ["../vars/site_config.yml"]
+          skip: true
+
+    - name: Load vault secrets when present
+      ansible.builtin.include_vars: "{{ item }}"
+      with_first_found:
+        - files: ["../vars/vault_secrets.yml"]
+          skip: true
+
+    - name: Validate the output directory
+      ansible.builtin.assert:
+        that:
+          - report_output_dir is match('^/[A-Za-z0-9/_.-]+$')
+          - "'..' not in report_output_dir"
+        fail_msg: "report_output_dir must be an absolute path without '..'."
+
+    - name: Load the CIS M365 control catalog
+      ansible.builtin.set_fact:
+        cis_catalog: "{{ (lookup('file', report_catalog) | from_json).recommendations }}"
+
+    - name: Resolve the tenant when none supplied (never mix tenants)
+      when: (report_tenant | default('', true)) | length == 0
+      block:
+        - name: Find the tenant with the newest stored result
+          community.postgresql.postgresql_query:
+            login_host: "{{ pg_host | mandatory }}"
+            login_port: "{{ pg_port | default(5432) }}"
+            login_user: "{{ pg_user | default('postgres') }}"
+            login_password: "{{ compliance_db_password }}"
+            login_db: "{{ pg_database | default('compliance') }}"
+            ssl_mode: "{{ pg_ssl_mode | default('prefer') }}"
+            query: |
+              SELECT hostname FROM compliance_results
+              WHERE framework = %(fw)s
+                AND evaluation_timestamp >= NOW() - (%(days)s || ' days')::interval
+              ORDER BY evaluation_timestamp DESC LIMIT 1
+            named_args:
+              fw: "{{ report_framework }}"
+              days: "{{ report_lookback | int | string }}"
+          register: tenant_query
+
+        - name: Bind resolved tenant
+          ansible.builtin.set_fact:
+            report_tenant: "{{ (tenant_query.query_result | first | default({})).hostname | default('') }}"
+
+    - name: Refuse to render without a tenant
+      ansible.builtin.assert:
+        that: (report_tenant | default('', true)) | length > 0
+        fail_msg: >-
+          No {{ report_framework }} rows in compliance_results within the last
+          {{ report_lookback }} days. Run the assessment first — this playbook
+          reports stored evidence, it does not evaluate anything.
+
+    - name: Query latest stored result per section for the tenant
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host | mandatory }}"
+        login_port: "{{ pg_port | default(5432) }}"
+        login_user: "{{ pg_user | default('postgres') }}"
+        login_password: "{{ compliance_db_password }}"
+        login_db: "{{ pg_database | default('compliance') }}"
+        ssl_mode: "{{ pg_ssl_mode | default('prefer') }}"
+        query: |
+          SELECT DISTINCT ON (policy_name)
+            policy_name, violations, metadata, evaluation_timestamp,
+            passed_controls, failed_controls
+          FROM compliance_results
+          WHERE framework = %(fw)s
+            AND hostname = %(tenant)s
+            AND evaluation_timestamp >= NOW() - (%(days)s || ' days')::interval
+          ORDER BY policy_name, evaluation_timestamp DESC
+        named_args:
+          fw: "{{ report_framework }}"
+          tenant: "{{ (report_tenant | default('', true)) }}"
+          days: "{{ report_lookback | int | string }}"
+      register: results_query
+
+    - name: Refuse to render an empty report
+      ansible.builtin.assert:
+        that: results_query.query_result | length > 0
+        fail_msg: "No {{ report_framework }} rows for tenant {{ (report_tenant | default('', true)) }} in the window."
+
+    - name: Render the interpreted findings report (Markdown)
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/../../scripts/m365_findings_report.py"
+          - --render
+          - md
+        stdin: >-
+          {{ {'rows': results_query.query_result,
+              'catalog': cis_catalog,
+              'tenant': report_tenant} | to_json }}
+      register: md_out
+      changed_when: true
+
+    - name: Render the interpreted findings report (HTML)
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/../../scripts/m365_findings_report.py"
+          - --render
+          - html
+        stdin: >-
+          {{ {'rows': results_query.query_result,
+              'catalog': cis_catalog,
+              'tenant': report_tenant} | to_json }}
+      register: html_out
+      changed_when: true
+
+    - name: Render the executive summary (one-page, for leadership)
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/../../scripts/m365_findings_report.py"
+          - --render
+          - exec-html
+        stdin: >-
+          {{ {'rows': results_query.query_result,
+              'catalog': cis_catalog,
+              'tenant': report_tenant} | to_json }}
+      register: exec_out
+      changed_when: true
+
+    - name: Render the CSV results export (summary by category + detail)
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/../../scripts/m365_findings_report.py"
+          - --render
+          - csv
+        stdin: >-
+          {{ {'rows': results_query.query_result,
+              'catalog': cis_catalog,
+              'tenant': report_tenant} | to_json }}
+      register: csv_out
+      changed_when: true
+
+    - name: Write the Markdown report
+      ansible.builtin.copy:
+        dest: "{{ report_md }}"
+        content: "{{ md_out.stdout }}"
+        mode: "0644"
+
+    - name: Write the HTML findings report
+      ansible.builtin.copy:
+        dest: "{{ report_html }}"
+        content: "{{ html_out.stdout }}"
+        mode: "0644"
+
+    - name: Write the executive summary
+      ansible.builtin.copy:
+        dest: "{{ report_exec }}"
+        content: "{{ exec_out.stdout }}"
+        mode: "0644"
+
+    - name: Write the CSV results export
+      ansible.builtin.copy:
+        dest: "{{ report_csv }}"
+        content: "{{ csv_out.stdout }}"
+        mode: "0644"
+
+    - name: Publish reports to persistent storage
+      when: report_publish_host | default('') | length > 0
+      ansible.builtin.command:
+        argv:
+          - scp
+          - -o
+          - StrictHostKeyChecking=accept-new
+          - -o
+          - BatchMode=yes
+          - "{{ report_md }}"
+          - "{{ report_html }}"
+          - "{{ report_exec }}"
+          - "{{ report_csv }}"
+          - "{{ report_publish_user | default('aapuser1') }}@{{ report_publish_host }}:{{ report_publish_dir | default('/var/tmp') }}/"
+      changed_when: true
+
+    - name: Warn when no persistent publication is configured
+      when: report_publish_host | default('') | length == 0
+      ansible.builtin.debug:
+        msg: >-
+          WARNING: reports written only to the execution environment
+          ({{ report_output_dir }}) and will vanish when this job ends. Set
+          report_publish_host to copy them to persistent storage.
+
+    - name: Report summary
+      ansible.builtin.debug:
+        msg:
+          - "M365 CIS findings report — tenant {{ (report_tenant | default('', true)) }}"
+          - "  MD:   {{ report_md }}"
+          - "  HTML: {{ report_html }}"
+          - "  Exec: {{ report_exec }}"
+          - "  CSV:  {{ report_csv }}"

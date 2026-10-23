@@ -1,0 +1,217 @@
+---
+# aac_store_results/tasks/main.yml
+# Validates required vars, inserts one row into compliance_results,
+# and exposes the new row's ID as aac_result_id.
+
+- name: Validate required result vars
+  assert:
+    that:
+      - (aac_result_policy_name | default('', true))  | length > 0
+      - (aac_result_policy_version | default('', true)) | length > 0
+      - aac_result_total_controls | int >= 0
+    fail_msg: >
+      aac_store_results: aac_result_policy_name, aac_result_policy_version,
+      and aac_result_total_controls (>= 0) are required.
+
+# ── Resolve derived values once so Jinja renders consistently ─────────────────
+# Split into two tasks: _aac_failed/_aac_passed/_aac_pct must be set before
+# _aac_compliant can reference _aac_failed in its else branch.
+- name: Resolve derived scoring vars (pass/fail counts)
+  set_fact:
+    _aac_failed:    "{{ aac_result_failed_controls | int }}"
+    _aac_passed:    "{{ aac_result_passed_controls | int }}"
+    _aac_pct:       "{{ aac_result_compliance_pct | float | round(2) }}"
+    _aac_framework: >-
+      {{ (aac_result_framework | default('', true))
+         if ((aac_result_framework | default('', true)) | length > 0)
+         else (aac_result_metadata.framework
+               if (aac_result_metadata is mapping and 'framework' in aac_result_metadata)
+               else 'unknown') }}
+    # Never accept 'localhost' as a subject. It is the execution context, not an
+    # asset, and it denotes a different machine depending on where the job ran.
+    # The same goes for in-cluster EE pod names (automation-job-*), which the
+    # env HOSTNAME fallback would otherwise leak as the evidence subject.
+    # aac_evidence_subject comes from tasks/resolve_evidence_provenance.yml.
+    _aac_hostname: >-
+      {{ aac_evidence_subject | default('', true)
+         or (aac_result_hostname | default('', true))
+         or (aac_result_metadata.hostname
+             if (aac_result_metadata is mapping and 'hostname' in aac_result_metadata)
+             else '')
+         or (inventory_hostname if inventory_hostname not in ['localhost','127.0.0.1'] else '')
+         or (ansible_facts.fqdn | default('', true))
+         or ((lookup('env', 'HOSTNAME') | default('', true) | trim)
+             if not ((lookup('env', 'HOSTNAME') | default('', true) | trim) is match('^automation-job-'))
+             else '') }}
+
+- name: Resolve derived scoring vars (compliant flag)
+  set_fact:
+    _aac_compliant: >-
+      {{ (aac_result_metadata.compliant | bool)
+         if (aac_result_metadata is mapping and 'compliant' in aac_result_metadata)
+         else (_aac_failed | int == 0) }}
+
+# ── Security exception waivers ────────────────────────────────────────────────
+# One choke point for every framework: ask OPA's exceptions module (data from
+# ansible/vars/waivers.yml, loaded by "AAC - Load OPA Policies") which of these
+# violations carry an active, documented waiver. Waived findings move out of
+# the violations column into metadata.waivers_applied — stored and reportable,
+# never deleted. Any failure here (OPA down, module not loaded) waives nothing:
+# the failure direction is always "report more".
+- name: Query waiver decision from OPA
+  uri:
+    use_proxy: false
+    url: "{{ aac_waivers_opa_url }}/v1/data/exceptions/decision"
+    method: POST
+    body_format: json
+    body:
+      input:
+        host: "{{ _aac_hostname }}"
+        framework: "{{ _aac_framework }}"
+        violations: "{{ aac_result_violations }}"
+    return_content: yes
+    timeout: 30
+  register: _aac_waiver_resp
+  failed_when: false
+  delegate_to: "{{ aac_result_delegate_to }}"
+  become: no
+  when:
+    - aac_waivers_enabled | bool
+    - aac_result_violations | length > 0
+
+- name: Apply waiver decision (counts)
+  vars:
+    _wd: "{{ (_aac_waiver_resp.json | default({})).get('result', {}) }}"
+  set_fact:
+    _aac_violations_final: "{{ _wd.active_violations }}"
+    _aac_waived_count: "{{ _wd.waived_count | int }}"
+    _aac_failed: "{{ [(_aac_failed | int) - (_wd.waived_count | int), 0] | max }}"
+    _aac_passed: "{{ [(_aac_passed | int) + (_wd.waived_count | int), aac_result_total_controls | int] | min }}"
+  when:
+    - _aac_waiver_resp is not skipped
+    - (_aac_waiver_resp.json | default({})).get('result', {}).get('waived_count', 0) | int > 0
+
+- name: Apply waiver decision (score + provenance)
+  vars:
+    _wd: "{{ (_aac_waiver_resp.json | default({})).get('result', {}) }}"
+  set_fact:
+    _aac_pct: "{{ ((_aac_passed | int / ([aac_result_total_controls | int, 1] | max)) * 100) | round(2) }}"
+    _aac_compliant: "{{ _aac_failed | int == 0 }}"
+    _aac_metadata_final: >-
+      {{ aac_result_metadata | combine({
+           'waivers_applied': _wd.waived,
+           'waived_count': _wd.waived_count,
+           'waiver_expired_matches': _wd.expired_matches
+         }) }}
+  when: _aac_waived_count | default(0) | int > 0
+
+# ── INSERT — with facts_id FK ─────────────────────────────────────────────────
+- name: Store result (with facts_id)
+  community.postgresql.postgresql_query:
+    login_host:     "{{ aac_result_pg_host }}"
+    login_port:     "{{ aac_result_pg_port }}"
+    login_user:     "{{ aac_result_pg_user }}"
+    login_password: "{{ aac_result_pg_password }}"
+    login_db:             "{{ aac_result_pg_db }}"
+    query: |
+      INSERT INTO compliance_results
+        (facts_id, hostname, framework, policy_name, policy_version,
+         total_controls, passed_controls, failed_controls,
+         compliance_percentage, compliant, violations, metadata,
+         policy_sha, project_sha)
+      VALUES
+        (%s::bigint, %s, %s, %s, %s,
+         %s::integer, %s::integer, %s::integer,
+         %s::numeric, %s::boolean, %s::jsonb, %s::jsonb,
+         NULLIF(%s,''), NULLIF(%s,''))
+      RETURNING id
+    positional_args:
+      - "{{ aac_result_facts_id }}"
+      - "{{ _aac_hostname }}"
+      - "{{ _aac_framework }}"
+      - "{{ (aac_result_policy_name | default('', true)) }}"
+      - "{{ (aac_result_policy_version | default('', true)) }}"
+      - "{{ aac_result_total_controls | int }}"
+      - "{{ _aac_passed | int }}"
+      - "{{ _aac_failed | int }}"
+      - "{{ _aac_pct }}"
+      - "{{ _aac_compliant | bool }}"
+      - "{{ _aac_violations_final | default(aac_result_violations) | to_json }}"
+      - "{{ _aac_metadata_final | default(aac_result_metadata) | to_json }}"
+      - "{{ aac_policy_sha | default('') }}"
+      - "{{ aac_project_sha | default('') }}"
+  register: _aac_insert_result
+  delegate_to: "{{ aac_result_delegate_to }}"
+  become: no
+  when: aac_result_facts_id is not none and aac_result_facts_id | string | length > 0
+
+# ── INSERT — without facts_id (NULL) ─────────────────────────────────────────
+- name: Store result (no facts_id)
+  community.postgresql.postgresql_query:
+    login_host:     "{{ aac_result_pg_host }}"
+    login_port:     "{{ aac_result_pg_port }}"
+    login_user:     "{{ aac_result_pg_user }}"
+    login_password: "{{ aac_result_pg_password }}"
+    login_db:             "{{ aac_result_pg_db }}"
+    query: |
+      INSERT INTO compliance_results
+        (hostname, framework, policy_name, policy_version,
+         total_controls, passed_controls, failed_controls,
+         compliance_percentage, compliant, violations, metadata,
+         policy_sha, project_sha)
+      VALUES
+        (%s, %s, %s, %s,
+         %s::integer, %s::integer, %s::integer,
+         %s::numeric, %s::boolean, %s::jsonb, %s::jsonb,
+         NULLIF(%s,''), NULLIF(%s,''))
+      RETURNING id
+    positional_args:
+      - "{{ _aac_hostname }}"
+      - "{{ _aac_framework }}"
+      - "{{ (aac_result_policy_name | default('', true)) }}"
+      - "{{ (aac_result_policy_version | default('', true)) }}"
+      - "{{ aac_result_total_controls | int }}"
+      - "{{ _aac_passed | int }}"
+      - "{{ _aac_failed | int }}"
+      - "{{ _aac_pct }}"
+      - "{{ _aac_compliant | bool }}"
+      - "{{ _aac_violations_final | default(aac_result_violations) | to_json }}"
+      - "{{ _aac_metadata_final | default(aac_result_metadata) | to_json }}"
+      - "{{ aac_policy_sha | default('') }}"
+      - "{{ aac_project_sha | default('') }}"
+  register: _aac_insert_result
+  delegate_to: "{{ aac_result_delegate_to }}"
+  become: no
+  when: aac_result_facts_id is none or aac_result_facts_id | string | length == 0
+
+# ── Expose the new row ID ─────────────────────────────────────────────────────
+- name: Expose result ID
+  set_fact:
+    aac_result_id: "{{ _aac_insert_result.query_result[0].id | default(None) }}"
+
+# ── Optional CAA chain — write a compliance_certifications row ────────────────
+# Callers opt in with aac_caa_enabled: true. To make the CAA reproducible, callers
+# should also pass aac_result_caa_result (canonical OPA decision) and
+# aac_result_caa_input (the OPA input) — otherwise the writer stores an empty
+# result/input and the CAA is provenance-only, not reproducibility-capable.
+#
+# The pass-through vars are prefixed aac_result_caa_* rather than aac_caa_* to
+# avoid a Jinja recursion when the wrapper's include_role vars: block references
+# a same-named outer var (aac_caa_result: "{{ aac_caa_result | default({}) }}"
+# hits maximum recursion depth exceeded).
+- name: Store Certifiable Audit Artifact
+  include_role:
+    name: aac_store_certification
+  vars:
+    aac_caa_framework:         "{{ _aac_framework }}"
+    # Scope defaults to host + inventory_hostname; fleet-scoped callers
+    # (NERC-CIP, Digital Sovereignty, etc.) pass aac_result_caa_scope: fleet
+    # and aac_result_caa_scope_value: <organization>.
+    aac_caa_scope:             "{{ aac_result_caa_scope | default('host') }}"
+    aac_caa_scope_value:       "{{ aac_result_caa_scope_value | default(_aac_hostname) }}"
+    aac_caa_compliance_status: "{{ 'compliant' if _aac_compliant | bool else 'non_compliant' }}"
+    aac_caa_violations:        "{{ aac_result_violations }}"
+    aac_caa_result:            "{{ aac_result_caa_result | default({}) }}"
+    aac_caa_input:             "{{ aac_result_caa_input | default({}) }}"
+    aac_caa_framework_version: "{{ aac_result_caa_framework_version | default(aac_result_policy_version | default('')) }}"
+  when: aac_caa_enabled | bool

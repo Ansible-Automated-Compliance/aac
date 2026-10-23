@@ -1,0 +1,41 @@
+---
+# Create /opt/aac-compliance-state, sync the app source, and write the DB env file.
+
+- name: Ensure app directory exists
+  file:
+    path: "{{ aac_eauth_app_dir }}"
+    state: directory
+    owner: "{{ aac_eauth_run_user }}"
+    group: "{{ aac_eauth_run_user }}"
+    mode: "0750"
+  delegate_to: "{{ aac_host }}"
+  become: true
+
+- name: Sync API source to the host
+  copy:
+    src: "{{ aac_eauth_src_dir }}/"
+    dest: "{{ aac_eauth_app_dir }}/"
+    owner: "{{ aac_eauth_run_user }}"
+    group: "{{ aac_eauth_run_user }}"
+    mode: "0644"
+  delegate_to: "{{ aac_host }}"
+  become: true
+
+- name: Write compliance-state.env (compliance_reader password from vault)
+  copy:
+    dest: "{{ aac_eauth_app_dir }}/compliance-state.env"
+    owner: "{{ aac_eauth_run_user }}"
+    group: "{{ aac_eauth_run_user }}"
+    mode: "0600"
+    content: |
+      # AAC Compliance-State API environment — written by aac_enforceauth_bridge role.
+      # Read-only compliance_reader credentials; never write access.
+      AAC_DB_HOST={{ aac_eauth_db_host }}
+      AAC_DB_PORT={{ aac_eauth_db_port }}
+      AAC_DB_NAME={{ aac_eauth_db_name }}
+      AAC_DB_USER={{ aac_eauth_db_user }}
+      AAC_DB_PASSWORD={{ aac_eauth_db_password }}
+      AAC_MAX_AGE_SECONDS={{ aac_eauth_max_age_seconds }}
+  delegate_to: "{{ aac_host }}"
+  become: true
+  no_log: true

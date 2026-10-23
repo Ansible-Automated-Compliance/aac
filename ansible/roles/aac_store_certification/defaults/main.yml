@@ -1,0 +1,61 @@
+---
+# aac_store_certification/defaults/main.yml
+# Writes one row into compliance_certifications (Certifiable Audit Artifact).
+# See docs/strategy/AAC_CERTIFIABLE_AUDIT_ARTIFACT_SPEC.md for the data model.
+
+# ── Required ──────────────────────────────────────────────────────────────────
+aac_caa_framework:        ""    # e.g. "cis_rhel9", "nerc_cip", "hipaa"
+aac_caa_scope_value:      ""    # hostname (host scope), fleet_id (fleet scope), etc.
+aac_caa_result:           {}    # canonical OPA decision document (JSONB)
+aac_caa_input:            {}    # OPA input that produced the result — hashed for reproducibility
+aac_caa_compliance_status: ""   # "compliant" | "non_compliant" | "partial"
+
+# ── Optional ──────────────────────────────────────────────────────────────────
+aac_caa_framework_version: ""           # e.g. "v2.0.0", "Rev 2"
+aac_caa_scope:             "host"       # host | fleet | control | compensating_control
+aac_caa_violations:        []           # used to derive severity_summary if metadata absent
+
+# AAP provenance — auto-resolved from AAP runtime facts when run inside a job
+aac_caa_evaluator_aap_job_id: "{{ (awx_job_id | default(tower_job_id) | default(0)) | int }}"
+aac_caa_evaluator_aap_host:   "{{ awx_host_url | default(tower_host_url) | default('') }}"
+
+# Policy substrate
+aac_caa_policy_dir:           "/runner/project"   # root of project checkout in EE
+aac_caa_opa_bundle_revision:  null                # populated when bundle revision is known
+# AAP-provided project revision — parent-repo (compliance) SHA at time of last
+# project sync. Not the submodule's own SHA, but a stable pointer an auditor can
+# dereference to find the exact policies commit. Used as a fallback when the
+# git-file-based strategies in tasks/main.yml can't recover the submodule SHA
+# (the EE typically has /runner/project WITHOUT .git — AAP's runner strips it).
+# AAP 2.6 sets awx_project_revision; the legacy tower_project_revision alias
+# is intentionally NOT chained here — nested Jinja default() over multiple
+# possibly-undefined vars broke shell-block templating (see PR #278).
+aac_caa_project_revision:     "{{ awx_project_revision | default('') }}"
+
+# CAA bundle URI (populated by item 6 when portal stores bundles in S3)
+aac_caa_artifact_uri:         null
+
+# ── Cosign key-based signing (CAA spec §7 item 4) ────────────────────────────
+# Signature material — the private key content lives in vault_secrets.yml as
+# caa_signing_private_key (Cosign PEM, encrypted with caa_signing_password).
+# Empty password is the automation default. Public key ships in the repo at
+# docs/security/caa-signing-key-v1.pub for auditor verification. When rotated,
+# bump the version id here and publish caa-signing-key-vN.pub alongside.
+aac_caa_signing_private_key:  "{{ caa_signing_private_key | default('', true) }}"
+aac_caa_signing_password:     "{{ caa_signing_password    | default('', true) }}"
+aac_caa_signing_key_id:       "cosign-key-v1"
+aac_caa_signing_algorithm:    "cosign-ecdsa-p256"
+
+# ── DB connection (inherit from site_config vars) ─────────────────────────────
+aac_caa_pg_host:     "{{ pg_host }}"
+aac_caa_pg_port:     "{{ pg_port | default(5433) }}"
+# Same writer selection as aac_store_results: the evidence writer when configured.
+aac_caa_pg_user:     "{{ aac_evidence_writer_user | default(pg_user | default('postgres'), true) }}"
+aac_caa_pg_password: >-
+  {{ compliance_writer_password
+     if (aac_evidence_writer_user | default('', true) | length > 0)
+     else (pg_password | default(compliance_db_password)) }}
+aac_caa_pg_db:       "{{ pg_db | default('compliance') }}"
+
+# ── Behaviour ─────────────────────────────────────────────────────────────────
+aac_caa_delegate_to: localhost

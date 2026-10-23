@@ -1,0 +1,1336 @@
+---
+# cis_linux_build_opa_input.yml — the ONE mapper from collected Linux facts to
+# the CIS Linux OPA input shape.
+#
+# Shared by cis_rhel9_assessment.yml (direct) and evaluate_stored_facts.yml
+# (stored facts). Both must send OPA the same payload; this file is where it is
+# built.
+#
+# Input:   facts_data     — {ansible_facts: {...}, custom_facts: {...}} as produced
+#                           by ../tasks/collect_linux_compliance_facts.yml
+#          opa_hostname   — hostname to report (optional)
+#          m              — when called in a loop from evaluate_stored_facts.yml,
+#                           the matrix row; the built input is appended to
+#                           eval_inputs as {'m': m, 'input': opa_input}
+# Output:  opa_input
+#
+# SAFETY NOTES
+# - Template injection: every host-collected string here (sshd config, sudoers,
+#   banners, logging config, …) arrives as module output (`register` stdout or a
+#   postgresql_query row), which Ansible wraps as AnsibleUnsafe; it is carried
+#   through `combine` untemplated. tests/cis_mapper verifies a hostile payload
+#   ("{{ lookup('pipe','id') }}") survives verbatim and nothing is evaluated.
+# - Parser differential: a derived field is only ever as good as this file's
+#   regex versus the daemon's own parser. Where that could read as "configured"
+#   from a comment or a partial file, the derivation is written to bias CLOSED
+#   (uncommented Defaults lines only for sudo; whole rsyslog/journald files plus
+#   drop-ins collected; journald defaults applied only where the daemon's own
+#   default applies). Prefer `sshd -T`-style effective output over raw files.
+#
+# RULE: NEVER FABRICATE. A section is emitted only when the collector gathered
+# the facts behind it, and a field only when it can be derived from them. A
+# section that is not emitted is reported by the policy as NOT ASSESSED (see
+# cis_rhel9.section_inputs in the Rego library), which is the honest result.
+# The previous mapper carried constants such as aide_installed: false,
+# global_gpgcheck_enabled: true and logrotate.installed: true; those produced
+# violations and passes for controls nobody had looked at.
+#
+# Sections emitted today and the facts behind them:
+#   ansible_facts, ssh, pam (+ login.defs aging, password_auth, root_gid,
+#   default_umask, tmout, inactive_days), auditd (+ log / log dir / config
+#   file permissions), services (ansible service_facts), packages (audit,
+#   pwquality), sudo, selinux, bootloader, rsyslog, journald, chronyd,
+#   time_synchronization, autofs, cron (daemon state + file modes/owners and
+#   allow/deny presence), initial_setup (banner presence, banner modes/owners,
+#   gpg_keys, enabled_repos, repos_without_gpgcheck, global_gpgcheck_enabled,
+#   crypto_policy), disabled_filesystem_modules, mount_options (/tmp,
+#   /dev/shm), world_writable, boot_security, sysctl_parameters (analysis:
+#   parameter + running value for a fixed CIS whitelist), ip_forwarding, ipv6,
+#   firewall, wireless_interfaces, user_group, storage_encryption,
+#   certificates (RPM family), authorized_keys.
+# The supplement sections (boot_security onward, and the "+" fields above) come
+# from collector blocks that end in "end:ok"; without that marker -- a block
+# that did not run, or a stored-facts row older than 2026-10-19 -- they are not
+# emitted. Platform notes: gpg_keys / enabled_repos / certificates are RPM-only
+# and are omitted on Debian/Ubuntu (NOT ASSESSED / evidence missing there).
+#
+# CIS RHEL 9 v3.0.0 (2026-10-21): the _v3_* sections below come from the
+# kmod / sysctl / pkg_state / config / perms / accounts / fs_sweep blocks
+# (disabled_*_modules with available/disabled/loaded, sysctl_parameters
+# analysis + persisted, packages, services for units service_facts does not
+# report, crypto_policy, chronyd, mta, firewall backend/zones, GDM fields,
+# critical_files, ssh/sudo/rsyslog/audit-tool/log file modes, shadow_entries,
+# unowned/ungrouped files, sticky_bit, privileged_commands). They are emitted
+# only from their own valid block, like the supplement sections.
+#
+# Not emitted (NOT ASSESSED until a collector exists): suid_files,
+# sgid_files, ssh_private_keys (v2 shape), unnecessary_services,
+# separate_partitions, usb_storage, sysctl_parameters.non_compliant_params
+# (an expected-value comparison is a policy decision, not the mapper's).
+
+- name: Build CIS Linux OPA input from collected facts (no fabricated values)
+  vars:
+    _af: "{{ facts_data.ansible_facts | default({}) }}"
+    _cf: "{{ facts_data.custom_facts | default({}) }}"
+    _svc: "{{ (facts_data.ansible_facts | default({})).services | default({}) }}"
+    _logging_raw: "{{ (facts_data.custom_facts | default({})).logging_raw | default('') }}"
+    _rsyslog_txt: "{{ (_logging_raw.split('=== journald ==='))[0] }}"
+    _journald_txt: "{{ (_logging_raw.split('=== journald ==='))[1] | default('') }}"
+    _sudoers: "{{ (facts_data.custom_facts | default({})).sudoers_raw | default('') }}"
+    _aging_raw: "{{ (facts_data.custom_facts | default({})).password_aging_raw | default('') }}"
+    _banners: "{{ (facts_data.custom_facts | default({})).banners_raw | default('') }}"
+    _grub: "{{ (facts_data.custom_facts | default({})).grub_raw | default('') }}"
+    _mods_raw: "{{ (facts_data.custom_facts | default({})).kernel_modules_raw | default('') }}"
+    _tmp_mount: "{{ (_af.mounts | default([])) | selectattr('mount', 'equalto', '/tmp') | list | first | default({}) }}"
+    _shm_mount: "{{ (_af.mounts | default([])) | selectattr('mount', 'equalto', '/dev/shm') | list | first | default({}) }}"
+
+    _base:
+      ansible_facts:
+        ansible_hostname: "{{ _af.hostname | default(opa_hostname | default(inventory_hostname)) }}"
+        ansible_distribution: "{{ _af.distribution | default('') }}"
+        ansible_distribution_version: "{{ _af.distribution_version | default('') }}"
+        ansible_distribution_major_version: "{{ _af.distribution_major_version | default((_af.distribution_version | default('0')) | string | split('.') | first) }}"
+        ansible_os_family: "{{ _af.os_family | default('') }}"
+        ansible_kernel: "{{ _af.kernel | default('') }}"
+        ansible_architecture: "{{ _af.architecture | default('') }}"
+        ansible_mounts: "{{ _af.mounts | default([]) }}"
+        ansible_interfaces: "{{ _af.interfaces | default([]) }}"
+        ansible_default_ipv4: "{{ _af.default_ipv4 | default({}) }}"
+        ansible_selinux: "{{ _af.selinux | default({}) }}"
+        ansible_service_mgr: "{{ _af.service_mgr | default('systemd') }}"
+        ansible_processor_cores: "{{ _af.processor_cores | default(0) }}"
+        ansible_memtotal_mb: "{{ _af.memtotal_mb | default(0) }}"
+
+    # ── SSH (CIS 5.2.x) ────────────────────────────────────────────────────
+    _ssh: >-
+      {{ {'ssh': {'sshd_config_raw': (_cf.sshd_config_raw | regex_replace('(?im)^listenaddress[^\n]*\n?', ''))}}
+         if (_cf.sshd_config_raw | default('') | length > 0) else {} }}
+
+    # ── PAM + login.defs aging (CIS 5.4.x, 5.5.x) ──────────────────────────
+    _aging: >-
+      {%- set d = {} -%}
+      {%- for key, name in [('PASS_MAX_DAYS', 'pass_max_days'), ('PASS_MIN_DAYS', 'pass_min_days'), ('PASS_WARN_AGE', 'pass_warn_age')] -%}
+        {%- set m = _aging_raw | regex_search(key ~ '\\s+(\\d+)', '\\1') -%}
+        {%- if m -%}{%- set _ = d.update({name: (m[0] | int)}) -%}{%- endif -%}
+      {%- endfor -%}
+      {{ d }}
+    _pam: >-
+      {{ {'pam': ({'pwquality_conf_raw': _cf.pwquality_conf_raw | default(''),
+                   'pwquality_installed': (_cf.pwquality_conf_raw | default('') | length > 0),
+                   'system_auth': _cf.pam_config_raw | default('')} | combine(_aging))}
+         if ((_cf.pam_config_raw | default('') | length > 0) or (_cf.pwquality_conf_raw | default('') | length > 0)) else {} }}
+
+    # ── auditd (CIS 4.1.x) ─────────────────────────────────────────────────
+    _auditd_rules: "{{ (_cf.auditd_rules_raw | default('')) | split('\n') | select | list }}"
+    _auditd: >-
+      {{ {'auditd': {'config': _cf.auditd_conf_raw | default(''), 'active_rules': _auditd_rules, 'rules': _auditd_rules}}
+         if ((_cf.auditd_rules_raw | default('') | length > 0) or (_cf.auditd_conf_raw | default('') | length > 0)) else {} }}
+
+    # ── packages the modules ask about and the collector can answer ────────
+    _packages:
+      packages:
+        audit: "{{ 'auditd.service' in _svc }}"
+        pwquality: "{{ _cf.pwquality_conf_raw | default('') | length > 0 }}"
+
+    # ── sudo (CIS 5.3.x) ───────────────────────────────────────────────────
+    # Only an UNCOMMENTED Defaults line may satisfy a control; a commented
+    # "# Defaults logfile=" must not read as configured (fail-open otherwise).
+    _sudo_timeout: "{{ _sudoers | regex_search('(?m)^\\s*Defaults[^#\\n]*timestamp_timeout\\s*=\\s*(-?\\d+)', '\\1') }}"
+    _sudo_logfile: "{{ _sudoers is search('(?m)^\\s*Defaults[^#\\n]*logfile\\s*=') }}"
+    _sudo: >-
+      {{ {'sudo': ({'installed': true, 'sudoers_content': _sudoers, 'logfile_exists': (_sudo_logfile | bool)}
+                   | combine({'timestamp_timeout': _sudo_timeout[0]} if _sudo_timeout else {}))}
+         if (_sudoers | length > 0) else {} }}
+
+    # ── SELinux (CIS 1.6.x) ────────────────────────────────────────────────
+    _selinux: >-
+      {{ {'selinux': {'installed': ((_af.selinux | default({})).status | default('')) in ['enabled', 'disabled'],
+                      'status': (_af.selinux | default({})).status | default('disabled'),
+                      'mode': (_af.selinux | default({})).mode | default('disabled'),
+                      'policy': (_af.selinux | default({})).type | default(''),
+                      'grub_cmdline': _grub}}
+         if ((_af.selinux | default({})).status is defined) else {} }}
+
+    # ── bootloader (CIS 1.4.x) ─────────────────────────────────────────────
+    _bootloader: "{{ {'bootloader': {'grub_config': _grub}} if (_grub | length > 0) else {} }}"
+
+    # ── rsyslog / journald (CIS 4.2.x) — derived from the config text ──────
+    _rsyslog_mode: "{{ _rsyslog_txt | regex_search('\\$FileCreateMode\\s+(\\d+)', '\\1') }}"
+    _rsyslog: >-
+      {{ {'rsyslog': ({'installed': ('rsyslog.service' in _svc),
+                       'service_active': (_svc.get('rsyslog.service', {}).get('state', '') == 'running'),
+                       'service_enabled': (_svc.get('rsyslog.service', {}).get('status', '') == 'enabled'),
+                       'logging_rules_count': (_rsyslog_txt | regex_findall('^[^#$].*\s-?/var/log/', multiline=True) | length),
+                       'remote_logging_configured': (_rsyslog_txt is search('(?m)^[^#]*\s@@?[\w.\[\]:-]+')),
+                       'config_raw': (_rsyslog_txt | regex_replace('^\\s*=== rsyslog ===\\s*\\n?', '') | trim)}
+                      | combine({'file_create_mode': _rsyslog_mode[0]} if _rsyslog_mode else {}))}
+         if ((_logging_raw | length > 0) or ('rsyslog.service' in _svc)) else {} }}
+    _journald_storage: "{{ _journald_txt | regex_search('(?m)^Storage=(\\w+)', '\\1') }}"
+    _journald: >-
+      {{ {'journald': {'service_active': (_svc.get('systemd-journald.service', {}).get('state', '') == 'running'),
+                       'compress_enabled': ('yes' if (_journald_txt is search('(?m)^Compress=yes')) else 'no'),
+                       'forward_to_syslog': ('yes' if (_journald_txt is search('(?m)^ForwardToSyslog=yes')) else 'no'),
+                       'storage_mode': (_journald_storage[0] if _journald_storage else 'auto')}}
+         if (_logging_raw | length > 0) else {} }}
+
+    # ── services derived from ansible_facts.services (CIS 2.x, 5.1.1) ──────
+    _chronyd_active: "{{ _svc.get('chronyd.service', {}).get('state', '') == 'running' }}"
+    _services: >-
+      {{ {'chronyd': {'installed': ('chronyd.service' in _svc),
+                      'service_active': (_chronyd_active | bool),
+                      'service_enabled': (_svc.get('chronyd.service', {}).get('status', '') == 'enabled'),
+                      'has_time_sources': (_chronyd_active | bool)},
+          'time_synchronization': {'has_active_service': (_chronyd_active | bool),
+                                   'active_service': ('chronyd' if (_chronyd_active | bool) else ''),
+                                   'services': [{'service': 'chronyd', 'active': (_chronyd_active | bool)}]},
+          'autofs': {'installed': ('autofs.service' in _svc),
+                     'active': (_svc.get('autofs.service', {}).get('state', '') == 'running'),
+                     'enabled': (_svc.get('autofs.service', {}).get('status', '') == 'enabled')},
+          'cron': {'crond_enabled': (_svc.get('crond.service', {}).get('status', '') == 'enabled'),
+                   'crond_running': (_svc.get('crond.service', {}).get('state', '') == 'running')}}
+         if (_svc | length > 0) else {} }}
+
+    # ── initial setup: banner presence (CIS 1.7.x) ─────────────────────────
+    # *_contains_sensitive_info: the CIS audit pattern -- an escape that prints
+    # system data (\m \r \s \v) or the OS id -- in that file's own text.
+    _banner_text: >-
+      {%- set o = {'motd': [], 'issue': [], 'issue_net': []} -%}{%- set cur = {'k': ''} -%}
+      {%- for l in _banners.split('\n') -%}
+        {%- if l == '=== /etc/motd ===' -%}{%- set _ = cur.update({'k': 'motd'}) -%}
+        {%- elif l == '=== /etc/issue ===' -%}{%- set _ = cur.update({'k': 'issue'}) -%}
+        {%- elif l == '=== /etc/issue.net ===' -%}{%- set _ = cur.update({'k': 'issue_net'}) -%}
+        {%- elif cur.k != '' -%}{%- set _ = o[cur.k].append(l) -%}{%- endif -%}
+      {%- endfor -%}
+      {{ o }}
+    _os_ids: >-
+      {%- set d = (_af.distribution | default('') | lower) -%}
+      {{ ({'redhat': ['rhel', 'red hat'], 'centos': ['centos'], 'rocky': ['rocky'], 'almalinux': ['almalinux', 'alma'], 'fedora': ['fedora'],
+           'ubuntu': ['ubuntu'], 'amazon': ['amzn', 'amazon'], 'debian': ['debian']}).get(d, ([d] if d else [])) }}
+    _initial: >-
+      {%- set o = {'motd_exists': (('=== /etc/motd ===' in _banners) and ((_banners.split('=== /etc/issue ==='))[0] | length > 20)),
+                   'issue_exists': ('=== /etc/issue ===' in _banners),
+                   'issue_net_exists': ('=== /etc/issue.net ===' in _banners)} -%}
+      {%- set pat = '(?i)(\\\\[mrsv]' ~ ((_os_ids | map('regex_escape') | map('regex_replace', '^(.*)$', '|\\\\b\\1\\\\b') | join('')) if (_os_ids | length) > 0 else '') ~ ')' -%}
+      {%- for k in ['motd', 'issue', 'issue_net'] if o[k ~ '_exists'] -%}
+        {%- set _ = o.update({k ~ '_contains_sensitive_info': ((_banner_text[k] | join('\n')) is search(pat))}) -%}
+      {%- endfor -%}
+      {{ {'initial_setup': o} if (_banners | length > 0) else {} }}
+
+    # ── filesystem modules (CIS 1.1.1.x) from the modprobe probe ───────────
+    _fsmods_list: >-
+      {%- set out = [] -%}
+      {%- for line in (_mods_raw | split('\n')) if ':' in line -%}
+        {%- set name = line.split(':')[0] | trim -%}
+        {%- set disabled = line.endswith(':disabled') -%}
+        {%- set _ = out.append({'module': name, 'disabled': disabled, 'loaded': 'unknown', 'compliant': disabled}) -%}
+      {%- endfor -%}
+      {{ out }}
+    _fsmods: >-
+      {{ {'disabled_filesystem_modules': {'modules': _fsmods_list,
+                                          'all_compliant': ((_fsmods_list | rejectattr('compliant') | list | length) == 0)}}
+         if (_mods_raw | length > 0) else {} }}
+
+    # ── mount options for /tmp and /dev/shm (CIS 1.1.2.x) from ansible_mounts
+    _mounts: >-
+      {{ {'mount_options': {'tmp': {'exists': (_tmp_mount | length > 0),
+                                    'has_nodev': ('nodev' in ((_tmp_mount.options | default('')) | split(','))),
+                                    'has_nosuid': ('nosuid' in ((_tmp_mount.options | default('')) | split(','))),
+                                    'has_noexec': ('noexec' in ((_tmp_mount.options | default('')) | split(',')))},
+                            'dev_shm': {'exists': (_shm_mount | length > 0),
+                                        'has_nodev': ('nodev' in ((_shm_mount.options | default('')) | split(','))),
+                                        'has_nosuid': ('nosuid' in ((_shm_mount.options | default('')) | split(','))),
+                                        'has_noexec': ('noexec' in ((_shm_mount.options | default('')) | split(',')))}}}
+         if (_af.mounts is defined) else {} }}
+
+    # ── world-writable files (CIS 6.1.x) ───────────────────────────────────
+    # The collector lists at most 100 paths; count is the TRUE total when it
+    # was collected, and truncated: true marks a partial list (or an unknown
+    # total, e.g. the sweep timed out), which is never compliant.
+    _ww: >-
+      {%- set ww = _cf.world_writable_files | reject('match', '^__count__[|]') | list -%}
+      {%- set tr = (_cf.world_writable_truncated | default(false)) | bool -%}
+      {%- set n = (_cf.world_writable_count | int) if ((_cf.world_writable_count | default('', true) | string) is match('^[0-9]+$')) else (ww | length) -%}
+      {{ {'world_writable': ({'files': ww, 'count': (n | int), 'compliant': ((n | int) == 0 and not tr)}
+                             | combine({'truncated': true} if tr else {}))}
+         if (_cf.world_writable_files is defined) else {} }}
+
+    # ══ CIS supplement (collector blocks ending in "end:ok") ══════════════
+    # A block without its end:ok marker (not run, or a stored row older than
+    # the collector change) yields no fields at all.
+    _fm_raw: "{{ _cf.file_modes_raw | default('') }}"
+    _boot_raw: "{{ _cf.boot_raw | default('') }}"
+    _net_raw: "{{ _cf.network_raw | default('') }}"
+    _ug_raw: "{{ _cf.user_group_raw | default('') }}"
+    _ap_raw: "{{ _cf.account_policy_raw | default('') }}"
+    _pt_raw: "{{ _cf.pkg_trust_raw | default('') }}"
+    _st_raw: "{{ _cf.storage_raw | default('') }}"
+    _cert_raw: "{{ _cf.certs_raw | default('') }}"
+    _ak_raw: "{{ _cf.authorized_keys_raw | default('') }}"
+    _kmod_raw: "{{ _cf.kmod_raw | default('') }}"
+    _sysctl_raw: "{{ _cf.sysctl_raw | default('') }}"
+    _pkg_raw: "{{ _cf.pkg_state_raw | default('') }}"
+    _cfg_raw: "{{ _cf.config_raw | default('') }}"
+    _perms_raw: "{{ _cf.perms_raw | default('') }}"
+    _acc_raw: "{{ _cf.accounts_raw | default('') }}"
+    _sweep_raw: "{{ _cf.fs_sweep_raw | default('') }}"
+
+    # INTEGRITY RULES for the tagged-line blocks (each is fail-closed):
+    #  - end:ok must appear exactly once and be the block's last line, else the
+    #    whole block is "not collected" (a forged or truncated block);
+    #  - a singleton tag (one fixed path, one sysctl key, fips, ...) seen more
+    #    than once makes the whole block "not collected": never first/last-wins,
+    #    and dropping just that field would read as a pass for rules that only
+    #    fire when a field is present;
+    #  - missing_cmd|<cmd> and truncated|<tag> mean the evidence is incomplete:
+    #    the block (or, where noted, the field) is not collected;
+    #  - symlink|<tag> is recorded; the collector reports the link's own mode;
+    #  - unsafe_name|<tag> lines only RECORD that the collector replaced a
+    #    hostile host string by unsafe:<sha256 prefix>; the record itself is
+    #    kept and judged like any other (a world-writable file with a hostile
+    #    name still fails). They never invalidate a block: an unprivileged user
+    #    can create such names, and must not be able to suppress a section.
+    # Every parse yields {tag: [[field, ...], ...], '_dup': [...], '_unsafe': [...]}.
+    _fm_kv: >-
+      {%- set d = {'_dup': [], '_unsafe': [], '_trunc': [], '_missing': [], '_symlink': []} -%}{%- set seen = {} -%}
+      {%- set lines = _fm_raw | trim | split('\n') -%}
+      {%- set marked = ((lines | select('equalto', 'end:ok') | list | length) == 1) and ((lines | last) == 'end:ok') -%}
+      {%- for line in lines if marked and line != 'end:ok' -%}
+        {%- set p = line.split('|') -%}
+        {%- if (p | length) >= 2 -%}
+          {%- set key = ('path|' ~ (p[1:] | last)) if p[0] in ['stat', 'absent'] else (p[0] if p[0] in ['audit_log_file', 'audit_log_dir'] else '') -%}
+          {%- if key != '' -%}
+            {%- if key in seen -%}{%- set _ = d._dup.append(key) -%}{%- endif -%}
+            {%- set _ = seen.update({key: 1}) -%}
+          {%- endif -%}
+          {%- if p[0] == 'unsafe_name' -%}{%- set _ = d._unsafe.append(p[1]) -%}{%- endif -%}
+          {%- if p[0] == 'truncated' -%}{%- set _ = d._trunc.append(p[1]) -%}{%- endif -%}
+          {%- if p[0] == 'missing_cmd' -%}{%- set _ = d._missing.append(p[1]) -%}{%- endif -%}
+          {%- if p[0] == 'symlink' -%}{%- set _ = d._symlink.append(p[1]) -%}{%- endif -%}
+          {%- set _ = d.setdefault(p[0], []).append(p[1:]) -%}
+        {%- endif -%}
+      {%- endfor -%}
+      {{ d | combine({'_marked': marked}) }}
+    _boot_kv: >-
+      {%- set d = {'_dup': [], '_unsafe': [], '_trunc': [], '_missing': [], '_symlink': []} -%}{%- set seen = {} -%}
+      {%- set lines = _boot_raw | trim | split('\n') -%}
+      {%- set marked = ((lines | select('equalto', 'end:ok') | list | length) == 1) and ((lines | last) == 'end:ok') -%}
+      {%- for line in lines if marked and line != 'end:ok' -%}
+        {%- set p = line.split('|') -%}
+        {%- if (p | length) >= 2 -%}
+          {%- set key = (p[0] ~ '|' ~ p[1]) if p[0] in ['pkg', 'sysctl', 'sulogin', 'enabled', 'coredump'] else (p[0] if p[0] in ['aide_db', 'aide_cron', 'aide_timer', 'grub_pw_hashed', 'grub_pw_plain', 'coredump_present'] else '') -%}
+          {%- if key != '' -%}
+            {%- if key in seen -%}{%- set _ = d._dup.append(key) -%}{%- endif -%}
+            {%- set _ = seen.update({key: 1}) -%}
+          {%- endif -%}
+          {%- if p[0] == 'unsafe_name' -%}{%- set _ = d._unsafe.append(p[1]) -%}{%- endif -%}
+          {%- if p[0] == 'truncated' -%}{%- set _ = d._trunc.append(p[1]) -%}{%- endif -%}
+          {%- if p[0] == 'missing_cmd' -%}{%- set _ = d._missing.append(p[1]) -%}{%- endif -%}
+          {%- if p[0] == 'symlink' -%}{%- set _ = d._symlink.append(p[1]) -%}{%- endif -%}
+          {%- set _ = d.setdefault(p[0], []).append(p[1:]) -%}
+        {%- endif -%}
+      {%- endfor -%}
+      {{ d | combine({'_marked': marked}) }}
+    _net_kv: >-
+      {%- set d = {'_dup': [], '_unsafe': [], '_trunc': [], '_missing': [], '_symlink': []} -%}{%- set seen = {} -%}
+      {%- set lines = _net_raw | trim | split('\n') -%}
+      {%- set marked = ((lines | select('equalto', 'end:ok') | list | length) == 1) and ((lines | last) == 'end:ok') -%}
+      {%- for line in lines if marked and line != 'end:ok' -%}
+        {%- set p = line.split('|') -%}
+        {%- if (p | length) >= 2 -%}
+          {%- set key = (p[0] ~ '|' ~ p[1]) if p[0] in ['sysctl'] else (p[0] if p[0] in ['ipv6', 'ipv6_addresses', 'firewall'] else '') -%}
+          {%- if key != '' -%}
+            {%- if key in seen -%}{%- set _ = d._dup.append(key) -%}{%- endif -%}
+            {%- set _ = seen.update({key: 1}) -%}
+          {%- endif -%}
+          {%- if p[0] == 'unsafe_name' -%}{%- set _ = d._unsafe.append(p[1]) -%}{%- endif -%}
+          {%- if p[0] == 'truncated' -%}{%- set _ = d._trunc.append(p[1]) -%}{%- endif -%}
+          {%- if p[0] == 'missing_cmd' -%}{%- set _ = d._missing.append(p[1]) -%}{%- endif -%}
+          {%- if p[0] == 'symlink' -%}{%- set _ = d._symlink.append(p[1]) -%}{%- endif -%}
+          {%- set _ = d.setdefault(p[0], []).append(p[1:]) -%}
+        {%- endif -%}
+      {%- endfor -%}
+      {{ d | combine({'_marked': marked}) }}
+    _ug_kv: >-
+      {%- set d = {'_dup': [], '_unsafe': [], '_trunc': [], '_missing': [], '_symlink': []} -%}{%- set seen = {} -%}
+      {%- set lines = _ug_raw | trim | split('\n') -%}
+      {%- set marked = ((lines | select('equalto', 'end:ok') | list | length) == 1) and ((lines | last) == 'end:ok') -%}
+      {%- for line in lines if marked and line != 'end:ok' -%}
+        {%- set p = line.split('|') -%}
+        {%- if (p | length) >= 2 -%}
+          {%- set key = (p[0] ~ '|' ~ p[1]) if p[0] in [] else (p[0] if p[0] in ['root_path'] else '') -%}
+          {%- if key != '' -%}
+            {%- if key in seen -%}{%- set _ = d._dup.append(key) -%}{%- endif -%}
+            {%- set _ = seen.update({key: 1}) -%}
+          {%- endif -%}
+          {%- if p[0] == 'unsafe_name' -%}{%- set _ = d._unsafe.append(p[1]) -%}{%- endif -%}
+          {%- if p[0] == 'truncated' -%}{%- set _ = d._trunc.append(p[1]) -%}{%- endif -%}
+          {%- if p[0] == 'missing_cmd' -%}{%- set _ = d._missing.append(p[1]) -%}{%- endif -%}
+          {%- if p[0] == 'symlink' -%}{%- set _ = d._symlink.append(p[1]) -%}{%- endif -%}
+          {%- set _ = d.setdefault(p[0], []).append(p[1:]) -%}
+        {%- endif -%}
+      {%- endfor -%}
+      {{ d | combine({'_marked': marked}) }}
+    _ap_kv: >-
+      {%- set d = {'_dup': [], '_unsafe': [], '_trunc': [], '_missing': [], '_symlink': []} -%}{%- set seen = {} -%}
+      {%- set lines = _ap_raw | trim | split('\n') -%}
+      {%- set marked = ((lines | select('equalto', 'end:ok') | list | length) == 1) and ((lines | last) == 'end:ok') -%}
+      {%- for line in lines if marked and line != 'end:ok' -%}
+        {%- set p = line.split('|') -%}
+        {%- if (p | length) >= 2 -%}
+          {%- set key = (p[0] ~ '|' ~ p[1]) if p[0] in [] else (p[0] if p[0] in ['inactive'] else '') -%}
+          {%- if key != '' -%}
+            {%- if key in seen -%}{%- set _ = d._dup.append(key) -%}{%- endif -%}
+            {%- set _ = seen.update({key: 1}) -%}
+          {%- endif -%}
+          {%- if p[0] == 'unsafe_name' -%}{%- set _ = d._unsafe.append(p[1]) -%}{%- endif -%}
+          {%- if p[0] == 'truncated' -%}{%- set _ = d._trunc.append(p[1]) -%}{%- endif -%}
+          {%- if p[0] == 'missing_cmd' -%}{%- set _ = d._missing.append(p[1]) -%}{%- endif -%}
+          {%- if p[0] == 'symlink' -%}{%- set _ = d._symlink.append(p[1]) -%}{%- endif -%}
+          {%- set _ = d.setdefault(p[0], []).append(p[1:]) -%}
+        {%- endif -%}
+      {%- endfor -%}
+      {{ d | combine({'_marked': marked}) }}
+    _pt_kv: >-
+      {%- set d = {'_dup': [], '_unsafe': [], '_trunc': [], '_missing': [], '_symlink': []} -%}{%- set seen = {} -%}
+      {%- set lines = _pt_raw | trim | split('\n') -%}
+      {%- set marked = ((lines | select('equalto', 'end:ok') | list | length) == 1) and ((lines | last) == 'end:ok') -%}
+      {%- for line in lines if marked and line != 'end:ok' -%}
+        {%- set p = line.split('|') -%}
+        {%- if (p | length) >= 2 -%}
+          {%- set key = (p[0] ~ '|' ~ p[1]) if p[0] in [] else (p[0] if p[0] in ['family', 'main_gpgcheck', 'crypto_policy'] else '') -%}
+          {%- if key != '' -%}
+            {%- if key in seen -%}{%- set _ = d._dup.append(key) -%}{%- endif -%}
+            {%- set _ = seen.update({key: 1}) -%}
+          {%- endif -%}
+          {%- if p[0] == 'unsafe_name' -%}{%- set _ = d._unsafe.append(p[1]) -%}{%- endif -%}
+          {%- if p[0] == 'truncated' -%}{%- set _ = d._trunc.append(p[1]) -%}{%- endif -%}
+          {%- if p[0] == 'missing_cmd' -%}{%- set _ = d._missing.append(p[1]) -%}{%- endif -%}
+          {%- if p[0] == 'symlink' -%}{%- set _ = d._symlink.append(p[1]) -%}{%- endif -%}
+          {%- set _ = d.setdefault(p[0], []).append(p[1:]) -%}
+        {%- endif -%}
+      {%- endfor -%}
+      {{ d | combine({'_marked': marked}) }}
+    _st_kv: >-
+      {%- set d = {'_dup': [], '_unsafe': [], '_trunc': [], '_missing': [], '_symlink': []} -%}{%- set seen = {} -%}
+      {%- set lines = _st_raw | trim | split('\n') -%}
+      {%- set marked = ((lines | select('equalto', 'end:ok') | list | length) == 1) and ((lines | last) == 'end:ok') -%}
+      {%- for line in lines if marked and line != 'end:ok' -%}
+        {%- set p = line.split('|') -%}
+        {%- if (p | length) >= 2 -%}
+          {%- set key = (p[0] ~ '|' ~ p[1]) if p[0] in [] else (p[0] if p[0] in ['fips'] else '') -%}
+          {%- if key != '' -%}
+            {%- if key in seen -%}{%- set _ = d._dup.append(key) -%}{%- endif -%}
+            {%- set _ = seen.update({key: 1}) -%}
+          {%- endif -%}
+          {%- if p[0] == 'unsafe_name' -%}{%- set _ = d._unsafe.append(p[1]) -%}{%- endif -%}
+          {%- if p[0] == 'truncated' -%}{%- set _ = d._trunc.append(p[1]) -%}{%- endif -%}
+          {%- if p[0] == 'missing_cmd' -%}{%- set _ = d._missing.append(p[1]) -%}{%- endif -%}
+          {%- if p[0] == 'symlink' -%}{%- set _ = d._symlink.append(p[1]) -%}{%- endif -%}
+          {%- set _ = d.setdefault(p[0], []).append(p[1:]) -%}
+        {%- endif -%}
+      {%- endfor -%}
+      {{ d | combine({'_marked': marked}) }}
+    _cert_kv: >-
+      {%- set d = {'_dup': [], '_unsafe': [], '_trunc': [], '_missing': [], '_symlink': []} -%}{%- set seen = {} -%}
+      {%- set lines = _cert_raw | trim | split('\n') -%}
+      {%- set marked = ((lines | select('equalto', 'end:ok') | list | length) == 1) and ((lines | last) == 'end:ok') -%}
+      {%- for line in lines if marked and line != 'end:ok' -%}
+        {%- set p = line.split('|') -%}
+        {%- if (p | length) >= 2 -%}
+          {%- set key = (p[0] ~ '|' ~ p[1]) if p[0] in [] else (p[0] if p[0] in ['ca_bundle_intact'] else '') -%}
+          {%- if key != '' -%}
+            {%- if key in seen -%}{%- set _ = d._dup.append(key) -%}{%- endif -%}
+            {%- set _ = seen.update({key: 1}) -%}
+          {%- endif -%}
+          {%- if p[0] == 'unsafe_name' -%}{%- set _ = d._unsafe.append(p[1]) -%}{%- endif -%}
+          {%- if p[0] == 'truncated' -%}{%- set _ = d._trunc.append(p[1]) -%}{%- endif -%}
+          {%- if p[0] == 'missing_cmd' -%}{%- set _ = d._missing.append(p[1]) -%}{%- endif -%}
+          {%- if p[0] == 'symlink' -%}{%- set _ = d._symlink.append(p[1]) -%}{%- endif -%}
+          {%- set _ = d.setdefault(p[0], []).append(p[1:]) -%}
+        {%- endif -%}
+      {%- endfor -%}
+      {{ d | combine({'_marked': marked}) }}
+    _ak_kv: >-
+      {%- set d = {'_dup': [], '_unsafe': [], '_trunc': [], '_missing': [], '_symlink': []} -%}{%- set seen = {} -%}
+      {%- set lines = _ak_raw | trim | split('\n') -%}
+      {%- set marked = ((lines | select('equalto', 'end:ok') | list | length) == 1) and ((lines | last) == 'end:ok') -%}
+      {%- for line in lines if marked and line != 'end:ok' -%}
+        {%- set p = line.split('|') -%}
+        {%- if (p | length) >= 2 -%}
+          {%- set key = (p[0] ~ '|' ~ p[1]) if p[0] in [] else (p[0] if p[0] in [] else '') -%}
+          {%- if key != '' -%}
+            {%- if key in seen -%}{%- set _ = d._dup.append(key) -%}{%- endif -%}
+            {%- set _ = seen.update({key: 1}) -%}
+          {%- endif -%}
+          {%- if p[0] == 'unsafe_name' -%}{%- set _ = d._unsafe.append(p[1]) -%}{%- endif -%}
+          {%- if p[0] == 'truncated' -%}{%- set _ = d._trunc.append(p[1]) -%}{%- endif -%}
+          {%- if p[0] == 'missing_cmd' -%}{%- set _ = d._missing.append(p[1]) -%}{%- endif -%}
+          {%- if p[0] == 'symlink' -%}{%- set _ = d._symlink.append(p[1]) -%}{%- endif -%}
+          {%- set _ = d.setdefault(p[0], []).append(p[1:]) -%}
+        {%- endif -%}
+      {%- endfor -%}
+      {{ d | combine({'_marked': marked}) }}
+    _kmod_kv: >-
+      {%- set d = {'_dup': [], '_unsafe': [], '_trunc': [], '_missing': [], '_symlink': []} -%}{%- set seen = {} -%}
+      {%- set lines = _kmod_raw | trim | split('\n') -%}
+      {%- set marked = ((lines | select('equalto', 'end:ok') | list | length) == 1) and ((lines | last) == 'end:ok') -%}
+      {%- for line in lines if marked and line != 'end:ok' -%}
+        {%- set p = line.split('|') -%}
+        {%- if (p | length) >= 2 -%}
+          {%- set key = (p[0] ~ '|' ~ p[1]) if p[0] in ['kmod', 'wmod'] else '' -%}
+          {%- if key != '' -%}
+            {%- if key in seen -%}{%- set _ = d._dup.append(key) -%}{%- endif -%}
+            {%- set _ = seen.update({key: 1}) -%}
+          {%- endif -%}
+          {%- if p[0] == 'unsafe_name' -%}{%- set _ = d._unsafe.append(p[1]) -%}{%- endif -%}
+          {%- if p[0] == 'truncated' -%}{%- set _ = d._trunc.append(p[1]) -%}{%- endif -%}
+          {%- if p[0] == 'missing_cmd' -%}{%- set _ = d._missing.append(p[1]) -%}{%- endif -%}
+          {%- if p[0] == 'symlink' -%}{%- set _ = d._symlink.append(p[1]) -%}{%- endif -%}
+          {%- set _ = d.setdefault(p[0], []).append(p[1:]) -%}
+        {%- endif -%}
+      {%- endfor -%}
+      {{ d | combine({'_marked': marked}) }}
+    _sysctl_kv: >-
+      {%- set d = {'_dup': [], '_unsafe': [], '_trunc': [], '_missing': [], '_symlink': []} -%}{%- set seen = {} -%}
+      {%- set lines = _sysctl_raw | trim | split('\n') -%}
+      {%- set marked = ((lines | select('equalto', 'end:ok') | list | length) == 1) and ((lines | last) == 'end:ok') -%}
+      {%- for line in lines if marked and line != 'end:ok' -%}
+        {%- set p = line.split('|') -%}
+        {%- if (p | length) >= 2 -%}
+          {%- set key = (p[0] ~ '|' ~ p[1]) if p[0] in ['run', 'persist'] else '' -%}
+          {%- if key != '' -%}
+            {%- if key in seen -%}{%- set _ = d._dup.append(key) -%}{%- endif -%}
+            {%- set _ = seen.update({key: 1}) -%}
+          {%- endif -%}
+          {%- if p[0] == 'unsafe_name' -%}{%- set _ = d._unsafe.append(p[1]) -%}{%- endif -%}
+          {%- if p[0] == 'truncated' -%}{%- set _ = d._trunc.append(p[1]) -%}{%- endif -%}
+          {%- if p[0] == 'missing_cmd' -%}{%- set _ = d._missing.append(p[1]) -%}{%- endif -%}
+          {%- if p[0] == 'symlink' -%}{%- set _ = d._symlink.append(p[1]) -%}{%- endif -%}
+          {%- set _ = d.setdefault(p[0], []).append(p[1:]) -%}
+        {%- endif -%}
+      {%- endfor -%}
+      {{ d | combine({'_marked': marked}) }}
+    _pkg_kv: >-
+      {%- set d = {'_dup': [], '_unsafe': [], '_trunc': [], '_missing': [], '_symlink': []} -%}{%- set seen = {} -%}
+      {%- set lines = _pkg_raw | trim | split('\n') -%}
+      {%- set marked = ((lines | select('equalto', 'end:ok') | list | length) == 1) and ((lines | last) == 'end:ok') -%}
+      {%- for line in lines if marked and line != 'end:ok' -%}
+        {%- set p = line.split('|') -%}
+        {%- if (p | length) >= 2 -%}
+          {%- set key = (p[0] ~ '|' ~ p[1]) if p[0] in ['pkg', 'pkgver', 'unit'] else (p[0] if p[0] in ['family', 'default_target'] else '') -%}
+          {%- if key != '' -%}
+            {%- if key in seen -%}{%- set _ = d._dup.append(key) -%}{%- endif -%}
+            {%- set _ = seen.update({key: 1}) -%}
+          {%- endif -%}
+          {%- if p[0] == 'unsafe_name' -%}{%- set _ = d._unsafe.append(p[1]) -%}{%- endif -%}
+          {%- if p[0] == 'truncated' -%}{%- set _ = d._trunc.append(p[1]) -%}{%- endif -%}
+          {%- if p[0] == 'missing_cmd' -%}{%- set _ = d._missing.append(p[1]) -%}{%- endif -%}
+          {%- if p[0] == 'symlink' -%}{%- set _ = d._symlink.append(p[1]) -%}{%- endif -%}
+          {%- set _ = d.setdefault(p[0], []).append(p[1:]) -%}
+        {%- endif -%}
+      {%- endfor -%}
+      {{ d | combine({'_marked': marked}) }}
+    _cfg_kv: >-
+      {%- set d = {'_dup': [], '_unsafe': [], '_trunc': [], '_missing': [], '_symlink': []} -%}{%- set seen = {} -%}
+      {%- set lines = _cfg_raw | trim | split('\n') -%}
+      {%- set marked = ((lines | select('equalto', 'end:ok') | list | length) == 1) and ((lines | last) == 'end:ok') -%}
+      {%- for line in lines if marked and line != 'end:ok' -%}
+        {%- set p = line.split('|') -%}
+        {%- if (p | length) >= 2 -%}
+          {%- set key = (p[0] ~ '|' ~ p[1]) if p[0] in ['fwzone', 'gdmconf'] else (p[0] if p[0] in ['pq_module', 'authselect_profile', 'authselect_check', 'chrony_servers', 'chrony_pools', 'chrony_options', 'mta_probe', 'mta_inet', 'fw_backend', 'fw_log_denied', 'su_wheel', 'aide_conf'] else '') -%}
+          {%- if key != '' -%}
+            {%- if key in seen -%}{%- set _ = d._dup.append(key) -%}{%- endif -%}
+            {%- set _ = seen.update({key: 1}) -%}
+          {%- endif -%}
+          {%- if p[0] == 'unsafe_name' -%}{%- set _ = d._unsafe.append(p[1]) -%}{%- endif -%}
+          {%- if p[0] == 'truncated' -%}{%- set _ = d._trunc.append(p[1]) -%}{%- endif -%}
+          {%- if p[0] == 'missing_cmd' -%}{%- set _ = d._missing.append(p[1]) -%}{%- endif -%}
+          {%- if p[0] == 'symlink' -%}{%- set _ = d._symlink.append(p[1]) -%}{%- endif -%}
+          {%- set _ = d.setdefault(p[0], []).append(p[1:]) -%}
+        {%- endif -%}
+      {%- endfor -%}
+      {{ d | combine({'_marked': marked}) }}
+    _perms_kv: >-
+      {%- set d = {'_dup': [], '_unsafe': [], '_trunc': [], '_missing': [], '_symlink': []} -%}{%- set seen = {} -%}
+      {%- set lines = _perms_raw | trim | split('\n') -%}
+      {%- set marked = ((lines | select('equalto', 'end:ok') | list | length) == 1) and ((lines | last) == 'end:ok') -%}
+      {%- for line in lines if marked and line != 'end:ok' -%}
+        {%- set p = line.split('|') -%}
+        {%- if (p | length) >= 2 -%}
+          {%- set key = ('path|' ~ (p[5:] | join('|'))) if (p[0] == 'f' and (p | length) >= 6) else (('path|' ~ (p[2:] | join('|'))) if (p[0] == 'absent' and (p | length) >= 3) else '') -%}
+          {%- if key != '' -%}
+            {%- if key in seen -%}{%- set _ = d._dup.append(key) -%}{%- endif -%}
+            {%- set _ = seen.update({key: 1}) -%}
+          {%- endif -%}
+          {%- if p[0] == 'unsafe_name' -%}{%- set _ = d._unsafe.append(p[1]) -%}{%- endif -%}
+          {%- if p[0] == 'truncated' -%}{%- set _ = d._trunc.append(p[1]) -%}{%- endif -%}
+          {%- if p[0] == 'missing_cmd' -%}{%- set _ = d._missing.append(p[1]) -%}{%- endif -%}
+          {%- if p[0] == 'symlink' -%}{%- set _ = d._symlink.append(p[1]) -%}{%- endif -%}
+          {%- set _ = d.setdefault(p[0], []).append(p[1:]) -%}
+        {%- endif -%}
+      {%- endfor -%}
+      {{ d | combine({'_marked': marked}) }}
+    _acc_kv: >-
+      {%- set d = {'_dup': [], '_unsafe': [], '_trunc': [], '_missing': [], '_symlink': []} -%}{%- set seen = {} -%}
+      {%- set lines = _acc_raw | trim | split('\n') -%}
+      {%- set marked = ((lines | select('equalto', 'end:ok') | list | length) == 1) and ((lines | last) == 'end:ok') -%}
+      {%- for line in lines if marked and line != 'end:ok' -%}
+        {%- set p = line.split('|') -%}
+        {%- if (p | length) >= 2 -%}
+          {%- set key = p[0] if p[0] in ['uid_min', 'encrypt_method', 'root_umask'] else '' -%}
+          {%- if key != '' -%}
+            {%- if key in seen -%}{%- set _ = d._dup.append(key) -%}{%- endif -%}
+            {%- set _ = seen.update({key: 1}) -%}
+          {%- endif -%}
+          {%- if p[0] == 'unsafe_name' -%}{%- set _ = d._unsafe.append(p[1]) -%}{%- endif -%}
+          {%- if p[0] == 'truncated' -%}{%- set _ = d._trunc.append(p[1]) -%}{%- endif -%}
+          {%- if p[0] == 'missing_cmd' -%}{%- set _ = d._missing.append(p[1]) -%}{%- endif -%}
+          {%- if p[0] == 'symlink' -%}{%- set _ = d._symlink.append(p[1]) -%}{%- endif -%}
+          {%- set _ = d.setdefault(p[0], []).append(p[1:]) -%}
+        {%- endif -%}
+      {%- endfor -%}
+      {{ d | combine({'_marked': marked}) }}
+    _sweep_kv: >-
+      {%- set d = {'_dup': [], '_unsafe': [], '_trunc': [], '_missing': [], '_symlink': []} -%}{%- set seen = {} -%}
+      {%- set lines = _sweep_raw | trim | split('\n') -%}
+      {%- set marked = ((lines | select('equalto', 'end:ok') | list | length) == 1) and ((lines | last) == 'end:ok') -%}
+      {%- for line in lines if marked and line != 'end:ok' -%}
+        {%- set p = line.split('|') -%}
+        {%- if (p | length) >= 2 -%}
+          {%- set key = (p[0] ~ '|' ~ p[1]) if p[0] in ['count', 'container_storage'] else '' -%}
+          {%- if key != '' -%}
+            {%- if key in seen -%}{%- set _ = d._dup.append(key) -%}{%- endif -%}
+            {%- set _ = seen.update({key: 1}) -%}
+          {%- endif -%}
+          {%- if p[0] == 'unsafe_name' -%}{%- set _ = d._unsafe.append(p[1]) -%}{%- endif -%}
+          {%- if p[0] == 'truncated' -%}{%- set _ = d._trunc.append(p[1]) -%}{%- endif -%}
+          {%- if p[0] == 'missing_cmd' -%}{%- set _ = d._missing.append(p[1]) -%}{%- endif -%}
+          {%- if p[0] == 'symlink' -%}{%- set _ = d._symlink.append(p[1]) -%}{%- endif -%}
+          {%- set _ = d.setdefault(p[0], []).append(p[1:]) -%}
+        {%- endif -%}
+      {%- endfor -%}
+      {{ d | combine({'_marked': marked}) }}
+    # block usable: marker valid, no duplicate singleton, no missing command,
+    # no truncated list (a capped list is not the whole truth). Exceptions,
+    # per item: a capped dotfile list (user_group) or key list (authorized_keys)
+    # becomes one failing entry for THAT user / file; nothing else is dropped.
+    _ok_fm: "{{ (_fm_kv._marked | bool) and (_fm_kv._dup | length == 0) and (_fm_kv._missing | length == 0) and (_fm_kv._trunc | length == 0) }}"
+    _ok_boot: "{{ (_boot_kv._marked | bool) and (_boot_kv._dup | length == 0) and (_boot_kv._missing | length == 0) and (_boot_kv._trunc | length == 0) }}"
+    _ok_net: "{{ (_net_kv._marked | bool) and (_net_kv._dup | length == 0) and (_net_kv._missing | length == 0) and (_net_kv._trunc | length == 0) }}"
+    _ok_ug: "{{ (_ug_kv._marked | bool) and (_ug_kv._dup | length == 0) and (_ug_kv._missing | length == 0) and (_ug_kv._trunc | reject('equalto', 'dotww') | list | length == 0) }}"
+    _ok_ap: "{{ (_ap_kv._marked | bool) and (_ap_kv._dup | length == 0) and (_ap_kv._missing | length == 0) and (_ap_kv._trunc | length == 0) }}"
+    _ok_pt: "{{ (_pt_kv._marked | bool) and (_pt_kv._dup | length == 0) and (_pt_kv._missing | length == 0) and (_pt_kv._trunc | length == 0) }}"
+    _ok_st: "{{ (_st_kv._marked | bool) and (_st_kv._dup | length == 0) and (_st_kv._missing | length == 0) and (_st_kv._trunc | length == 0) }}"
+    _ok_cert: "{{ (_cert_kv._marked | bool) and (_cert_kv._dup | length == 0) and (_cert_kv._missing | length == 0) and (_cert_kv._trunc | length == 0) }}"
+    _ok_ak: "{{ (_ak_kv._marked | bool) and (_ak_kv._dup | length == 0) and (_ak_kv._missing | length == 0) and (_ak_kv._trunc | reject('equalto', 'akkey') | list | length == 0) }}"
+    # v3 blocks. perms / sweep: a capped list (grub, logf; unowned, ungrouped,
+    # nosticky, priv) drops only THAT field, never the rest of the block.
+    _ok_kmod: "{{ (_kmod_kv._marked | bool) and (_kmod_kv._dup | length == 0) and (_kmod_kv._missing | length == 0) and (_kmod_kv._trunc | length == 0) }}"
+    _ok_sysctl: "{{ (_sysctl_kv._marked | bool) and (_sysctl_kv._dup | length == 0) and (_sysctl_kv._missing | length == 0) and (_sysctl_kv._trunc | length == 0) }}"
+    _ok_pkg: "{{ (_pkg_kv._marked | bool) and (_pkg_kv._dup | length == 0) and (_pkg_kv._missing | length == 0) and (_pkg_kv._trunc | length == 0) }}"
+    _ok_cfg: "{{ (_cfg_kv._marked | bool) and (_cfg_kv._dup | length == 0) and (_cfg_kv._missing | length == 0) and (_cfg_kv._trunc | length == 0) }}"
+    _ok_perms: "{{ (_perms_kv._marked | bool) and (_perms_kv._dup | length == 0) and (_perms_kv._missing | length == 0) and (_perms_kv._trunc | reject('in', ['grub', 'logf']) | list | length == 0) }}"
+    _ok_acc: "{{ (_acc_kv._marked | bool) and (_acc_kv._dup | length == 0) and (_acc_kv._missing | length == 0) and (_acc_kv._trunc | length == 0) }}"
+    _ok_sweep: "{{ (_sweep_kv._marked | bool) and (_sweep_kv._dup | length == 0) and (_sweep_kv._missing | length == 0) }}"
+    # path -> {mode, owner, group} | {absent: true}, only from a usable block
+    _fm: >-
+      {%- set d = {'_ok': (_ok_fm | bool), '_auditcfg': []} -%}
+      {%- if (_ok_fm | bool) -%}
+        {%- for p in _fm_kv.get('stat', []) if (p | length) >= 4 -%}
+          {%- set _ = d.update({(p[3:] | join('|')): {'mode': p[0], 'owner': p[1], 'group': p[2]}}) -%}
+        {%- endfor -%}
+        {%- for p in _fm_kv.get('absent', []) -%}{%- set _ = d.update({(p | join('|')): {'absent': true}}) -%}{%- endfor -%}
+        {%- for p in _fm_kv.get('audit_log_file', []) -%}{%- set _ = d.update({'_audit_log_file': (p | join('|'))}) -%}{%- endfor -%}
+        {%- for p in _fm_kv.get('audit_log_dir', []) -%}{%- set _ = d.update({'_audit_log_dir': (p | join('|'))}) -%}{%- endfor -%}
+        {%- for p in _fm_kv.get('auditcfg', []) if (p | length) >= 4 -%}
+          {%- set _ = d._auditcfg.append({'stat': {'path': (p[3:] | join('|')), 'mode': p[0], 'pw_name': p[1], 'gr_name': p[2]}}) -%}
+        {%- endfor -%}
+      {%- endif -%}
+      {{ d }}
+    # What the integrity rules rejected, per block -- carried to OPA as
+    # evidence (no policy reads it today; it explains a NOT ASSESSED).
+    _integrity: >-
+      {%- set o = {} -%}
+      {%- for name, kv in [('file_modes', _fm_kv), ('boot', _boot_kv), ('network', _net_kv), ('user_group', _ug_kv), ('account_policy', _ap_kv), ('pkg_trust', _pt_kv), ('storage', _st_kv), ('certs', _cert_kv), ('authorized_keys', _ak_kv), ('kernel_modules', _kmod_kv), ('sysctl', _sysctl_kv), ('package_state', _pkg_kv), ('config', _cfg_kv), ('permissions', _perms_kv), ('accounts', _acc_kv), ('filesystem_sweep', _sweep_kv)] -%}
+        {%- if (kv._dup + kv._unsafe + kv._trunc + kv._missing + kv._symlink) | length > 0 -%}
+          {%- set _ = o.update({name: {'duplicate_singletons': kv._dup, 'unsafe_names': kv._unsafe, 'truncated': kv._trunc,
+                                       'missing_commands': kv._missing, 'symlinks': kv._symlink}}) -%}
+        {%- endif -%}
+      {%- endfor -%}
+      {{ {'collection_integrity': o} if (o | length) > 0 else {} }}
+    _crypto_policy: "{{ (((_pt_kv.crypto_policy | default([[]]))[-1] | first | default('')) | trim) if (_ok_pt | bool) else '' }}"
+    # ── boot_security (CIS 1.3-1.5) ────────────────────────────────────────
+    # grub.cfg: the BIOS/RHEL path first, the Debian path second.
+    _grub_stat: >-
+      {{ _fm.get('/boot/grub2/grub.cfg', {}) if ('mode' in _fm.get('/boot/grub2/grub.cfg', {}))
+         else _fm.get('/boot/grub/grub.cfg', {}) }}
+    _boot_security: >-
+      {%- set kv = {} -%}{%- set sy = {} -%}{%- set cd = {} -%}{%- set cores = [] -%}
+      {%- for p in _boot_kv.get('pkg', []) + _boot_kv.get('enabled', []) + _boot_kv.get('sulogin', []) if (p | length) == 2 -%}
+        {%- set _ = kv.update({p[0]: (p[1] | trim) == 'yes'}) -%}
+      {%- endfor -%}
+      {%- for p in _boot_kv.get('sysctl', []) if (p | length) == 2 -%}{%- set _ = sy.update({p[0]: (p[1] | trim)}) -%}{%- endfor -%}
+      {%- for p in _boot_kv.get('coredump', []) if (p | length) == 2 -%}{%- set _ = cd.update({p[0]: (p[1] | trim)}) -%}{%- endfor -%}
+      {%- for p in _boot_kv.get('hard_core', []) -%}{%- set _ = cores.append(p[0] | trim) -%}{%- endfor -%}
+      {%- set one = {} -%}
+      {%- for k in ['aide_db', 'aide_cron', 'aide_timer', 'grub_pw_hashed', 'grub_pw_plain', 'coredump_present'] if k in _boot_kv -%}
+        {%- set _ = one.update({k: (_boot_kv[k][-1][0] | trim)}) -%}
+      {%- endfor -%}
+      {%- set o = {} -%}
+      {%- for name, key in [('aide_installed', 'aide'), ('prelink_installed', 'prelink'), ('abrt_installed', 'abrt'), ('abrtd_enabled', 'abrtd'), ('kdump_enabled', 'kdump')] if key in kv -%}
+        {%- set _ = o.update({name: kv[key]}) -%}
+      {%- endfor -%}
+      {%- for name, key in [('aide_database_initialized', 'aide_db'), ('aide_cron_configured', 'aide_cron'), ('aide_timer_configured', 'aide_timer')] if key in one -%}
+        {%- set _ = o.update({name: one[key] == 'yes'}) -%}
+      {%- endfor -%}
+      {%- if (one.grub_pw_hashed | default('x')) is match('^\d+$') and (one.grub_pw_plain | default('x')) is match('^\d+$') -%}
+        {%- set _ = o.update({'grub_password_set': ((one.grub_pw_hashed | int) + (one.grub_pw_plain | int)) > 0,
+                              'grub_password_hashed': (one.grub_pw_plain | int) == 0}) -%}
+      {%- endif -%}
+      {%- if 'mode' in _grub_stat -%}
+        {%- set _ = o.update({'grub_cfg_mode': _grub_stat.mode, 'grub_cfg_owner': _grub_stat.owner, 'grub_cfg_group': _grub_stat.group}) -%}
+      {%- endif -%}
+      {%- if 'rescue.service' in kv and 'emergency.service' in kv -%}
+        {%- set _ = o.update({'single_user_auth_required': kv['rescue.service'] and kv['emergency.service']}) -%}
+      {%- endif -%}
+      {%- if 'rescue.service' in kv -%}{%- set _ = o.update({'rescue_auth_required': kv['rescue.service']}) -%}{%- endif -%}
+      {%- if 'emergency.service' in kv -%}{%- set _ = o.update({'emergency_auth_required': kv['emergency.service']}) -%}{%- endif -%}
+      {%- if 'fs.suid_dumpable' in sy -%}{%- set _ = o.update({'core_dumps_disabled_sysctl': sy['fs.suid_dumpable'] == '0'}) -%}{%- endif -%}
+      {%- if (_boot_kv | length) > 0 -%}
+        {%- set _ = o.update({'core_dumps_disabled_limits': ((cores | length) > 0) and ((cores | reject('equalto', '0') | list | length) == 0)}) -%}
+      {%- endif -%}
+      {%- if one.coredump_present | default('') == 'yes' -%}
+        {%- set _ = o.update({'systemd_coredump_storage': cd.get('Storage', 'external'),
+                              'systemd_coredump_process_size_max': cd.get('ProcessSizeMax', 'unset (systemd default)')}) -%}
+      {%- endif -%}
+      {%- for name, key in [('aslr_value', 'kernel.randomize_va_space'), ('kernel_kptr_restrict', 'kernel.kptr_restrict'), ('kernel_dmesg_restrict', 'kernel.dmesg_restrict')] if key in sy -%}
+        {%- set _ = o.update({name: sy[key]}) -%}
+      {%- endfor -%}
+      {{ {'boot_security': o} if ((_ok_boot | bool) and (o | length) > 0) else {} }}
+
+    # ── network (CIS 3.x) — exact whitelist; values as the kernel reports ──
+    # No expected values here: comparing them is the policy's job.
+    _net_params:
+      - net.ipv4.ip_forward
+      - net.ipv4.conf.all.forwarding
+      - net.ipv4.conf.default.forwarding
+      - net.ipv4.conf.all.route_localnet
+      - net.ipv4.conf.default.route_localnet
+      - net.ipv6.conf.all.forwarding
+      - net.ipv6.conf.default.forwarding
+      - net.ipv4.conf.all.send_redirects
+      - net.ipv4.conf.default.send_redirects
+      - net.ipv4.conf.all.accept_source_route
+      - net.ipv4.conf.default.accept_source_route
+      - net.ipv6.conf.all.accept_source_route
+      - net.ipv6.conf.default.accept_source_route
+      - net.ipv4.conf.all.accept_redirects
+      - net.ipv4.conf.default.accept_redirects
+      - net.ipv6.conf.all.accept_redirects
+      - net.ipv6.conf.default.accept_redirects
+      - net.ipv4.conf.all.secure_redirects
+      - net.ipv4.conf.default.secure_redirects
+      - net.ipv4.conf.all.log_martians
+      - net.ipv4.conf.default.log_martians
+      - net.ipv4.icmp_echo_ignore_broadcasts
+      - net.ipv4.icmp_ignore_bogus_error_responses
+      - net.ipv4.conf.all.rp_filter
+      - net.ipv4.conf.default.rp_filter
+      - net.ipv4.tcp_syncookies
+      - net.ipv6.conf.all.accept_ra
+      - net.ipv6.conf.default.accept_ra
+    _network: >-
+      {%- set sy = {} -%}
+      {%- for p in _net_kv.get('sysctl', []) if (p | length) == 2 -%}{%- set _ = sy.update({p[0]: (p[1] | trim)}) -%}{%- endfor -%}
+      {%- set analysis = [] -%}
+      {%- for n in _net_params if n in sy -%}{%- set _ = analysis.append({'parameter': n, 'current_value': sy[n]}) -%}{%- endfor -%}
+      {%- set o = {} -%}
+      {%- if (analysis | length) > 0 -%}{%- set _ = o.update({'sysctl_parameters': {'analysis': analysis, 'collected_count': (analysis | length)}}) -%}{%- endif -%}
+      {%- set fwd = {} -%}
+      {%- for name, key in [('ipv4_forwarding', 'net.ipv4.ip_forward'), ('ipv6_forwarding', 'net.ipv6.conf.all.forwarding')] if (sy.get(key, '') is match('^-?\d+$')) -%}
+        {%- set _ = fwd.update({name: (sy[key] | int)}) -%}
+      {%- endfor -%}
+      {%- if (fwd | length) > 0 -%}{%- set _ = o.update({'ip_forwarding': fwd}) -%}{%- endif -%}
+      {%- if 'ipv6' in _net_kv -%}
+        {%- set st = _net_kv.ipv6[-1][0] | trim -%}
+        {%- set n6 = ((_net_kv.ipv6_addresses | default([['']]))[-1][0] | trim) -%}
+        {%- set _ = o.update({'ipv6': ({'status': st, 'disabled': st in ['disabled', 'disabled_kernel']}
+                                         | combine({'address_count': (n6 | int)} if (n6 is match('^\d+$')) else {}))}) -%}
+      {%- endif -%}
+      {%- if 'firewall' in _net_kv -%}
+        {%- set fw = _net_kv.firewall[-1][0] | trim -%}
+        {%- set _ = o.update({'firewall': {'type': fw, 'active': fw != 'none'}}) -%}
+      {%- endif -%}
+      {%- if (_ok_net | bool) -%}
+        {%- set w = _net_kv.get('wireless', []) | map('first') | list -%}
+        {%- set _ = o.update({'wireless_interfaces': {'interfaces': w, 'count': (w | length), 'has_wireless': (w | length) > 0, 'compliant': (w | length) == 0}}) -%}
+      {%- endif -%}
+      {{ o if (_ok_net | bool) else {} }}
+
+    # ── user_group (CIS 6.2.x) ─────────────────────────────────────────────
+    _user_group: >-
+      {%- set pw = [] -%}
+      {%- for p in _ug_kv.get('pw', []) if (p | length) >= 5 -%}{%- set _ = pw.append(p) -%}{%- endfor -%}
+      {%- set grp = [] -%}
+      {%- for p in _ug_kv.get('grp', []) if (p | length) >= 2 -%}{%- set _ = grp.append(p) -%}{%- endfor -%}
+      {%- set gids = grp | map(attribute=1) | list -%}
+      {%- set uidmap = {} -%}{%- set namecnt = {} -%}{%- set gidmap = {} -%}{%- set gnamecnt = {} -%}
+      {%- for p in pw -%}
+        {%- set _ = uidmap.setdefault(p[1], []).append(p[0]) -%}
+        {%- set _ = namecnt.update({p[0]: namecnt.get(p[0], 0) + 1}) -%}
+      {%- endfor -%}
+      {%- for p in grp -%}
+        {%- set _ = gidmap.setdefault(p[1], []).append(p[0]) -%}
+        {%- set _ = gnamecnt.update({p[0]: gnamecnt.get(p[0], 0) + 1}) -%}
+      {%- endfor -%}
+      {%- set dup_uids = {} -%}{%- set dup_gids = {} -%}{%- set dup_names = {} -%}{%- set dup_gnames = {} -%}
+      {%- for k, v in uidmap.items() if (v | length) > 1 -%}{%- set _ = dup_uids.update({k: v}) -%}{%- endfor -%}
+      {%- for k, v in gidmap.items() if (v | length) > 1 -%}{%- set _ = dup_gids.update({k: v}) -%}{%- endfor -%}
+      {%- for k, v in namecnt.items() if v > 1 -%}{%- set _ = dup_names.update({k: v}) -%}{%- endfor -%}
+      {%- for k, v in gnamecnt.items() if v > 1 -%}{%- set _ = dup_gnames.update({k: v}) -%}{%- endfor -%}
+      {%- set missing_groups = [] -%}
+      {%- for p in pw if p[2] not in gids and (p[0] ~ ':' ~ p[2]) not in missing_groups -%}{%- set _ = missing_groups.append(p[0] ~ ':' ~ p[2]) -%}{%- endfor -%}
+      {%- set homes = _ug_kv.get('home', []) | selectattr('5', 'defined') | list -%}
+      {%- set no_home = [] -%}{%- set not_owner = [] -%}{%- set wide = [] -%}
+      {%- for h in homes -%}
+        {%- if h[2] == 'no' -%}{%- set _ = no_home.append(h[0]) -%}
+        {%- else -%}
+          {%- if h[3] != h[0] -%}{%- set _ = not_owner.append({'user': h[0], 'home': h[1]}) -%}{%- endif -%}
+          {%- if (h[5] | trim) == 'yes' -%}{%- set _ = wide.append({'user': h[0], 'home': h[1], 'mode': h[4]}) -%}{%- endif -%}
+        {%- endif -%}
+      {%- endfor -%}
+      {%- set rp = ((_ug_kv.root_path | default([['']]))[-1] | join('|')) -%}
+      {%- set o = {
+            'users_without_shadow': (_ug_kv.get('noshadow', []) | map('first') | list),
+            'users_with_empty_password': (_ug_kv.get('emptypw', []) | map('first') | list),
+            'passwd_groups_not_in_group_file': missing_groups,
+            'duplicate_uids': dup_uids, 'duplicate_gids': dup_gids,
+            'duplicate_usernames': dup_names, 'duplicate_groupnames': dup_gnames,
+            'uid_zero_accounts': (pw | selectattr('1', 'equalto', '0') | map('first') | list),
+            'gid_zero_accounts': (pw | selectattr('2', 'equalto', '0') | map('first') | list),
+            'gid_zero_groups': (grp | selectattr('1', 'equalto', '0') | map('first') | list),
+            'users_without_home_directory': no_home,
+            'users_not_owning_home': not_owner,
+            'home_dirs_too_permissive': wide,
+            'users_with_netrc': [], 'users_with_forward': [], 'users_with_rhosts': [],
+            'dotfiles_group_or_world_writable': [],
+            'root_path': rp,
+            'root_path_dirs': (_ug_kv.get('pathdir', []) | map('first') | list),
+            'root_path_writable_dirs': [], 'root_path_nonexistent_dirs': [],
+            'passwd_content': '', 'group_content': '', 'shadow_content': ''} -%}
+      {%- for tag, key in [('dotnetrc', 'users_with_netrc'), ('dotforward', 'users_with_forward'), ('dotrhosts', 'users_with_rhosts')] -%}
+        {%- for p in _ug_kv.get(tag, []) if (p | length) >= 2 -%}{%- set _ = o[key].append({'user': p[0], 'path': (p[1:] | join('|'))}) -%}{%- endfor -%}
+      {%- endfor -%}
+      {%- for p in _ug_kv.get('dotww', []) if (p | length) >= 3 -%}
+        {%- set _ = o.dotfiles_group_or_world_writable.append({'user': p[0], 'mode': p[1], 'file': (p[2:] | join('|'))}) -%}
+      {%- endfor -%}
+      {%- for p in _ug_kv.get('pathdir', []) if (p | length) == 3 -%}
+        {%- if p[1] == 'no' -%}{%- set _ = o.root_path_nonexistent_dirs.append(p[0]) -%}{%- endif -%}
+        {%- if (p[2] | trim) == 'yes' -%}{%- set _ = o.root_path_writable_dirs.append(p[0]) -%}{%- endif -%}
+      {%- endfor -%}
+      {#- a user whose dotfile list was capped gets ONE failing entry naming the
+          truncation; every other user's entries stay as collected -#}
+      {%- for p in _ug_kv.get('truncated', []) if p[0] == 'dotww' and (p | length) >= 2 -%}
+        {%- set _ = o.dotfiles_group_or_world_writable.append({'user': (p[1:] | join('|')), 'mode': 'unverified', 'truncated': true,
+                      'file': 'TRUNCATED: more than 50 group/world-writable dot files; list not complete'}) -%}
+      {%- endfor -%}
+      {%- for f in ['passwd', 'group', 'shadow'] -%}
+        {%- set _ = o.update({f ~ '_content': (_ug_kv.get('plus', []) | selectattr('0', 'equalto', f) | map(attribute=1) | join('\n'))}) -%}
+      {%- endfor -%}
+      {{ {'user_group': o} if ((_ok_ug | bool) and (pw | length) > 0 and 'root_path' in _ug_kv) else {} }}
+
+    # ── pam extras (CIS 5.4.x, 5.5.x) ──────────────────────────────────────
+    # password_auth: the password-auth section of the collected PAM text.
+    # default_umask / tmout: the LEAST restrictive uncommented setting found
+    # (bias closed): a umask is restrictive only when group lacks write and
+    # other has nothing (027 or tighter); any TMOUT=0 wins, else the largest.
+    _pam_pa: "{{ ((_cf.pam_config_raw | default('')).split('=== password-auth ===')[1] | default('')) | trim }}"
+    _root_line: "{{ (_cf.users_raw | default('')) | regex_search('(?m)^root:[^\\n]*') }}"
+    _pam_extra: >-
+      {%- set o = {} -%}
+      {%- if (_pam_pa | length) > 0 -%}{%- set _ = o.update({'password_auth': _pam_pa}) -%}{%- endif -%}
+      {%- set rf = (_root_line or '').split(':') -%}
+      {%- if (rf | length) >= 3 and rf[2] is match('^\d+$') -%}{%- set _ = o.update({'root_gid': (rf[2] | int)}) -%}{%- endif -%}
+      {%- if (_ok_ap | bool) -%}
+        {%- set um = _ap_kv.get('umask', []) | map('last') | map('trim') | select('match', '^[0-7]{3,4}$') | list -%}
+        {%- set weak = [] -%}
+        {%- for u in um -%}
+          {%- set g = u[-2] | int -%}{%- set ot = u[-1] | int -%}
+          {%- if not (g in [2, 3, 6, 7] and ot == 7) -%}{%- set _ = weak.append(u) -%}{%- endif -%}
+        {%- endfor -%}
+        {%- if (um | length) > 0 -%}{%- set _ = o.update({'default_umask': (weak + um) | first}) -%}{%- endif -%}
+        {#- login.defs UMASK on its own (CIS 5.4.3.3); the last one wins, as in shadow-utils -#}
+        {%- set ld = _ap_kv.get('umask', []) | selectattr('0', 'equalto', '/etc/login.defs') | map('last') | map('trim') | select('match', '^[0-7]{3,4}$') | list -%}
+        {%- if (ld | length) > 0 -%}{%- set _ = o.update({'login_defs_umask': ld | last}) -%}{%- endif -%}
+        {%- set tm = _ap_kv.get('tmout', []) | map('last') | map('trim') | select('match', '^\d+$') | map('int') | list -%}
+        {#- no uncommented TMOUT anywhere: the shell never times out (0, fails) -#}
+        {%- set _ = o.update({'tmout': (0 if ((tm | length) == 0 or 0 in tm) else (tm | max))}) -%}
+        {%- set ia = _ap_kv.get('inactive', []) | map('last') | map('trim') | select('match', '^-?\d+$') | list -%}
+        {%- if (ia | length) > 0 -%}{%- set _ = o.update({'inactive_days': (ia | last | int)}) -%}{%- endif -%}
+      {%- endif -%}
+      {{ {'pam': o} if (o | length) > 0 else {} }}
+
+    # ── auditd file permissions (CIS 4.1.4.x) + service state (4.1.1.2) ────
+    _audit_log: "{{ _fm.get(_fm._audit_log_file | default('-'), {}) }}"
+    _audit_dir: "{{ _fm.get(_fm._audit_log_dir | default((_fm._audit_log_file | default('-')) | dirname), {}) }}"
+    _auditd_extra: >-
+      {%- set o = {} -%}
+      {%- if 'mode' in _audit_log -%}{%- set _ = o.update({'log_permissions': {'mode': _audit_log.mode, 'pw_name': _audit_log.owner, 'gr_name': _audit_log.group}}) -%}{%- endif -%}
+      {%- if 'mode' in _audit_dir -%}{%- set _ = o.update({'log_dir_permissions': {'mode': _audit_dir.mode, 'pw_name': _audit_dir.owner, 'gr_name': _audit_dir.group}}) -%}{%- endif -%}
+      {%- if (_fm._audit_log_file is defined) and (_fm._auditcfg | length) > 0 -%}{%- set _ = o.update({'config_permissions': _fm._auditcfg}) -%}{%- endif -%}
+      {{ {'auditd': o} if (o | length) > 0 else {} }}
+    _svc_section: "{{ {'services': _svc} if (_svc | length > 0) else {} }}"
+
+    # ── initial_setup extras (CIS 1.2.x, 1.7.x, 1.9) ───────────────────────
+    # dnf defaults: a repo without enabled= is enabled; a repo without
+    # gpgcheck= inherits [main]; [main] without gpgcheck= is NOT enabled.
+    _initial_extra: >-
+      {%- set o = {} -%}
+      {%- for f, k in [('/etc/motd', 'motd'), ('/etc/issue', 'issue'), ('/etc/issue.net', 'issue_net')] if 'mode' in _fm.get(f, {}) -%}
+        {%- set _ = o.update({k ~ '_mode': _fm[f].mode, k ~ '_owner': _fm[f].owner, k ~ '_group': _fm[f].group}) -%}
+      {%- endfor -%}
+      {%- set truthy = ['1', 'true', 'yes'] -%}
+      {%- if (_ok_pt | bool) and ((_pt_kv.family | default([['']]))[-1][0] | trim) == 'rpm' -%}
+        {%- set mg = ((_pt_kv.main_gpgcheck | default([['']]))[-1][0] | trim | lower) in truthy -%}
+        {%- set enabled = [] -%}{%- set nogpg = [] -%}
+        {%- for r in _pt_kv.get('repo', []) if (r | length) == 3 -%}
+          {%- set en = r[1] | trim | lower -%}{%- set gc = r[2] | trim | lower -%}
+          {%- if en == '' or en in truthy -%}
+            {%- set _ = enabled.append(r[0]) -%}
+            {%- if (gc == '' and not mg) or (gc != '' and gc not in truthy) -%}{%- set _ = nogpg.append(r[0]) -%}{%- endif -%}
+          {%- endif -%}
+        {%- endfor -%}
+        {%- set _ = o.update({'gpg_keys': (_pt_kv.get('gpgkey', []) | map('first') | list),
+                              'enabled_repos': enabled, 'repos_without_gpgcheck': nogpg,
+                              'global_gpgcheck_enabled': mg}) -%}
+      {%- endif -%}
+      {%- if (_crypto_policy | length) > 0 -%}{%- set _ = o.update({'crypto_policy': _crypto_policy}) -%}{%- endif -%}
+      {{ {'initial_setup': o} if (o | length) > 0 else {} }}
+
+    # ── cron file modes (CIS 5.1.2-5.1.9) ──────────────────────────────────
+    _cron_extra: >-
+      {%- set o = {} -%}
+      {%- if (_fm._ok | bool) -%}
+        {%- for f, k in [('/etc/crontab', 'crontab'), ('/etc/cron.hourly', 'cron_hourly'), ('/etc/cron.daily', 'cron_daily'), ('/etc/cron.weekly', 'cron_weekly'), ('/etc/cron.monthly', 'cron_monthly'), ('/etc/cron.d', 'cron_d')] if 'mode' in _fm.get(f, {}) -%}
+          {%- set _ = o.update({k ~ '_mode': _fm[f].mode, k ~ '_owner': _fm[f].owner, k ~ '_group': _fm[f].group}) -%}
+        {%- endfor -%}
+        {%- for f, k in [('/etc/cron.allow', 'cron_allow'), ('/etc/cron.deny', 'cron_deny'), ('/etc/at.allow', 'at_allow'), ('/etc/at.deny', 'at_deny')] if f in _fm -%}
+          {%- set _ = o.update({k ~ '_exists': ('mode' in _fm[f])}) -%}
+          {%- if 'mode' in _fm[f] -%}{%- set _ = o.update({k ~ '_mode': _fm[f].mode, k ~ '_owner': _fm[f].owner, k ~ '_group': _fm[f].group}) -%}{%- endif -%}
+        {%- endfor -%}
+      {%- endif -%}
+      {{ {'cron': o} if (o | length) > 0 else {} }}
+
+    # ── storage_encryption (STIG RHEL-09-231xxx / 672xxx) ──────────────────
+    # Data partitions = every mounted block filesystem except /boot and below.
+    _storage: >-
+      {%- set o = {'luks_volumes': [], 'unencrypted_data_partitions': [], 'crypttab_entries': [],
+                   'crypttab_missing_devices': [], 'fstab_entries': [], 'fstab_unencrypted_data_mounts': []} -%}
+      {%- set fips = ((_st_kv.fips | default([['']]))[-1][0] | trim) -%}
+      {%- if fips in ['0', '1'] -%}{%- set _ = o.update({'fips_enabled': fips == '1'}) -%}{%- endif -%}
+      {%- if (_crypto_policy | length) > 0 -%}{%- set _ = o.update({'crypto_policy': _crypto_policy}) -%}{%- endif -%}
+      {%- for m in _st_kv.get('mnt', []) if (m | length) == 4 -%}
+        {%- set data = not (m[1] == '/boot' or m[1].startswith('/boot/')) -%}
+        {%- set enc = m[2] == 'yes' -%}
+        {%- if data and not enc and m[0] not in o.unencrypted_data_partitions -%}{%- set _ = o.unencrypted_data_partitions.append(m[0]) -%}{%- endif -%}
+      {%- endfor -%}
+      {#- fstab fields come from the CONFIGURED entries (fstab| lines), never from
+          the live mount's membership flag: an unmounted entry is listed, and the
+          device and its encryption state are the configured one's. -#}
+      {%- for f in _st_kv.get('fstab', []) if (f | length) == 4 -%}
+        {%- set data = not (f[1] == '/boot' or f[1].startswith('/boot/')) -%}
+        {%- set enc = f[2] == 'yes' -%}
+        {%- set _ = o.fstab_entries.append({'device': f[0], 'mountpoint': f[1], 'encrypted': enc, 'device_present': (f[3] | trim) == 'yes'}) -%}
+        {%- if data and not enc -%}{%- set _ = o.fstab_unencrypted_data_mounts.append({'device': f[0], 'mountpoint': f[1]}) -%}{%- endif -%}
+      {%- endfor -%}
+      {%- for v in _st_kv.get('luks', []) if (v | length) == 4 -%}
+        {%- set _ = o.luks_volumes.append({'device': v[0], 'version': v[1], 'cipher': v[2], 'active_key_slots': (v[3] | trim).split(',') | reject('equalto', '') | list}) -%}
+      {%- endfor -%}
+      {%- for c in _st_kv.get('crypttab', []) if (c | length) >= 3 -%}
+        {%- set _ = o.crypttab_entries.append({'name': c[0], 'device': c[1], 'options': ((c[2:] | join('|')) | trim).split(',') | reject('equalto', '') | list}) -%}
+      {%- endfor -%}
+      {%- for c in _st_kv.get('crypttab_missing', []) if (c | length) >= 2 -%}
+        {%- set _ = o.crypttab_missing_devices.append({'name': c[0], 'device': (c[1:] | join('|'))}) -%}
+      {%- endfor -%}
+      {%- set sw = _st_kv.get('swap', []) | selectattr('1', 'defined') | list -%}
+      {%- set _ = o.update({'swap_present': (sw | length) > 0}) -%}
+      {%- if (sw | length) > 0 -%}{%- set _ = o.update({'swap_encrypted': (sw | map(attribute=1) | map('trim') | reject('equalto', 'yes') | list | length) == 0}) -%}{%- endif -%}
+      {{ {'storage_encryption': o} if (_ok_st | bool) else {} }}
+
+    # ── certificates (NIST SC-17 / IA-5), RPM family only ──────────────────
+    _certificates: >-
+      {%- set certs = [] -%}
+      {%- for c in _cert_kv.get('cert', []) if (c | length) >= 6 -%}
+        {%- set e = {'key_type': c[1], 'signature_algorithm': c[3], 'path': c[4], 'subject': (c[5:] | join('|'))} -%}
+        {%- if c[0] is match('^-?\d+$') -%}{%- set _ = e.update({'days_until_expiry': (c[0] | int)}) -%}{%- endif -%}
+        {%- if c[2] is match('^\d+$') -%}{%- set _ = e.update({'key_bits': (c[2] | int)}) -%}{%- endif -%}
+        {%- set _ = certs.append(e) -%}
+      {%- endfor -%}
+      {%- set o = {'system_certs': certs,
+                   'unexpected_cas': []} -%}
+      {%- for c in _cert_kv.get('unexpected_ca', []) if (c | length) >= 2 -%}{%- set _ = o.unexpected_cas.append({'issuer': c[0], 'subject': (c[1:] | join('|'))}) -%}{%- endfor -%}
+      {%- set ci = (_cert_kv.ca_bundle_intact | default([['']]))[-1][0] | trim -%}
+      {%- if ci in ['yes', 'no'] -%}{%- set _ = o.update({'ca_bundle_intact': ci == 'yes'}) -%}{%- endif -%}
+      {%- if (_crypto_policy | length) > 0 -%}{%- set _ = o.update({'crypto_policy': _crypto_policy}) -%}{%- endif -%}
+      {{ {'certificates': o} if (_ok_cert | bool) else {} }}
+
+    # ── authorized_keys (CIS 5.2 / STIG RHEL-09-255xxx) ────────────────────
+    # ssh-keygen -lf prints "(RSA)" etc. and "no comment" for an empty one.
+    _authorized_keys: >-
+      {%- set tmap = {'RSA': 'ssh-rsa', 'ED25519': 'ssh-ed25519', 'DSA': 'ssh-dss', 'ED25519-SK': 'sk-ssh-ed25519@openssh.com', 'ECDSA-SK': 'sk-ecdsa-sha2-nistp256@openssh.com'} -%}
+      {%- set keys = {} -%}
+      {%- for k in _ak_kv.get('akkey', []) if (k | length) >= 5 -%}
+        {%- set t = k[3] | trim -%}
+        {%- set ty = tmap[t] if t in tmap else (('ecdsa-sha2-nistp' ~ k[1]) if t == 'ECDSA' else (t | lower)) -%}
+        {%- set cm = (k[4:] | join('|')) | trim -%}
+        {%- set e = {'type': ty, 'fingerprint': k[2], 'comment': ('' if cm == 'no comment' else cm)} -%}
+        {%- if k[1] is match('^\d+$') -%}{%- set _ = e.update({'bits': (k[1] | int)}) -%}{%- endif -%}
+        {%- set _ = keys.setdefault(k[0], []).append(e) -%}
+      {%- endfor -%}
+      {#- a file whose key list was capped (>100 keys or >1 MiB) keeps the keys
+          read so far, is marked truncated, and carries a sentinel key with no
+          comment, so the policy fails THAT file (IA-3: ownership cannot be
+          determined); other files are unaffected -#}
+      {%- set trunc_paths = _ak_kv.get('truncated', []) | selectattr('0', 'equalto', 'akkey') | map('last') | list -%}
+      {%- set files = [] -%}
+      {%- for f in _ak_kv.get('akfile', []) if (f | length) >= 4 -%}
+        {%- set path = f[3:] | join('|') -%}
+        {%- set e = {'path': path, 'user': f[0], 'expected_owner': f[0], 'owner': f[1], 'mode': f[2], 'keys': keys.get(path, []) | list} -%}
+        {%- if path in trunc_paths -%}
+          {%- set _ = e.update({'truncated': true, 'keys': e['keys'] + [{'type': 'unverified', 'fingerprint': 'TRUNCATED-key-list-not-fully-collected', 'comment': ''}]}) -%}
+        {%- endif -%}
+        {%- set _ = files.append(e) -%}
+      {%- endfor -%}
+      {%- set dirs = [] -%}
+      {%- for d in _ak_kv.get('sshdir', []) if (d | length) >= 3 -%}{%- set _ = dirs.append({'user': d[0], 'mode': d[1], 'path': (d[2:] | join('|'))}) -%}{%- endfor -%}
+      {{ {'authorized_keys': {'files': files, 'ssh_dirs': dirs}} if (_ok_ak | bool) else {} }}
+
+    # ══ CIS RHEL 9 v3.0.0 sections (collector blocks of 2026-10-21) ════════
+    # ── kernel modules (CIS 1.1.1.x, 3.2.x): available / disabled / loaded ──
+    _v3_kmod: >-
+      {%- set fsm = ['cramfs', 'freevxfs', 'hfs', 'hfsplus', 'jffs2', 'overlay', 'squashfs', 'udf', 'firewire-core', 'usb-storage'] -%}
+      {%- set fs = [] -%}{%- set net = [] -%}
+      {%- for k in _kmod_kv.get('kmod', []) if (k | length) == 4 -%}
+        {#- compliant: kept for the v2-shaped consumers (AL2023, Rocky, Ubuntu)
+            that read it; it is exactly the v3 "not available" test -#}
+        {%- set e = {'module': k[0], 'available': k[1] == 'yes', 'disabled': k[2] == 'yes', 'loaded': (k[3] | trim) == 'yes',
+                     'compliant': (k[1] == 'no' and (k[3] | trim) == 'no') or (k[2] == 'yes' and (k[3] | trim) == 'no')} -%}
+        {%- set _ = (fs if k[0] in fsm else net).append(e) -%}
+      {%- endfor -%}
+      {#- CIS 3.1.2: driver modules of the wireless interfaces; a driver that
+          could not be named is a module that cannot be shown unavailable -#}
+      {%- set wl = [] -%}
+      {%- for w in _kmod_kv.get('wmod', []) -%}
+        {%- if (w | length) == 5 -%}
+          {%- set _ = wl.append({'module': w[1], 'interface': w[0], 'available': w[2] == 'yes', 'disabled': w[3] == 'yes', 'loaded': (w[4] | trim) == 'yes'}) -%}
+        {%- else -%}
+          {%- set _ = wl.append({'module': 'unknown', 'interface': w[0], 'available': true, 'disabled': false, 'loaded': true}) -%}
+        {%- endif -%}
+      {%- endfor -%}
+      {{ {'disabled_filesystem_modules': {'modules': fs,
+            'all_compliant': ((fs | selectattr('available') | rejectattr('disabled') | list | length) == 0) and ((fs | selectattr('loaded') | list | length) == 0)},
+          'disabled_network_modules': {'modules': net},
+          'wireless_interfaces': {'modules': wl}} if (_ok_kmod | bool) else {} }}
+
+    # ── kernel parameters (CIS 1.5.x, 3.3.x): running + persisted ──────────
+    # persisted: the last assignment in systemd-sysctl order; a key set
+    # nowhere is "unset", which fails the check (it is not missing evidence).
+    _v3_sysctl: >-
+      {%- set keys = ['fs.protected_hardlinks', 'fs.protected_symlinks', 'fs.suid_dumpable', 'kernel.dmesg_restrict', 'kernel.kptr_restrict',
+                      'kernel.randomize_va_space', 'kernel.yama.ptrace_scope'] + _net_params + ['net.ipv4.conf.all.route_localnet', 'net.ipv4.conf.default.route_localnet'] -%}
+      {%- set run = {} -%}{%- set per = {} -%}
+      {%- for p in _sysctl_kv.get('run', []) if (p | length) >= 2 -%}{%- set _ = run.update({p[0]: (p[1:] | join('|') | trim)}) -%}{%- endfor -%}
+      {%- for p in _sysctl_kv.get('persist', []) if (p | length) >= 2 -%}{%- set _ = per.update({p[0]: (p[1:] | join('|') | trim)}) -%}{%- endfor -%}
+      {%- set analysis = [] -%}{%- set persisted = {} -%}
+      {%- for k in keys | unique -%}
+        {%- if k in run -%}{%- set _ = analysis.append({'parameter': k, 'current_value': run[k]}) -%}{%- endif -%}
+        {%- set _ = persisted.update({k: per.get(k, 'unset')}) -%}
+      {%- endfor -%}
+      {{ {'sysctl_parameters': {'analysis': analysis, 'persisted': persisted, 'collected_count': (analysis | length)}} if (_ok_sysctl | bool) else {} }}
+
+    # ── packages, versions and unit state (CIS 1.3.1.x, 2.x, 4.1.9, 5.3.1.x, 6.x)
+    _v3_pkg_map: >-
+      {%- set d = {} -%}
+      {%- for p in _pkg_kv.get('pkg', []) if (p | length) == 2 -%}{%- set _ = d.update({p[0]: (p[1] | trim) == 'yes'}) -%}{%- endfor -%}
+      {{ d if ((_ok_pkg | bool) and ((_pkg_kv.family | default([['']]))[-1][0] | trim) == 'rpm') else {} }}
+    _v3_pkg: >-
+      {%- set o = {} -%}
+      {%- set pk = _v3_pkg_map -%}
+      {%- if (pk | length) > 0 -%}
+        {%- set _ = o.update({'packages': pk,
+              'selinux': {'mcstrans_installed': pk.get('mcstrans', false), 'setroubleshoot_installed': pk.get('setroubleshoot', false)},
+              'gui': {'environment_installed': (pk.get('gdm', false) or pk.get('gnome-shell', false) or pk.get('xorg-x11-server-Xorg', false) or pk.get('xorg-x11-server-common', false))},
+              'chronyd': {'installed': pk.get('chrony', false)},
+              'initial_setup': {'gdm_installed': pk.get('gdm', false)}}) -%}
+        {%- set pv = {} -%}
+        {%- for p in _pkg_kv.get('pkgver', []) if (p | length) == 2 -%}{%- set _ = pv.update({p[0]: (p[1] | trim)}) -%}{%- endfor -%}
+        {%- set _ = o.update({'pam': {'package_versions': pv}}) -%}
+      {%- endif -%}
+      {%- if (_ok_pkg | bool) -%}
+        {%- set dt = (_pkg_kv.default_target | default([['']]))[-1][0] | trim -%}
+        {%- if dt != '' -%}{%- set _ = o.update({'gui': (o.get('gui', {}) | combine({'default_target': dt}))}) -%}{%- endif -%}
+        {#- units service_facts did not report (sockets, not-found units);
+            a unit service_facts reported keeps its service_facts record -#}
+        {%- set units = {} -%}
+        {%- for u in _pkg_kv.get('unit', []) if (u | length) == 4 and u[0] not in _svc -%}
+          {%- set ls = u[1] | trim -%}{%- set as = u[2] | trim -%}{%- set fs = u[3] | trim -%}
+          {%- set _ = units.update({u[0]: {'name': u[0], 'source': 'systemctl',
+                'state': ('running' if (as == 'active' and u[0].endswith('.service')) else as),
+                'status': (fs if fs != '' else ('not-found' if ls == 'not-found' else 'static'))}}) -%}
+        {%- endfor -%}
+        {%- if (units | length) > 0 -%}{%- set _ = o.update({'services': units}) -%}{%- endif -%}
+      {%- endif -%}
+      {{ o }}
+
+    # ── configuration text and derived values (config block) ───────────────
+    # txt|<tag>|<line>: the file's active lines; nofile|<tag>: no such file.
+    _v3_txt: >-
+      {%- set d = {} -%}
+      {%- for p in _cfg_kv.get('txt', []) if (p | length) >= 2 -%}{%- set _ = d.setdefault(p[0], []).append(p[1:] | join('|')) -%}{%- endfor -%}
+      {{ d }}
+    _v3_nofile: "{{ _cfg_kv.get('nofile', []) | map('first') | map('trim') | list }}"
+    _v3_cfg: >-
+      {%- set o = {} -%}
+      {%- if (_ok_cfg | bool) -%}
+        {%- set one = {} -%}
+        {%- for k in ['pq_module', 'authselect_profile', 'authselect_check', 'chrony_servers', 'chrony_pools', 'chrony_options', 'mta_probe', 'mta_inet', 'fw_backend', 'fw_log_denied', 'aide_conf'] if k in _cfg_kv -%}
+          {%- set _ = one.update({k: (_cfg_kv[k][-1] | join('|') | trim)}) -%}
+        {%- endfor -%}
+        {%- set tx = _v3_txt -%}
+        {%- set present = _cfg_kv.get('file', []) | map('first') | map('trim') | list -%}
+        {#- crypto policy (CIS 1.6.x) -#}
+        {%- set cp = {} -%}
+        {%- if 'crypto_pol' in tx -%}{%- set _ = cp.update({'current_pol_raw': tx.crypto_pol | join('\n')}) -%}{%- endif -%}
+        {%- if one.pq_module is defined -%}{%- set _ = cp.update({'pq_module_available': one.pq_module == 'yes'}) -%}{%- endif -%}
+        {%- if (cp | length) > 0 -%}{%- set _ = o.update({'crypto_policy': cp}) -%}{%- endif -%}
+        {%- if 'dnf' in tx -%}{%- set _ = o.update({'initial_setup': {'dnf_conf_raw': tx.dnf | join('\n')}}) -%}{%- endif -%}
+        {#- PAM module configuration (CIS 5.3.x): an absent file is collected as a
+            comment naming it, so the check reads "not met", not missing evidence -#}
+        {%- set pam = {} -%}
+        {%- for tag, key, path in [('faillock', 'faillock_conf_raw', '/etc/security/faillock.conf'), ('pwhistory', 'pwhistory_conf_raw', '/etc/security/pwhistory.conf')] -%}
+          {%- if tag in tx -%}{%- set _ = pam.update({key: tx[tag] | join('\n')}) -%}
+          {%- elif tag in present -%}{%- set _ = pam.update({key: '# ' ~ path ~ ': no active settings'}) -%}
+          {%- elif tag in _v3_nofile -%}{%- set _ = pam.update({key: '# ' ~ path ~ ' not present'}) -%}{%- endif -%}
+        {%- endfor -%}
+        {%- if one.authselect_profile is defined -%}{%- set _ = pam.update({'authselect_profile': one.authselect_profile}) -%}{%- endif -%}
+        {%- if one.authselect_check is defined -%}{%- set _ = pam.update({'authselect_check_valid': one.authselect_check == 'yes'}) -%}{%- endif -%}
+        {%- if (pam | length) > 0 -%}{%- set _ = o.update({'pam': pam}) -%}{%- endif -%}
+        {#- chrony (CIS 2.3.x) -#}
+        {%- set ch = {} -%}
+        {%- if (one.chrony_servers | default('x')) is match('^\d+$') -%}{%- set _ = ch.update({'servers_configured': one.chrony_servers | int}) -%}{%- endif -%}
+        {%- if (one.chrony_pools | default('x')) is match('^\d+$') -%}{%- set _ = ch.update({'pools_configured': one.chrony_pools | int}) -%}{%- endif -%}
+        {%- if one.chrony_options is defined -%}{%- set _ = ch.update({'sysconfig_options': one.chrony_options}) -%}{%- endif -%}
+        {%- if (ch | length) > 0 -%}{%- set _ = o.update({'chronyd': ch}) -%}{%- endif -%}
+        {#- MTA (CIS 2.1.19): mail-port listeners outside loopback -#}
+        {%- if one.mta_probe | default('') == 'yes' -%}
+          {%- set ls = _cfg_kv.get('mta_listen', []) | map('join', '|') | map('trim') | list -%}
+          {%- set nl = ls | reject('match', '^(127\.|\[?::1\]?$|\[?::ffff:127\.|localhost)') | list -%}
+          {%- set pk = _v3_pkg_map -%}
+          {%- set m = {'non_loopback_listeners': nl,
+                       'has_mta': ((ls | length) > 0) or pk.get('postfix', false) or pk.get('sendmail', false) or pk.get('exim', false) or (one.mta_inet is defined)} -%}
+          {%- if one.mta_inet is defined -%}{%- set _ = m.update({'inet_interfaces': one.mta_inet}) -%}{%- endif -%}
+          {%- set _ = o.update({'mta': m}) -%}
+        {%- endif -%}
+        {#- firewalld (CIS 4.1.x) -#}
+        {%- set fw = {} -%}
+        {%- if one.fw_backend is defined -%}{%- set _ = fw.update({'backend': one.fw_backend}) -%}{%- endif -%}
+        {%- if one.fw_log_denied is defined -%}{%- set _ = fw.update({'log_denied': one.fw_log_denied}) -%}{%- endif -%}
+        {%- set zones = [] -%}
+        {%- for z in _cfg_kv.get('fwzone', []) if (z | length) == 6 -%}
+          {%- set _ = zones.append({'name': z[0], 'target': z[1], 'permanent_target': z[2], 'icmp_block_inversion': (z[3] | trim) == 'yes',
+                                    'icmp_blocks': (z[4] | trim).split() , 'interfaces': (z[5] | trim).split()}) -%}
+        {%- endfor -%}
+        {%- if (zones | length) > 0 -%}{%- set _ = fw.update({'zones': zones}) -%}{%- endif -%}
+        {%- if (fw | length) > 0 -%}{%- set _ = o.update({'firewall': fw}) -%}{%- endif -%}
+        {#- sudo / su (CIS 5.2.12): a pam_wheel group that exists and has no members -#}
+        {%- if 'su_wheel' in _cfg_kv -%}
+          {%- set sw = _cfg_kv.su_wheel[-1] -%}
+          {%- set _ = o.update({'sudo': {'su_restricted': (sw | length) >= 2 and sw[0] != 'none' and (sw[1:] | join('|') | trim) == '0'}}) -%}
+        {%- endif -%}
+        {#- auditd (CIS 6.2.3.36) -#}
+        {%- if 'augenrules' in tx -%}{%- set _ = o.update({'auditd': {'augenrules_check': tx.augenrules | join('\n')}}) -%}{%- endif -%}
+        {#- AIDE (CIS 6.3.3 / 6.3.4): a tool listed twice keeps its WEAKEST line -#}
+        {%- if one.aide_conf is defined -%}
+          {%- set ao = {} -%}
+          {%- for a in _cfg_kv.get('aideopt', []) if (a | length) >= 2 -%}
+            {%- set v = a[1:] | join('|') | trim -%}
+            {%- if a[0] not in ao or ((v.split('+') | length) < (ao[a[0]].split('+') | length)) -%}{%- set _ = ao.update({a[0]: v}) -%}{%- endif -%}
+          {%- endfor -%}
+          {%- set _ = o.update({'boot_security': {'aide_audit_tool_options': ao, 'aide_report_urls': (_cfg_kv.get('aide_report', []) | map('join', '|') | map('trim') | list)}}) -%}
+        {%- endif -%}
+        {#- GDM (CIS 1.8.x), only when gdm is installed: every occurrence of a
+            key must hold the wanted value; "override allowed" = key not locked -#}
+        {%- if _v3_pkg_map.get('gdm', false) -%}
+          {%- set dv = {} -%}
+          {%- for p in _cfg_kv.get('dconf', []) if (p | length) >= 2 -%}{%- set _ = dv.setdefault(p[0], []).append((p[1:] | join('|') | trim | lower).split() | last | default('')) -%}{%- endfor -%}
+          {%- set locks = _cfg_kv.get('dlock', []) | map('join', '|') | map('trim') | list -%}
+          {%- set gc = {} -%}
+          {%- for p in _cfg_kv.get('gdmconf', []) if (p | length) >= 2 -%}{%- set _ = gc.update({p[0]: (p[1:] | join('|') | trim | lower)}) -%}{%- endfor -%}
+          {%- set g = {
+                'gdm_banner_configured': (dv.get('banner-message-enable', []) | length > 0) and (dv.get('banner-message-enable', []) | reject('equalto', 'true') | list | length == 0),
+                'gdm_banner_override_allowed': '/org/gnome/login-screen/banner-message-enable' not in locks,
+                'gdm_disable_user_list': (dv.get('disable-user-list', []) | length > 0) and (dv.get('disable-user-list', []) | reject('equalto', 'true') | list | length == 0),
+                'gdm_disable_user_list_override_allowed': '/org/gnome/login-screen/disable-user-list' not in locks,
+                'gdm_lock_override_allowed': ('/org/gnome/desktop/session/idle-delay' not in locks) or ('/org/gnome/desktop/screensaver/lock-delay' not in locks),
+                'gdm_automount_disabled': (dv.get('automount', []) | length > 0) and (dv.get('automount', []) | reject('equalto', 'false') | list | length == 0),
+                'gdm_automount_open_disabled': (dv.get('automount-open', []) | length > 0) and (dv.get('automount-open', []) | reject('equalto', 'false') | list | length == 0),
+                'gdm_automount_override_allowed': ('/org/gnome/desktop/media-handling/automount' not in locks) or ('/org/gnome/desktop/media-handling/automount-open' not in locks),
+                'gdm_autorun_never_enabled': (dv.get('autorun-never', []) | length > 0) and (dv.get('autorun-never', []) | reject('equalto', 'true') | list | length == 0),
+                'gdm_autorun_override_allowed': '/org/gnome/desktop/media-handling/autorun-never' not in locks,
+                'gdm_xdmcp_enabled': gc.get('xdmcp_enable', 'false') in ['true', '1', 'yes'],
+                'gdm_wayland_disabled': gc.get('wayland_enable', 'true') in ['false', '0', 'no']} -%}
+          {%- set idl = dv.get('idle-delay', []) | select('match', '^\d+$') | map('int') | list -%}
+          {%- set lkd = dv.get('lock-delay', []) | select('match', '^\d+$') | map('int') | list -%}
+          {#- idle-delay set in no system database: the screen never locks on an
+              administrator setting, reported as 0 (fails 1.8.3); lock-delay
+              unset is the GNOME default 0 -#}
+          {%- set _ = g.update({'gdm_idle_delay': (0 if ((idl | length) == 0 or 0 in idl) else (idl | max))}) -%}
+          {%- set _ = g.update({'gdm_lock_delay': ((lkd | max) if (lkd | length) > 0 else 0)}) -%}
+          {%- set _ = o.update({'initial_setup': (o.get('initial_setup', {}) | combine(g))}) -%}
+        {%- endif -%}
+      {%- endif -%}
+      {{ o }}
+
+    # ── file modes (perms block): tag -> [{path, mode, owner, group}] ──────
+    _v3_pf: >-
+      {%- set d = {'_absent': {}} -%}
+      {%- if (_ok_perms | bool) -%}
+        {%- for p in _perms_kv.get('f', []) if (p | length) >= 5 -%}
+          {%- set _ = d.setdefault(p[0], []).append({'mode': p[1], 'owner': p[2], 'group': p[3], 'path': (p[4:] | join('|'))}) -%}
+        {%- endfor -%}
+        {%- for p in _perms_kv.get('absent', []) if (p | length) >= 2 -%}
+          {%- set _ = d._absent.setdefault(p[0], []).append(p[1:] | join('|')) -%}
+        {%- endfor -%}
+      {%- endif -%}
+      {{ d }}
+    _v3_perms: >-
+      {%- set o = {} -%}
+      {%- if (_ok_perms | bool) -%}
+        {%- set pf = _v3_pf -%}{%- set tr = _perms_kv._trunc -%}
+        {%- set st = {} -%}
+        {#- SSH (CIS 5.1.1-5.1.4) -#}
+        {%- set ssh = {'dropin_permissions': [], 'private_key_permissions': [], 'public_key_permissions': []} -%}
+        {%- for f in pf.get('ssh_config', []) -%}{%- set _ = ssh.update({'config_permissions': {'mode': f.mode, 'pw_name': f.owner, 'gr_name': f.group}}) -%}{%- endfor -%}
+        {%- for f in pf.get('ssh_dropin_dir', []) -%}{%- set _ = ssh.update({'dropin_dir_permissions': {'mode': f.mode, 'pw_name': f.owner, 'gr_name': f.group}}) -%}{%- endfor -%}
+        {%- for f in pf.get('ssh_dropin', []) -%}{%- set _ = ssh.dropin_permissions.append({'path': f.path, 'mode': f.mode, 'pw_name': f.owner, 'gr_name': f.group}) -%}{%- endfor -%}
+        {%- for f in pf.get('ssh_hostkey', []) -%}{%- set _ = ssh.private_key_permissions.append({'stat': {'path': f.path, 'mode': f.mode, 'pw_name': f.owner, 'gr_name': f.group}}) -%}{%- endfor -%}
+        {%- for f in pf.get('ssh_hostpub', []) -%}{%- set _ = ssh.public_key_permissions.append({'path': f.path, 'mode': f.mode, 'pw_name': f.owner, 'gr_name': f.group}) -%}{%- endfor -%}
+        {%- set _ = o.update({'ssh': ssh}) -%}
+        {#- sudo (CIS 5.2.2, 5.2.3) -#}
+        {%- set su = {'sudoers_d_files': (pf.get('sudoers_d', []) | list)} -%}
+        {%- for f in pf.get('sudoers', []) -%}{%- set _ = su.update({'sudoers_mode': f.mode, 'sudoers_owner': f.owner, 'sudoers_group': f.group}) -%}{%- endfor -%}
+        {%- for f in pf.get('sudoers_d_dir', []) -%}{%- set _ = su.update({'sudoers_d_dir': {'mode': f.mode, 'owner': f.owner, 'group': f.group}}) -%}{%- endfor -%}
+        {%- set _ = o.update({'sudo': su}) -%}
+        {#- critical files (CIS 7.1.1-7.1.10) -#}
+        {%- set cf = [] -%}
+        {%- for f in pf.get('critical', []) -%}{%- set _ = cf.append({'file': f.path, 'exists': true, 'actual_mode': f.mode, 'actual_owner': f.owner, 'actual_group': f.group}) -%}{%- endfor -%}
+        {%- for p in pf._absent.get('critical', []) -%}{%- set _ = cf.append({'file': p, 'exists': false}) -%}{%- endfor -%}
+        {%- set _ = o.update({'critical_files': {'analysis': cf}}) -%}
+        {#- cron.yearly (CIS 2.4.1.7) -#}
+        {%- for f in pf.get('cron_yearly', []) -%}{%- set _ = o.update({'cron': {'cron_yearly_exists': true, 'cron_yearly_mode': f.mode, 'cron_yearly_owner': f.owner, 'cron_yearly_group': f.group}}) -%}{%- endfor -%}
+        {%- if (pf._absent.get('cron_yearly', []) | length) > 0 -%}{%- set _ = o.update({'cron': {'cron_yearly_exists': false}}) -%}{%- endif -%}
+        {#- GRUB files (CIS 1.4.2), unless the list was capped -#}
+        {%- if 'grub' not in tr -%}{%- set _ = o.update({'boot_security': {'grub_files': pf.get('grub', []) | list}}) -%}{%- endif -%}
+        {#- rsyslog files (CIS 6.1.2.4-6.1.2.6) -#}
+        {%- set rs = {} -%}
+        {%- if (pf.get('rsyslog_conf', []) | length) > 0 -%}{%- set _ = rs.update({'config_files': pf.rsyslog_conf}) -%}{%- endif -%}
+        {%- for f in pf.get('rsyslog_d', []) -%}{%- set _ = rs.update({'d_dir': {'mode': f.mode, 'owner': f.owner, 'group': f.group}}) -%}{%- endfor -%}
+        {%- for f in pf.get('rsyslog_work', []) -%}{%- set _ = rs.update({'work_dir': {'mode': f.mode, 'owner': f.owner, 'group': f.group}}) -%}{%- endfor -%}
+        {%- if (rs | length) > 0 -%}{%- set _ = o.update({'rsyslog': rs}) -%}{%- endif -%}
+        {#- audit tools (CIS 6.2.4.8-6.2.4.10) -#}
+        {%- set at = [] -%}
+        {%- for f in pf.get('audit_tool', []) -%}{%- set _ = at.append({'stat': {'path': f.path, 'mode': f.mode, 'pw_name': f.owner, 'gr_name': f.group}}) -%}{%- endfor -%}
+        {%- if (at | length) > 0 -%}{%- set _ = o.update({'auditd': {'tools_permissions': at}}) -%}{%- endif -%}
+        {#- /var/log files (CIS 6.1.3.1), unless the sweep was capped -#}
+        {%- if 'logf' not in tr -%}
+          {%- set lf = [] -%}
+          {%- for f in pf.get('logf', []) -%}{%- set _ = lf.append({'file': f.path, 'actual_mode': f.mode, 'actual_owner': f.owner, 'actual_group': f.group}) -%}{%- endfor -%}
+          {%- set _ = o.update({'log_file_permissions': {'analysis': lf}}) -%}
+        {%- endif -%}
+      {%- endif -%}
+      {{ o }}
+
+    # ── accounts (CIS 5.4.x): shadow state and aging, shells, root umask/PATH
+    _v3_acc: >-
+      {%- set o = {} -%}
+      {%- if (_ok_acc | bool) -%}
+        {%- set one = {} -%}
+        {%- for k in ['uid_min', 'encrypt_method', 'root_umask'] if k in _acc_kv -%}{%- set _ = one.update({k: (_acc_kv[k][-1] | join('|') | trim)}) -%}{%- endfor -%}
+        {%- set sh = [] -%}{%- set state = {} -%}
+        {%- for s in _acc_kv.get('sh', []) if (s | length) == 6 -%}
+          {%- set e = {'user': s[0], 'has_password': s[1] == 'P', 'locked': s[1] == 'L'} -%}
+          {%- for i, k in [(2, 'last_change'), (3, 'max_days'), (4, 'warn_days'), (5, 'inactive')] -%}
+            {%- set _ = e.update({k: ((s[i] | trim | int) if ((s[i] | trim) is match('^-?\d+$')) else none)}) -%}
+          {%- endfor -%}
+          {%- set _ = sh.append(e) -%}{%- set _ = state.update({s[0]: s[1]}) -%}
+        {%- endfor -%}
+        {%- set shells = _acc_kv.get('shell', []) | map('join', '|') | map('trim') | list -%}
+        {%- set valid = shells | reject('search', 'nologin') | list -%}
+        {%- set ug = {'shadow_entries': sh, 'shells_content': (shells | join('\n'))} -%}
+        {%- if 'root' in state -%}{%- set _ = ug.update({'root_password_status': {'P': 'PS', 'L': 'LK', 'NP': 'NP'}.get(state.root, state.root)}) -%}{%- endif -%}
+        {%- if one.root_umask is defined -%}{%- set _ = ug.update({'root_umask': one.root_umask}) -%}{%- endif -%}
+        {%- set pe = [] -%}
+        {%- for p in _acc_kv.get('pathent', []) if (p | length) >= 3 -%}{%- set _ = pe.append({'owner': p[0], 'mode': p[1], 'path': (p[2:] | join('|'))}) -%}{%- endfor -%}
+        {%- set _ = ug.update({'root_path_entries': pe}) -%}
+        {%- set pam = {} -%}
+        {%- if one.encrypt_method is defined -%}{%- set _ = pam.update({'encrypt_method': one.encrypt_method}) -%}{%- endif -%}
+        {%- set _ = pam.update({'tmout_readonly_exported': ('tmout_ro' in _acc_kv) and ('tmout_export' in _acc_kv)}) -%}
+        {#- with the passwd list of the user/group block: accounts below UID_MIN
+            holding a valid login shell (5.4.2.7), and accounts without a valid
+            shell whose password is not locked (5.4.2.8) -#}
+        {%- if (_ok_ug | bool) and (shells | length) > 0 -%}
+          {%- set umin = (one.uid_min | default('1000') | int) -%}
+          {%- set sys_login = [] -%}{%- set unlocked = [] -%}
+          {%- for p in _ug_kv.get('pw', []) if (p | length) >= 5 and (p[1] is match('^\d+$')) -%}
+            {%- set shl = p[4:] | join('|') | trim -%}
+            {%- if p[0] not in ['root', 'halt', 'sync', 'shutdown', 'nfsnobody'] and ((p[1] | int) < umin or (p[1] | int) == 65534) and shl in valid -%}{%- set _ = sys_login.append(p[0]) -%}{%- endif -%}
+            {%- if p[0] != 'root' and shl not in valid and state.get(p[0], '') != 'L' -%}{%- set _ = unlocked.append(p[0]) -%}{%- endif -%}
+          {%- endfor -%}
+          {%- set _ = pam.update({'system_accounts_with_login_shell': sys_login}) -%}
+          {%- set _ = ug.update({'unlocked_accounts_without_shell': unlocked}) -%}
+        {%- endif -%}
+        {#- user_group fields join the section only beside a usable user/group
+            block: a forged or truncated passwd list must not leave a section -#}
+        {%- set _ = o.update({'pam': pam}) -%}
+        {%- if (_ok_ug | bool) -%}{%- set _ = o.update({'user_group': ug}) -%}{%- endif -%}
+      {%- endif -%}
+      {{ o }}
+
+    # ── filesystem sweep (CIS 6.2.3.10, 7.1.11, 7.1.12) ────────────────────
+    # A capped or incomplete list (truncated) keeps its count as a LOWER
+    # bound: a known non-zero count is enough to fail, so it is emitted
+    # (truncated: true); only "0 found, but the sweep was incomplete" is not
+    # collected. The privileged-command list is checked item by item, so an
+    # incomplete one carries a sentinel command no audit rule can match.
+    _v3_sweep: >-
+      {%- set o = {} -%}
+      {%- if (_ok_sweep | bool) -%}
+        {%- set tr = _sweep_kv._trunc -%}
+        {%- set n = {} -%}{%- set cs = {} -%}
+        {%- for c in _sweep_kv.get('count', []) if (c | length) == 2 and ((c[1] | trim) is match('^\d+$')) -%}{%- set _ = n.update({c[0]: (c[1] | trim | int)}) -%}{%- endfor -%}
+        {%- for c in _sweep_kv.get('container_storage', []) if (c | length) == 2 and ((c[1] | trim) is match('^\d+$')) -%}{%- set _ = cs.update({c[0]: (c[1] | trim | int)}) -%}{%- endfor -%}
+        {%- for tag, key in [('unowned', 'unowned_files'), ('ungrouped', 'ungrouped_files'), ('nosticky', 'sticky_bit')] if tag in n and (tag not in tr or n[tag] > 0) -%}
+          {%- set files = _sweep_kv.get(tag, []) | map('join', '|') | list -%}
+          {%- set e = ({'world_writable_without_sticky': files} if tag == 'nosticky' else {'files': files}) | combine({'count': n[tag], 'container_storage_count': cs.get(tag, 0)}) -%}
+          {%- if tag in tr -%}{%- set _ = e.update({'truncated': true}) -%}{%- endif -%}
+          {%- set _ = o.update({key: e}) -%}
+        {%- endfor -%}
+        {%- set pc = _sweep_kv.get('priv', []) | map('join', '|') | list -%}
+        {%- if 'priv' in tr -%}{%- set pc = pc + ['TRUNCATED: privileged command list not fully collected'] -%}{%- endif -%}
+        {%- set _ = o.update({'auditd': {'privileged_commands': pc}}) -%}
+      {%- endif -%}
+      {{ o }}
+  set_fact:
+    # recursive: the supplement sections extend pam / auditd / cron /
+    # initial_setup rather than replacing them.
+    opa_input: >-
+      {{ _base | combine(_ssh, _pam, _auditd, _packages, _sudo, _selinux, _bootloader, _rsyslog, _journald,
+                         _services, _initial, _fsmods, _mounts, _ww,
+                         _boot_security, _network, _user_group, _pam_extra, _auditd_extra, _svc_section,
+                         _initial_extra, _cron_extra, _storage, _certificates, _authorized_keys,
+                         _v3_kmod, _v3_sysctl, _v3_pkg, _v3_cfg, _v3_perms, _v3_acc, _v3_sweep, _integrity, recursive=True) }}
+
+- name: Append built input to the evaluation list (loop mode)
+  set_fact:
+    eval_inputs: "{{ (eval_inputs | default([])) + [{'m': m, 'input': opa_input}] }}"
+  when: m is defined

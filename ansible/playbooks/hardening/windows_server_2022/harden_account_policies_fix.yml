@@ -1,0 +1,313 @@
+---
+# harden_account_policies_fix.yml — Fix remaining Section 1 + audit subcategory violations
+#
+# Targeted fix for violations still failing after initial hardening:
+# - Account policy: use net accounts instead of secedit (more reliable on standalone)
+# - Audit subcategories: reorder (force subcategory settings FIRST, then auditpol)
+# - Event log: use direct registry write instead of wevtutil
+# - Security options: retry registry writes for LSA/NTLM/UAC settings
+# - Services: force-disable RemoteRegistry, MSiSCSI, RpcLocator
+
+- name: CIS Windows Server 2022 — Targeted Fix for Remaining Violations
+  hosts: "{{ target_hosts | default('all') }}"
+  gather_facts: false
+
+  vars_files:
+    - [ "../../vars/vault_secrets.yml", "../../vars/empty_fallback.yml" ]
+
+  tasks:
+
+    # ── Fix 1: Account Policy via net accounts (Section 1) ───────────────────
+    # secedit /configure silently fails on fresh Server 2022 installs.
+    # net accounts modifies SAM directly — immediate effect, secedit /export reflects it.
+
+    - name: Set password policy via net accounts (CIS 1.1.1/1.1.3/1.1.4/1.2.x)
+      win_shell: |
+        net accounts /uniquepw:24 /maxpwage:90 /minpwage:1 /minpwlen:14 2>&1
+        net accounts /lockoutthreshold:5 /lockoutduration:15 /lockoutwindow:15 2>&1
+      changed_when: true
+      failed_when: false
+
+    - name: Enable password complexity via secedit (CIS 1.1.5)
+      win_shell: |
+        $lines = @(
+          '[Unicode]', 'Unicode=yes',
+          '[System Access]',
+          'PasswordComplexity = 1',
+          'ClearTextPassword = 0',
+          '[Version]', 'signature="$CHICAGO$"', 'Revision=1'
+        )
+        $lines | Out-File C:\Windows\Temp\pw_complexity.cfg -Encoding Unicode
+        secedit /configure /cfg C:\Windows\Temp\pw_complexity.cfg `
+          /db C:\Windows\Security\Database\secedit.sdb /areas SECURITYPOLICY /quiet 2>&1
+        Remove-Item C:\Windows\Temp\pw_complexity.cfg -Force -ErrorAction SilentlyContinue
+      changed_when: true
+      failed_when: false
+
+    - name: Enable RelaxMinimumPasswordLengthLimits (CIS 1.1.6)
+      win_regedit:
+        path: HKLM:\SYSTEM\CurrentControlSet\Control\SAM
+        name: RelaxMinimumPasswordLengthLimits
+        data: 1
+        type: dword
+
+    - name: Enable AllowAdministratorLockout (CIS 1.2.3)
+      win_regedit:
+        path: HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon
+        name: AllowAdministratorLockout
+        data: 1
+        type: dword
+
+    # ── Fix 2: Force audit subcategory settings BEFORE auditpol (CIS 2.3.2.1) ─
+    # Must be set first so auditpol changes aren't overridden by legacy policy.
+
+    - name: Force audit subcategory settings (must precede auditpol) (CIS 2.3.2.1)
+      win_regedit:
+        path: HKLM:\SYSTEM\CurrentControlSet\Control\Lsa
+        name: SCENoApplyLegacyAuditPolicy
+        data: 1
+        type: dword
+
+    - name: Re-run audit policy — Object Access subcategories (CIS 17.6.x)
+      win_shell: |
+        # Use GUIDs for reliability — language/locale independent
+        # Detailed File Share {0cce9244-69ae-11d9-bed3-505054503030}
+        auditpol /set /subcategory:"{0cce9244-69ae-11d9-bed3-505054503030}" /success:disable /failure:enable
+        # Other Object Access Events {0cce9245-69ae-11d9-bed3-505054503030}
+        auditpol /set /subcategory:"{0cce9245-69ae-11d9-bed3-505054503030}" /success:enable /failure:enable
+        # Removable Storage {0cce9245-69ae-11d9-bed3-505054503030}
+        auditpol /set /subcategory:"Removable Storage" /success:enable /failure:enable
+        # Fallback by name
+        auditpol /set /subcategory:"Detailed File Share" /success:disable /failure:enable
+        auditpol /set /subcategory:"Other Object Access Events" /success:enable /failure:enable
+      changed_when: true
+      failed_when: false
+
+    - name: Re-run audit policy — Policy Change subcategories (CIS 17.7.x)
+      win_shell: |
+        # Audit Policy Change {0cce922f-69ae-11d9-bed3-505054503030}
+        auditpol /set /subcategory:"{0cce922f-69ae-11d9-bed3-505054503030}" /success:enable /failure:enable
+        # Authentication Policy Change {0cce9230-69ae-11d9-bed3-505054503030}
+        auditpol /set /subcategory:"{0cce9230-69ae-11d9-bed3-505054503030}" /success:enable /failure:disable
+        # MPSSVC Rule-Level Policy Change {0cce9232-69ae-11d9-bed3-505054503030}
+        auditpol /set /subcategory:"{0cce9232-69ae-11d9-bed3-505054503030}" /success:enable /failure:enable
+        # Other Policy Change Events {0cce9234-69ae-11d9-bed3-505054503030}
+        auditpol /set /subcategory:"{0cce9234-69ae-11d9-bed3-505054503030}" /success:enable /failure:disable
+        # Fallback by name
+        auditpol /set /subcategory:"Audit Policy Change" /success:enable /failure:enable
+        auditpol /set /subcategory:"MPSSVC Rule-Level Policy Change" /success:enable /failure:enable
+        auditpol /set /subcategory:"Other Policy Change Events" /success:enable /failure:disable
+      changed_when: true
+      failed_when: false
+
+    # ── Fix 3: Event Log Sizes via direct registry (CIS 18.9.26.x) ───────────
+    # wevtutil /ms: is unreliable — write directly to the registry key.
+
+    - name: Set Application log max size to 32 MB (CIS 18.9.26.1.1)
+      win_regedit:
+        path: HKLM:\SYSTEM\CurrentControlSet\Services\EventLog\Application
+        name: MaxSize
+        data: 33554432
+        type: dword
+
+    - name: Set Security log max size to 192 MB (CIS 18.9.26.2.1)
+      win_regedit:
+        path: HKLM:\SYSTEM\CurrentControlSet\Services\EventLog\Security
+        name: MaxSize
+        data: 201326592
+        type: dword
+
+    - name: Set Setup log max size to 32 MB (CIS 18.9.26.3.1)
+      win_regedit:
+        path: HKLM:\SYSTEM\CurrentControlSet\Services\EventLog\Setup
+        name: MaxSize
+        data: 33554432
+        type: dword
+
+    - name: Set System log max size to 32 MB (CIS 18.9.26.4.1)
+      win_regedit:
+        path: HKLM:\SYSTEM\CurrentControlSet\Services\EventLog\System
+        name: MaxSize
+        data: 33554432
+        type: dword
+
+    # ── Fix 4: Security Options — retry LSA/NTLM/UAC registry settings ────────
+
+    - name: Set LAN Manager auth level to NTLMv2 only (CIS 2.3.11.5)
+      win_regedit:
+        path: HKLM:\SYSTEM\CurrentControlSet\Control\Lsa
+        name: LmCompatibilityLevel
+        data: 5
+        type: dword
+
+    - name: Set NTLM client minimum session security (CIS 2.3.11.7)
+      win_regedit:
+        path: HKLM:\SYSTEM\CurrentControlSet\Control\Lsa\MSV1_0
+        name: NTLMMinClientSec
+        data: 537395200
+        type: dword
+
+    - name: Set NTLM server minimum session security (CIS 2.3.11.8)
+      win_regedit:
+        path: HKLM:\SYSTEM\CurrentControlSet\Control\Lsa\MSV1_0
+        name: NTLMMinServerSec
+        data: 537395200
+        type: dword
+
+    - name: Don't display last signed-in username (CIS 2.3.7.2)
+      win_regedit:
+        path: HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System
+        name: DontDisplayLastUserName
+        data: 1
+        type: dword
+
+    - name: Set machine inactivity limit to 900 seconds (CIS 2.3.7.4)
+      win_regedit:
+        path: HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System
+        name: InactivityTimeoutSecs
+        data: 900
+        type: dword
+
+    - name: Block Microsoft accounts (CIS 2.3.1.2)
+      win_regedit:
+        path: HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System
+        name: NoConnectedUser
+        data: 3
+        type: dword
+
+    - name: UAC standard users auto-deny (CIS 2.3.17.3)
+      win_regedit:
+        path: HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System
+        name: ConsentPromptBehaviorUser
+        data: 0
+        type: dword
+
+    - name: Set shutdown-on-audit-fail (CIS 2.3.2.2)
+      win_regedit:
+        path: HKLM:\SYSTEM\CurrentControlSet\Control\Lsa
+        name: CrashOnAuditFail
+        data: 1
+        type: dword
+
+    # ── Fix 5: Services — force stop and disable ──────────────────────────────
+
+    - name: Force stop and disable Remote Registry (CIS 5.18)
+      win_shell: |
+        Stop-Service RemoteRegistry -Force -ErrorAction SilentlyContinue
+        Set-Service RemoteRegistry -StartupType Disabled
+        sc.exe config RemoteRegistry start= disabled
+      changed_when: true
+      failed_when: false
+
+    - name: Force disable MSiSCSI (CIS 5.12)
+      win_shell: |
+        Stop-Service MSiSCSI -Force -ErrorAction SilentlyContinue
+        Set-Service MSiSCSI -StartupType Disabled
+        sc.exe config MSiSCSI start= disabled
+      changed_when: true
+      failed_when: false
+
+    - name: Force disable RpcLocator (CIS 5.17)
+      win_shell: |
+        Stop-Service RpcLocator -Force -ErrorAction SilentlyContinue
+        Set-Service RpcLocator -StartupType Disabled 2>$null
+        sc.exe config RpcLocator start= disabled 2>$null
+      changed_when: true
+      failed_when: false
+      ignore_errors: true
+
+    # ── Fix 6: Firewall — use registry for reliable inbound default ────────────
+
+    - name: Set Domain firewall inbound default to Block via registry (CIS 9.1.x)
+      win_regedit:
+        path: HKLM:\SYSTEM\CurrentControlSet\Services\SharedAccess\Parameters\FirewallPolicy\DomainProfile
+        name: DefaultInboundAction
+        data: 1
+        type: dword
+
+    - name: Set Private firewall inbound default to Block via registry (CIS 9.2.x)
+      win_regedit:
+        path: HKLM:\SYSTEM\CurrentControlSet\Services\SharedAccess\Parameters\FirewallPolicy\StandardProfile
+        name: DefaultInboundAction
+        data: 1
+        type: dword
+
+    - name: Set Public firewall inbound default to Block via registry (CIS 9.3.x)
+      win_regedit:
+        path: HKLM:\SYSTEM\CurrentControlSet\Services\SharedAccess\Parameters\FirewallPolicy\PublicProfile
+        name: DefaultInboundAction
+        data: 1
+        type: dword
+
+    # ── Fix 7: User Rights — retry deny rights ────────────────────────────────
+
+    - name: Deny network access includes Guests (CIS 2.2.14) — explicit set
+      ansible.windows.win_user_right:
+        name: SeDenyNetworkLogonRight
+        users:
+          - Guests
+          - "{{ ansible_hostname }}\\Guest"
+        action: add
+      failed_when: false
+
+    - name: Deny batch logon includes Guests (CIS 2.2.15)
+      ansible.windows.win_user_right:
+        name: SeDenyBatchLogonRight
+        users:
+          - Guests
+        action: add
+      failed_when: false
+
+    - name: Deny service logon includes Guests (CIS 2.2.16)
+      ansible.windows.win_user_right:
+        name: SeDenyServiceLogonRight
+        users:
+          - Guests
+        action: add
+      failed_when: false
+
+    - name: Deny local logon includes Guests (CIS 2.2.17)
+      ansible.windows.win_user_right:
+        name: SeDenyInteractiveLogonRight
+        users:
+          - Guests
+        action: add
+      failed_when: false
+
+    - name: Deny RDP logon includes Guests (CIS 2.2.18)
+      ansible.windows.win_user_right:
+        name: SeDenyRemoteInteractiveLogonRight
+        users:
+          - Guests
+        action: add
+      failed_when: false
+
+    - name: Restore files restricted to Administrators (CIS 2.2.32)
+      ansible.windows.win_user_right:
+        name: SeRestorePrivilege
+        users:
+          - Administrators
+        action: set
+      failed_when: false
+
+    - name: Shut down system restricted to Administrators (CIS 2.2.33)
+      ansible.windows.win_user_right:
+        name: SeShutdownPrivilege
+        users:
+          - Administrators
+        action: set
+      failed_when: false
+
+    - name: Rename Guest account if still named Guest (CIS 2.3.1.6)
+      win_shell: |
+        $g = Get-LocalUser | Where-Object { $_.SID -like '*-501' } | Select-Object -First 1
+        if ($g -and $g.Name -ieq 'Guest') {
+          Rename-LocalUser -Name 'Guest' -NewName 'GuestDisabled' -ErrorAction SilentlyContinue
+        }
+        Write-Output "Guest account name: $(($g).Name)"
+      changed_when: true
+      failed_when: false
+
+    - name: Targeted fixes complete
+      debug:
+        msg: "Targeted fixes applied. Re-running assessment to measure improvement."

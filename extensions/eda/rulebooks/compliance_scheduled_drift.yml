@@ -1,0 +1,60 @@
+---
+# EDA Rulebook: Scheduled Compliance Drift — Critical Infrastructure
+#
+# Runs a continuous 30-minute compliance check against critical infrastructure
+# hosts and triggers remediation if violations are detected.
+#
+# SCOPE: Critical infrastructure only (NERC-CIP, FISMA).
+#        Use ansible.eda.tick so the check is always live while the
+#        rulebook activation is running — no counter hacks, no limit.
+#
+# PERIODIC ASSESSMENTS (not here):
+#   Hourly and daily compliance assessments are AAP Controller schedules
+#   on their respective job templates — not EDA rulebooks. EDA is for
+#   event-driven responses, not cron replacement.
+#
+# AAP Job Templates:
+#   - "AAC - NERC CIP Compliance Report" (ID 26)
+#   - "CIS RHEL 9 Assessment"            (ID 10)
+
+- name: Critical Infrastructure Continuous Compliance Check
+  hosts: critical_infrastructure
+  sources:
+    - name: tick_30min
+      ansible.eda.tick:
+        interval: 1800  # 30 minutes
+
+  rules:
+
+    # ── NERC-CIP continuous check ────────────────────────────────────────
+    # Fires every 30 minutes against critical infrastructure hosts.
+    # CIP-007 and CIP-010 require near-real-time change detection.
+    - name: NERC-CIP Continuous Compliance Check
+      condition: event.tick is defined
+      throttle:
+        once_within: 25 minutes  # Prevent overlap if job runs long
+      action:
+        run_job_template:
+          name: "AAC - NERC CIP Compliance Report"
+          organization: Default
+          job_args:
+            extra_vars:
+              compliance_trigger: scheduled_critical_tick
+              priority: high
+
+    # ── CIS RHEL 9 continuous check on critical hosts ────────────────────
+    # Supplements file_watch monitoring with a periodic full assessment.
+    # Catches drift that doesn't manifest as a file change
+    # (e.g. runtime kernel parameter changes via sysctl -w).
+    - name: CIS RHEL 9 Continuous Check on Critical Hosts
+      condition: event.tick is defined
+      throttle:
+        once_within: 25 minutes
+      action:
+        run_job_template:
+          name: "CIS RHEL 9 Assessment"
+          organization: Default
+          job_args:
+            extra_vars:
+              compliance_trigger: scheduled_critical_tick
+              priority: high

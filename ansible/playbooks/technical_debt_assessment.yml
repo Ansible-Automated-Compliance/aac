@@ -1,0 +1,487 @@
+---
+# =============================================================================
+# AAC Technical Debt Assessment
+#
+# Reads the most recent compliance_results from PostgreSQL, scores each
+# violation through the OPA debt scoring policy, and writes scored items
+# to technical_debt_items + technical_debt_summary.
+#
+# Optionally calls Claude (via MCP) to generate a prioritized AI roadmap
+# and stores the result in technical_debt_summary.ai_roadmap.
+#
+# AAP Survey variables:
+#   target_frameworks   Comma-separated list of frameworks to assess.
+#                       Default: all 17 frameworks (cis_rhel9,nerc_cip,ami,digital_sovereignty,
+#                         nist_800_53,iso27001,ncsc_caf,dora,nis2,nist_800_82,ny_dfs,sec_cyber,
+#                         swift_csp,hitrust,tisax,cfr_part_11,cis_gcp)
+#   lookback_hours      How far back to look for compliance results. Default: 48
+#   hourly_rate         Loaded engineer hourly rate (USD) for cost estimates. Default: 185
+#   enable_ai_summary   Generate AI roadmap via Claude MCP. Default: false
+#   opa_debt_url        OPA endpoint for debt scoring. Default: derived
+#                       from aac_host (`http://<aac_host>:8182`) so the
+#                       playbook talks to the SAME host the AAC stack is
+#                       deployed on. RHPDS Node 6 sets aac_host to the
+#                       per-cluster EC2 IP, so parallel demo users stay
+#                       isolated.
+# =============================================================================
+
+- name: AAC Technical Debt Assessment
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - [ "../vars/vault_secrets.yml", "../vars/empty_fallback.yml" ]
+    - ../vars/site_config.yml
+
+  vars:
+    # Derive default URLs from aac_host (wired per-cluster by Node 6 of
+    # the RHPDS provisioning workflow — configure_rhpds_aap.yml). Falling
+    # through to the local AAP host would tunnel a remote RHPDS demo back to
+    # the original AAC author's local instance — exactly the cross-cluster
+    # bleed-over to prevent for parallel demo users.
+    opa_debt_url:       "{{ opa_compliance_url | default('http://' ~ (aac_host | default('localhost')) ~ ':8182') }}"
+    target_frameworks:  "cis_rhel9,nerc_cip,ami,digital_sovereignty,nist_800_53,iso27001,ncsc_caf,dora,nis2,nist_800_82,ny_dfs,sec_cyber,swift_csp,hitrust,tisax,cfr_part_11,cis_gcp"
+    lookback_hours:     48
+    hourly_rate:        185   # fallback only — overridden per-category from remediation_rates table
+    enable_ai_summary:  false
+
+    pg_db:              "compliance"
+    pg_user:            "postgres"
+    pg_password:        "{{ compliance_db_password | mandatory }}"
+
+    report_timestamp:   "{{ lookup('pipe', 'date +%Y%m%dT%H%M%S') }}"
+    assessment_label:   "technical_debt_{{ report_timestamp }}"
+
+  tasks:
+
+    # -------------------------------------------------------------------------
+    # Setup
+    # -------------------------------------------------------------------------
+    - name: Parse framework filter
+      set_fact:
+        framework_list: "{{ target_frameworks.split(',') | map('trim') | list }}"
+
+    - name: "=== AAC Technical Debt Assessment — {{ report_timestamp }} ==="
+      debug:
+        msg:
+          - "Frameworks: {{ framework_list | join(', ') }}"
+          - "Lookback:   {{ lookback_hours }}h"
+          - "OPA debt endpoint: {{ opa_debt_url }}/v1/data/technical_debt/scoring/debt_report"
+
+    # -------------------------------------------------------------------------
+    # Fetch latest compliance results from PostgreSQL
+    # -------------------------------------------------------------------------
+    - name: Query latest compliance results per host/framework
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port | default(5432) }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        # lookback + framework filter are bound parameters (array binds to ANY())
+        named_args:
+          lookback_hours: "{{ lookback_hours | int }}"
+          framework_list: "{{ framework_list }}"
+        query: |
+          WITH normalized AS (
+            SELECT
+              cr.id,
+              COALESCE(cr.hostname, cf.hostname, 'unknown') AS hostname,
+              CASE
+                WHEN cr.policy_name ILIKE 'CIS RHEL%%'    THEN 'cis_rhel9'
+                WHEN cr.policy_name ILIKE 'CIS Ubuntu%%'  THEN 'cis_ubuntu2204'
+                WHEN cr.policy_name ILIKE 'CIS Amazon%%'  THEN 'cis_al2023'
+                WHEN cr.policy_name ILIKE 'CIS Windows%%' THEN 'cis_windows2022'
+                WHEN cr.policy_name ILIKE 'CIS Fedora%%'  THEN 'cis_rhel9'
+                WHEN cr.policy_name ILIKE 'CIS pfSense%%' THEN 'cis_pfsense'
+                WHEN cr.policy_name ILIKE 'CIS VyOS%%'    THEN 'cis_vyos'
+                WHEN cr.policy_name ILIKE 'NERC CIP%%'    THEN 'nerc_cip'
+                WHEN cr.policy_name ILIKE 'AMI%%'         THEN 'ami'
+                WHEN cr.policy_name = 'Digital Sovereignty' THEN 'digital_sovereignty'
+                WHEN cr.policy_name ILIKE 'ncsc_caf%%'    THEN 'ncsc_caf'
+                WHEN cr.policy_name ILIKE 'ISO%%'         THEN 'iso27001'
+                WHEN cr.policy_name ILIKE 'NIST 800-82%%'
+                  OR cr.policy_name ILIKE 'nist_800_82%%' THEN 'nist_800_82'
+                WHEN cr.policy_name ILIKE 'NIST%%'        THEN 'nist_800_53'
+                WHEN cr.policy_name ILIKE 'dora%%'        THEN 'dora'
+                WHEN cr.policy_name ILIKE 'nis2%%'        THEN 'nis2'
+                WHEN cr.policy_name ILIKE 'ny_dfs%%'      THEN 'ny_dfs'
+                WHEN cr.policy_name ILIKE 'sec_cyber%%'   THEN 'sec_cyber'
+                WHEN cr.policy_name ILIKE 'swift_csp%%'   THEN 'swift_csp'
+                WHEN cr.policy_name ILIKE 'hitrust%%'     THEN 'hitrust'
+                WHEN cr.policy_name ILIKE 'tisax%%'       THEN 'tisax'
+                WHEN cr.policy_name ILIKE 'cfr_part_11%%' THEN 'cfr_part_11'
+                WHEN cr.policy_name ILIKE 'CIS GCP%%'     THEN 'cis_gcp'
+                ELSE LOWER(REGEXP_REPLACE(cr.policy_name, '[^a-zA-Z0-9]', '_', 'g'))
+              END AS framework,
+              cr.violations,
+              cr.failed_controls,
+              cr.compliance_percentage,
+              cr.evaluation_timestamp,
+              DATE_PART('day', NOW() - cr.evaluation_timestamp)::int AS age_days
+            FROM compliance_results cr
+            LEFT JOIN compliance_facts cf ON cr.facts_id = cf.id
+            WHERE cr.evaluation_timestamp >= NOW() - make_interval(hours => %(lookback_hours)s)
+              AND cr.violations IS NOT NULL
+              AND jsonb_typeof(cr.violations) = 'array'
+              AND jsonb_array_length(cr.violations) > 0
+          )
+          SELECT DISTINCT ON (hostname, framework) *
+          FROM normalized
+          WHERE framework = ANY(%(framework_list)s)
+          ORDER BY hostname, framework, evaluation_timestamp DESC
+      register: compliance_rows
+      failed_when: false
+
+    - name: Filter results to requested frameworks
+      set_fact:
+        filtered_rows: >-
+          {{
+            (compliance_rows.query_result | default([]))
+            | selectattr('framework', 'in', framework_list)
+            | list
+          }}
+
+    - name: Report results found
+      debug:
+        msg: "Found {{ filtered_rows | length }} host/framework combinations with violations ({{ compliance_rows.rowcount | default(0) }} total before framework filter)"
+
+    - name: Exit early if no violations to score
+      meta: end_play
+      when: (filtered_rows | length) == 0
+
+    # -------------------------------------------------------------------------
+    # Score each result through OPA debt policy
+    # -------------------------------------------------------------------------
+    - name: Score violations through OPA debt policy
+      uri:
+        use_proxy: false
+        url: "{{ opa_debt_url }}/v1/data/technical_debt/scoring/debt_report"
+        method: POST
+        body_format: json
+        body:
+          input:
+            hostname:      "{{ row.hostname }}"
+            framework:     "{{ row.framework }}"
+            violations:    "{{ row.violations }}"
+            debt_age_days: "{{ row.age_days | default(0) }}"
+        return_content: true
+        status_code: [200]
+        timeout: 30
+      loop: "{{ filtered_rows }}"
+      loop_control:
+        loop_var: row
+        label: "{{ row.hostname }}/{{ row.framework }}"
+      register: opa_responses
+      failed_when: false
+
+    - name: Build scored debt items list
+      set_fact:
+        all_debt_items: >-
+          {{
+            opa_responses.results
+            | selectattr('status', 'eq', 200)
+            | map(attribute='json.result.items')
+            | select('defined')
+            | flatten
+          }}
+        debt_reports: >-
+          {{
+            opa_responses.results
+            | selectattr('status', 'eq', 200)
+            | map(attribute='json.result')
+            | select('defined')
+            | list
+          }}
+
+    - name: Report debt items scored
+      debug:
+        msg: "Scored {{ all_debt_items | length }} debt items across {{ debt_reports | length }} assessments"
+
+    # -------------------------------------------------------------------------
+    # Upsert debt items into PostgreSQL
+    # Mark resolved items first, then insert/update open ones
+    # -------------------------------------------------------------------------
+    - name: Mark previously open items as resolved if not in current scan
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port | default(5432) }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: |
+          UPDATE technical_debt_items
+          SET status = 'resolved',
+              resolved_at = NOW()
+          WHERE status = 'open'
+            AND framework = ANY(%(frameworks)s)
+            AND last_seen < NOW() - (%(hours)s * INTERVAL '1 hour')
+        named_args:
+          frameworks: "{{ framework_list }}"
+          hours: "{{ lookback_hours | int }}"
+      failed_when: false
+
+    - name: Upsert open debt items
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port | default(5432) }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: |
+          INSERT INTO technical_debt_items
+            (hostname, framework, violation, debt_category, severity, complexity,
+             effort_hours, priority_score, debt_age_days, status,
+             first_seen, last_seen, metadata)
+          VALUES
+            (%(hostname)s, %(framework)s, %(violation)s, %(category)s, %(severity)s,
+             %(complexity)s, %(hours)s, %(priority)s, %(age)s, 'open',
+             NOW(), NOW(),
+             %(metadata)s::jsonb)
+          ON CONFLICT (hostname, framework, violation)
+          DO UPDATE SET
+            last_seen      = NOW(),
+            priority_score = %(priority)s,
+            debt_age_days  = EXCLUDED.debt_age_days + 1,
+            status         = 'open'
+        named_args:
+          hostname:  "{{ item.hostname }}"
+          framework: "{{ item.framework }}"
+          violation: "{{ item.violation }}"
+          category:  "{{ item.debt_category }}"
+          severity:  "{{ item.severity }}"
+          complexity: "{{ item.complexity }}"
+          hours:     "{{ item.effort_hours }}"
+          priority:  "{{ item.priority_score }}"
+          age:       "{{ item.debt_age_days }}"
+          metadata:  "{{ {'assessment': assessment_label} | to_json }}"
+      loop: "{{ all_debt_items }}"
+      loop_control:
+        label: "{{ item.hostname }}/{{ item.framework }}/{{ item.violation[:60] }}"
+      failed_when: false
+
+    # -------------------------------------------------------------------------
+    # Write per-host summaries
+    # -------------------------------------------------------------------------
+    - name: Aggregate per-host debt summary
+      set_fact:
+        host_summaries: >-
+          {{
+            all_debt_items
+            | groupby('hostname')
+            | list
+          }}
+
+    - name: Upsert technical_debt_summary per host
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port | default(5432) }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: |
+          INSERT INTO technical_debt_summary
+            (hostname, assessed_at,
+             total_items, critical_items, high_items, medium_items, low_items,
+             total_effort_hours, security_hours, compliance_hours, operational_hours,
+             sovereignty_hours, critical_infrastructure_hours,
+             debt_score, frameworks_assessed, metadata)
+          VALUES (
+            %(hostname)s, NOW(),
+            %(total)s, %(critical)s, %(high)s, %(medium)s, %(low)s,
+            %(total_hours)s, %(sec_hours)s, %(comp_hours)s, %(ops_hours)s,
+            %(sov_hours)s, %(ci_hours)s,
+            %(score)s, %(frameworks)s::jsonb, %(metadata)s::jsonb
+          )
+        named_args:
+          hostname:    "{{ item.0 }}"
+          total:       "{{ item.1 | length }}"
+          critical:    "{{ item.1 | selectattr('severity','eq','CRITICAL') | list | length }}"
+          high:        "{{ item.1 | selectattr('severity','eq','HIGH')     | list | length }}"
+          medium:      "{{ item.1 | selectattr('severity','eq','MEDIUM')   | list | length }}"
+          low:         "{{ item.1 | selectattr('severity','eq','LOW')      | list | length }}"
+          total_hours: "{{ item.1 | map(attribute='effort_hours') | map('float') | sum }}"
+          sec_hours:   "{{ item.1 | selectattr('debt_category','eq','security')                | map(attribute='effort_hours') | map('float') | sum }}"
+          comp_hours:  "{{ item.1 | selectattr('debt_category','eq','compliance')              | map(attribute='effort_hours') | map('float') | sum }}"
+          ops_hours:   "{{ item.1 | selectattr('debt_category','eq','operational')             | map(attribute='effort_hours') | map('float') | sum }}"
+          sov_hours:   "{{ item.1 | selectattr('debt_category','eq','sovereignty')             | map(attribute='effort_hours') | map('float') | sum }}"
+          ci_hours:    "{{ item.1 | selectattr('debt_category','eq','critical_infrastructure') | map(attribute='effort_hours') | map('float') | sum }}"
+          score:       "{{ item.1 | map(attribute='priority_score') | map('float') | sum }}"
+          frameworks:  "{{ item.1 | map(attribute='framework') | unique | list | to_json }}"
+          metadata:    "{{ {'assessment': assessment_label, 'hourly_rate': hourly_rate} | to_json }}"
+      loop: "{{ host_summaries }}"
+      loop_control:
+        label: "{{ item.0 }}"
+      failed_when: false
+
+    # -------------------------------------------------------------------------
+    # Optional: AI summary via Claude MCP
+    # -------------------------------------------------------------------------
+    - name: Query top debt items for AI prompt
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port | default(5432) }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: |
+          SELECT
+            hostname, framework, debt_category, severity, complexity,
+            effort_hours, priority_score, violation
+          FROM technical_debt_items
+          WHERE status = 'open'
+          ORDER BY priority_score DESC
+          LIMIT 25
+      register: top_items
+      when: enable_ai_summary | bool
+      failed_when: false
+
+    - name: Query debt summary totals for AI prompt
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port | default(5432) }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: |
+          SELECT
+            COUNT(*)                                    AS total_items,
+            SUM(effort_hours)                           AS total_hours,
+            SUM(CASE WHEN severity='CRITICAL' THEN 1 ELSE 0 END) AS critical,
+            SUM(CASE WHEN debt_category='security'                THEN effort_hours ELSE 0 END) AS sec_hours,
+            SUM(CASE WHEN debt_category='compliance'              THEN effort_hours ELSE 0 END) AS comp_hours,
+            SUM(CASE WHEN debt_category='operational'             THEN effort_hours ELSE 0 END) AS ops_hours,
+            SUM(CASE WHEN debt_category='sovereignty'             THEN effort_hours ELSE 0 END) AS sov_hours,
+            SUM(CASE WHEN debt_category='critical_infrastructure' THEN effort_hours ELSE 0 END) AS ci_hours
+          FROM technical_debt_items
+          WHERE status = 'open'
+      register: debt_totals
+      when: enable_ai_summary | bool
+      failed_when: false
+
+    - name: Build AI prompt
+      set_fact:
+        ai_prompt: |
+          You are analyzing technical debt across {{ (debt_totals.query_result[0].total_items | default(0)) }} open violations
+          in an enterprise IT environment running Ansible Automated Compliance (AAC).
+
+          TOTALS:
+          - Total violations: {{ debt_totals.query_result[0].total_items | default(0) }}
+          - Total remediation effort: {{ debt_totals.query_result[0].total_hours | default(0) | round(1) }} hours
+          - Estimated cost at ${{ hourly_rate }}/hr: ${{ ((debt_totals.query_result[0].total_hours | default(0) | float) * (hourly_rate | int)) | int | string }}
+          - Critical violations: {{ debt_totals.query_result[0].critical | default(0) }}
+
+          EFFORT BY CATEGORY:
+          - Security: {{ debt_totals.query_result[0].sec_hours | default(0) | round(1) }}h
+          - Compliance: {{ debt_totals.query_result[0].comp_hours | default(0) | round(1) }}h
+          - Operational: {{ debt_totals.query_result[0].ops_hours | default(0) | round(1) }}h
+          - Critical Infrastructure (NERC-CIP/AMI): {{ debt_totals.query_result[0].ci_hours | default(0) | round(1) }}h
+          - Digital Sovereignty: {{ debt_totals.query_result[0].sov_hours | default(0) | round(1) }}h
+
+          TOP 25 PRIORITY ITEMS (sorted by priority score):
+          {% for row in top_items.query_result | default([]) %}
+          {{ loop.index }}. [{{ row.severity }}] {{ row.hostname }} / {{ row.framework }} — {{ row.violation[:100] }}
+             Effort: {{ row.effort_hours }}h | Category: {{ row.debt_category }} | Complexity: {{ row.complexity }}
+          {% endfor %}
+
+          Generate a concise technical debt remediation roadmap with:
+          1. A 30-day quick-win sprint (quick_win complexity items only)
+          2. A 90-day plan for high-priority security and compliance items
+          3. A 180-day plan for complex architectural improvements
+          For each phase: list the top 3-5 items, estimated hours, estimated cost, and expected risk reduction.
+          Be specific and actionable. Format as structured JSON with keys: quick_wins, plan_90_day, plan_180_day, executive_summary.
+      when: enable_ai_summary | bool
+
+    - name: Call Claude MCP for AI roadmap
+      uri:
+        use_proxy: false
+        url: "{{ mcp_url | default('http://' ~ (aac_host | default('localhost')) ~ ':8004') }}/messages/"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ vault_aap_local_mcp_token }}"
+          Content-Type: "application/json"
+        body_format: json
+        body:
+          model: "claude-opus-4-6"
+          max_tokens: 2048
+          messages:
+            - role: "user"
+              content: "{{ ai_prompt }}"
+        return_content: true
+        timeout: 120
+        status_code: [200]
+      register: ai_response
+      when: enable_ai_summary | bool
+      failed_when: false
+
+    - name: Store AI roadmap in summary
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port | default(5432) }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: |
+          UPDATE technical_debt_summary
+          SET ai_summary = %(summary)s,
+              ai_roadmap = %(roadmap)s::jsonb
+          WHERE metadata->>'assessment' = %(label)s
+        named_args:
+          summary: "{{ ai_response.json.content[0].text | default('') }}"
+          roadmap: "{{ ai_response.json.content[0].text | default('{}') }}"
+          label:   "{{ assessment_label }}"
+      when:
+        - enable_ai_summary | bool
+        - ai_response is defined
+        - ai_response.status == 200
+      failed_when: false
+
+    # -------------------------------------------------------------------------
+    # Final summary
+    # -------------------------------------------------------------------------
+    - name: Query final totals for summary display
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port | default(5432) }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: |
+          SELECT
+            COUNT(DISTINCT hostname)                              AS hosts_assessed,
+            COUNT(*)                                             AS total_open_items,
+            ROUND(SUM(effort_hours)::numeric, 1)                AS total_hours,
+            ROUND(SUM(
+              effort_hours * COALESCE(r.hourly_rate_usd, %(fallback_rate)s)
+            )::numeric, 0)                                       AS estimated_cost,
+            SUM(CASE WHEN severity = 'CRITICAL' THEN 1 ELSE 0 END) AS critical_count,
+            SUM(CASE WHEN complexity = 'quick_win' THEN 1 ELSE 0 END) AS quick_wins
+          FROM technical_debt_items d
+          LEFT JOIN LATERAL (
+            SELECT hourly_rate_usd
+            FROM remediation_rates
+            WHERE tenant_id = 'default'
+              AND debt_category = d.debt_category
+              AND effective_from <= CURRENT_DATE
+            ORDER BY effective_from DESC
+            LIMIT 1
+          ) r ON TRUE
+          WHERE d.status = 'open'
+        named_args:
+          fallback_rate: "{{ hourly_rate }}"
+      register: final_totals
+      failed_when: false
+
+    - name: "=== Technical Debt Assessment Complete ==="
+      debug:
+        msg:
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "  Hosts assessed:     {{ (final_totals.query_result[0].hosts_assessed  | default(0)) }}"
+          - "  Open debt items:    {{ (final_totals.query_result[0].total_open_items | default(0)) }}"
+          - "  Critical:           {{ (final_totals.query_result[0].critical_count   | default(0)) }}"
+          - "  Quick wins:         {{ (final_totals.query_result[0].quick_wins       | default(0)) }}"
+          - "  Total effort:       {{ (final_totals.query_result[0].total_hours      | default(0)) }}h"
+          - "  Estimated cost:     ${{ (final_totals.query_result[0].estimated_cost  | default(0)) }} (per-domain rates from remediation_rates)"
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "  Dashboard: {{ grafana_url | default('http://' ~ (aac_host | default('localhost')) ~ ':3000') }}/d/aac-tech-debt-001"

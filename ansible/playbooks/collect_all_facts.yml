@@ -1,0 +1,116 @@
+---
+# collect_all_facts.yml — Phase 1 fact collection
+#
+# SSHes to managed Linux hosts and stores a complete fact snapshot in
+# compliance_facts. No OPA evaluation — that's handled separately by
+# evaluate_stored_facts.yml, which reads from PostgreSQL and requires no SSH.
+#
+# This decoupling means:
+#   - Policy changes → re-run evaluate_stored_facts.yml (no SSH needed)
+#   - New frameworks  → evaluate existing stored facts instantly
+#   - Drift detection → compare consecutive snapshots (Phase 2)
+#   - Reset to known good → tag a snapshot as baseline (Phase 2)
+#
+# AAP Job Template: "AAC - Collect Facts"
+# Credentials: Compliance SSH Credential, Ansible Vault
+# EE: AAC Compliance EE
+# Inventory: Compliance Infrastructure (linux hosts)
+# Survey:
+#   target_hosts — which inventory group to collect from (default: linux)
+
+# ── Play 1: SSH to managed hosts, gather all facts ───────────────────────────
+
+- name: Collect comprehensive facts from managed hosts
+  hosts: "{{ target_hosts | default('all') }}"
+  gather_facts: yes
+  become: yes
+
+  vars_files:
+    - [ "../vars/vault_secrets.yml", "../vars/empty_fallback.yml" ]
+    - ../vars/site_config.yml
+
+  vars:
+    facts_schema_version: "2.0"
+
+  tasks:
+
+    # Standard ansible_facts already gathered by gather_facts: yes above.
+    # The tasks below collect specialized configuration not in ansible_facts.
+
+    # The collector itself lives in ../tasks/collect_linux_compliance_facts.yml
+    # so that the direct assessment playbooks (cis_rhel9_assessment.yml) and this
+    # stored-facts path feed OPA the SAME facts. Carved out 2026-10-12.
+    - name: Collect Linux compliance facts (shared collector)
+      include_tasks: ../tasks/collect_linux_compliance_facts.yml
+
+# ── Play 2: Store collected facts to PostgreSQL (runs on controller) ──────────
+
+- name: Store collected facts to PostgreSQL
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - [ "../vars/vault_secrets.yml", "../vars/empty_fallback.yml" ]
+    - ../vars/site_config.yml
+
+  vars:
+    pg_password: "{{ compliance_db_password }}"
+    facts_schema_version: "2.0"
+
+  tasks:
+
+    - name: Store facts for each managed host
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port | default(5433) }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: |
+          INSERT INTO compliance_facts
+            (hostname, framework, schema_version, facts)
+          VALUES (%s, %s, %s, %s::jsonb)
+          RETURNING id
+        positional_args:
+          - "{{ hostvars[item].ansible_hostname }}"
+          - "cis"
+          - "{{ facts_schema_version }}"
+          - "{{ hostvars[item].combined_facts | to_json }}"
+      loop: "{{ groups['all'] | default([]) }}"
+      when: hostvars[item].combined_facts is defined
+      register: storage_results
+
+    - name: Check for unchanged hosts (same checksum as previous collection)
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port | default(5433) }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: |
+          SELECT
+            cf.hostname,
+            COUNT(*) AS total_snapshots,
+            MAX(cf.collected_at) AS latest,
+            0 AS duplicate_count
+          FROM compliance_facts cf
+          WHERE cf.hostname = ANY(%s::text[])
+          GROUP BY cf.hostname
+          ORDER BY cf.hostname
+        positional_args:
+          - "{{ '{' + (groups['all'] | default([]) | select('defined') | list | join(',')) + '}' }}"
+      register: collection_summary
+      when:
+        - storage_results is defined
+        - storage_results.results | selectattr('changed') | list | length > 0
+      failed_when: false
+
+    - name: Collection summary
+      debug:
+        msg:
+          - "✅ Fact collection complete"
+          - "   Hosts processed: {{ storage_results.results | selectattr('changed') | list | length }}"
+          - "   Facts stored in compliance_facts — ready for policy evaluation"
+          - "   Run 'AAC - Evaluate Stored Facts' to assess against compliance policies (no SSH required)"
+          - "   Run 'AAC - Evaluate Stored Facts' again with any new policy to assess retroactively"

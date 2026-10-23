@@ -1,0 +1,28 @@
+---
+# aac_findings_sync/defaults/main.yml
+# Derives first-class FINDINGS from stored compliance_results rows:
+# identity (framework, control_id, subject), state
+# (open / resolved / waived), and verified-by-rescan closure — so every
+# question has targets, not percentages: which systems fail control X
+# (blast radius), what does system Y need fixed, what got resolved.
+#
+# Owns the derived table compliance_findings + its views (created
+# idempotently on every sync). Reads compliance_results only; never
+# modifies evidence rows.
+
+# ── Scope (MEDIUM) ────────────────────────────────────────────────────────────
+# Only rows inside the lookback take part in the sync; a framework/subject
+# with no assessment in the window is left untouched (no data ≠ resolved).
+findings_lookback_days: 90
+# Optional: restrict the sync to one framework key ('' = all).
+findings_framework: ""
+
+# Python for the extractor (runs in the EE).
+findings_python: python3
+
+# ── DB connection (inherit from site_config; no literal fallbacks) ───────────
+findings_pg_host: "{{ pg_host | mandatory }}"
+findings_pg_port: "{{ pg_port | default(5432) }}"
+findings_pg_user: "{{ pg_user | default('postgres') }}"
+findings_pg_db: "{{ pg_database | default('compliance') }}"
+findings_pg_ssl_mode: "{{ pg_ssl_mode | default('prefer') }}"

@@ -1,0 +1,54 @@
+---
+# Default variables for gather_logging_config role
+
+# Expected log file permissions (CIS 4.2.1.x)
+expected_log_permissions:
+  /var/log/messages:
+    mode: "0640"
+    owner: root
+    group: root
+  /var/log/secure:
+    mode: "0640"
+    owner: root
+    group: root
+  /var/log/maillog:
+    mode: "0640"
+    owner: root
+    group: root
+  /var/log/cron:
+    mode: "0640"
+    owner: root
+    group: root
+  /var/log/boot.log:
+    mode: "0640"
+    owner: root
+    group: root
+
+# Critical journald settings (CIS 4.2.2.x)
+required_journald_settings:
+  Storage: persistent
+  Compress: "yes"
+  ForwardToSyslog: "yes"
+  # MaxRetentionSec: 31536000  # 1 year, optional
+
+# Critical rsyslog settings (CIS 4.2.1.x)
+required_rsyslog_modules:
+  - imjournal
+  - imuxsock
+
+# Remote logging configuration
+remote_log_host: ""  # Set if remote logging is required
+remote_log_port: 514
+
+# Log directories to check
+log_directories:
+  - /var/log
+  - /var/log/audit
+
+# Expected systemd-journald service state
+journald_service_expected_state: active
+journald_service_expected_enabled: true
+
+# Expected rsyslog service state (if used)
+rsyslog_service_expected_state: active
+rsyslog_service_expected_enabled: true

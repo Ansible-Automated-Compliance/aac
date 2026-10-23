@@ -1,0 +1,308 @@
+---
+# AMI Compliance Grafana Dashboard Deployment
+#
+# This playbook:
+#   1. Verifies Grafana is reachable on port 3000
+#   2. Creates/updates PostgreSQL datasource pointing to compliance DB
+#   3. Deploys the AMI Compliance dashboard via Grafana HTTP API
+#
+# NOTE: Grafana runs as an existing container on <aac-host>:3000.
+#       This playbook only provisions its datasource and dashboard — no container management.
+#
+# Usage: Run via AAP job template "AMI - Deploy Grafana Dashboard"
+
+- name: Deploy AMI Compliance Dashboard to Grafana
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - [ "../vars/vault_secrets.yml", "../vars/empty_fallback.yml" ]
+    - ../vars/site_config.yml
+
+  vars:
+    grafana_admin_user:  "admin"
+    grafana_admin_pass:  "{{ grafana_admin_password }}"
+
+    pg_db:       "compliance"
+    pg_user:     "postgres"
+    pg_password: "{{ compliance_db_password }}"
+
+    # When set via extra_vars, deploy only the specified dashboard file.
+    # Leave unset (empty) to deploy the full default set.
+    # dashboard_file: <set via extra_vars / survey / inventory>
+    # dashboard_uid: <set via extra_vars / survey / inventory>
+
+  tasks:
+    # -------------------------------------------------------------------------
+    # 1. Verify Grafana is reachable
+    # -------------------------------------------------------------------------
+    - name: Check Grafana health
+      uri:
+        use_proxy: false
+        url: "{{ grafana_url }}/api/health"
+        method: GET
+        status_code: 200
+      register: grafana_health
+
+    - name: Show Grafana version
+      debug:
+        msg: "Grafana {{ grafana_health.json.version }} is healthy at {{ grafana_url }}"
+
+    # -------------------------------------------------------------------------
+    # 2. Configure PostgreSQL datasource
+    # -------------------------------------------------------------------------
+    - name: Check if AAC Compliance DB datasource exists
+      uri:
+        use_proxy: false
+        url: "{{ grafana_url }}/api/datasources/name/AAC%20Compliance%20DB"
+        method: GET
+        user: "{{ grafana_admin_user }}"
+        password: "{{ grafana_admin_pass }}"
+        force_basic_auth: true
+        status_code: [200, 404]
+      register: ds_check
+
+    - name: Create AAC Compliance DB datasource
+      uri:
+        use_proxy: false
+        url: "{{ grafana_url }}/api/datasources"
+        method: POST
+        user: "{{ grafana_admin_user }}"
+        password: "{{ grafana_admin_pass }}"
+        force_basic_auth: true
+        body_format: json
+        body:
+          name:   "AAC Compliance DB"
+          type:   "grafana-postgresql-datasource"
+          access: "proxy"
+          url:    "{{ pg_host }}:5432"
+          database: "{{ pg_db }}"
+          user:   "{{ pg_user }}"
+          secureJsonData:
+            password: "{{ pg_password }}"
+          jsonData:
+            sslmode: "disable"
+            postgresVersion: 1500
+            timescaledb: false
+          isDefault: true
+        status_code: [200, 409]
+      when: ds_check.status == 404
+      register: ds_create
+
+    - name: Update AAC Compliance DB datasource credentials
+      uri:
+        use_proxy: false
+        url: "{{ grafana_url }}/api/datasources/{{ ds_check.json.id }}"
+        method: PUT
+        user: "{{ grafana_admin_user }}"
+        password: "{{ grafana_admin_pass }}"
+        force_basic_auth: true
+        body_format: json
+        body:
+          id:       "{{ ds_check.json.id }}"
+          uid:      "{{ ds_check.json.uid }}"
+          name:     "AAC Compliance DB"
+          type:     "grafana-postgresql-datasource"
+          access:   "proxy"
+          url:      "{{ pg_host }}:5432"
+          database: "{{ pg_db }}"
+          user:     "{{ pg_user }}"
+          secureJsonData:
+            password: "{{ pg_password }}"
+          jsonData:
+            sslmode: "disable"
+            postgresVersion: 1500
+            timescaledb: false
+          isDefault: true
+        status_code: 200
+      when: ds_check.status == 200
+
+    - name: Get datasource UID
+      set_fact:
+        ds_uid: "{{ ds_check.json.uid if ds_check.status == 200 else ds_create.json.datasource.uid }}"
+
+    # -------------------------------------------------------------------------
+    # 3. Deploy AAC Infrastructure Compliance Dashboard
+    # -------------------------------------------------------------------------
+    - name: Load AAC Infrastructure Compliance dashboard JSON
+      set_fact:
+        aac_dashboard: "{{ lookup('file', playbook_dir + '/../../grafana/dashboards/aac_compliance_dashboard.json') | from_json }}"
+      when: (dashboard_file | default('', true)) == ""
+
+    - name: Deploy AAC Infrastructure Compliance dashboard
+      uri:
+        use_proxy: false
+        url: "{{ grafana_url }}/api/dashboards/db"
+        method: POST
+        user: "{{ grafana_admin_user }}"
+        password: "{{ grafana_admin_pass }}"
+        force_basic_auth: true
+        body_format: json
+        body:
+          dashboard: "{{ aac_dashboard }}"
+          overwrite: true
+          folderId: 0
+          message: "Deployed by Ansible Automated Compliance {{ lookup('pipe', 'date +%Y-%m-%d') }}"
+        status_code: 200
+      when: (dashboard_file | default('', true)) == ""
+      register: aac_dashboard_result
+
+    # -------------------------------------------------------------------------
+    # 4. Deploy AMI Compliance Dashboard
+    # -------------------------------------------------------------------------
+    - name: Load AMI compliance dashboard JSON
+      set_fact:
+        ami_dashboard: "{{ lookup('file', playbook_dir + '/../../grafana/dashboards/ami_compliance_dashboard.json') | from_json }}"
+      when: (dashboard_file | default('', true)) == ""
+
+    - name: Deploy AMI compliance dashboard
+      uri:
+        use_proxy: false
+        url: "{{ grafana_url }}/api/dashboards/db"
+        method: POST
+        user: "{{ grafana_admin_user }}"
+        password: "{{ grafana_admin_pass }}"
+        force_basic_auth: true
+        body_format: json
+        body:
+          dashboard: "{{ ami_dashboard }}"
+          overwrite: true
+          folderId: 0
+          message: "Deployed by Ansible Automated Compliance {{ lookup('pipe', 'date +%Y-%m-%d') }}"
+        status_code: 200
+      when: (dashboard_file | default('', true)) == ""
+      register: ami_dashboard_result
+
+    # -------------------------------------------------------------------------
+    # 4. Deploy NERC CIP Dashboard
+    # -------------------------------------------------------------------------
+    - name: Load NERC CIP dashboard JSON
+      set_fact:
+        nerc_dashboard: "{{ lookup('file', playbook_dir + '/../../grafana/dashboards/nerc_cip_dashboard.json') | from_json }}"
+      when: (dashboard_file | default('', true)) == ""
+
+    - name: Deploy NERC CIP dashboard
+      uri:
+        use_proxy: false
+        url: "{{ grafana_url }}/api/dashboards/db"
+        method: POST
+        user: "{{ grafana_admin_user }}"
+        password: "{{ grafana_admin_pass }}"
+        force_basic_auth: true
+        body_format: json
+        body:
+          dashboard: "{{ nerc_dashboard }}"
+          overwrite: true
+          folderId: 0
+          message: "Deployed by Ansible Automated Compliance {{ lookup('pipe', 'date +%Y-%m-%d') }}"
+        status_code: 200
+      when: (dashboard_file | default('', true)) == ""
+      register: nerc_dashboard_result
+
+    # -------------------------------------------------------------------------
+    # 5. Deploy Digital Sovereignty Dashboard
+    # -------------------------------------------------------------------------
+    - name: Load Digital Sovereignty dashboard JSON
+      set_fact:
+        ds_dashboard: "{{ lookup('file', playbook_dir + '/../../grafana/dashboards/digital_sovereignty_dashboard.json') | from_json }}"
+      when: (dashboard_file | default('', true)) == ""
+
+    - name: Deploy Digital Sovereignty dashboard
+      uri:
+        use_proxy: false
+        url: "{{ grafana_url }}/api/dashboards/db"
+        method: POST
+        user: "{{ grafana_admin_user }}"
+        password: "{{ grafana_admin_pass }}"
+        force_basic_auth: true
+        body_format: json
+        body:
+          dashboard: "{{ ds_dashboard }}"
+          overwrite: true
+          folderId: 0
+          message: "Deployed by Ansible Automated Compliance {{ lookup('pipe', 'date +%Y-%m-%d') }}"
+        status_code: 200
+      when: (dashboard_file | default('', true)) == ""
+      register: ds_dashboard_result
+
+    # -------------------------------------------------------------------------
+    # 6. Deploy NCSC CAF Dashboard
+    # -------------------------------------------------------------------------
+    - name: Load NCSC CAF dashboard JSON
+      set_fact:
+        caf_dashboard: "{{ (lookup('file', playbook_dir + '/../../grafana/dashboards/ncsc_caf_dashboard.json') | replace('${DS_AAC_COMPLIANCE_DB}', ds_uid)) | from_json }}"
+      when: (dashboard_file | default('', true)) == ""
+
+    - name: Deploy NCSC CAF dashboard
+      uri:
+        use_proxy: false
+        url: "{{ grafana_url }}/api/dashboards/db"
+        method: POST
+        user: "{{ grafana_admin_user }}"
+        password: "{{ grafana_admin_pass }}"
+        force_basic_auth: true
+        body_format: json
+        body:
+          dashboard: "{{ caf_dashboard }}"
+          overwrite: true
+          folderId: 0
+          message: "Deployed by Ansible Automated Compliance {{ lookup('pipe', 'date +%Y-%m-%d') }}"
+        status_code: 200
+      when: (dashboard_file | default('', true)) == ""
+      register: caf_dashboard_result
+
+    # -------------------------------------------------------------------------
+    # 7. Deploy single dashboard (when dashboard_file extra_var is set)
+    # -------------------------------------------------------------------------
+    - name: Load single dashboard JSON (extra_vars mode)
+      set_fact:
+        single_dashboard: >-
+          {{
+            (lookup('file', playbook_dir + '/../../' + dashboard_file)
+             | replace('${DS_AAC_COMPLIANCE_DB}', ds_uid))
+            | from_json
+          }}
+      when: (dashboard_file | default('', true)) != ""
+
+    - name: Deploy single dashboard
+      uri:
+        use_proxy: false
+        url: "{{ grafana_url }}/api/dashboards/db"
+        method: POST
+        user: "{{ grafana_admin_user }}"
+        password: "{{ grafana_admin_pass }}"
+        force_basic_auth: true
+        body_format: json
+        body:
+          dashboard: "{{ single_dashboard }}"
+          overwrite: true
+          folderId: 0
+          message: "Deployed by Ansible Automated Compliance {{ lookup('pipe', 'date +%Y-%m-%d') }}"
+        status_code: 200
+      when: (dashboard_file | default('', true)) != ""
+      register: single_dashboard_result
+
+    # -------------------------------------------------------------------------
+    # 8. Summary
+    # -------------------------------------------------------------------------
+    - name: "=== Dashboard Deployed (single) ==="
+      debug:
+        msg:
+          - "Grafana:    {{ grafana_url }}"
+          - "Datasource: AAC Compliance DB → {{ pg_host }}:5432/{{ pg_db }}"
+          - "Dashboard:  {{ grafana_url }}{{ single_dashboard_result.json.url }}"
+      when: (dashboard_file | default('', true)) != ""
+
+    - name: "=== Dashboards Deployed (full set) ==="
+      debug:
+        msg:
+          - "Grafana:                       {{ grafana_url }}"
+          - "Datasource:                    AAC Compliance DB → {{ pg_host }}:5432/{{ pg_db }}"
+          - ""
+          - "AAC Infrastructure Dashboard:  {{ grafana_url }}{{ aac_dashboard_result.json.url }}"
+          - "AMI Dashboard:                 {{ grafana_url }}{{ ami_dashboard_result.json.url }}"
+          - "NERC CIP Dashboard:            {{ grafana_url }}{{ nerc_dashboard_result.json.url }}"
+          - "Digital Sovereignty Dashboard: {{ grafana_url }}{{ ds_dashboard_result.json.url }}"
+          - "NCSC CAF Dashboard:            {{ grafana_url }}{{ caf_dashboard_result.json.url }}"
+      when: (dashboard_file | default('', true)) == ""

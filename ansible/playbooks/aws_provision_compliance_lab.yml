@@ -1,0 +1,455 @@
+---
+# AWS Compliance Lab - Provision Infrastructure
+# Run from AAP with AWS credentials
+#
+# Required AAP Credentials:
+#   - Amazon Web Services credential ("AWS Compliance Lab" — aws_lab_access_key, aws_lab_secret_key from vault)
+#
+# Key pairs:
+#   - Linux instances use {{ lab_name }}-key (ED25519 or imported public key)
+#   - Windows instances ALWAYS use {{ lab_name }}-key-win (RSA — ED25519 not supported by Windows AMIs)
+#
+# Variables (set via AAP Survey or Extra Variables):
+#   - aws_region: AWS region (default: us-east-1)
+#   - instance_type: EC2 instance type (default: t3.micro - free tier eligible)
+#   - lab_name: Name prefix for resources (default: compliance-lab)
+
+- name: Provision AWS Compliance Lab
+  hosts: localhost
+  connection: local
+  gather_facts: yes
+
+  vars:
+    # aws_region: <set via extra_vars / survey / inventory>   # default 'us-east-1'
+    # instance_type: <set via extra_vars / survey / inventory>   # default 't3.micro'
+    # lab_name: <set via extra_vars / survey / inventory>   # default 'compliance-lab'
+    vpc_cidr: "10.100.0.0/16"
+    subnet_cidr: "10.100.1.0/24"
+    key_name: "{{ (lab_name | default('compliance-lab', true)) }}-key"
+    # Optional: provide SSH public key content to import (prevents key loss on re-provision).
+    # When set, AWS key pair is created from this public key; use the corresponding private key
+    # in AAP credentials. When empty, a new key pair is generated and saved persistently.
+    # NOTE: do not redefine ec2_key_material here — use default('') at each reference site.
+    aac_host: "{{ aac_host }}"
+
+    # WinRM setup script for Windows instances
+    windows_userdata: |
+      <powershell>
+      # Enable WinRM for Ansible
+      $url = "https://raw.githubusercontent.com/ansible/ansible/devel/examples/scripts/ConfigureRemotingForAnsible.ps1"
+      $file = "$env:temp\ConfigureRemotingForAnsible.ps1"
+      (New-Object -TypeName System.Net.WebClient).DownloadFile($url, $file)
+      powershell.exe -ExecutionPolicy ByPass -File $file -EnableCredSSP -DisableBasicAuth -Verbose
+
+      # Configure WinRM for HTTPS (NTLM over TLS)
+      winrm quickconfig -q
+      winrm set winrm/config/winrs '@{MaxMemoryPerShellMB="1024"}'
+
+      # Open firewall for WinRM HTTPS
+      netsh advfirewall firewall add rule name="WinRM HTTPS" dir=in action=allow protocol=TCP localport=5986
+
+      # Restart WinRM service
+      Restart-Service WinRM
+      </powershell>
+
+    # Instances to create
+    lab_instances:
+      - name: "{{ (lab_name | default('compliance-lab', true)) }}-rhel9"
+        ami_filter: "RHEL-9*_HVM-*-x86_64-*"
+        ami_owner: "309956199498"
+        os_type: linux
+        ssh_user: ec2-user
+        platform: rhel9
+
+      - name: "{{ (lab_name | default('compliance-lab', true)) }}-ubuntu22"
+        ami_filter: "ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*"
+        ami_owner: "099720109477"
+        os_type: linux
+        ssh_user: ubuntu
+        platform: ubuntu22
+
+      - name: "{{ (lab_name | default('compliance-lab', true)) }}-amazon-linux"
+        ami_filter: "al2023-ami-2023*-x86_64"
+        ami_owner: "137112412989"
+        os_type: linux
+        ssh_user: ec2-user
+        platform: amazon_linux
+
+      - name: "{{ (lab_name | default('compliance-lab', true)) }}-rocky9"
+        ami_filter: "Rocky-9-EC2-Base-9*x86_64-*"
+        ami_owner: "792107900819"
+        os_type: linux
+        ssh_user: rocky
+        platform: rocky9
+
+      - name: "{{ (lab_name | default('compliance-lab', true)) }}-windows2022"
+        ami_filter: "Windows_Server-2022-English-Full-Base-*"
+        ami_owner: "801119661308"
+        os_type: windows
+        ssh_user: Administrator
+        platform: windows2022
+
+  tasks:
+    - name: Display provisioning parameters
+      debug:
+        msg:
+          - "Region: {{ (aws_region | default('us-east-1', true)) }}"
+          - "Instance Type: {{ (instance_type | default('t3.micro', true)) }}"
+          - "Lab Name: {{ (lab_name | default('compliance-lab', true)) }}"
+          - "Instances: {{ lab_instances | map(attribute='name') | list }}"
+
+    # =========================================
+    # SSH Key Pair
+    # Set key_pair_created_externally=true to skip these tasks (e.g. when
+    # amazon.aws.ec2_key is unavailable and the key was imported via AWS CLI).
+    # =========================================
+    - name: Create EC2 key pair (generate new keypair)
+      amazon.aws.ec2_key:
+        name: "{{ key_name }}"
+        region: "{{ (aws_region | default('us-east-1', true)) }}"
+        state: present
+      register: ec2_key
+      when:
+        - not (key_pair_created_externally | default(false) | bool)
+        - ec2_key_material | default('') | trim == ''
+
+    - name: Import EC2 key pair from provided public key
+      amazon.aws.ec2_key:
+        name: "{{ key_name }}"
+        region: "{{ (aws_region | default('us-east-1', true)) }}"
+        state: present
+        key_material: "{{ ec2_key_material | default('') }}"
+      when:
+        - not (key_pair_created_externally | default(false) | bool)
+        - ec2_key_material | default('') | trim != ''
+
+    - name: Save private key to Controller (EE ephemeral path)
+      copy:
+        content: "{{ ec2_key.key.private_key }}"
+        dest: "/tmp/{{ key_name }}.pem"
+        mode: '0600'
+      when:
+        - not (key_pair_created_externally | default(false) | bool)
+        - ec2_key_material | default('') | trim == ''
+        - ec2_key is not skipped
+        - ec2_key.key.private_key is defined
+
+    - name: Persist private key to AAP controller filesystem
+      shell: >
+        scp -o StrictHostKeyChecking=no -o BatchMode=yes
+        /tmp/{{ key_name }}.pem
+        aapuser1@host.containers.internal:/home/aapuser1/.ssh/{{ key_name }}.pem
+      when:
+        - not (key_pair_created_externally | default(false) | bool)
+        - ec2_key_material | default('') | trim == ''
+        - ec2_key is not skipped
+        - ec2_key.key.private_key is defined
+      ignore_errors: yes
+
+    - name: Display key info
+      debug:
+        msg: "SSH Key: {{ key_name }} provisioned."
+
+    # =========================================
+    # VPC and Networking
+    # =========================================
+    - name: Create VPC
+      amazon.aws.ec2_vpc_net:
+        name: "{{ (lab_name | default('compliance-lab', true)) }}-vpc"
+        cidr_block: "{{ vpc_cidr }}"
+        region: "{{ (aws_region | default('us-east-1', true)) }}"
+        state: present
+        tags:
+          Project: "{{ (lab_name | default('compliance-lab', true)) }}"
+          ManagedBy: "AAP"
+      register: vpc
+
+    - name: Create Internet Gateway
+      amazon.aws.ec2_vpc_igw:
+        vpc_id: "{{ vpc.vpc.id }}"
+        region: "{{ (aws_region | default('us-east-1', true)) }}"
+        state: present
+        tags:
+          Name: "{{ (lab_name | default('compliance-lab', true)) }}-igw"
+      register: igw
+
+    - name: Create Subnet
+      amazon.aws.ec2_vpc_subnet:
+        vpc_id: "{{ vpc.vpc.id }}"
+        cidr: "{{ subnet_cidr }}"
+        region: "{{ (aws_region | default('us-east-1', true)) }}"
+        az: "{{ (aws_region | default('us-east-1', true)) }}a"
+        state: present
+        map_public: yes
+        tags:
+          Name: "{{ (lab_name | default('compliance-lab', true)) }}-subnet"
+          Project: "{{ (lab_name | default('compliance-lab', true)) }}"
+      register: subnet
+
+    - name: Create Route Table
+      amazon.aws.ec2_vpc_route_table:
+        vpc_id: "{{ vpc.vpc.id }}"
+        region: "{{ (aws_region | default('us-east-1', true)) }}"
+        state: present
+        tags:
+          Name: "{{ (lab_name | default('compliance-lab', true)) }}-rt"
+        subnets:
+          - "{{ subnet.subnet.id }}"
+        routes:
+          - dest: "0.0.0.0/0"
+            gateway_id: "{{ igw.gateway_id }}"
+
+    # =========================================
+    # Security Groups
+    # =========================================
+    - name: Create Linux Security Group
+      amazon.aws.ec2_security_group:
+        name: "{{ (lab_name | default('compliance-lab', true)) }}-linux-sg"
+        description: "Linux compliance lab - SSH access"
+        vpc_id: "{{ vpc.vpc.id }}"
+        region: "{{ (aws_region | default('us-east-1', true)) }}"
+        state: present
+        rules:
+          - proto: tcp
+            ports: 22
+            cidr_ip: "0.0.0.0/0"
+            rule_desc: "SSH"
+          - proto: icmp
+            from_port: -1
+            to_port: -1
+            cidr_ip: "{{ vpc_cidr }}"
+        rules_egress:
+          - proto: all
+            cidr_ip: "0.0.0.0/0"
+        tags:
+          Name: "{{ (lab_name | default('compliance-lab', true)) }}-linux-sg"
+          Project: "{{ (lab_name | default('compliance-lab', true)) }}"
+      register: linux_sg
+
+    - name: Create Windows Security Group
+      amazon.aws.ec2_security_group:
+        name: "{{ (lab_name | default('compliance-lab', true)) }}-windows-sg"
+        description: "Windows compliance lab - WinRM and RDP"
+        vpc_id: "{{ vpc.vpc.id }}"
+        region: "{{ (aws_region | default('us-east-1', true)) }}"
+        state: present
+        rules:
+          - proto: tcp
+            ports: 5986
+            cidr_ip: "0.0.0.0/0"
+            rule_desc: "WinRM HTTPS"
+          - proto: tcp
+            ports: 3389
+            cidr_ip: "0.0.0.0/0"
+            rule_desc: "RDP"
+          - proto: icmp
+            from_port: -1
+            to_port: -1
+            cidr_ip: "{{ vpc_cidr }}"
+        rules_egress:
+          - proto: all
+            cidr_ip: "0.0.0.0/0"
+        tags:
+          Name: "{{ (lab_name | default('compliance-lab', true)) }}-windows-sg"
+          Project: "{{ (lab_name | default('compliance-lab', true)) }}"
+      register: windows_sg
+
+    # =========================================
+    # Find AMIs
+    # =========================================
+    - name: Find latest AMIs
+      amazon.aws.ec2_ami_info:
+        region: "{{ (aws_region | default('us-east-1', true)) }}"
+        owners:
+          - "{{ item.ami_owner }}"
+        filters:
+          name: "{{ item.ami_filter }}"
+          architecture: "x86_64"
+          root-device-type: "ebs"
+      register: ami_search
+      loop: "{{ lab_instances }}"
+
+    - name: Build AMI map
+      set_fact:
+        ami_map: >-
+          {{ ami_map | default({}) | combine({
+            item.item.name: (item.images | sort(attribute='creation_date', reverse=true) | first).image_id
+          }) }}
+      loop: "{{ ami_search.results }}"
+      when: item.images | length > 0
+
+    # =========================================
+    # Windows Key Pair (RSA required — ED25519 not supported by Windows AMIs)
+    # Always create a separate RSA key pair for Windows regardless of ec2_key_material.
+    # =========================================
+    - name: Create RSA key pair for Windows instances
+      amazon.aws.ec2_key:
+        name: "{{ key_name }}-win"
+        region: "{{ (aws_region | default('us-east-1', true)) }}"
+        key_type: rsa
+        state: present
+      register: ec2_key_win
+
+    - name: Save Windows private key to Controller (EE ephemeral path)
+      copy:
+        content: "{{ ec2_key_win.key.private_key }}"
+        dest: "/tmp/{{ key_name }}-win.pem"
+        mode: '0600'
+      when:
+        - ec2_key_win.key.private_key is defined
+
+    - name: Persist Windows private key to AAP controller filesystem
+      shell: >
+        scp -o StrictHostKeyChecking=no -o BatchMode=yes
+        /tmp/{{ key_name }}-win.pem
+        aapuser1@host.containers.internal:/home/aapuser1/.ssh/{{ key_name }}-win.pem
+      when:
+        - ec2_key_win.key.private_key is defined
+      ignore_errors: yes
+
+    # =========================================
+    # Launch Instances
+    # =========================================
+    - name: Launch EC2 instances
+      amazon.aws.ec2_instance:
+        name: "{{ item.name }}"
+        key_name: "{{ key_name + '-win' if item.os_type == 'windows' else key_name }}"
+        instance_type: "{{ (instance_type | default('t3.micro', true)) }}"
+        image_id: "{{ ami_map[item.name] }}"
+        region: "{{ (aws_region | default('us-east-1', true)) }}"
+        vpc_subnet_id: "{{ subnet.subnet.id }}"
+        security_group: "{{ windows_sg.group_id if item.os_type == 'windows' else linux_sg.group_id }}"
+        network:
+          assign_public_ip: yes
+        user_data: "{{ windows_userdata if item.os_type == 'windows' else omit }}"
+        state: running
+        wait: yes
+        tags:
+          Name: "{{ item.name }}"
+          Project: "{{ (lab_name | default('compliance-lab', true)) }}"
+          Platform: "{{ item.platform }}"
+          SSHUser: "{{ item.ssh_user }}"
+          OSType: "{{ item.os_type }}"
+          ManagedBy: "AAP"
+      register: ec2_results
+      loop: "{{ lab_instances }}"
+      when: ami_map[item.name] is defined
+
+    # =========================================
+    # Wait for Instances
+    # =========================================
+    - name: Wait for Linux instances
+      wait_for:
+        host: "{{ item.instances[0].public_ip_address }}"
+        port: 22
+        delay: 30
+        timeout: 300
+      loop: "{{ ec2_results.results }}"
+      when:
+        - item.item.os_type == 'linux'
+        - item.instances is defined
+
+    - name: Wait for Windows WinRM
+      wait_for:
+        host: "{{ item.instances[0].public_ip_address }}"
+        port: 5986
+        delay: 60
+        timeout: 900
+      loop: "{{ ec2_results.results }}"
+      when:
+        - item.item.os_type == 'windows'
+        - item.instances is defined
+      ignore_errors: yes
+      register: winrm_wait_result
+
+    - name: Warn if Windows WinRM not yet ready
+      debug:
+        msg: >-
+          WARNING: WinRM not ready on {{ item.item.instances[0].public_ip_address }}
+          after 900s. Windows instance is still booting — retry CIS Windows scan later.
+      loop: "{{ winrm_wait_result.results | default([]) }}"
+      when:
+        - item.failed | default(false)
+        - item.item.item.os_type | default('') == 'windows'
+
+    # =========================================
+    # Create Dynamic Inventory
+    # =========================================
+    - name: Build instance info
+      set_fact:
+        instance_info: >-
+          {{ instance_info | default([]) + [{
+            'name': item.item.name,
+            'ip': item.instances[0].public_ip_address,
+            'private_ip': item.instances[0].private_ip_address,
+            'instance_id': item.instances[0].instance_id,
+            'ssh_user': item.item.ssh_user,
+            'os_type': item.item.os_type,
+            'platform': item.item.platform
+          }] }}
+      loop: "{{ ec2_results.results }}"
+      when: item.instances is defined
+
+    - name: Display provisioned instances
+      debug:
+        msg: |
+
+          =============================================
+          AWS Compliance Lab Provisioned Successfully
+          =============================================
+
+          Region: {{ (aws_region | default('us-east-1', true)) }}
+          VPC ID: {{ vpc.vpc.id }}
+          Subnet ID: {{ subnet.subnet.id }}
+
+          Instances:
+          {% for inst in instance_info %}
+            {{ inst.name }}:
+              Public IP: {{ inst.ip }}
+              Private IP: {{ inst.private_ip }}
+              Instance ID: {{ inst.instance_id }}
+              SSH User: {{ inst.ssh_user }}
+              Platform: {{ inst.platform }}
+          {% endfor %}
+
+          SSH Key: {{ key_name }}
+
+          Next Steps:
+          1. Add instances to AAP Inventory
+          2. Create Machine Credential with SSH key
+          3. Run compliance assessments
+
+          =============================================
+
+    # =========================================
+    # Register with AAP Inventory (Optional)
+    # =========================================
+    - name: Add hosts to AAP inventory via API
+      uri:
+        use_proxy: false
+        url: "https://{{ aap_host | default('localhost') }}/api/controller/v2/hosts/"
+        method: POST
+        user: "{{ aap_username | default('admin') }}"
+        password: "{{ aap_password | default(lookup('env', 'CONTROLLER_PASSWORD')) }}"
+        validate_certs: no
+        body_format: json
+        body:
+          name: "{{ item.name }}"
+          inventory: "{{ aap_inventory_id | default(4) }}"
+          variables: |
+            ansible_host: {{ item.ip }}
+            ansible_user: {{ item.ssh_user }}
+            platform: {{ item.platform }}
+            instance_id: {{ item.instance_id }}
+            {% if item.os_type == 'windows' %}
+            ansible_connection: winrm
+            ansible_winrm_transport: ntlm
+            ansible_port: 5986
+            ansible_winrm_server_cert_validation: ignore
+            {% endif %}
+        status_code: [200, 201]
+      loop: "{{ instance_info }}"
+      when:
+        - aap_host is defined
+        - add_to_aap_inventory | default(false) | bool
+      ignore_errors: yes

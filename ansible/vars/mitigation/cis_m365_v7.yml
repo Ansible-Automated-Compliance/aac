@@ -1,0 +1,24 @@
+---
+# F2 mitigation catalog — CIS Microsoft 365 Foundations v7.0.0.
+# Framework-specific remediation guidance as DATA (the logic is generic code
+# in scripts/mitigation.py). Keyed by control-id prefix (dotted-segment match,
+# longest wins). Directional by design: the admin surface + the action; exact
+# steps live in the CIS benchmark text.
+framework: cis_m365_v7
+mitigations:
+  "1.1": {where: "Microsoft 365 admin center -> Users / Roles", action: "adjust administrative role assignments and account configuration", method: manual}
+  "1.2": {where: "Microsoft 365 admin center -> Teams & groups", action: "restrict group creation / sharing to approved owners", method: manual}
+  "1.3": {where: "Microsoft 365 admin center -> Settings -> Org settings", action: "disable the permissive service setting for this control", method: manual}
+  "2": {where: "Microsoft Defender portal -> Policies & rules", action: "enable or strengthen the Safe Links / Safe Attachments / anti-phishing policy", method: manual}
+  "3": {where: "Microsoft Purview -> Data lifecycle / DLP", action: "enable the data-protection or DLP policy for this control", method: manual}
+  "5.1.2": {where: "Microsoft Entra admin center -> Identity -> Users -> User settings", action: "restrict the user self-service capability to administrators", method: manual}
+  "5.1.3": {where: "Microsoft Entra admin center -> Identity -> Groups -> General", action: "restrict group self-service to administrators", method: manual}
+  "5.1.5": {where: "Microsoft Entra admin center -> Identity -> Enterprise applications -> Consent and permissions", action: "route application consent to an administrator", method: manual}
+  "5.1": {where: "Microsoft Entra admin center -> Identity -> Users", action: "apply the identity restriction for this control", method: manual}
+  "5.2": {where: "Microsoft Entra admin center -> Protection -> Authentication methods / Conditional Access", action: "enable the authentication-strength / MFA control", method: manual}
+  "5.3": {where: "Microsoft Entra admin center -> Identity Governance", action: "apply the access-review / PIM configuration", method: manual}
+  "6": {where: "Exchange admin center -> Mail flow / Settings", action: "apply the Exchange Online configuration for this control", method: manual}
+  "7": {where: "SharePoint admin center -> Policies / Sharing", action: "tighten the SharePoint / OneDrive sharing setting", method: manual}
+  "8": {where: "Teams admin center -> Meetings / Messaging policies", action: "apply the Teams policy for this control", method: manual}
+  "9": {where: "Microsoft Fabric / Power Platform admin portal", action: "apply the tenant setting for this control", method: manual}
+  _default: {where: "Microsoft 365 / Entra admin center", action: "apply the CIS-recommended configuration for this control", method: manual}

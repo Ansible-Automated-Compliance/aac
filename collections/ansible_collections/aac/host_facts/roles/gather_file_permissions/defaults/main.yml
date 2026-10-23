@@ -1,0 +1,109 @@
+---
+# Default variables for gather_file_permissions role
+
+# Critical system files and their expected permissions (CIS 6.1.x)
+critical_file_permissions:
+  /etc/passwd:
+    mode: "0644"
+    owner: root
+    group: root
+  /etc/passwd-:
+    mode: "0644"
+    owner: root
+    group: root
+  /etc/group:
+    mode: "0644"
+    owner: root
+    group: root
+  /etc/group-:
+    mode: "0644"
+    owner: root
+    group: root
+  /etc/shadow:
+    mode: "0000"
+    owner: root
+    group: root
+  /etc/shadow-:
+    mode: "0000"
+    owner: root
+    group: root
+  /etc/gshadow:
+    mode: "0000"
+    owner: root
+    group: root
+  /etc/gshadow-:
+    mode: "0000"
+    owner: root
+    group: root
+  /etc/security/opasswd:
+    mode: "0600"
+    owner: root
+    group: root
+  /etc/shells:
+    mode: "0644"
+    owner: root
+    group: root
+  /etc/crontab:
+    mode: "0600"
+    owner: root
+    group: root
+  /etc/cron.hourly:
+    mode: "0700"
+    owner: root
+    group: root
+  /etc/cron.daily:
+    mode: "0700"
+    owner: root
+    group: root
+  /etc/cron.weekly:
+    mode: "0700"
+    owner: root
+    group: root
+  /etc/cron.monthly:
+    mode: "0700"
+    owner: root
+    group: root
+  /etc/cron.d:
+    mode: "0700"
+    owner: root
+    group: root
+  /etc/ssh/sshd_config:
+    mode: "0600"
+    owner: root
+    group: root
+
+# Search paths for SUID/SGID files
+search_paths:
+  - /usr/bin
+  - /usr/sbin
+  - /usr/local/bin
+  - /usr/local/sbin
+  - /bin
+  - /sbin
+
+# Known legitimate SUID binaries (to reduce noise)
+known_suid_binaries:
+  - /usr/bin/sudo
+  - /usr/bin/su
+  - /usr/bin/passwd
+  - /usr/bin/chage
+  - /usr/bin/gpasswd
+  - /usr/bin/newgrp
+  - /usr/bin/mount
+  - /usr/bin/umount
+  - /usr/bin/crontab
+  - /usr/bin/pkexec
+  - /usr/bin/staprun
+  - /usr/sbin/unix_chkpwd
+  - /usr/sbin/pam_timestamp_check
+  - /usr/libexec/openssh/ssh-keysign
+  - /usr/libexec/dbus-1/dbus-daemon-launch-helper
+
+# Maximum number of SUID/SGID files to report in detail
+max_suid_sgid_results: 100
+
+# Maximum number of unowned files to report
+max_unowned_files: 50
+
+# Maximum number of world-writable files to report
+max_world_writable_files: 50

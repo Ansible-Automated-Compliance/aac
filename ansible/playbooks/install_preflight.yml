@@ -1,0 +1,277 @@
+---
+# install_preflight.yml — standard AAC pre-install PRECONDITIONS gate.
+#
+# Profile-driven (ansible/vars/profiles/<env>.yml, selected in install_config.yml
+# or -e env_profile=<name>). Verifies the things that must already be true
+# BEFORE installing AAC — NOT the AAC services themselves (those are checked
+# after install by verify_install.yml).
+#
+# Checks: config is filled in (no leftover <placeholders>), AAP is reachable +
+# auth works, the PostgreSQL target is reachable and >= 15 (required for an
+# external/customer DB), the required secrets are present (not PLACEHOLDER), and
+# the EE image is set. Prints a GO / NO-GO report and fails on any hard failure.
+#
+# Run:  ansible-playbook ansible/playbooks/install_preflight.yml -e env_profile=lab
+#       (OpenShift profiles resolve in-cluster service DNS — run from the EE / AAP.)
+
+- name: AAC Install Preflight — preconditions gate
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  tasks:
+    # Secrets are expected from the profile's secret_source (an AAP credential
+    # injecting extra_vars, or a vault file for CLI). Defaults keep the probe
+    # from erroring when a value is simply absent. set_fact, NOT a vars-block
+    # self-reference (`x: "{{ x | default('') }}"`), which Jinja-recurses on
+    # ansible-core 2.16+ — the same trap verify_installation.yml documents.
+    - name: Default absent secrets to empty (eager, non-recursive)
+      ansible.builtin.set_fact:
+        compliance_db_password: "{{ compliance_db_password | default('') }}"
+        # extra_vars outrank set_fact: resolve internal copies so a null survey value is normalised
+        _aap_token: "{{ aap_token | default('', true) }}"
+        _aap_admin_password: "{{ aap_admin_password | default(vault_aap_admin_password | default('', true), true) }}"
+
+    - name: Load layered install config (site_config -> profile -> install_config)
+      ansible.builtin.include_tasks: ../tasks/load_install_profile.yml
+
+    # ── 1. Config completeness — catch an unfilled install_config.yml ────────
+    - name: Detect leftover <placeholder> values in critical config
+      ansible.builtin.set_fact:
+        _placeholder_vars: >-
+          {{ {'aap_url': aap_url, 'pg_host': pg_host,
+              'opa_security_url': opa_security_url,
+              'opa_compliance_url': opa_compliance_url,
+              'opa_ot_url': opa_ot_url, 'grafana_url': grafana_url,
+              'ee_image': ee_image}
+             | dict2items | selectattr('value', 'search', '[<>]')
+             | map(attribute='key') | list }}
+
+    # ── 2. AAP reachability + auth ──────────────────────────────────────────
+    - name: Probe AAP controller ping
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "{{ aap_url }}/api/controller/v2/ping/"
+        method: GET
+        status_code: [200]
+        timeout: 8
+        validate_certs: false
+      register: _aap_ping
+      ignore_errors: true
+
+    - name: Probe AAP auth (token or admin basic-auth)
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "{{ aap_url }}/api/controller/v2/me/"
+        method: GET
+        headers: "{{ {'Authorization': 'Bearer ' ~ _aap_token} if (_aap_token | length > 0) else {} }}"
+        url_username: "{{ aap_admin_user | default('admin') if (_aap_token | length == 0) else omit }}"
+        url_password: "{{ _aap_admin_password if (_aap_token | length == 0) else omit }}"
+        force_basic_auth: "{{ (_aap_token | length == 0) and (_aap_admin_password | length > 0) }}"
+        status_code: [200]
+        timeout: 8
+        validate_certs: false
+      register: _aap_auth
+      ignore_errors: true
+      when: (_aap_token | length > 0) or (_aap_admin_password | length > 0)
+
+    # ── 3. PostgreSQL reachable + version >= 15 ─────────────────────────────
+    - name: Probe PostgreSQL server version
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port | default(5432) }}"
+        login_user: "{{ pg_user | default('postgres') }}"
+        login_password: "{{ compliance_db_password }}"
+        login_db: "{{ 'postgres' if topology == 'containers' else pg_db | default('compliance') }}"
+        query: "SHOW server_version"
+      register: _pg_probe
+      ignore_errors: true
+
+    - name: Extract PostgreSQL major version
+      ansible.builtin.set_fact:
+        _pg_major: "{{ (_pg_probe.query_result[0].server_version | default('0')).split('.')[0] | int }}"
+      when: _pg_probe is defined and (_pg_probe.query_result | default([]) | length > 0)
+
+    # ── 4. Required secrets present (value-probe, not just defined) ──────────
+    - name: Classify required secrets
+      ansible.builtin.set_fact:
+        _secret_status:
+          compliance_db_password: "{{ 'present' if (compliance_db_password | length > 0 and 'PLACEHOLDER' not in compliance_db_password) else 'MISSING' }}"
+          aap_auth: "{{ 'present' if ((_aap_token | length > 0) or (_aap_admin_password | length > 0)) else 'MISSING' }}"
+
+    # Is the PostgreSQL target a hard precondition? Only for an external/customer
+    # DB (for container topology WE deploy it, so it may be absent at preflight).
+    - name: Decide whether PostgreSQL is a hard precondition
+      ansible.builtin.set_fact:
+        # Hard only for an external/customer DB (it must pre-exist). For OpenShift
+        # profiles WE deploy compliance-db, so its absence at preflight is a warning.
+        _pg_hard: "{{ (env_profile == 'customer') | bool }}"
+
+    # ── 5. Podman carries the /dev/null layer-extraction fix (containers only) ──
+    # Rootless podman < 5.8.2-6 could hard-link the host's /dev/null during image
+    # layer normalization and strip its world-write bits (/dev/null is 0666 by
+    # design, which is exactly what made it hard-linkable). A broken /dev/null
+    # takes down sudo/ssh/systemd redirects and the AAP gateway upstreams —
+    # surfacing as intermittent 503 "No Healthy Upstream" that reinstalls only
+    # temporarily mask (each image pull can re-trigger it). Root-caused by Red Hat
+    # engineering on a customer POC, 2026-09; fixed in podman 5.8.2-6.el9_8.
+    # Both this and the /dev/null probe below run ON the container host via
+    # delegate_to aac_host — podman storage and the /dev/null device live there,
+    # not on the EE/controller that runs this play (hosts: localhost). Without the
+    # delegation a clean EE would report GO while the target still carries the
+    # residue. failed_when:false so an unreachable host surfaces as a "probe
+    # failed" NO-GO (distinct from a real finding), not a play abort.
+    # sort -V compares VERSION-RELEASE without needing rpmdev.
+    - name: Probe podman version-release (containers topology only)
+      ansible.builtin.shell: |
+        set -o pipefail
+        vr=$(rpm -q --qf '%{VERSION}-%{RELEASE}' podman 2>/dev/null) || { echo "ABSENT"; exit 0; }
+        lowest=$(printf '%s\n' "5.8.2-6" "$vr" | sort -V | head -1)
+        [ "$lowest" = "5.8.2-6" ] && echo "OK $vr" || echo "OLD $vr"
+      register: _podman_probe
+      changed_when: false
+      failed_when: false
+      delegate_to: "{{ aac_host }}"
+      when: topology | default('') == 'containers'
+
+    # ── 5b. /dev/null integrity (containers only) — catches pre-existing residue ──
+    # Even with fixed podman, links created by EARLIER extractions persist under
+    # the service account's ~/.local/share/containers — and any /home permission-
+    # hardening sweep then chmods the shared inode, breaking /dev/null host-wide
+    # (rw-rw-rw- -> rw-rw-r--), which kills sudo/ssh redirects and the AAP
+    # gateway. Healthy state: character device, mode 666, link count exactly 1.
+    # Link count > 1 => leftover hard links (find $HOME -xdev -samefile /dev/null;
+    # podman system reset + reinstall on fixed podman is the clean route).
+    # Mode != 666 => something already struck it (restore: chmod 666 /dev/null,
+    # then find and fix the striker — see the podman check above).
+    - name: Probe /dev/null integrity (containers topology only)
+      ansible.builtin.shell: |
+        set -o pipefail
+        s=$(stat -c '%F|%a|%h' /dev/null 2>/dev/null) || { echo "MISSING"; exit 0; }
+        [ "$s" = "character special file|666|1" ] && echo "OK $s" || echo "BAD $s"
+      register: _devnull_probe
+      changed_when: false
+      failed_when: false
+      delegate_to: "{{ aac_host }}"
+      when: topology | default('') == 'containers'
+
+    # These host probes are n/a ONLY for the recognized openshift topology (AAC
+    # runs in-cluster there, not on host podman). Every other value — including a
+    # typo like 'contianers' — falls through to the else branch, where the probe
+    # was skipped (when: == 'containers'), so stdout is empty, the match fails, and
+    # the check reads NO-GO. Paired with the hard flag below (hard for anything not
+    # openshift) and the explicit "Topology is a known value" check, an unknown
+    # topology fails closed instead of being silently auto-passed as n/a.
+    - name: Evaluate /dev/null check result
+      ansible.builtin.set_fact:
+        _devnull_ok: >-
+          {{ true if topology | default('') == 'openshift'
+             else (_devnull_probe.stdout | default('') is match('^OK ')) }}
+        _devnull_detail: >-
+          {{ 'n/a (' ~ topology | default('?') ~ ' topology)'
+             if topology | default('') == 'openshift'
+             else (_devnull_probe.stdout | default('probe failed')
+                   | replace('MISSING', '/dev/null missing entirely')
+                   | replace('BAD ', 'UNHEALTHY (want char device|666|links=1) — restore mode then clear residue (chmod 666 /dev/null; find /home/<svc> -xdev -samefile /dev/null; podman system reset as the service user + reinstall on fixed podman): ')
+                   | replace('OK ', 'healthy: ')) }}
+
+    - name: Evaluate podman check result
+      ansible.builtin.set_fact:
+        _podman_ok: >-
+          {{ true if topology | default('') == 'openshift'
+             else (_podman_probe.stdout | default('') is match('^OK ')) }}
+        _podman_detail: >-
+          {{ 'n/a (' ~ topology | default('?') ~ ' topology)'
+             if topology | default('') == 'openshift'
+             else (_podman_probe.stdout | default('probe failed')
+                   | replace('ABSENT', 'podman not installed on this host')
+                   | replace('OLD ', 'vulnerable, need >= 5.8.2-6: ')
+                   | replace('OK ', 'fixed: ')) }}
+
+    # NOTE: a second, link-count-only /dev/null probe used to run here and
+    # OVERWROTE _devnull_ok/_devnull_detail — so a /dev/null at mode 664 with
+    # link count 1 passed the gate, defeating the mode check. Removed: the
+    # full-tuple probe above (char device + mode 666 + link count 1) is the
+    # single source of truth and already covers the link count via %h.
+
+    # ── Build the checks table ──────────────────────────────────────────────
+    - name: Assemble preflight checks
+      ansible.builtin.set_fact:
+        checks:
+          - name: "Config filled in (no <placeholders>)"
+            ok: "{{ (_placeholder_vars | length == 0) | bool }}"
+            detail: "{{ 'clean' if _placeholder_vars | length == 0 else 'unset: ' ~ (_placeholder_vars | join(', ')) }}"
+            hard: true
+          - name: "AAP controller reachable"
+            ok: "{{ (_aap_ping.status | default(0) == 200) | bool }}"
+            detail: "{{ aap_url }} -> HTTP {{ _aap_ping.status | default('unreachable') }}"
+            hard: true
+          - name: "AAP auth valid"
+            ok: "{{ (_aap_auth.status | default(0) == 200) | bool }}"
+            detail: "{{ 'ok' if (_aap_auth.status | default(0) == 200) else 'token/admin auth failed or not provided' }}"
+            hard: true
+          - name: "PostgreSQL reachable"
+            ok: "{{ (_pg_probe.query_result | default([]) | length > 0) | bool }}"
+            detail: "{{ pg_host ~ ':' ~ (pg_port | default(5432)) ~ ' -> ' ~ ((_pg_probe.query_result[0].server_version) if (_pg_probe.query_result | default([]) | length > 0) else 'unreachable') }}"
+            hard: "{{ _pg_hard | bool }}"
+          - name: "PostgreSQL version >= 15"
+            ok: "{{ ((_pg_major | default(0) | int) >= 15) | bool }}"
+            detail: "{{ 'v' ~ (_pg_major | default('?')) if (_pg_major is defined) else 'not probed' }}"
+            hard: "{{ _pg_hard | bool }}"
+          - name: "Secret: compliance_db_password"
+            ok: "{{ (_secret_status.compliance_db_password == 'present') | bool }}"
+            detail: "{{ _secret_status.compliance_db_password }}"
+            hard: true
+          - name: "Secret: AAP auth (token or admin password)"
+            ok: "{{ (_secret_status.aap_auth == 'present') | bool }}"
+            detail: "{{ _secret_status.aap_auth }}"
+            hard: true
+          - name: "EE image set"
+            ok: "{{ (ee_image | length > 0 and '<' not in ee_image) | bool }}"
+            detail: "{{ ee_image }}"
+            hard: true
+          # Fail closed on an unknown/typo'd topology. The host probes below key
+          # their skip/hard behavior off this value; a value that is neither
+          # 'containers' nor 'openshift' (e.g. 'contianers') must NO-GO here rather
+          # than slip through as a non-hard n/a. profiles/<env>.yml set it, but an
+          # inventory/-e override can supply anything and is not otherwise validated.
+          - name: "Topology is a known value"
+            ok: "{{ (topology | default('') in ['containers', 'openshift']) | bool }}"
+            detail: "{{ topology | default('(unset)') }} (must be containers|openshift)"
+            hard: true
+          - name: "Podman >= 5.8.2-6 (/dev/null layer-extraction fix)"
+            ok: "{{ _podman_ok | bool }}"
+            detail: "{{ _podman_detail | trim }}"
+            hard: "{{ (topology | default('') != 'openshift') | bool }}"
+          - name: "/dev/null integrity (char device, 666, no hard links)"
+            ok: "{{ _devnull_ok | bool }}"
+            detail: "{{ _devnull_detail | trim }}"
+            hard: "{{ (topology | default('') != 'openshift') | bool }}"
+
+    - name: Count failures
+      ansible.builtin.set_fact:
+        hard_failures: "{{ checks | rejectattr('ok') | selectattr('hard', 'equalto', true) | list }}"
+        soft_failures: "{{ checks | rejectattr('ok') | rejectattr('hard', 'equalto', true) | list }}"
+
+    - name: Preflight — per-check result
+      ansible.builtin.debug:
+        msg: "{{ (item.ok | ternary('✅', '❌')) }} {{ item.name }} :: {{ item.detail }}{{ '  [warn]' if (not item.ok and not (item.hard | bool)) else '' }}"
+      loop: "{{ checks }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Preflight verdict
+      ansible.builtin.debug:
+        msg: >-
+          AAC INSTALL PREFLIGHT — {{ env_profile_name | default(env_profile) }}
+          ({{ topology | default('?') }}):
+          {{ (hard_failures | length == 0) | ternary('🟢 GO — preconditions met',
+             '🔴 NO-GO — ' ~ (hard_failures | length) ~ ' hard failure(s)') }}
+          {{ '| warnings: ' ~ (soft_failures | map(attribute='name') | join(', ')) if (soft_failures | length > 0) else '' }}
+
+    - name: Fail if any hard precondition is unmet
+      ansible.builtin.fail:
+        msg: >-
+          Preflight NO-GO — {{ hard_failures | map(attribute='name') | join('; ') }}.
+          Fix these before installing. See install_config.yml / the environment profile.
+      when: hard_failures | length > 0

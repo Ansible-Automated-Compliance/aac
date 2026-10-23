@@ -1,0 +1,380 @@
+---
+# tasks file for gather_network_config
+
+# =============================================================================
+# CIS 3.1.x, 3.2.x, 3.3.x - NETWORK KERNEL PARAMETERS
+# =============================================================================
+
+- name: Get all sysctl parameters
+  shell: sysctl -a 2>/dev/null | grep -E '^(net\.ipv4\.|net\.ipv6\.)'
+  register: all_sysctl_raw
+  changed_when: false
+  failed_when: false
+
+- name: Parse current sysctl parameters
+  set_fact:
+    current_sysctl_params: |-
+      {% set params = {} %}
+      {% for line in all_sysctl_raw.stdout_lines %}
+        {% if '=' in line %}
+          {% set parts = line.split('=', 1) %}
+          {% set key = parts[0].strip() %}
+          {% set value = parts[1].strip() %}
+          {% set _ = params.update({key: value}) %}
+        {% endif %}
+      {% endfor %}
+      {{ params }}
+
+- name: Check expected sysctl parameters
+  set_fact:
+    sysctl_compliance_analysis: |-
+      {% set analysis = [] %}
+      {% for param, config in expected_sysctl_parameters.items() %}
+        {% set current_value = current_sysctl_params.get(param, 'not set') %}
+        {% set expected_value = config.value | string %}
+        {% set is_compliant = current_value == expected_value %}
+        {% set _ = analysis.append({
+          'parameter': param,
+          'expected_value': expected_value,
+          'current_value': current_value,
+          'description': config.description,
+          'compliant': is_compliant,
+          'severity': 'high' if not is_compliant else 'none'
+        }) %}
+      {% endfor %}
+      {{ analysis }}
+
+# =============================================================================
+# CIS 3.1.1 - IP FORWARDING
+# =============================================================================
+
+- name: Check IP forwarding status
+  shell: |
+    ipv4=$(sysctl net.ipv4.ip_forward 2>/dev/null | awk '{print $3}')
+    ipv6=$(sysctl net.ipv6.conf.all.forwarding 2>/dev/null | awk '{print $3}')
+    echo "ipv4=$ipv4 ipv6=$ipv6"
+  register: ip_forward_check
+  changed_when: false
+  failed_when: false
+
+- name: Parse IP forwarding status
+  set_fact:
+    ip_forwarding: |-
+      {% set parts = ip_forward_check.stdout.split() %}
+      {% set ipv4 = 'unknown' %}
+      {% set ipv6 = 'unknown' %}
+      {% for part in parts %}
+        {% if 'ipv4=' in part %}
+          {% set ipv4 = part.split('=')[1] %}
+        {% elif 'ipv6=' in part %}
+          {% set ipv6 = part.split('=')[1] %}
+        {% endif %}
+      {% endfor %}
+      {
+        'ipv4_forwarding': {{ ipv4 }},
+        'ipv6_forwarding': {{ ipv6 }},
+        'ipv4_compliant': {{ ipv4 == '0' }},
+        'ipv6_compliant': {{ ipv6 == '0' }},
+        'fully_compliant': {{ ipv4 == '0' and ipv6 == '0' }}
+      }
+
+# =============================================================================
+# CIS 3.3.x - IPv6 CONFIGURATION
+# =============================================================================
+
+- name: Check if IPv6 is disabled
+  shell: |
+    if grep -q "ipv6.disable=1" /proc/cmdline 2>/dev/null; then
+      echo "disabled_kernel"
+    elif [ ! -d /proc/sys/net/ipv6 ]; then
+      echo "disabled"
+    else
+      echo "enabled"
+    fi
+  register: ipv6_status_check
+  changed_when: false
+  failed_when: false
+
+- name: Check IPv6 addresses
+  shell: ip -6 addr show | grep -c "inet6" || echo "0"
+  register: ipv6_addresses_count
+  changed_when: false
+  failed_when: false
+
+- name: Parse IPv6 status
+  set_fact:
+    ipv6_status:
+      status: "{{ ipv6_status_check.stdout }}"
+      disabled: "{{ ipv6_status_check.stdout in ['disabled', 'disabled_kernel'] }}"
+      address_count: "{{ ipv6_addresses_count.stdout | int }}"
+      compliant: "{{ ipv6_status_check.stdout in ['disabled', 'disabled_kernel'] or ipv6_disabled == false }}"
+
+# =============================================================================
+# NETWORK INTERFACES
+# =============================================================================
+
+- name: Get network interface list
+  # Quoted: the unquoted form contains ": " inside the awk field separator,
+  # which YAML reads as a mapping separator and refuses to parse.
+  shell: "ip -o link show | awk -F': ' '{print $2}' | grep -v '^lo$'"
+  register: network_interfaces_raw
+  changed_when: false
+  failed_when: false
+
+- name: Get detailed interface information
+  shell: |
+    ip -o addr show {{ item }} | awk '{print $2"|"$3"|"$4}'
+  loop: "{{ network_interfaces_raw.stdout_lines }}"
+  register: interface_details_raw
+  changed_when: false
+  failed_when: false
+
+- name: Parse network interfaces
+  set_fact:
+    network_interfaces: |-
+      {% set interfaces = [] %}
+      {% for result in interface_details_raw.results %}
+        {% if result.stdout %}
+          {% for line in result.stdout_lines %}
+            {% set parts = line.split('|') %}
+            {% if parts | length >= 3 %}
+              {% set _ = interfaces.append({
+                'name': parts[0],
+                'family': parts[1],
+                'address': parts[2]
+              }) %}
+            {% endif %}
+          {% endfor %}
+        {% endif %}
+      {% endfor %}
+      {{ interfaces }}
+
+# =============================================================================
+# WIRELESS INTERFACES (Should not exist on servers)
+# =============================================================================
+
+- name: Check for wireless interfaces
+  shell: |
+    ip link show | grep -E '^[0-9]+: (wlan|wlp|wifi)' | awk -F': ' '{print $2}' | cut -d'@' -f1
+  register: wireless_interfaces_raw
+  changed_when: false
+  failed_when: false
+
+- name: Parse wireless interfaces
+  set_fact:
+    wireless_interfaces:
+      interfaces: "{{ wireless_interfaces_raw.stdout_lines }}"
+      count: "{{ wireless_interfaces_raw.stdout_lines | length }}"
+      has_wireless: "{{ wireless_interfaces_raw.stdout_lines | length > 0 }}"
+      compliant: "{{ wireless_interfaces_raw.stdout_lines | length == 0 }}"
+
+# =============================================================================
+# /etc/sysctl.conf and /etc/sysctl.d/ FILES
+# =============================================================================
+
+- name: Check if /etc/sysctl.conf exists
+  stat:
+    path: /etc/sysctl.conf
+  register: sysctl_conf_stat
+
+- name: Read /etc/sysctl.conf if it exists
+  slurp:
+    src: /etc/sysctl.conf
+  register: sysctl_conf_content
+  when: sysctl_conf_stat.stat.exists
+  failed_when: false
+
+- name: Find all sysctl.d configuration files
+  find:
+    paths: /etc/sysctl.d
+    patterns: "*.conf"
+  register: sysctl_d_files
+  failed_when: false
+
+- name: Read sysctl.d files
+  slurp:
+    src: "{{ item.path }}"
+  loop: "{{ sysctl_d_files.files | default([]) }}"
+  register: sysctl_d_contents
+  failed_when: false
+
+- name: Parse persistent sysctl configuration
+  set_fact:
+    persistent_sysctl_config: |-
+      {% set config = {'sysctl_conf': {}, 'sysctl_d': {}} %}
+      {% if sysctl_conf_content is defined and sysctl_conf_content is succeeded %}
+        {% for line in (sysctl_conf_content.content | b64decode).split('\n') %}
+          {% if line and not line.strip().startswith('#') and '=' in line %}
+            {% set parts = line.split('=', 1) %}
+            {% set key = parts[0].strip() %}
+            {% set value = parts[1].strip() %}
+            {% set _ = config.sysctl_conf.update({key: value}) %}
+          {% endif %}
+        {% endfor %}
+      {% endif %}
+      {% for file_result in sysctl_d_contents.results | default([]) %}
+        {% if file_result is succeeded %}
+          {% set filename = file_result.item.path | basename %}
+          {% set file_params = {} %}
+          {% for line in (file_result.content | b64decode).split('\n') %}
+            {% if line and not line.strip().startswith('#') and '=' in line %}
+              {% set parts = line.split('=', 1) %}
+              {% set key = parts[0].strip() %}
+              {% set value = parts[1].strip() %}
+              {% set _ = file_params.update({key: value}) %}
+            {% endif %}
+          {% endfor %}
+          {% set _ = config.sysctl_d.update({filename: file_params}) %}
+        {% endif %}
+      {% endfor %}
+      {{ config }}
+
+# =============================================================================
+# ICMP AND ROUTING CONFIGURATION
+# =============================================================================
+
+- name: Check routing table
+  shell: ip route show
+  register: routing_table_raw
+  changed_when: false
+  failed_when: false
+
+- name: Parse routing table
+  set_fact:
+    routing_table:
+      routes: "{{ routing_table_raw.stdout_lines }}"
+      route_count: "{{ routing_table_raw.stdout_lines | length }}"
+      has_default_route: "{{ 'default' in routing_table_raw.stdout }}"
+
+# =============================================================================
+# NETWORK MANAGER STATUS
+# =============================================================================
+
+- name: Check NetworkManager service status
+  systemd:
+    name: NetworkManager
+  register: networkmanager_service_status
+  failed_when: false
+
+- name: Parse NetworkManager status
+  set_fact:
+    networkmanager_status:
+      active: "{{ networkmanager_service_status.status.ActiveState == 'active' if networkmanager_service_status.status is defined else false }}"
+      enabled: "{{ networkmanager_service_status.status.UnitFileState in ['enabled', 'enabled-runtime'] if networkmanager_service_status.status is defined else false }}"
+
+# =============================================================================
+# FIREWALL STATUS (Basic Check)
+# =============================================================================
+
+- name: Check firewall status
+  shell: |
+    if systemctl is-active firewalld >/dev/null 2>&1; then
+      echo "firewalld"
+    elif systemctl is-active iptables >/dev/null 2>&1; then
+      echo "iptables"
+    elif systemctl is-active nftables >/dev/null 2>&1; then
+      echo "nftables"
+    else
+      echo "none"
+    fi
+  register: firewall_type_check
+  changed_when: false
+  failed_when: false
+
+- name: Parse firewall status
+  set_fact:
+    firewall_status:
+      type: "{{ firewall_type_check.stdout }}"
+      active: "{{ firewall_type_check.stdout != 'none' }}"
+      compliant: "{{ firewall_type_check.stdout in ['firewalld', 'nftables'] }}"
+
+# =============================================================================
+# COMPREHENSIVE NETWORK CONFIGURATION FACTS ASSEMBLY
+# =============================================================================
+
+- name: Set comprehensive network configuration facts
+  set_fact:
+    host_network_facts:
+      sysctl_parameters:
+        expected_parameters: "{{ expected_sysctl_parameters.keys() | list }}"
+        analysis: "{{ sysctl_compliance_analysis }}"
+        compliant_count: >-
+          {{
+            sysctl_compliance_analysis | selectattr('compliant', 'equalto', true) | list | length
+          }}
+        non_compliant_count: >-
+          {{
+            sysctl_compliance_analysis | selectattr('compliant', 'equalto', false) | list | length
+          }}
+        all_compliant: >-
+          {{
+            (sysctl_compliance_analysis | selectattr('compliant', 'equalto', false) | list | length) == 0
+          }}
+        non_compliant_params: >-
+          {{
+            sysctl_compliance_analysis | selectattr('compliant', 'equalto', false) | list
+          }}
+      ip_forwarding: "{{ ip_forwarding }}"
+      ipv6:
+        status: "{{ ipv6_status.status }}"
+        disabled: "{{ ipv6_status.disabled }}"
+        address_count: "{{ ipv6_status.address_count }}"
+        compliant: "{{ ipv6_status.compliant }}"
+      network_interfaces:
+        all_interfaces: "{{ network_interfaces }}"
+        interface_count: "{{ network_interfaces | length }}"
+      wireless_interfaces: "{{ wireless_interfaces }}"
+      persistent_config:
+        sysctl_conf: "{{ persistent_sysctl_config.sysctl_conf }}"
+        sysctl_d_files: "{{ persistent_sysctl_config.sysctl_d.keys() | list }}"
+        sysctl_d_params: "{{ persistent_sysctl_config.sysctl_d }}"
+      routing:
+        table: "{{ routing_table }}"
+      networkmanager: "{{ networkmanager_status }}"
+      firewall: "{{ firewall_status }}"
+      compliance_checks:
+        all_sysctl_compliant: >-
+          {{
+            (sysctl_compliance_analysis | selectattr('compliant', 'equalto', false) | list | length) == 0
+          }}
+        ip_forwarding_disabled: "{{ ip_forwarding.fully_compliant }}"
+        ipv6_compliant: "{{ ipv6_status.compliant }}"
+        no_wireless_interfaces: "{{ wireless_interfaces.compliant }}"
+        firewall_active: "{{ firewall_status.active }}"
+      collection_timestamp: "{{ ansible_date_time.iso8601 }}"
+
+- name: Display network configuration summary
+  debug:
+    msg:
+      - "=========================================="
+      - "Network Configuration Facts"
+      - "=========================================="
+      - "Sysctl Parameters:"
+      - "  Total Checked: {{ host_network_facts.sysctl_parameters.expected_parameters | length }}"
+      - "  Compliant: {{ host_network_facts.sysctl_parameters.compliant_count }}"
+      - "  Non-Compliant: {{ host_network_facts.sysctl_parameters.non_compliant_count }}"
+      - ""
+      - "IP Forwarding:"
+      - "  IPv4: {{ ip_forwarding.ipv4_forwarding }} (Expected: 0)"
+      - "  IPv6: {{ ip_forwarding.ipv6_forwarding }} (Expected: 0)"
+      - "  Compliant: {{ ip_forwarding.fully_compliant }}"
+      - ""
+      - "IPv6 Status:"
+      - "  Status: {{ ipv6_status.status }}"
+      - "  Addresses: {{ ipv6_status.address_count }}"
+      - "  Compliant: {{ ipv6_status.compliant }}"
+      - ""
+      - "Network Interfaces:"
+      - "  Total: {{ network_interfaces | length }}"
+      - "  Wireless: {{ wireless_interfaces.count }}"
+      - ""
+      - "Firewall:"
+      - "  Type: {{ firewall_status.type }}"
+      - "  Active: {{ firewall_status.active }}"
+      - ""
+      - "Compliance Summary:"
+      - "  Sysctl Parameters: {{ host_network_facts.compliance_checks.all_sysctl_compliant }}"
+      - "  IP Forwarding Disabled: {{ host_network_facts.compliance_checks.ip_forwarding_disabled }}"
+      - "  No Wireless: {{ host_network_facts.compliance_checks.no_wireless_interfaces }}"
+      - "  Firewall Active: {{ host_network_facts.compliance_checks.firewall_active }}"
+      - "=========================================="

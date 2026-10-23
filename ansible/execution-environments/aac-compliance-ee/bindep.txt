@@ -1,0 +1,9 @@
+python3-devel [platform:centos-8 platform:centos-9 platform:rhel-8 platform:rhel-9 platform:rocky-9]
+postgresql-devel [platform:centos-8 platform:centos-9 platform:rhel-8 platform:rhel-9 platform:rocky-9]
+# Runtime postgres client — provides pg_dump / psql so
+# community.postgresql.postgresql_db state=dump works in
+# push_db_backup_to_github.yml and seed_rhpds_database.yml without
+# shelling out to the host.
+postgresql [platform:centos-8 platform:centos-9 platform:rhel-8 platform:rhel-9 platform:rocky-9]
+libpq-devel [platform:centos-8 platform:centos-9 platform:rhel-8 platform:rhel-9 platform:rocky-9]
+gcc [compile]

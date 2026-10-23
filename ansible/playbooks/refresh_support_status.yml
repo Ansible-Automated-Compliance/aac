@@ -1,0 +1,200 @@
+---
+# refresh_support_status.yml — resolve technology support status (EOL exposure)
+#
+# Fills the `technology_lifecycle` debt category, which the debt-scoring policy
+# has declared since it was written but which nothing has ever fed.
+#
+# What it answers: **which of my systems run technology that is past end of
+# support** — where no patch will ever come, remediation debt has become
+# REPLACEMENT debt, and NERC CIP-007-6 R2.3 requires a dated mitigation plan as
+# the only lawful path. Maps to NIST 800-53 SA-22 and CIS Controls v8 2.2.
+#
+# Needs NO customer integration and NO asset register. It runs entirely against
+# the product catalog fact collection already produces, which is why it sits
+# near the top of the build sequence.
+#
+# Run after "AAC - Refresh Inventory Catalog (patch intelligence)".
+#
+# AAP Job Template: "AAC - Refresh Support Status (EOL exposure)"
+# Credentials: Ansible Vault
+# EE: AAC Compliance EE (community.postgresql)
+# Schedule: weekly — lifecycle dates move slowly, and the upstream feed is a
+#           courtesy service that should not be polled hard.
+
+- name: Resolve technology support status from the product catalog
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - [ "../vars/vault_secrets.yml", "../vars/empty_fallback.yml" ]
+    - ../vars/site_config.yml
+
+  vars:
+    pg_port: "{{ compliance_db_port | default(5432) }}"
+    pg_db: "compliance"
+    pg_user: "postgres"
+    pg_password: "{{ compliance_db_password }}"
+    eol_api_base: "https://endoflife.date/api"
+
+  tasks:
+    - name: Ensure the support-status schema exists
+      community.postgresql.postgresql_script:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        path: "{{ playbook_dir }}/../files/support_status_schema.sql"
+
+    # Only fetch products the operator has actually mapped. Fetching all 460+
+    # upstream products would be rude to a free service and useless to us.
+    - name: Read the mapped product list
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: "SELECT DISTINCT eol_product FROM support_status_map ORDER BY 1"
+      register: mapped_products
+
+    - name: Fail clearly when nothing is mapped
+      ansible.builtin.fail:
+        msg: >-
+          support_status_map is empty, so there is nothing to resolve. The schema
+          seeds the common OS and runtime products; if this fires, the seed did
+          not apply.
+      when: (mapped_products.query_result | default([])) | length == 0
+
+    - name: Fetch lifecycle data per product
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "{{ eol_api_base }}/{{ item.eol_product }}.json"
+        method: GET
+        return_content: true
+        status_code: [200, 404]
+        timeout: 20
+      loop: "{{ mapped_products.query_result }}"
+      loop_control:
+        label: "{{ item.eol_product }}"
+      register: eol_fetch
+      # A single unreachable product must not abort the run — the rest of the
+      # estate still gets resolved, and the gap surfaces as 'unknown'.
+      failed_when: false
+
+    - name: Report products upstream does not know
+      ansible.builtin.debug:
+        msg: >-
+          Upstream has no data for: {{ missing | join(', ') }} — hosts running
+          these will resolve to lifecycle_stage='unknown'. Check the product name
+          in support_status_map against the upstream catalogue.
+      vars:
+        missing: >-
+          {{ eol_fetch.results | selectattr('status', 'defined')
+             | selectattr('status', 'ne', 200)
+             | map(attribute='item.eol_product') | list }}
+      when: >-
+        (eol_fetch.results | selectattr('status', 'defined')
+         | selectattr('status', 'ne', 200) | list | length) > 0
+
+    # Upstream gives `eol` and `support` as EITHER an ISO date OR a boolean.
+    # `true` means "already end-of-life, no date published" — a case that must
+    # survive, because collapsing it to NULL would mark genuinely dead products
+    # as merely unknown.
+    # Flatten to one row per (product, cycle), stamping the product onto each
+    # cycle dict so the insert below is a single flat loop.
+    - name: Flatten lifecycle rows
+      ansible.builtin.set_fact:
+        lifecycle_rows: >-
+          {{ lifecycle_rows | default([])
+             + (item.json | map('combine', {'_product': item.item.eol_product}) | list) }}
+      loop: >-
+        {{ eol_fetch.results | selectattr('status', 'defined')
+           | selectattr('status', 'eq', 200) | list }}
+      loop_control:
+        label: "{{ item.item.eol_product }} ({{ item.json | length }} cycles)"
+
+    # NEVER put SQL `--` comments inside a YAML folded scalar (>-). Folding
+    # joins the lines with spaces, so the comment swallows everything after it
+    # on the resulting single line — including the VALUES clause. Explanations
+    # belong here, in YAML comments, not inside the query body.
+    #
+    # NULLIF(%s,'')::date: Jinja renders an absent/None value as an EMPTY
+    # STRING, not SQL NULL, and Postgres rejects '' as a date. Debian cycles
+    # carry no `support` key at all, which is what caught this. Normalising in
+    # SQL is robust against every missing-key case rather than one at a time.
+    - name: Upsert lifecycle data
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: >-
+          INSERT INTO product_lifecycle
+            (eol_product, cycle, release_date, eol_date, eol_is_past,
+             support_end_date, latest, checked_at)
+          VALUES (%s, %s, NULLIF(%s,'')::date, NULLIF(%s,'')::date,
+                  %s, NULLIF(%s,'')::date, %s, now())
+          ON CONFLICT (eol_product, cycle) DO UPDATE SET
+            release_date     = EXCLUDED.release_date,
+            eol_date         = EXCLUDED.eol_date,
+            eol_is_past      = EXCLUDED.eol_is_past,
+            support_end_date = EXCLUDED.support_end_date,
+            latest           = EXCLUDED.latest,
+            checked_at       = now()
+        positional_args:
+          # Emit '' for anything missing or non-date-shaped; NULLIF above turns it
+          # into SQL NULL. Upstream gives `eol`/`support` as EITHER an ISO date OR a
+          # boolean, so the length check is what separates a real date from `true`.
+          - "{{ item._product }}"
+          - "{{ item.cycle | string }}"
+          - "{{ item.releaseDate | default('') if (item.releaseDate | default('')) | string | length == 10 else '' }}"
+          - "{{ item.eol | default('') if (item.eol | default('')) | string | length == 10 else '' }}"
+          - "{{ (item.eol | default(false)) is sameas true }}"
+          - "{{ item.support | default('') if (item.support | default('')) | string | length == 10 else '' }}"
+          - "{{ item.latest | default('') | string }}"
+      loop: "{{ lifecycle_rows | default([]) }}"
+      loop_control:
+        label: "{{ item._product }} {{ item.cycle }}"
+
+    - name: Resolve per-host support status
+      community.postgresql.postgresql_script:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        path: "{{ playbook_dir }}/../files/support_status_resolve.sql"
+
+    - name: Read back the result
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: >-
+          SELECT
+            count(*) FILTER (WHERE lifecycle_stage='unsupported') AS unsupported,
+            count(*) FILTER (WHERE lifecycle_stage='sunset')      AS sunset,
+            count(*) FILTER (WHERE lifecycle_stage='mature')      AS mature,
+            count(*) FILTER (WHERE lifecycle_stage='current')     AS current_ok,
+            count(*) FILTER (WHERE lifecycle_stage='unknown')     AS unknown,
+            count(DISTINCT hostname) FILTER (WHERE lifecycle_stage='unsupported')
+              AS hosts_unsupported
+          FROM host_support_status
+      register: stats
+
+    - name: Summary
+      vars:
+        s: "{{ stats.query_result[0] }}"
+      ansible.builtin.debug:
+        msg:
+          - "UNSUPPORTED: {{ s.unsupported }} findings across {{ s.hosts_unsupported }} hosts — no patch will ever come; these need replacement or a dated mitigation plan (CIP-007-6 R2.3)"
+          - "sunset (<1yr to EOL): {{ s.sunset }} — fund the replacement now, not at the deadline"
+          - "mature (security fixes only): {{ s.mature }}"
+          - "current: {{ s.current_ok }}"
+          - "unknown: {{ s.unknown }} — version could not be matched to an upstream cycle. This is itself a finding for an SA-22 assessment, not a blank"
+          - "Feeds the technology_lifecycle debt category. Replacement effort, not patch effort."

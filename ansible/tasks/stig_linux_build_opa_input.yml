@@ -1,0 +1,235 @@
+---
+# stig_linux_build_opa_input.yml — the ONE mapper from collected Linux facts to
+# the DISA STIG Linux OPA input shape (benchmarks/stig/{rhel_9,rhel_8,
+# oracle_linux_9,oracle_linux_8} in the Rego library share one contract; the
+# Oracle Linux modules read a subset of the RHEL 9 keys).
+#
+# Input:   facts_data   — {ansible_facts: {...}, custom_facts: {..., stig_raw: {...}}}
+#                         as produced by ../tasks/collect_linux_compliance_facts.yml
+#                         followed by ../tasks/collect_linux_stig_facts.yml
+#          opa_hostname — hostname to report (optional)
+#          stig_documented_suid_files — list of SUID/SGID paths the site has
+#                         documented (optional; default none, so every SUID file
+#                         is reported as undocumented until the site lists it)
+#          stig_ipv6_required — set true/false only when the site has decided
+#                         (optional; when unset the key is not emitted)
+# Output:  opa_input
+#
+# RULE: NEVER FABRICATE. Every value here is derived from a command's output
+# collected on the host. A key whose source command produced nothing is left
+# out or carries the empty/zero it produced, and the policy reports the control
+# Open. Nothing here is a constant that says "configured".
+#
+# Parser notes: `sshd -T` prints lowercase keys; the modules read the OpenSSH
+# spelling (PermitRootLogin), so the names are mapped through _ssh_names. The
+# /etc/shadow-derived list holds account names only. Multi-valued raw outputs
+# (sysctl, services, repos) are built as JSON text with a loop and parsed, which
+# keeps them data, not templates — tests/stig_mapper proves a hostile banner
+# survives verbatim.
+
+- name: Build STIG Linux OPA input from collected facts (no fabricated values)
+  vars:
+    _af: "{{ facts_data.ansible_facts | default({}) }}"
+    _cf: "{{ facts_data.custom_facts | default({}) }}"
+    _sr: "{{ (facts_data.custom_facts | default({})).stig_raw | default({}) }}"
+    _have_stig: "{{ (_sr | length) > 0 }}"
+
+    # ── sysctl → kernel_params (every key, string values as sysctl prints them)
+    _kernel_params: "{{ dict((_sr.sysctl_raw | default('')) | regex_findall('(?m)^([A-Za-z0-9_.\\-/]+)\\s*=\\s*(.*?)\\s*$')) }}"
+
+    # ── sshd -T → ssh_config with the OpenSSH key spelling
+    _ssh_pairs: "{{ (_cf.sshd_config_raw | default('')) | regex_findall('(?m)^([A-Za-z][A-Za-z0-9]*)\\s+(.*?)\\s*$') }}"
+    _ssh_lower: "{{ dict(_ssh_pairs | map('first') | map('lower') | zip(_ssh_pairs | map('last'))) }}"
+    _ssh_names:
+      Banner: banner
+      Ciphers: ciphers
+      ClientAliveCountMax: clientalivecountmax
+      ClientAliveInterval: clientaliveinterval
+      Compression: compression
+      HostbasedAuthentication: hostbasedauthentication
+      IgnoreRhosts: ignorerhosts
+      IgnoreUserKnownHosts: ignoreuserknownhosts
+      MACs: macs
+      MaxAuthTries: maxauthtries
+      PermitEmptyPasswords: permitemptypasswords
+      PermitRootLogin: permitrootlogin
+      PrintLastLog: printlastlog
+      Protocol: protocol
+      StrictModes: strictmodes
+      UsePAM: usepam
+      X11Forwarding: x11forwarding
+    _ssh_present: "{{ _ssh_names | dict2items | selectattr('value', 'in', _ssh_lower) | list }}"
+    _ssh_config: "{{ dict(_ssh_present | map(attribute='key') | zip(_ssh_present | map(attribute='value') | map('extract', _ssh_lower))) }}"
+
+    # ── pwquality, faillock, login.defs, useradd, pwhistory
+    _pwq: "{{ dict((_cf.pwquality_conf_raw | default('')) | regex_findall('(?m)^\\s*([a-z]+)\\s*=\\s*(-?\\d+)')) }}"
+    _auth: "{{ _sr.auth_raw | default('') }}"
+    _faillock: "{{ dict(_auth | regex_findall('(?m)^\\s*(deny|unlock_time|fail_interval)\\s*=\\s*(\\d+)')) }}"
+    _login_defs: "{{ dict(_auth | regex_findall('(?m)^(ENCRYPT_METHOD|PASS_MAX_DAYS|PASS_MIN_DAYS|PASS_WARN_AGE|PASS_MIN_LEN|UMASK)\\s+(\\S+)')) }}"
+    _inactive: "{{ _auth | regex_findall('(?m)^INACTIVE=(-?\\d+)') | first | default('') }}"
+    _remember: "{{ _auth | regex_findall('remember\\s*=\\s*(\\d+)') | first | default('') }}"
+    _pam_unix_sha512: "{{ (_cf.pam_config_raw | default('')) is search('(?m)^\\s*password\\s+\\S+\\s+pam_unix\\.so.*\\bsha512\\b') }}"
+
+    # ── smart card / sssd / pkcs11
+    _pam_sc: "{{ (_sr.pam_raw | default('')) | regex_findall('(?s)=== smartcard-auth ===\\n(.*?)(?:=== |\\Z)') | first | default('') }}"
+    _sssd: "{{ (_sr.pam_raw | default('')) | regex_findall('(?s)=== sssd ===\\n(.*?)(?:=== |\\Z)') | first | default('') }}"
+    _pam_cert_auth: "{{ _sssd is search('(?im)^\\s*pam_cert_auth\\s*=\\s*true') }}"
+    _cert_verification: "{{ _sssd | regex_findall('(?im)^\\s*certificate_verification\\s*=\\s*(.*?)\\s*$') | first | default('') }}"
+    _certmap: "{{ _sssd | regex_findall('(?im)^\\s*\\[certmap/([^\\]]+)\\]') | first | default('') }}"
+    _sc_pam: "{{ _pam_sc is search('pam_pkcs11\\.so|pam_sss\\.so.*(try_cert_auth|require_cert_auth)') }}"
+    _dconf: "{{ dict((_sr.dconf_raw | default('')) | regex_findall('(?m)^([^=\\n]+)=(.*)$')) }}"
+
+    # ── accounts, system flags, crypto
+    _acc: "{{ _sr.accounts_raw | default('') }}"
+    _empty_pw: "{{ (_acc | regex_findall('(?s)=== empty_password ===\\n(.*?)(?:=== |\\Z)') | first | default('')) | trim | split('\n') | select | list }}"
+    _dup_uid: "{{ (_acc | regex_findall('(?s)=== duplicate_uid ===\\n(.*?)(?:=== |\\Z)') | first | default('')) | trim | split('\n') | select | list }}"
+    _dup_gid: "{{ (_acc | regex_findall('(?s)=== duplicate_gid ===\\n(.*?)(?:=== |\\Z)') | first | default('')) | trim | split('\n') | select | list }}"
+    _invalid_grp: "{{ (_acc | regex_findall('(?s)=== invalid_group ===\\n(.*?)(?:=== |\\Z)') | first | default('')) | trim | split('\n') | select | list }}"
+    _sys: "{{ dict((_sr.system_raw | default('')) | regex_findall('(?m)^(fips|module_sig_enforce|grub_password_entries|firewalld_state):(.*)$')) }}"
+    _wireless: "{{ (_sr.system_raw | default('')) | regex_findall('(?m)^wireless:(\\S+)') | unique | list }}"
+    _promisc: "{{ (_sr.system_raw | default('')) | regex_findall('(?m)^promisc:(\\S+)') | unique | list }}"
+    _crypto_policy: "{{ (_sr.crypto_raw | default('')) | regex_findall('(?m)^policy:(.*)$') | first | default('') | trim }}"
+    _crypto_overrides: "{{ (_sr.crypto_raw | default('')) | regex_findall('(?m)^override:(.*)$') }}"
+    _dnf_conf: "{{ dict((_sr.dnf_conf_raw | default('')) | regex_findall('(?m)^\\s*(gpgcheck|localpkg_gpgcheck)\\s*=\\s*(\\d)')) }}"
+
+    # ── certificates, openssl, aide, cron.allow
+    _certs: "{{ _sr.certs_raw | default('') }}"
+    _expired: "{{ _certs | regex_findall('(?m)^expired:(.*)$') }}"
+    _aide: "{{ _sr.aide_raw | default('') }}"
+    _aide_conf: "{{ _aide | regex_findall('(?s)=== conf ===\\n(.*?)(?:=== |\\Z)') | first | default('') }}"
+    _aide_cron: "{{ (_aide | regex_findall('(?s)=== cron ===\\n(.*?)(?:=== |\\Z)') | first | default('')) | trim }}"
+    _aide_db_path: "{{ _aide_conf | regex_findall('(?m)^\\s*database_in\\s*=\\s*(\\S+)') | first | default('') }}"
+    _aide_mail: "{{ _aide_cron | regex_findall('(?im)^.*\\bmail\\b.*\\s(\\S+)\\s*$') | first | default('') }}"
+    _perms: "{{ _sr.perms_raw | default('') }}"
+    _file_rows: "{{ (_perms | regex_findall('(?s)=== files ===\\n(.*?)(?:=== |\\Z)') | first | default('')) | regex_findall('(?m)^(\\d+)\\|(\\S+)\\|(\\S+)\\|(\\S+)$') }}"
+    _audit_dir_row: "{{ (_perms | regex_findall('(?s)=== audit_log_dir ===\\n(.*?)(?:=== |\\Z)') | first | default('')) | regex_findall('(?m)^(\\d+)\\|') | first | default('') }}"
+    _cron_allow_row: "{{ (_perms | regex_findall('(?s)=== cron_allow ===\\n(.*?)(?:=== |\\Z)') | first | default('')) | trim }}"
+    _home_rows: "{{ (_perms | regex_findall('(?s)=== home_dirs ===\\n(.*?)(?:=== |\\Z)') | first | default('')) | regex_findall('(?m)^(\\d+)\\|(\\S+)\\|(.*)$') }}"
+    _unowned: "{{ (_perms | regex_findall('(?s)=== unowned ===\\n(.*?)(?:=== |\\Z)') | first | default('')) | trim | split('\n') | select | list }}"
+    _ungrouped: "{{ (_perms | regex_findall('(?s)=== ungrouped ===\\n(.*?)(?:=== |\\Z)') | first | default('')) | trim | split('\n') | select | list }}"
+    _cmd_bad: "{{ (_perms | regex_findall('(?s)=== cmd_group_or_world_writable ===\\n(.*?)(?:=== |\\Z)') | first | default('')) | trim | split('\n') | select | list }}"
+    _lib_bad: "{{ (_perms | regex_findall('(?s)=== lib_group_or_world_writable ===\\n(.*?)(?:=== |\\Z)') | first | default('')) | trim | split('\n') | select | list }}"
+    _libdir_bad: "{{ (_perms | regex_findall('(?s)=== lib_dirs_not_root ===\\n(.*?)(?:=== |\\Z)') | first | default('')) | trim | split('\n') | select | list }}"
+    _suid: "{{ _cf.suid_sgid_files | default([]) | select | list }}"
+    _ww: "{{ _cf.world_writable_files | default([]) | select | list }}"
+    _unsigned: "{{ (_sr.unsigned_raw | default('')) | trim | split('\n') | select | list }}"
+    _auditd_conf: "{{ dict((_cf.auditd_conf_raw | default('')) | regex_findall('(?m)^\\s*([a-z_]+)\\s*=\\s*(\\S+)')) }}"
+    _audit_rules: "{{ (_cf.auditd_rules_raw | default('')) | trim | split('\n') | select | list }}"
+    _issue: "{{ (_cf.banners_raw | default('')) | regex_findall('(?s)=== /etc/issue ===\\n(.*?)(?:\\n=== |\\Z)') | first | default('') }}"
+
+    # ── three-column tables → JSON text → objects
+    _kernel_modules: >-
+      {{ ('{' ~ ((_sr.modules_raw | default('')).splitlines() | select('match', '^[a-z0-9-]+\|(enabled|disabled)\|(true|false)$')
+                 | map('regex_replace', '^([a-z0-9-]+)\|(\w+)\|(\w+)$', '"\1": {"status": "\2", "blacklisted": \3}') | join(',')) ~ '}') | from_json }}
+    _packages: >-
+      {{ ('{' ~ ((_sr.packages_raw | default('')).splitlines() | select('match', '^[a-z0-9.+-]+\|(installed|absent)$')
+                 | map('regex_replace', '^([a-z0-9.+-]+)\|installed$', '"\1": true') | map('regex_replace', '^([a-z0-9.+-]+)\|absent$', '"\1": false') | join(',')) ~ '}') | from_json }}
+    _services: >-
+      {{ ('{' ~ ((_sr.services_raw | default('')).splitlines() | select('match', '^[A-Za-z0-9@._-]+\|[a-z-]+\|[a-z-]+$')
+                 | map('regex_replace', '^([A-Za-z0-9@._-]+)\|[a-z-]+\|masked$', '"\1": "masked"')
+                 | map('regex_replace', '^([A-Za-z0-9@._-]+)\|([a-z-]+)\|[a-z-]+$', '"\1": "\2"') | join(',')) ~ '}') | from_json }}
+    _repo_rows: >-
+      {{ ('[' ~ ((_sr.repos_raw | default('')).splitlines() | select('match', '^[^|]+\|[01]?\|[01]?$')
+                 | map('regex_replace', '^([^|]+)\|([01]?)\|([01]?)$', '{"id": "\1", "enabled": "\2", "gpgcheck": "\3"}') | join(',')) ~ ']') | from_json }}
+    _yum_repos: >-
+      [{% for r in _repo_rows if r.enabled != '0' %}{"id": {{ r.id | to_json }}, "gpgcheck": {{ 'true' if (r.gpgcheck if r.gpgcheck != '' else (_dnf_conf.gpgcheck | default(''))) == '1' else 'false' }}}{{ ',' if not loop.last }}{% endfor %}]
+    _filesystem_mounts: >-
+      [{% for m in _af.mounts | default([]) %}{"mount": {{ m.mount | to_json }}, "device": {{ m.device | default('') | to_json }}, "fstype": {{ m.fstype | default('') | to_json }}, "options": {{ (m.options | default('')).split(',') | to_json }}}{{ ',' if not loop.last }}{% endfor %}]
+    _file_names: {"/etc/passwd": "etc_passwd", "/etc/shadow": "etc_shadow", "/etc/group": "etc_group", "/etc/gshadow": "etc_gshadow",
+                  "/etc/passwd-": "etc_passwd_backup", "/etc/shadow-": "etc_shadow_backup", "/etc/group-": "etc_group_backup", "/etc/gshadow-": "etc_gshadow_backup"}
+    _file_permissions_named: >-
+      {{ ('{' ~ ((_file_rows | selectattr(3, 'in', _file_names) | list) | map('join', '|') | map('regex_replace', '^(\d+)\|(\S+)\|(\S+)\|(\S+)$', '"\4": {"mode": "\1", "owner": "\2", "group": "\3"}') | join(',')) ~ '}') | from_json }}
+    _file_permissions_renamed: >-
+      {{ dict(_file_permissions_named | dict2items | map(attribute='key') | map('extract', _file_names)
+              | zip(_file_permissions_named | dict2items | map(attribute='value'))) }}
+    _insecure_homes: "{{ _home_rows | rejectattr(0, 'match', '^0?[0-7][0-5]0$') | map(attribute=2) | list }}"
+    _undocumented_suid: "{{ _suid | reject('in', stig_documented_suid_files | default([])) | list }}"
+
+    # ── derived booleans and numbers (strings from the host; nothing assumed)
+    _crypto_is_legacy: "{{ _crypto_policy is match('(?i)^LEGACY') }}"
+    _password_policy: >-
+      {{ {} | combine(
+           ({'minlen': _pwq.minlen | int} if 'minlen' in _pwq else {}),
+           ({'minclass': _pwq.minclass | int} if 'minclass' in _pwq else {}),
+           ({'dcredit': _pwq.dcredit | int} if 'dcredit' in _pwq else {}),
+           ({'ucredit': _pwq.ucredit | int} if 'ucredit' in _pwq else {}),
+           ({'lcredit': _pwq.lcredit | int} if 'lcredit' in _pwq else {}),
+           ({'ocredit': _pwq.ocredit | int} if 'ocredit' in _pwq else {}),
+           ({'maxdays': _login_defs.PASS_MAX_DAYS | int} if 'PASS_MAX_DAYS' in _login_defs else {}),
+           ({'mindays': _login_defs.PASS_MIN_DAYS | int} if 'PASS_MIN_DAYS' in _login_defs else {}),
+           ({'warn_age': _login_defs.PASS_WARN_AGE | int} if 'PASS_WARN_AGE' in _login_defs else {}),
+           ({'inactive_days': _inactive | int} if _inactive != '' else {}),
+           ({'remember': _remember | int} if _remember != '' else {}),
+           {'sha512': ((_login_defs.ENCRYPT_METHOD | default('') | upper) == 'SHA512') or (_pam_unix_sha512 | bool)}) }}
+    _pam_config: >-
+      {{ {} | combine(
+           ({'lockout_attempts': _faillock.deny | int} if 'deny' in _faillock else {}),
+           ({'lockout_time': _faillock.unlock_time | int} if 'unlock_time' in _faillock else {}),
+           {'password_hash': ('sha512' if (((_login_defs.ENCRYPT_METHOD | default('') | upper) == 'SHA512') or (_pam_unix_sha512 | bool)) else (_login_defs.ENCRYPT_METHOD | default('') | lower)),
+            'pkcs11_enabled': _sc_pam | bool, 'piv_enabled': _sc_pam | bool,
+            'sssd_pki': _pam_cert_auth | bool, 'sssd_mfa': _pam_cert_auth | bool,
+            'cert_mapping_configured': _certmap != '',
+            'mfa_enabled': (_sc_pam | bool) or (_pam_cert_auth | bool),
+            'smartcard_removal_lock': (_dconf['org/gnome/settings-daemon/peripherals/smartcard/removal-action'] | default('')) is search('lock-screen')}) }}
+    _stig_input: >-
+      {{ {
+        'kernel_params': _kernel_params,
+        'kernel_modules': _kernel_modules,
+        'packages': _packages,
+        'services': _services,
+        'yum_repos': (_yum_repos | from_json) if _yum_repos is string else _yum_repos,
+        'dnf_config': {'gpgcheck': (_dnf_conf.gpgcheck | default('')) == '1', 'localpkg_gpgcheck': (_dnf_conf.localpkg_gpgcheck | default('')) == '1'},
+        'yum_config': {'gpgcheck': (_dnf_conf.gpgcheck | default('')) == '1'},
+        'crypto_policy': _crypto_policy,
+        'crypto_policy_overrides': _crypto_overrides,
+        'fips_mode': (_sys.fips | default('')) == '1',
+        'kernel_config': {'module_sig_enforce': (_sys.module_sig_enforce | default('')) == 'Y'},
+        'grub_config': {'password_set': (_sys.grub_password_entries | default('0') | int) > 0},
+        'firewall': {'active': (_sys.firewalld_state | default('')) == 'running'},
+        'wireless_interfaces': _wireless,
+        'promiscuous_interfaces': _promisc,
+        'network_config': {'ipv4_forwarding': (_kernel_params['net.ipv4.ip_forward'] | default('')) == '1',
+                           'ipv6_disabled': (_kernel_params['net.ipv6.conf.all.disable_ipv6'] | default('')) == '1',
+                           'wireless_disabled': (_wireless | length) == 0}
+                          | combine({'ipv6_required': stig_ipv6_required | bool} if stig_ipv6_required is defined else {}),
+        'password_policy': _password_policy,
+        'pam_config': _pam_config,
+        'sssd_config': {'piv_enabled': _pam_cert_auth | bool, 'certificate_authentication': _pam_cert_auth | bool, 'cert_user_mapping': _certmap},
+        'pki_config': {'ocsp_enabled': _cert_verification is search('(?i)ocsp'), 'crl_checking': _cert_verification is search('(?i)crl')},
+        'dconf_settings': _dconf,
+        'local_accounts_with_empty_passwords': _empty_pw,
+        'duplicate_uids': _dup_uid,
+        'duplicate_gids': _dup_gid,
+        'invalid_group_references': _invalid_grp,
+        'unsigned_packages': _unsigned,
+        'certificates': {'dod_root_ca_installed': _certs is search('(?m)^dod_root_ca:yes$'), 'expired_certs': _expired},
+        'openssl_config': {'system_policy': _certs is search('(?m)^openssl_system_policy:yes$'), 'legacy_override': _crypto_is_legacy | bool},
+        'aide_config': {'db_exists': _aide is search('(?m)^db_exists:yes$'), 'db_path': _aide_db_path,
+                        'hash_algorithms': _aide_conf | regex_findall('(sha256|sha512)') | unique | list,
+                        'acl_enabled': _aide_conf is search('(?i)\bacl\b'), 'cron_job': _aide_cron != '', 'notify_email': _aide_mail},
+        'cron_allow': {'file_exists': _cron_allow_row != 'absent' and _cron_allow_row != '',
+                       'permissions': (_cron_allow_row | regex_findall('^(\d+)\|') | first | default(''))},
+        'file_permissions': _file_permissions_renamed | combine({
+            'unowned_files': _unowned, 'ungrouped_files': _ungrouped, 'insecure_home_dirs': _insecure_homes,
+            'system_commands_ok': (_cmd_bad | length) == 0, 'library_files_ok': (_lib_bad | length) == 0,
+            'library_dirs_owned_root': (_libdir_bad | length) == 0,
+            'undocumented_suid_files': _undocumented_suid, 'world_writable_files': _ww}),
+        'auditd_config': _auditd_conf | combine({'log_dir_permissions': _audit_dir_row} if _audit_dir_row != '' else {}),
+        'audit_rules': _audit_rules,
+        'filesystem_mounts': (_filesystem_mounts | from_json) if _filesystem_mounts is string else _filesystem_mounts,
+        'ssh_config': _ssh_config,
+        'login_banner': {'issue': _issue},
+        'selinux': {'status': (_af.selinux | default({})).mode | default((_af.selinux | default({})).status | default('')),
+                    'policy': (_af.selinux | default({})).type | default('')}
+      } }}
+    _base:
+      system_info:
+        hostname: "{{ _af.hostname | default(opa_hostname | default(inventory_hostname)) }}"
+        distribution: "{{ _af.distribution | default('') }}"
+        distribution_version: "{{ _af.distribution_version | default('') }}"
+        kernel: "{{ _af.kernel | default('') }}"
+        architecture: "{{ _af.architecture | default('') }}"
+      facts_schema_version: "{{ facts_data.schema_version | default('') }}"
+      collection_timestamp: "{{ facts_data.collection_timestamp | default('') }}"
+  set_fact:
+    opa_input: "{{ _base | combine(_stig_input if _have_stig else {}) }}"

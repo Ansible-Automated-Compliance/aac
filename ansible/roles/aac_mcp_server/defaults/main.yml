@@ -1,0 +1,83 @@
+---
+# aac_mcp_server role defaults
+# Override any of these in group_vars, host_vars, or the calling play's vars block.
+
+# Container image — pre-built and stored in the local registry on aac_host.
+# Build via AAP Template 45 "AAC - Build Compliance EE" or manually.
+aac_mcp_image: "{{ mcp_image }}"          # from site_config.yml, e.g. <registry>/aap-mcp-server:v1.0
+
+# Container name and host port
+aac_mcp_container_name: "aap-mcp"
+aac_mcp_port: 8004
+
+# App directory on aac_host — source code volume-mounted into the container.
+# The pre-built image boots the OPA-governed entrypoint: python /app/server_opa.py
+# (the ungoverned server.py bypass was removed from the tree 2026-09-21).
+aac_mcp_app_dir: "/opt/aap-mcp-server"
+
+# Agent identity for this deployment — sent to OPA as input.agent and written
+# to the decision log. One server deployment = one agent identity.
+aac_mcp_agent_id: ""
+
+# Append-only decision log (ai_action_log in the compliance DB).
+# Empty DSN disables persistence; required=true refuses calls the log can't record.
+aac_mcp_decision_log_dsn: ""
+aac_mcp_decision_log_required: false
+
+# Token env file written to aac_mcp_app_dir/mcp.env
+# Set aac_mcp_token to populate it. Leave blank to write a placeholder
+# (token can be set later via "AAC - Rotate MCP Token", Template 40).
+aac_mcp_token: ""
+
+# OS user that runs the rootless podman container.
+# Must match the user running AAP (aapuser1).
+aac_mcp_run_user: "{{ aap_ssh_user }}"    # from site_config.yml
+
+# AAP gateway and controller URLs as seen from INSIDE the container.
+#
+# POST-CRC: AAP is an OpenShift Route, not a host port, so host.containers.internal
+# no longer reaches it. The container must also run with --network host (see
+# aac_mcp_network below) — otherwise the cluster's ingress routes resolve to the
+# CONTAINER's own loopback and every request fails with httpx.ConnectError.
+# No literal fallback: the external AAP route comes from the environment profile
+# (ansible/vars/profiles/<env>.yml → external_aap_url) or extra_vars. A missing
+# value is a configuration error here, not a silent pointer at the lab.
+aac_mcp_gateway_url: "{{ external_aap_url | mandatory }}"
+aac_mcp_controller_url: "{{ external_aap_url | mandatory }}/api/controller/v2"
+aac_mcp_openapi_spec_url: "file:///app/aap-controller-api.json"
+
+# Host networking: the container then resolves the cluster's ingress routes exactly
+# as the host does (on a laptop cluster that is 127.0.0.1) and reaches both the AAP
+# gateway and the OPA routes. With the default rootless network it cannot.
+# Consequence: no -p mapping — the app binds the host port directly.
+aac_mcp_network: "host"
+
+# SELinux: the app bind-mount needs :Z so podman relabels it with this
+# container's MCS categories. Without it the container gets
+# "PermissionError: [Errno 13] Permission denied: '/app'" even though the
+# directory is world-readable.
+aac_mcp_volume_opts: "Z"
+
+# OPA governance. The endpoint is a CRC route post-migration — the old
+# host.containers.internal:8182 is dead.
+# The MCP container runs on the host, so it needs the externally reachable OPA
+# route (profile: external_opa_compliance_url), not the in-cluster service.
+aac_mcp_opa_url: "{{ external_opa_compliance_url | default(undef(), true) | mandatory(msg='Set external_opa_compliance_url to an OPA URL reachable from the MCP host (not in-cluster DNS)') }}"
+# ENABLED 2026-08-01, once two prerequisites were met (rego#51 + compliance#370):
+#   1. the approval rule matches both "AAC_" and "AAC - " naming, and
+#   2. data.aac.templates is populated, so registered templates auto-approve.
+# Without (2) the policy default-denies EVERY launch. That registry is pushed
+# over OPA's REST API and is held in memory, so it must be re-published after
+# any OPA restart — the post-boot hook (aac_post_boot) does this.
+# DEPRECATED — governance is unconditional in server_opa.py. Setting this to
+# false no longer produces an ungoverned server: the server REFUSES TO START
+# (review finding: a disable knob makes the "every call is governed" claim
+# false). The variable remains only so a misconfiguration fails loudly.
+aac_mcp_opa_governance_enabled: true
+
+# Server entrypoint. server_opa.py is the OPA-governed server actually in use;
+# it runs transport='streamable-http', so the endpoint is /mcp — NOT /sse.
+aac_mcp_entrypoint: "/app/server_opa.py"
+
+# Set to false to skip writing the user-level systemd unit.
+aac_mcp_generate_systemd: true

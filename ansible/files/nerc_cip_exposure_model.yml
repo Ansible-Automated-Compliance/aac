@@ -1,0 +1,239 @@
+---
+# nerc_cip_exposure_model.yml — reference data for NERC-CIP regulatory exposure ranking
+#
+# ============================================================================
+# READ THIS BEFORE QUOTING ANY NUMBER THIS FILE PRODUCES
+#
+# This is a PRIORITISATION MODEL, not a prediction of a penalty.
+#
+# It answers "which CIP control families are carrying the most risk-days, and in
+# what order should we spend effort" — a question we can answer defensibly from
+# data we hold. It does NOT answer "what will the regulator fine us", which
+# depends on self-reporting, mitigation, internal compliance programme credit,
+# repeat findings and negotiation, none of which live in this database.
+#
+# Presenting a computed dollar figure to a compliance function invites an
+# argument about the model instead of a conversation about the finding. Lead
+# with the RANKING. The dollar estimate is off by default and must be turned on
+# deliberately (`exposure_enable_currency: true`).
+# ============================================================================
+#
+# HOW NERC PENALTIES ARE ACTUALLY STRUCTURED (the shape this model follows)
+#
+#   - Every requirement carries a Violation Risk Factor (VRF): Lower / Medium / High.
+#   - Every violation is assigned a Violation Severity Level (VSL): Lower /
+#     Moderate / High / Severe.
+#   - VRF x VSL selects a base penalty band. Duration is then a primary driver,
+#     because penalties are assessed per violation per day.
+#   - A statutory maximum applies per violation per day.
+#
+# AAC's contribution is the duration term. `technical_debt_items.debt_age_days`
+# is the number of days a finding has been open — it is already collected, and
+# it is the multiplier nothing else in the stack knows.
+#
+# ---------------------------------------------------------------------------
+# PROVENANCE AND CONFIDENCE
+#
+# Each entry carries `confidence`. Only entries marked `confidence: verified`
+# are scored. Anything else is reported as UNSCORED and excluded — a wrong VRF
+# silently scoring is exactly the failure mode this platform is supposed to
+# prevent. Populate from NERC's published VRF/VSL matrices for the standard
+# version the entity is registered against, then set confidence to `verified`.
+#
+# Requirement-level (R-number) entries take precedence over standard-level ones.
+
+model_version: "0.1.0"
+model_status: "SEED — most entries deliberately unverified; see confidence fields"
+
+# Relative weight per VRF x VSL cell. Unitless, used for RANKING.
+# Shape follows the NERC base-penalty matrix (risk rises with both axes);
+# the specific values are AAC's modelling choice, not a published table.
+exposure_weights:
+  High:
+    Severe: 100
+    High: 75
+    Moderate: 50
+    Lower: 30
+  Medium:
+    Severe: 60
+    High: 45
+    Moderate: 30
+    Lower: 18
+  Lower:
+    Severe: 25
+    High: 18
+    Moderate: 12
+    Lower: 7
+
+# Map AAC's own severity vocabulary onto VSL bands.
+# AAC severity is assigned by the debt-scoring policy; VSL is a regulatory
+# construct. This mapping is an approximation and is stated as one.
+severity_to_vsl:
+  CRITICAL: Severe
+  HIGH: High
+  MEDIUM: Moderate
+  LOW: Lower
+
+# Optional currency anchor, per risk-weight-point per day.
+# OFF by default. There is no published per-day rate that can be applied
+# mechanically; any value here is an assumption for internal comparison only.
+currency:
+  enabled: false
+  per_weight_point_per_day_usd: 0
+  note: >-
+    Deliberately zero. Populate only with a rate the account team can defend,
+    derived from published settlements for comparable findings, and label every
+    output as an internal estimate.
+
+# ---------------------------------------------------------------------------
+# VRF assignments.
+#
+# `unknown` is the honest default here. These must be read off NERC's VRF/VSL
+# matrix for the registered standard version before they can be scored.
+
+standards:
+  CIP-002:
+    title: BES Cyber System Categorization
+    vrf: unknown
+    confidence: unverified
+  CIP-003:
+    title: Security Management Controls
+    vrf: unknown
+    confidence: unverified
+    note: >-
+      Commercially relevant: the largest publicly-disclosed CIP settlement at a
+      western US investor-owned utility was assessed under CIP-003 and involved a
+      third-party contractor exposure. It is the case usually credited with
+      motivating the CIP-013 supply-chain rulemaking.
+  CIP-004:
+    title: Personnel & Training
+    vrf: unknown
+    confidence: unverified
+  CIP-005:
+    title: Electronic Security Perimeter(s)
+    vrf: unknown
+    confidence: unverified
+  CIP-006:
+    title: Physical Security of BES Cyber Systems
+    vrf: unknown
+    confidence: unverified
+  CIP-007:
+    title: System Security Management
+    vrf: unknown
+    confidence: unverified
+  CIP-008:
+    title: Incident Reporting and Response Planning
+    vrf: unknown
+    confidence: unverified
+  CIP-009:
+    title: Recovery Plans for BES Cyber Systems
+    vrf: unknown
+    confidence: unverified
+  CIP-010:
+    title: Configuration Change Management & Vulnerability Assessments
+    vrf: unknown
+    confidence: unverified
+    note: >-
+      The control AAC contributes most directly (baseline, authorization,
+      drift). Verify this one first — it carries the most AAC-sourced findings.
+  CIP-011:
+    title: Information Protection
+    vrf: unknown
+    confidence: unverified
+  CIP-012:
+    title: Communications between Control Centers
+    vrf: unknown
+    confidence: unverified
+  CIP-013:
+    title: Supply Chain Risk Management
+    vrf: unknown
+    confidence: unverified
+    note: >-
+      Verify second — supply-chain findings dominate the current open set, and
+      this is the standard the streaming/vendor conversation lands on.
+  CIP-014:
+    title: Physical Security
+    vrf: unknown
+    confidence: unverified
+  CIP-015:
+    title: Internal Network Security Monitoring
+    vrf: unknown
+    confidence: unverified
+    note: >-
+      NOT ENFORCEABLE until 1 Oct 2028 (CIP-015-1) / 1 Oct 2029 (CIP-015-2).
+      Findings may be tracked, but they carry NO penalty exposure today and must
+      score zero. The scorer enforces this via `not_enforceable_before`.
+    not_enforceable_before: "2028-10-01"
+
+# Requirement-level overrides. Empty by design — populate from the VRF/VSL
+# matrix as requirements are verified. Keys look like "CIP-010 R1.2".
+requirements: {}
+
+# ---------------------------------------------------------------------------
+# CADENCE OBLIGATIONS
+#
+# A growing share of regulatory requirements are not "is the setting correct"
+# but "did you do the thing often enough". Those are CLOCKS, and a clock is
+# duration — the same term this whole model is built on. An obligation with a
+# period is measurable from data AAC already holds: when did it last happen,
+# and is that longer ago than the period allows.
+#
+# This is why the structure is not NERC-specific. Anything with a deadline —
+# patch evaluation windows, remediation SLAs, review intervals, reassessment
+# periods — scores through the same arithmetic:
+#
+#   days_overdue = days_since_last_event - period_days
+#   exposure     = weight * days_overdue        (only when days_overdue > 0)
+#
+# `period_days` here is the obligation's own clock. `applies_to` is the
+# framework key in technical_debt_items / compliance_results, so the same
+# playbook covers any framework by changing `exposure_framework`.
+
+cadence_obligations:
+
+  "CIP-007 R2.2":
+    applies_to: nerc_cip
+    description: Evaluate security patches for applicability
+    period_days: 35
+    confidence: unverified
+    note: >-
+      The patch-cadence obligation most often missed at scale. AAC's patch
+      lifecycle already tracks per-finding SLA clocks, so the input exists.
+
+  "CIP-007 R2.3":
+    applies_to: nerc_cip
+    description: Apply the patch, or produce a dated mitigation plan
+    period_days: 35
+    confidence: unverified
+    note: >-
+      Runs from the R2.2 evaluation date, not from patch release. Two 35-day
+      clocks in series, which is why patch backlog age is the thing to watch.
+
+  "CIP-010 R2.1":
+    applies_to: nerc_cip
+    description: Monitor for baseline configuration changes
+    period_days: 35
+    confidence: unverified
+    note: >-
+      Directly served by the AAC drift check. A missed interval is measurable
+      from the gap between baseline captures.
+
+  "CIP-010 R3.1":
+    applies_to: nerc_cip
+    description: Vulnerability assessment
+    period_days: 456          # 15 calendar months
+    confidence: unverified
+
+  "CIP-003 R1":
+    applies_to: nerc_cip
+    description: Review and approve cyber security policies
+    period_days: 456          # 15 calendar months
+    confidence: unverified
+
+# Non-NERC examples, included to show the shape carries. Populate per the
+# framework's own text before scoring — the periods below are illustrative
+# and every one is marked unverified.
+#
+#   "PCI-DSS 6.3.3":   applies_to: pci_dss,  period_days: 30
+#   "ISO27001 A.8.8":  applies_to: iso27001, period_days: 90
+#   "DORA ICT-review": applies_to: dora,     period_days: 365

@@ -1,0 +1,194 @@
+---
+# aac_inventory_template.yml — the canonical AAC inventory taxonomy
+#
+# Copy this per environment and populate the hosts. The GROUP NAMES are the
+# contract; the hosts are yours. Nothing here contains an environment-specific
+# address — product and API entries resolve from the active profile
+# (ansible/vars/profiles/<env>.yml), so the same structure works on lab, RHPDS,
+# mac-aap and a customer install unchanged.
+#
+# ── Why the prefixes ─────────────────────────────────────────────────────────
+# Every dimension uses a reserved prefix so an installer, a playbook or a report
+# can derive the whole picture with a filter instead of a hand-maintained list:
+#
+#   loc_*        where the host physically/logically is
+#   purpose_*    what the host is for
+#   use_*        how AAC treats it operationally
+#   product_*    an AAC component (never an assessment target)
+#   api_*        reached by URL, never by SSH
+#
+#   groups | select('match', '^loc_')      -> every location in this estate
+#   groups | select('match', '^purpose_')  -> every function
+#   groups['managed_estate']               -> everything we assess
+#   groups['aac_product']                  -> everything we operate
+#
+# Adding a location or a purpose is adding a group. No code changes anywhere.
+#
+# ── The split that matters ───────────────────────────────────────────────────
+# `managed_estate` and `aac_product` are deliberately disjoint. Mixing them is
+# not cosmetic: fact collection previously targeted `all`, tried to `become` on
+# the AAP controller, failed its setup, and — because a host that fails one play
+# is dropped from every later play — silently discarded 19 days of facts.
+#
+# **Assessment playbooks target `managed_estate`, never `all`.**
+
+all:
+  children:
+
+    # ═════════════════════════════════════════════════════════════════════════
+    # MANAGED ESTATE — customer infrastructure under assessment.
+    # A host normally belongs to one loc_*, one purpose_* and one use_* group.
+    # ═════════════════════════════════════════════════════════════════════════
+    managed_estate:
+      children:
+
+        # ── Location ─────────────────────────────────────────────────────────
+        loc_aws:
+          hosts: {}
+        loc_azure:
+          hosts: {}
+        loc_gcp:
+          hosts: {}
+        loc_onprem:
+          hosts: {}
+        loc_edge:          # substations, plant floor, remote sites
+          hosts: {}
+
+        # ── Purpose ──────────────────────────────────────────────────────────
+        purpose_server:
+          hosts: {}
+        purpose_network:        # routers, switches, firewalls
+          hosts: {}
+        purpose_application:    # app/middleware tiers
+          hosts: {}
+        purpose_database:
+          hosts: {}
+        purpose_storage:        # arrays, controllers, HBAs
+          hosts: {}
+        purpose_ot:             # RTUs, PLCs, meters, relays
+          hosts: {}
+        purpose_container:      # container hosts / cluster nodes
+          hosts: {}
+
+        # ── Use ──────────────────────────────────────────────────────────────
+        use_managed:            # assessed and remediated normally
+          hosts: {}
+        use_execution:          # AAP execution nodes — assessed, but changes
+          hosts: {}             # here affect automation capacity; tier higher
+        use_monitored:          # assessed read-only, never remediated
+          hosts: {}
+
+    # ═════════════════════════════════════════════════════════════════════════
+    # AAC PRODUCT — our own components. Enumerable so an installer can find and
+    # health-check them, but OUTSIDE managed_estate so no assessment run targets
+    # them.
+    #
+    # Connection details resolve from the active profile rather than being
+    # duplicated here — one source of truth, and this file stays portable.
+    # ═════════════════════════════════════════════════════════════════════════
+    aac_product:
+      vars:
+        # Product hosts are addressed through the profile, not SSH'd by default.
+        ansible_connection: local
+      children:
+
+        product_controller:
+          hosts:
+            aac-aap-controller:
+              aac_component: aap_controller
+              aac_endpoint: "{{ aap_url | default('') }}"
+              aac_endpoint_external: "{{ external_aap_url | default('') }}"
+
+        product_datastore:
+          hosts:
+            aac-compliance-db:
+              aac_component: postgresql
+              aac_endpoint: "{{ pg_host | default('', true) }}:{{ pg_port | default(5432) }}"
+
+        product_policy:
+          hosts:
+            aac-opa-security:
+              aac_component: opa
+              aac_opa_bucket: security
+              aac_endpoint: "{{ opa_security_url | default('', true) }}"
+            aac-opa-compliance:
+              aac_component: opa
+              aac_opa_bucket: compliance
+              aac_endpoint: "{{ opa_compliance_url | default('') }}"
+            aac-opa-ot:
+              aac_component: opa
+              aac_opa_bucket: ot
+              aac_endpoint: "{{ opa_ot_url | default('') }}"
+
+        product_observability:
+          hosts:
+            aac-grafana:
+              aac_component: grafana
+              aac_endpoint: "{{ grafana_url | default('') }}"
+
+    # ═════════════════════════════════════════════════════════════════════════
+    # API ENDPOINTS — reached by URL, never by SSH. Typed so a caller can find
+    # "every OPA" or "the portal bridge" without knowing a hostname.
+    #
+    #   aac_api_kind    opa | controller | portal | bridge | mcp | grafana | db
+    #   aac_api_url     resolved from the active profile
+    #   aac_api_health  path appended to aac_api_url for a liveness probe
+    #   aac_api_auth    none | bearer | basic | service_account
+    # ═════════════════════════════════════════════════════════════════════════
+    api_endpoints:
+      vars:
+        ansible_connection: local
+      hosts:
+
+        api-opa-security:
+          aac_api_kind: opa
+          aac_api_role: security
+          aac_api_url: "{{ opa_security_url | default('', true) }}"
+          aac_api_health: "/health"
+          aac_api_auth: none
+
+        api-opa-compliance:
+          aac_api_kind: opa
+          aac_api_role: compliance
+          aac_api_url: "{{ opa_compliance_url | default('') }}"
+          aac_api_health: "/health"
+          aac_api_auth: none
+
+        api-opa-ot:
+          aac_api_kind: opa
+          aac_api_role: ot
+          aac_api_url: "{{ opa_ot_url | default('') }}"
+          aac_api_health: "/health"
+          aac_api_auth: none
+
+        api-aap-controller:
+          aac_api_kind: controller
+          aac_api_url: "{{ aap_url | default('') }}"
+          aac_api_health: "/api/controller/v2/ping/"
+          aac_api_auth: bearer
+
+        api-grafana:
+          aac_api_kind: grafana
+          aac_api_url: "{{ grafana_url | default('') }}"
+          aac_api_health: "/login"
+          aac_api_auth: basic
+
+        api-mcp:
+          aac_api_kind: mcp
+          aac_api_url: "{{ mcp_url | default('') }}"
+          aac_api_health: "/mcp"
+          aac_api_auth: bearer
+
+        # Present only where the Customer Portal is in play. Left with empty
+        # defaults so the group parses cleanly on installs without it.
+        api-portal:
+          aac_api_kind: portal
+          aac_api_url: "{{ portal_base_url | default('') }}"
+          aac_api_health: "/health"
+          aac_api_auth: bearer
+
+        api-portal-bridge:
+          aac_api_kind: bridge
+          aac_api_url: "{{ aac_bridge_url | default('') }}"
+          aac_api_health: "/api/aac/v1/healthz"
+          aac_api_auth: bearer

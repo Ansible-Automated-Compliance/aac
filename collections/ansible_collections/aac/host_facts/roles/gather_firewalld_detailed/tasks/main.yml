@@ -1,0 +1,383 @@
+---
+# tasks file for gather_firewalld_detailed
+
+# =============================================================================
+# FIREWALLD PACKAGE AND SERVICE STATUS
+# =============================================================================
+
+- name: Check if firewalld package is installed
+  shell: rpm -q firewalld
+  register: firewalld_package_check
+  changed_when: false
+  failed_when: false
+
+- name: Set firewalld package installed fact
+  set_fact:
+    firewalld_installed: "{{ firewalld_package_check.rc == 0 }}"
+
+- name: Get firewalld service status
+  systemd:
+    name: firewalld
+  register: firewalld_service
+  when: firewalld_installed
+  failed_when: false
+
+- name: Check for conflicting firewall packages
+  shell: rpm -q {{ item }}
+  loop: "{{ conflicting_packages }}"
+  register: conflicting_packages_check
+  changed_when: false
+  failed_when: false
+
+- name: Build conflicting packages list
+  set_fact:
+    conflicting_pkgs_installed: |
+      {% set pkgs = [] %}
+      {% for result in conflicting_packages_check.results %}
+        {% if result.rc == 0 %}
+          {% set _ = pkgs.append(result.item) %}
+        {% endif %}
+      {% endfor %}
+      {{ pkgs }}
+
+# =============================================================================
+# FIREWALLD DEFAULT ZONE
+# =============================================================================
+
+- name: Get firewalld default zone
+  shell: firewall-cmd --get-default-zone 2>/dev/null || echo "not_set"
+  register: default_zone
+  changed_when: false
+  when: firewalld_installed
+
+- name: Get firewalld active zones
+  shell: firewall-cmd --get-active-zones 2>/dev/null || echo "none"
+  register: active_zones_raw
+  changed_when: false
+  when: firewalld_installed
+
+# =============================================================================
+# FIREWALLD ZONES CONFIGURATION
+# =============================================================================
+
+- name: List all zones
+  shell: firewall-cmd --get-zones 2>/dev/null || echo ""
+  register: all_zones
+  changed_when: false
+  when: firewalld_installed
+
+- name: Get detailed zone information
+  shell: |
+    for zone in $(firewall-cmd --get-zones 2>/dev/null); do
+      echo "=== ZONE: $zone ==="
+      echo "TARGET: $(firewall-cmd --zone=$zone --get-target 2>/dev/null || echo 'default')"
+      echo "INTERFACES: $(firewall-cmd --zone=$zone --list-interfaces 2>/dev/null || echo 'none')"
+      echo "SOURCES: $(firewall-cmd --zone=$zone --list-sources 2>/dev/null || echo 'none')"
+      echo "SERVICES: $(firewall-cmd --zone=$zone --list-services 2>/dev/null || echo 'none')"
+      echo "PORTS: $(firewall-cmd --zone=$zone --list-ports 2>/dev/null || echo 'none')"
+      echo "PROTOCOLS: $(firewall-cmd --zone=$zone --list-protocols 2>/dev/null || echo 'none')"
+      echo "RICH_RULES: $(firewall-cmd --zone=$zone --list-rich-rules 2>/dev/null || echo 'none')"
+      echo "MASQUERADE: $(firewall-cmd --zone=$zone --query-masquerade 2>/dev/null && echo 'yes' || echo 'no')"
+      echo "ICMP_BLOCKS: $(firewall-cmd --zone=$zone --list-icmp-blocks 2>/dev/null || echo 'none')"
+      echo "---"
+    done
+  register: zones_detailed
+  changed_when: false
+  when: firewalld_installed
+
+- name: Parse zone information
+  set_fact:
+    zones_config: |
+      {% set zones = [] %}
+      {% if zones_detailed is defined and zones_detailed.stdout %}
+        {% set current_zone = {} %}
+        {% for line in zones_detailed.stdout.split('\n') %}
+          {% if line.startswith('=== ZONE:') %}
+            {% if current_zone %}
+              {% set _ = zones.append(current_zone) %}
+            {% endif %}
+            {% set zone_name = line.split(':')[1].strip().replace('===', '').strip() %}
+            {% set current_zone = {'name': zone_name} %}
+          {% elif ':' in line and current_zone %}
+            {% set key_value = line.split(':', 1) %}
+            {% set key = key_value[0].strip().lower() %}
+            {% set value = key_value[1].strip() %}
+            {% if key == 'interfaces' %}
+              {% set _ = current_zone.update({'interfaces': value.split() if value != 'none' else []}) %}
+            {% elif key == 'sources' %}
+              {% set _ = current_zone.update({'sources': value.split() if value != 'none' else []}) %}
+            {% elif key == 'services' %}
+              {% set _ = current_zone.update({'services': value.split() if value != 'none' else []}) %}
+            {% elif key == 'ports' %}
+              {% set _ = current_zone.update({'ports': value.split() if value != 'none' else []}) %}
+            {% elif key == 'protocols' %}
+              {% set _ = current_zone.update({'protocols': value.split() if value != 'none' else []}) %}
+            {% elif key == 'rich_rules' %}
+              {% set _ = current_zone.update({'rich_rules': [value] if value != 'none' else []}) %}
+            {% elif key == 'masquerade' %}
+              {% set _ = current_zone.update({'masquerade': value == 'yes'}) %}
+            {% elif key == 'icmp_blocks' %}
+              {% set _ = current_zone.update({'icmp_blocks': value.split() if value != 'none' else []}) %}
+            {% elif key == 'target' %}
+              {% set _ = current_zone.update({'target': value}) %}
+            {% endif %}
+          {% endif %}
+        {% endfor %}
+        {% if current_zone %}
+          {% set _ = zones.append(current_zone) %}
+        {% endif %}
+      {% endif %}
+      {{ zones }}
+  when: firewalld_installed
+
+# =============================================================================
+# INTERFACE TO ZONE MAPPING
+# =============================================================================
+
+- name: Get all network interfaces
+  # Quoted: the unquoted form contains ": " inside the awk field separator,
+  # which YAML reads as a mapping separator and refuses to parse.
+  shell: "ip -o link show | awk -F': ' '{print $2}' | grep -v '^lo$'"
+  register: network_interfaces
+  changed_when: false
+
+- name: Check zone assignment for each interface
+  shell: |
+    ZONE=$(firewall-cmd --get-zone-of-interface={{ item }} 2>/dev/null || echo "no_zone")
+    echo "$ZONE"
+  loop: "{{ network_interfaces.stdout_lines }}"
+  register: interface_zones
+  changed_when: false
+  when: firewalld_installed
+
+- name: Build interface to zone mapping
+  set_fact:
+    interface_zone_mapping: |
+      {% set mapping = [] %}
+      {% for result in interface_zones.results %}
+        {% set iface_map = {
+          'interface': result.item,
+          'zone': result.stdout.strip(),
+          'assigned': result.stdout.strip() != 'no_zone'
+        } %}
+        {% set _ = mapping.append(iface_map) %}
+      {% endfor %}
+      {{ mapping }}
+  when: firewalld_installed
+
+# =============================================================================
+# SERVICE ANALYSIS
+# =============================================================================
+
+- name: Analyze exposed services across all zones
+  set_fact:
+    service_exposure_analysis: |
+      {% set analysis = {
+        'total_services': [],
+        'potentially_dangerous': [],
+        'essential_allowed': [],
+        'non_essential': []
+      } %}
+      {% for zone in zones_config %}
+        {% for service in zone.services %}
+          {% if service not in analysis.total_services %}
+            {% set _ = analysis.total_services.append(service) %}
+          {% endif %}
+          {% if service in potentially_dangerous_services %}
+            {% set exposure = {
+              'service': service,
+              'zone': zone.name,
+              'interfaces': zone.interfaces
+            } %}
+            {% set _ = analysis.potentially_dangerous.append(exposure) %}
+          {% endif %}
+          {% if service in allowed_essential_services %}
+            {% if service not in analysis.essential_allowed %}
+              {% set _ = analysis.essential_allowed.append(service) %}
+            {% endif %}
+          {% elif service not in potentially_dangerous_services %}
+            {% if service not in analysis.non_essential %}
+              {% set _ = analysis.non_essential.append(service) %}
+            {% endif %}
+          {% endif %}
+        {% endfor %}
+      {% endfor %}
+      {{ analysis }}
+  when:
+    - firewalld_installed
+    - zones_config is defined
+
+# =============================================================================
+# DIRECT RULES AND RICH RULES
+# =============================================================================
+
+- name: Get all rich rules from all zones
+  shell: |
+    firewall-cmd --list-all-zones 2>/dev/null | grep -A 1 "rich rules:" | grep "rule " || echo "none"
+  register: all_rich_rules
+  changed_when: false
+  when: firewalld_installed
+
+- name: Check for direct rules
+  shell: firewall-cmd --direct --get-all-rules 2>/dev/null || echo "none"
+  register: direct_rules
+  changed_when: false
+  when: firewalld_installed
+
+# =============================================================================
+# PANIC MODE AND LOCKDOWN
+# =============================================================================
+
+- name: Check panic mode
+  shell: firewall-cmd --query-panic 2>/dev/null && echo "yes" || echo "no"
+  register: panic_mode
+  changed_when: false
+  when: firewalld_installed
+
+- name: Check lockdown mode
+  shell: firewall-cmd --query-lockdown 2>/dev/null && echo "yes" || echo "no"
+  register: lockdown_mode
+  changed_when: false
+  when: firewalld_installed
+
+# =============================================================================
+# BACKEND CONFIGURATION
+# =============================================================================
+
+- name: Check firewalld backend
+  shell: |
+    if [ -f /etc/firewalld/firewalld.conf ]; then
+      grep "^FirewallBackend=" /etc/firewalld/firewalld.conf | cut -d= -f2
+    else
+      echo "not_configured"
+    fi
+  register: firewall_backend
+  changed_when: false
+  when: firewalld_installed
+
+# =============================================================================
+# ZONE TARGETS AND POLICIES
+# =============================================================================
+
+- name: Get default target for each zone
+  shell: firewall-cmd --permanent --zone={{ item }} --get-target 2>/dev/null || echo "default"
+  loop: "{{ all_zones.stdout.split() if all_zones.stdout else [] }}"
+  register: zone_targets
+  changed_when: false
+  when: firewalld_installed
+
+# =============================================================================
+# MASQUERADING CONFIGURATION
+# =============================================================================
+
+- name: Check for masquerading in zones
+  set_fact:
+    zones_with_masquerade: |
+      {% set masq_zones = [] %}
+      {% for zone in zones_config %}
+        {% if zone.masquerade | default(false) %}
+          {% set _ = masq_zones.append(zone.name) %}
+        {% endif %}
+      {% endfor %}
+      {{ masq_zones }}
+  when:
+    - firewalld_installed
+    - zones_config is defined
+
+# =============================================================================
+# UNASSIGNED INTERFACES
+# =============================================================================
+
+- name: Find unassigned interfaces
+  set_fact:
+    unassigned_interfaces: |
+      {% set unassigned = [] %}
+      {% for mapping in interface_zone_mapping %}
+        {% if not mapping.assigned %}
+          {% set _ = unassigned.append(mapping.interface) %}
+        {% endif %}
+      {% endfor %}
+      {{ unassigned }}
+  when:
+    - firewalld_installed
+    - interface_zone_mapping is defined
+
+# =============================================================================
+# COMPREHENSIVE FACTS ASSEMBLY
+# =============================================================================
+
+- name: Set comprehensive firewalld facts
+  set_fact:
+    host_firewalld_facts:
+      package_installed: "{{ firewalld_installed }}"
+      service_enabled: "{{ firewalld_service.status.UnitFileState | default('unknown') if firewalld_installed else 'N/A' }}"
+      service_running: "{{ firewalld_service.status.ActiveState | default('unknown') if firewalld_installed else 'N/A' }}"
+      service_state: "{{ firewalld_service.status.SubState | default('unknown') if firewalld_installed else 'N/A' }}"
+      conflicting_packages:
+        installed: "{{ conflicting_pkgs_installed }}"
+        has_conflicts: "{{ conflicting_pkgs_installed | length > 0 }}"
+      configuration:
+        default_zone: "{{ default_zone.stdout if default_zone is defined else 'unknown' }}"
+        default_zone_set: "{{ default_zone.stdout != 'not_set' if default_zone is defined else false }}"
+        backend: "{{ firewall_backend.stdout if firewall_backend is defined else 'unknown' }}"
+        backend_is_nftables: "{{ firewall_backend.stdout == 'nftables' if firewall_backend is defined else false }}"
+        panic_mode: "{{ panic_mode.stdout == 'yes' if panic_mode is defined else false }}"
+        lockdown_mode: "{{ lockdown_mode.stdout == 'yes' if lockdown_mode is defined else false }}"
+      zones:
+        all_zones: "{{ all_zones.stdout.split() if all_zones is defined and all_zones.stdout else [] }}"
+        total_count: "{{ all_zones.stdout.split() | length if all_zones is defined and all_zones.stdout else 0 }}"
+        detailed_config: "{{ zones_config | default([]) }}"
+        with_masquerade: "{{ zones_with_masquerade | default([]) }}"
+      interfaces:
+        all_interfaces: "{{ network_interfaces.stdout_lines }}"
+        interface_mapping: "{{ interface_zone_mapping | default([]) }}"
+        unassigned: "{{ unassigned_interfaces | default([]) }}"
+        has_unassigned: "{{ (unassigned_interfaces | default([]) | length) > 0 }}"
+      services:
+        exposure_analysis: "{{ service_exposure_analysis | default({}) }}"
+        total_exposed: "{{ (service_exposure_analysis.total_services | default([])) | length }}"
+        potentially_dangerous: "{{ (service_exposure_analysis.potentially_dangerous | default([])) | length }}"
+        has_dangerous_services: "{{ (service_exposure_analysis.potentially_dangerous | default([])) | length > 0 }}"
+      rules:
+        rich_rules: "{{ all_rich_rules.stdout_lines if all_rich_rules is defined and all_rich_rules.stdout != 'none' else [] }}"
+        direct_rules: "{{ direct_rules.stdout_lines if direct_rules is defined and direct_rules.stdout != 'none' else [] }}"
+        has_rich_rules: "{{ all_rich_rules.stdout != 'none' if all_rich_rules is defined else false }}"
+        has_direct_rules: "{{ direct_rules.stdout != 'none' if direct_rules is defined else false }}"
+      compliance_checks:
+        firewalld_installed: "{{ firewalld_installed }}"
+        service_enabled_and_running: "{{ (firewalld_service.status.UnitFileState == 'enabled' and firewalld_service.status.ActiveState == 'active') if firewalld_installed and firewalld_service.status is defined else false }}"
+        no_conflicting_packages: "{{ conflicting_pkgs_installed | length == 0 }}"
+        default_zone_configured: "{{ default_zone.stdout != 'not_set' if default_zone is defined else false }}"
+        all_interfaces_assigned: "{{ (unassigned_interfaces | default([]) | length) == 0 }}"
+        using_nftables_backend: "{{ firewall_backend.stdout == 'nftables' if firewall_backend is defined else false }}"
+        no_dangerous_services: "{{ (service_exposure_analysis.potentially_dangerous | default([])) | length == 0 }}"
+      collection_timestamp: "{{ ansible_date_time.iso8601 }}"
+
+- name: Display firewalld facts summary
+  debug:
+    msg:
+      - "=========================================="
+      - "Firewalld Configuration Facts"
+      - "=========================================="
+      - "Firewalld installed: {{ host_firewalld_facts.package_installed }}"
+      - "Service enabled: {{ host_firewalld_facts.service_enabled }}"
+      - "Service running: {{ host_firewalld_facts.service_running }}"
+      - ""
+      - "Configuration:"
+      - "  Default zone: {{ host_firewalld_facts.configuration.default_zone }}"
+      - "  Backend: {{ host_firewalld_facts.configuration.backend }}"
+      - "  Panic mode: {{ host_firewalld_facts.configuration.panic_mode }}"
+      - ""
+      - "Zones: {{ host_firewalld_facts.zones.total_count }}"
+      - "Interfaces: {{ host_firewalld_facts.interfaces.all_interfaces | length }}"
+      - "Unassigned interfaces: {{ host_firewalld_facts.interfaces.unassigned | length }}"
+      - ""
+      - "Services exposed: {{ host_firewalld_facts.services.total_exposed }}"
+      - "Potentially dangerous: {{ host_firewalld_facts.services.potentially_dangerous }}"
+      - ""
+      - "Compliance Issues:"
+      - "  Conflicting packages: {{ host_firewalld_facts.conflicting_packages.has_conflicts }}"
+      - "  Unassigned interfaces: {{ host_firewalld_facts.interfaces.has_unassigned }}"
+      - "  Dangerous services: {{ host_firewalld_facts.services.has_dangerous_services }}"
+      - "=========================================="
+  when: firewalld_installed

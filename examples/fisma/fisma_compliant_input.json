@@ -1,0 +1,905 @@
+{
+  "organization": {
+    "name": "Department of Federal Services",
+    "entity_type": "federal_agency",
+    "fisma_registration": "DFS-001",
+    "assessment_date": "2025-01-06T10:00:00Z"
+  },
+  "system_information": {
+    "system_name": "Financial Management Information System",
+    "system_abbreviation": "FMIS",
+    "system_id": "DFS-FMIS-001",
+    "system_version": "3.2.1",
+    "operational_status": "operational",
+    "deployment_model": "agency_hosted"
+  },
+  "fisma": {
+    "prepare": {
+      "risk_strategy": {
+        "documented": true,
+        "approved": true,
+        "communicated": true,
+        "review_frequency_defined": true,
+        "last_review_date": "2024-03-15T09:00:00Z"
+      },
+      "roles": {
+        "authorizing_official": {
+          "assigned": true,
+          "name": "Sarah Johnson",
+          "title": "Deputy Assistant Secretary for IT",
+          "clearance_level": "secret"
+        },
+        "senior_agency_iso": {
+          "assigned": true,
+          "name": "Michael Chen",
+          "title": "Chief Information Security Officer",
+          "certification": "CISSP"
+        },
+        "system_owner": {
+          "assigned": true,
+          "name": "Jennifer Davis",
+          "title": "Financial Systems Director",
+          "responsibilities_documented": true
+        },
+        "information_system_security_officer": {
+          "assigned": true,
+          "name": "Robert Wilson",
+          "title": "Senior Information System Security Officer",
+          "training_current": true
+        },
+        "control_assessor": {
+          "assigned": true,
+          "name": "Patricia Brown",
+          "title": "Independent Security Assessor",
+          "independence_verified": true
+        }
+      },
+      "common_controls": [
+        {
+          "control_family": "AC",
+          "provider_organization": "Department IT Services",
+          "authorization_status": "authorized",
+          "inheritance_documented": true,
+          "provider_contact": "commoncontrols@dept-it.gov"
+        },
+        {
+          "control_family": "AU",
+          "provider_organization": "Enterprise Security Operations",
+          "authorization_status": "authorized",
+          "inheritance_documented": true,
+          "provider_contact": "audit@eso.gov"
+        }
+      ],
+      "impact_prioritization": {
+        "high_impact_systems_identified": true,
+        "moderate_impact_systems_identified": true,
+        "low_impact_systems_identified": true,
+        "prioritization_criteria_documented": true
+      },
+      "continuous_monitoring": {
+        "strategy_documented": true,
+        "frequency_defined": true,
+        "automation_level_defined": true,
+        "reporting_requirements_defined": true
+      }
+    },
+    "categorize": {
+      "system_categorization": {
+        "confidentiality_impact": "moderate",
+        "integrity_impact": "high",
+        "availability_impact": "moderate",
+        "overall_impact": "high"
+      },
+      "information_types": [
+        {
+          "type_name": "Financial Management Information",
+          "nist_sp_800_60_reference": "C.2.8.1",
+          "confidentiality_impact": "moderate",
+          "integrity_impact": "high",
+          "availability_impact": "moderate",
+          "rationale": "Financial data requires high integrity to ensure accurate reporting and moderate confidentiality to protect sensitive financial information"
+        },
+        {
+          "type_name": "Personnel Records",
+          "nist_sp_800_60_reference": "C.2.8.2",
+          "confidentiality_impact": "moderate",
+          "integrity_impact": "moderate",
+          "availability_impact": "low",
+          "rationale": "Personnel records contain PII requiring protection but system availability less critical"
+        }
+      ],
+      "impact_analysis": {
+        "methodology_documented": true,
+        "assumptions_documented": true,
+        "risk_factors_identified": true,
+        "business_impact_assessed": true
+      },
+      "approval": {
+        "system_owner_approved": true,
+        "senior_agency_iso_reviewed": true,
+        "authorizing_official_endorsed": true,
+        "approval_date": "2024-04-01T09:00:00Z"
+      }
+    },
+    "select": {
+      "control_baselines": {
+        "baseline_applied": "high",
+        "nist_sp_800_53_revision": "5",
+        "selected_controls": [
+          "AC-1", "AC-2", "AC-3", "AC-4", "AC-5", "AC-6", "AC-7", "AC-8",
+          "AU-1", "AU-2", "AU-3", "AU-4", "AU-5", "AU-6", "AU-8", "AU-9",
+          "CA-1", "CA-2", "CA-3", "CA-7", "CA-8", "CA-9",
+          "CM-1", "CM-2", "CM-3", "CM-4", "CM-5", "CM-6", "CM-7", "CM-8"
+        ]
+      },
+      "tailoring": {
+        "tailored_controls": [
+          {
+            "control_id": "AU-4",
+            "tailoring_action": "modify",
+            "rationale": "Increased audit storage capacity to accommodate high transaction volume",
+            "approval_documented": true
+          }
+        ]
+      },
+      "compensating_controls": [
+        {
+          "baseline_control_id": "SC-8",
+          "compensating_control_id": "SC-8(1)",
+          "rationale": "Enhanced cryptographic protection for transmission confidentiality",
+          "risk_acceptance_documented": true
+        }
+      ],
+      "allocation": {
+        "system_specific_controls_identified": true,
+        "hybrid_controls_identified": true,
+        "common_controls_identified": true,
+        "responsibility_matrix_documented": true
+      }
+    },
+    "implement": {
+      "controls": {
+        "implementation_percentage": 98,
+        "configuration_management_applied": true,
+        "change_control_applied": true
+      },
+      "documentation": {
+        "control_descriptions_complete": true,
+        "implementation_guidance_followed": true,
+        "responsible_entities_identified": true,
+        "implementation_parameters_documented": true
+      },
+      "ssp": {
+        "document_exists": true,
+        "current_version": true,
+        "complete_control_descriptions": true,
+        "system_boundary_documented": true,
+        "interconnections_documented": true,
+        "approval_date": "2024-09-15T09:00:00Z"
+      },
+      "evidence": {
+        "artifacts_collected": true,
+        "testing_results_documented": true,
+        "configuration_baselines_established": true,
+        "procedures_documented": true
+      }
+    },
+    "assess": {
+      "assessment": {
+        "independent_assessor": true,
+        "assessment_plan_approved": true,
+        "all_controls_assessed": true,
+        "assessment_procedures_nist_800_53a": true,
+        "assessment_start_date": "2024-10-01T09:00:00Z",
+        "assessment_end_date": "2024-11-15T17:00:00Z"
+      },
+      "procedures": {
+        "examine_procedures_used": true,
+        "interview_procedures_used": true,
+        "test_procedures_used": true,
+        "depth_coverage_adequate": true
+      },
+      "findings": {
+        "security_assessment_report_complete": true,
+        "deficiencies_identified": true,
+        "recommendations_provided": true,
+        "risk_ratings_assigned": true,
+        "total_findings": 12,
+        "critical_findings": 0,
+        "high_findings": 2,
+        "moderate_findings": 5,
+        "low_findings": 5
+      },
+      "remediation": {
+        "plan_of_actions": [
+          {
+            "finding_id": "FMIS-001",
+            "control_id": "AC-2(1)",
+            "remediation_strategy": "Implement automated account management",
+            "target_completion_date": "2025-03-01T17:00:00Z",
+            "responsible_party": "System Administrator",
+            "risk_level": "moderate"
+          },
+          {
+            "finding_id": "FMIS-002",
+            "control_id": "AU-6(1)",
+            "remediation_strategy": "Deploy SIEM solution for audit review",
+            "target_completion_date": "2025-02-15T17:00:00Z",
+            "responsible_party": "Security Team",
+            "risk_level": "high"
+          }
+        ]
+      }
+    },
+    "authorize": {
+      "package": {
+        "system_security_plan_current": true,
+        "security_assessment_report_current": true,
+        "plan_of_action_milestones_current": true,
+        "risk_assessment_current": true
+      },
+      "risk_assessment": {
+        "methodology_documented": true,
+        "threat_analysis_completed": true,
+        "vulnerability_analysis_completed": true,
+        "risk_determination_documented": true,
+        "residual_risk_acceptable": true,
+        "overall_risk_level": "moderate"
+      },
+      "decision": {
+        "authorizing_official_decision": "authorize",
+        "decision_rationale_documented": true,
+        "authorization_letter_issued": true,
+        "authorization_date": "2024-12-15T09:00:00Z",
+        "authorization_expiration_date": "2027-12-15T23:59:59Z",
+        "authorization_current": true
+      },
+      "terms_conditions": {
+        "authorization_boundary_defined": true,
+        "authorization_period_defined": true,
+        "conditions_compliance_required": true,
+        "reporting_requirements_defined": true
+      }
+    },
+    "monitor": {
+      "continuous_monitoring": {
+        "strategy_implemented": true,
+        "automated_tools_deployed": true,
+        "manual_assessments_scheduled": true,
+        "frequency_requirements_met": true
+      },
+      "configuration_management": {
+        "baseline_configurations_maintained": true,
+        "change_control_enforced": true,
+        "configuration_deviations_tracked": true,
+        "unauthorized_changes_detected": true
+      },
+      "reporting": {
+        "security_status_reports_current": true,
+        "metrics_collection_automated": true,
+        "dashboard_updates_current": true,
+        "escalation_procedures_followed": true
+      },
+      "ongoing_assessments": {
+        "risk_reassessments_scheduled": true,
+        "control_assessments_ongoing": true,
+        "threat_intelligence_integrated": true,
+        "vulnerability_assessments_current": true
+      }
+    }
+  },
+  "ssp": {
+    "document": {
+      "format": "oscal",
+      "version_control": true,
+      "approval_signatures_present": true,
+      "table_of_contents_present": true,
+      "page_numbering_consistent": true
+    },
+    "system_identification": {
+      "system_name": "Financial Management Information System",
+      "system_abbreviation": "FMIS",
+      "system_description": "Web-based financial management system supporting budget execution, accounting, and financial reporting",
+      "system_purpose": "Automate financial management processes and provide financial reporting capabilities",
+      "system_version": "3.2.1",
+      "boundary": {
+        "physical_boundary_described": true,
+        "logical_boundary_described": true,
+        "network_architecture_documented": true,
+        "data_flows_documented": true,
+        "components": ["Web Servers", "Database Servers", "Load Balancers", "Firewalls"]
+      },
+      "ownership": {
+        "system_owner": {
+          "name": "Jennifer Davis",
+          "title": "Financial Systems Director",
+          "organization": "Office of Financial Management",
+          "contact_info": "jennifer.davis@agency.gov"
+        },
+        "authorizing_official": {
+          "name": "Sarah Johnson",
+          "title": "Deputy Assistant Secretary for IT"
+        }
+      }
+    },
+    "categorization": {
+      "confidentiality": {
+        "impact_level": "moderate",
+        "rationale": "Disclosure could cause serious adverse effects on agency operations"
+      },
+      "integrity": {
+        "impact_level": "high",
+        "rationale": "Modification could cause severe adverse effects on financial reporting accuracy"
+      },
+      "availability": {
+        "impact_level": "moderate",
+        "rationale": "Disruption could cause serious adverse effects on financial operations"
+      },
+      "overall_impact_level": "high",
+      "information_types": [
+        {
+          "name": "Financial Management Information",
+          "description": "Budget execution and accounting data",
+          "confidentiality_impact": "moderate",
+          "integrity_impact": "high",
+          "availability_impact": "moderate",
+          "nist_sp_800_60_reference": "C.2.8.1"
+        }
+      ],
+      "impact_analysis": {
+        "methodology_described": true,
+        "assumptions_documented": true,
+        "threat_sources_identified": true,
+        "vulnerability_considerations": true
+      },
+      "rationale": {
+        "confidentiality_rationale": "Financial data contains sensitive budget and accounting information",
+        "integrity_rationale": "Accurate financial reporting is critical for agency operations and compliance",
+        "availability_rationale": "Financial operations require timely access to systems and data",
+        "overall_rationale": "High water mark applied due to high integrity requirements"
+      }
+    },
+    "controls": {
+      "baseline": {
+        "nist_sp_800_53_baseline": "high",
+        "revision": "5",
+        "selected_controls": ["AC-1", "AC-2", "AC-3", "AU-1", "AU-2", "CA-1", "CM-1"]
+      },
+      "implemented_controls": [
+        {
+          "control_id": "AC-1",
+          "control_name": "Access Control Policy and Procedures",
+          "control_description": "Organization develops, documents, and disseminates access control policy and procedures",
+          "implementation_status": "implemented",
+          "implementation_description": "Agency-wide access control policy implemented with system-specific procedures",
+          "responsible_role": "System Security Officer",
+          "implementation_guidance": "Follows agency access control policy template",
+          "responsibility": "system_specific",
+          "responsible_entity": "FMIS Security Team"
+        }
+      ]
+    },
+    "environment": {
+      "hardware": [
+        {
+          "component_name": "Web Server Farm",
+          "component_type": "server",
+          "location": "Primary Data Center",
+          "responsible_organization": "IT Operations",
+          "security_impact_level": "high"
+        }
+      ],
+      "software": [
+        {
+          "software_name": "Oracle Database",
+          "version": "19c",
+          "vendor": "Oracle Corporation",
+          "purpose": "Financial data storage",
+          "security_impact_level": "high"
+        }
+      ],
+      "network": {
+        "architecture_diagram_current": true,
+        "network_topology_documented": true,
+        "network_connections": [
+          {
+            "source": "Web Tier",
+            "destination": "Database Tier",
+            "protocol": "HTTPS",
+            "port": "443",
+            "security_controls_applied": true
+          }
+        ]
+      },
+      "data_flows": [
+        {
+          "data_type": "Financial Transactions",
+          "source": "User Interface",
+          "destination": "Database",
+          "protection_mechanisms": "TLS encryption, input validation",
+          "classification": "moderate"
+        }
+      ]
+    },
+    "roles": {
+      "authorizing_official": {
+        "name": "Sarah Johnson",
+        "role_title": "Deputy Assistant Secretary for IT",
+        "responsibilities": "Risk-based authorization decisions",
+        "authority_level": "Agency-level authorization",
+        "required_qualifications": "Senior executive experience in IT",
+        "contact_info": {
+          "email": "sarah.johnson@agency.gov",
+          "phone": "202-555-0100",
+          "organization": "Office of Information Technology",
+          "mailing_address": "1234 Federal Way, Washington, DC 20001"
+        }
+      },
+      "senior_agency_iso": {
+        "name": "Michael Chen",
+        "role_title": "Chief Information Security Officer",
+        "responsibilities": "Agency information security program oversight",
+        "authority_level": "Agency-wide security authority",
+        "required_qualifications": "CISSP certification, federal security experience",
+        "contact_info": {
+          "email": "michael.chen@agency.gov",
+          "phone": "202-555-0101",
+          "organization": "Office of Information Security",
+          "mailing_address": "1234 Federal Way, Washington, DC 20001"
+        }
+      },
+      "system_owner": {
+        "name": "Jennifer Davis",
+        "role_title": "Financial Systems Director",
+        "responsibilities": "System operational responsibility",
+        "authority_level": "System-level management",
+        "required_qualifications": "Financial systems experience",
+        "contact_info": {
+          "email": "jennifer.davis@agency.gov",
+          "phone": "202-555-0102",
+          "organization": "Office of Financial Management",
+          "mailing_address": "1234 Federal Way, Washington, DC 20001"
+        }
+      },
+      "isso": {
+        "name": "Robert Wilson",
+        "role_title": "Senior Information System Security Officer",
+        "responsibilities": "System security implementation and monitoring",
+        "authority_level": "System security authority",
+        "required_qualifications": "Security+ certification, system security experience",
+        "contact_info": {
+          "email": "robert.wilson@agency.gov",
+          "phone": "202-555-0103",
+          "organization": "IT Security Office",
+          "mailing_address": "1234 Federal Way, Washington, DC 20001"
+        }
+      },
+      "system_administrator": {
+        "name": "Mark Thompson",
+        "role_title": "Senior System Administrator",
+        "responsibilities": "System administration and maintenance",
+        "authority_level": "Administrative access",
+        "required_qualifications": "System administration experience",
+        "contact_info": {
+          "email": "mark.thompson@agency.gov",
+          "phone": "202-555-0104",
+          "organization": "IT Operations",
+          "mailing_address": "1234 Federal Way, Washington, DC 20001"
+        }
+      },
+      "delegation": {
+        "delegation_agreements_current": true,
+        "backup_personnel_identified": true,
+        "succession_planning_documented": true
+      }
+    },
+    "maintenance": {
+      "version_control": {
+        "version_numbering_scheme": "Major.Minor.Patch",
+        "change_tracking_implemented": true,
+        "approval_workflow_defined": true,
+        "historical_versions_maintained": true
+      },
+      "review_cycle": {
+        "frequency": "annually",
+        "review_criteria_defined": true,
+        "responsible_parties_assigned": true,
+        "next_review_date": "2025-09-15T09:00:00Z"
+      },
+      "change_management": {
+        "change_request_process": true,
+        "impact_assessment_required": true,
+        "approval_authorities_defined": true,
+        "notification_procedures": true
+      },
+      "distribution": {
+        "controlled_distribution": true,
+        "authorized_recipients_list": true,
+        "distribution_tracking": true,
+        "confidentiality_marking": true
+      }
+    }
+  },
+  "continuous_monitoring": {
+    "program": {
+      "iscm_strategy_documented": true,
+      "scope_defined": true,
+      "objectives_stated": true,
+      "governance_structure_established": true,
+      "risk_tolerance_defined": true
+    },
+    "roles": {
+      "iscm_program_manager": {
+        "assigned": true
+      },
+      "system_owners": {
+        "responsibilities_defined": true
+      },
+      "security_control_assessors": {
+        "responsibilities_defined": true
+      },
+      "authorizing_officials": {
+        "responsibilities_defined": true
+      },
+      "risk_executive": {
+        "responsibilities_defined": true
+      }
+    },
+    "automation": {
+      "automated_tools_deployed": true,
+      "tool_integration_implemented": true,
+      "automated_data_collection": true,
+      "automated_analysis_capabilities": true,
+      "dashboard_capabilities": true
+    },
+    "metrics": {
+      "security_metrics": [
+        {
+          "metric_name": "Vulnerability Remediation Time",
+          "measurement_method": "Average days to remediate critical vulnerabilities",
+          "frequency": "monthly",
+          "target_value": "30 days",
+          "responsible_party": "Security Team"
+        }
+      ]
+    },
+    "strategy": {
+      "configuration_monitoring": {
+        "frequency": "real_time"
+      },
+      "vulnerability_scanning": {
+        "frequency": "weekly"
+      },
+      "control_assessments": {
+        "frequency": "annually"
+      },
+      "penetration_testing": {
+        "frequency": "annually"
+      }
+    },
+    "procedures": {
+      "configuration_monitoring_procedures": true,
+      "vulnerability_assessment_procedures": true,
+      "malware_detection_procedures": true,
+      "network_monitoring_procedures": true,
+      "log_analysis_procedures": true
+    },
+    "scope": {
+      "monitored_systems": [
+        {
+          "system_id": "FMIS-001",
+          "monitoring_level": "enhanced",
+          "critical_controls_identified": true,
+          "monitoring_frequency_defined": true
+        }
+      ]
+    },
+    "tools": {
+      "deployed_tools": [
+        {
+          "tool_name": "Nessus",
+          "tool_type": "vulnerability_scanner",
+          "configuration_current": true,
+          "integration_status": "active",
+          "coverage_adequate": true
+        }
+      ]
+    },
+    "configuration": {
+      "baseline_configurations_maintained": true,
+      "configuration_changes_tracked": true,
+      "unauthorized_changes_detected": true,
+      "configuration_drift_monitored": true,
+      "remediation_automated": true
+    },
+    "vulnerabilities": {
+      "scanning_current": true,
+      "vulnerability_database_current": true,
+      "risk_scoring_implemented": true,
+      "remediation_tracking": true,
+      "false_positive_management": true
+    },
+    "controls": {
+      "control_effectiveness_monitored": true,
+      "control_failures_detected": true,
+      "compensating_controls_monitored": true,
+      "control_inheritance_verified": true
+    },
+    "threat_intelligence": {
+      "feeds_integrated": true,
+      "indicators_monitored": true,
+      "threat_hunting_conducted": true,
+      "attribution_analysis": true
+    },
+    "assessments": {
+      "control_assessments": {
+        "schedule_maintained": true,
+        "assessment_procedures_current": true,
+        "findings_tracked": true,
+        "remediation_monitored": true
+      }
+    },
+    "risk_assessments": {
+      "risk_assessment_current": true,
+      "threat_assessment_current": true,
+      "vulnerability_assessment_current": true,
+      "impact_analysis_current": true
+    },
+    "penetration_testing": {
+      "testing_scheduled": true,
+      "scope_defined": true,
+      "results_analyzed": true,
+      "remediation_tracked": true
+    },
+    "red_team": {
+      "exercises_conducted": true,
+      "scenarios_realistic": true,
+      "findings_documented": true,
+      "improvements_implemented": true
+    },
+    "incident_response": {
+      "detection_capabilities": {
+        "siem_deployed": true,
+        "ids_ips_deployed": true,
+        "endpoint_detection": true,
+        "network_monitoring": true,
+        "user_behavior_analytics": true
+      },
+      "procedures": {
+        "incident_response_plan_current": true,
+        "escalation_procedures_defined": true,
+        "containment_procedures_defined": true,
+        "recovery_procedures_defined": true
+      },
+      "data_collection": {
+        "forensic_capabilities": true,
+        "log_preservation": true,
+        "evidence_handling": true,
+        "chain_of_custody": true
+      },
+      "lessons_learned": {
+        "post_incident_reviews": true,
+        "process_improvements": true,
+        "control_updates": true,
+        "training_updates": true
+      }
+    },
+    "reporting": {
+      "management": {
+        "dashboard_current": true,
+        "executive_summaries_provided": true,
+        "trend_analysis_provided": true,
+        "risk_posture_reported": true
+      },
+      "regulatory": {
+        "fisma_reporting_current": true,
+        "omb_reporting_compliant": true,
+        "agency_reporting_compliant": true,
+        "timeline_compliance": true
+      },
+      "stakeholder": {
+        "authorizing_officials_informed": true,
+        "system_owners_informed": true,
+        "users_notified": true,
+        "feedback_mechanisms": true
+      },
+      "metrics": {
+        "security_metrics_current": true,
+        "performance_trends_analyzed": true,
+        "benchmarking_conducted": true,
+        "improvement_recommendations": true
+      }
+    }
+  },
+  "ato": {
+    "authorization_package": {
+      "ssp": {
+        "document_current": true,
+        "version_approved": true,
+        "system_categorization_documented": true,
+        "control_implementation_documented": true,
+        "system_boundary_defined": true,
+        "interconnections_documented": true,
+        "responsible_parties_identified": true
+      },
+      "sar": {
+        "independent_assessment_conducted": true,
+        "assessment_procedures_followed": true,
+        "all_controls_assessed": true,
+        "findings_documented": true,
+        "recommendations_provided": true,
+        "risk_ratings_assigned": true,
+        "assessment_current": true
+      },
+      "poam": {
+        "action_items": [
+          {
+            "weakness_id": "FMIS-W001",
+            "description": "Automated account management not fully implemented",
+            "resources_required": "Staff time, software licensing",
+            "completion_date": "2025-03-01T17:00:00Z",
+            "risk_rating": "moderate",
+            "status": "ongoing"
+          }
+        ],
+        "risk_tolerance_acceptable": true
+      },
+      "risk_assessment": {
+        "methodology_documented": true,
+        "threat_sources_identified": true,
+        "vulnerabilities_identified": true,
+        "likelihood_determined": true,
+        "impact_analyzed": true,
+        "risk_determination_made": true,
+        "current_assessment": true
+      },
+      "supporting_docs": {
+        "contingency_plan_current": true,
+        "configuration_management_plan": true,
+        "incident_response_plan": true,
+        "continuous_monitoring_plan": true,
+        "privacy_impact_assessment": true,
+        "interconnection_agreements": true
+      }
+    },
+    "risk_assessment": {
+      "threats": {
+        "threat_sources": [
+          {
+            "threat_source": "Malicious Insider",
+            "threat_events": "Unauthorized data access or modification",
+            "likelihood": "low",
+            "threat_scenario": "Disgruntled employee with authorized access"
+          }
+        ],
+        "threat_intelligence_considered": true
+      },
+      "vulnerabilities": {
+        "vulnerability_scan_current": true,
+        "penetration_test_current": true,
+        "configuration_review_current": true,
+        "code_review_conducted": true,
+        "identified_vulnerabilities": []
+      },
+      "analysis": {
+        "threat_vulnerability_pairing": true,
+        "likelihood_determination": true,
+        "impact_analysis": true,
+        "risk_calculation": true,
+        "uncertainty_factors_considered": true
+      },
+      "residual_risk": {
+        "overall_risk_level": "moderate",
+        "high_risks_mitigated": true,
+        "risk_tolerance_within_limits": true,
+        "compensating_controls_effective": true
+      }
+    },
+    "controls": {
+      "implementation": {
+        "implementation_percentage": 98,
+        "evidence_artifacts_available": true,
+        "configuration_verified": true,
+        "procedures_documented": true
+      },
+      "testing": {
+        "examine_procedures_conducted": true,
+        "interview_procedures_conducted": true,
+        "test_procedures_conducted": true,
+        "sampling_adequate": true,
+        "independent_testing": true
+      },
+      "deficiencies": {
+        "critical_deficiencies_resolved": true,
+        "high_deficiencies_plan_approved": true,
+        "moderate_deficiencies_documented": true,
+        "compensating_controls_implemented": true
+      },
+      "inheritance": {
+        "common_controls_authorized": true,
+        "inheritance_documented": true,
+        "provider_assessments_current": true,
+        "responsibility_matrix_accurate": true
+      }
+    },
+    "poam": {
+      "completeness": {
+        "all_weaknesses_documented": true,
+        "root_cause_analysis_conducted": true,
+        "risk_ratings_accurate": true,
+        "dependencies_identified": true
+      },
+      "remediation": {
+        "strategies_documented": true,
+        "alternative_approaches_considered": true,
+        "cost_benefit_analyzed": true,
+        "feasibility_assessed": true
+      },
+      "resources": {
+        "funding_identified": true,
+        "personnel_assigned": true,
+        "technical_resources_available": true,
+        "vendor_support_confirmed": true
+      },
+      "timeline": {
+        "milestones_reasonable": true,
+        "dependencies_considered": true,
+        "contingency_planning": true,
+        "progress_tracking_implemented": true,
+        "critical_items_timeline": 60
+      }
+    },
+    "authorizing_official": {
+      "role": {
+        "authority_documented": true,
+        "responsibilities_understood": true,
+        "accountability_accepted": true,
+        "decision_criteria_established": true
+      },
+      "decision_framework": {
+        "risk_tolerance_defined": true,
+        "decision_criteria_documented": true,
+        "escalation_procedures": true,
+        "review_process_established": true
+      },
+      "oversight": {
+        "monitoring_requirements_defined": true,
+        "reporting_requirements_established": true,
+        "review_cycles_scheduled": true,
+        "performance_metrics_defined": true
+      },
+      "accountability": {
+        "responsibility_matrix_signed": true,
+        "delegation_documented": true,
+        "backup_ao_identified": true,
+        "succession_planning": true
+      }
+    },
+    "ongoing": {
+      "continuous_monitoring": {
+        "strategy_approved": true,
+        "tools_configured": true,
+        "procedures_documented": true,
+        "reporting_established": true
+      },
+      "reauthorization": {
+        "schedule_established": true,
+        "triggers_defined": true,
+        "process_documented": true,
+        "resource_planning": true
+      },
+      "change_management": {
+        "change_control_process": true,
+        "impact_assessment_procedures": true,
+        "authorization_updates": true,
+        "stakeholder_notification": true
+      },
+      "incident_response": {
+        "incident_procedures_current": true,
+        "coordination_mechanisms": true,
+        "impact_assessment_process": true,
+        "authorization_review_triggers": true
+      }
+    }
+  }
+}

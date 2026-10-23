@@ -1,0 +1,21 @@
+---
+# Deploy Multi-OPA Container Architecture
+# Deploys three purpose-specific OPA containers:
+#   opa-security   (port 8181): CIS Benchmarks, NIST, STIGs
+#   opa-compliance (port 8182): ISO 27001, SOC 2, PCI-DSS, GDPR, SOX, FISMA
+#   opa-ot         (port 8183): NERC-CIP, AI Governance, OT/ICS
+#
+# Usage: Run via AAP job template "AAC - Deploy OPA Containers" (ID 28)
+# After this runs, reload policies: "AAC - Load OPA Policies" (ID 27)
+
+- name: Deploy Multi-OPA Container Architecture
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - ../vars/site_config.yml
+    - [ "../vars/vault_secrets.yml", "../vars/empty_fallback.yml" ]
+
+  roles:
+    - role: aac_opa_containers

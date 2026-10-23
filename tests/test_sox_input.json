@@ -1,0 +1,1029 @@
+{
+  "sox": {
+    "section_302": {
+      "ceo_certification": {
+        "provided": true,
+        "date": "2025-03-31",
+        "scope": "complete_financial_statements"
+      },
+      "cfo_certification": {
+        "provided": true,
+        "date": "2025-03-31",
+        "scope": "complete_financial_statements"
+      },
+      "disclosure_controls": {
+        "effective": true,
+        "last_assessment": "2025-03-15",
+        "deficiencies": "none_identified"
+      },
+      "material_weaknesses": {
+        "none_identified": true,
+        "last_assessment": "2025-03-15"
+      },
+      "quarterly_review": {
+        "completed": true,
+        "last_review": "2025-03-31"
+      },
+      "annual_assessment": {
+        "completed": true,
+        "last_assessment": "2024-12-31"
+      }
+    },
+    "section_404": {
+      "management_assessment": {
+        "completed": true,
+        "assessment_date": "2025-03-31",
+        "methodology": "coso_framework"
+      },
+      "internal_controls": {
+        "designed_effectively": true,
+        "operating_effectively": true,
+        "last_testing": "2025-03-15"
+      },
+      "external_auditor_attestation": {
+        "unqualified": true,
+        "auditor": "Deloitte",
+        "opinion_date": "2025-04-15"
+      },
+      "remediation_plan": {
+        "implemented": true,
+        "completion_date": "2025-02-28"
+      },
+      "continuous_monitoring": {
+        "active": true,
+        "monitoring_frequency": "monthly"
+      }
+    },
+    "section_409": {
+      "material_events": {
+        "disclosed_timely": true,
+        "disclosure_timeline": "within_4_business_days"
+      },
+      "disclosure_process": {
+        "automated": true,
+        "system": "disclosure_management_platform"
+      },
+      "disclosure_controls": {
+        "reviewed_quarterly": true,
+        "last_review": "2025-03-31"
+      },
+      "event_detection": {
+        "real_time": true,
+        "monitoring_system": "financial_monitoring_platform"
+      },
+      "filing_deadlines": {
+        "met": true,
+        "compliance_rate": "100%"
+      }
+    },
+    "management": {
+      "assessment_framework": {
+        "documented": true,
+        "framework": "coso_internal_control",
+        "last_update": "2025-01-15"
+      },
+      "testing_procedures": {
+        "comprehensive": true,
+        "testing_frequency": "quarterly",
+        "documentation": "complete"
+      },
+      "deficiency_remediation": {
+        "timely": true,
+        "average_remediation_days": 45,
+        "tracking_system": "grc_platform"
+      },
+      "continuous_monitoring": {
+        "implemented": true,
+        "automation_level": "high",
+        "monitoring_tools": ["splunk", "tableau", "grc_platform"]
+      },
+      "risk_assessment": {
+        "annual": true,
+        "last_assessment": "2024-12-31",
+        "methodology": "coso_erm"
+      },
+      "control_documentation": {
+        "current": true,
+        "last_update": "2025-03-15",
+        "version_control": "active"
+      }
+    },
+    "itgc": {
+      "access_controls": {
+        "implemented": true,
+        "role_based_access": true,
+        "mfa_enabled": true,
+        "access_review_frequency": "quarterly"
+      },
+      "change_management": {
+        "controlled": true,
+        "approval_workflow": "multi_stage",
+        "emergency_change_process": "documented",
+        "change_success_rate": "98%"
+      },
+      "computer_operations": {
+        "monitored": true,
+        "monitoring_tools": ["splunk", "datadog", "new_relic"],
+        "incident_response_time": "< 30 minutes",
+        "uptime": "99.9%"
+      },
+      "system_development": {
+        "secure": true,
+        "sdlc_methodology": "agile_secure",
+        "code_review": "mandatory",
+        "security_testing": "automated"
+      },
+      "data_center_operations": {
+        "controlled": true,
+        "physical_security": "multi_layer",
+        "environmental_monitoring": "continuous",
+        "redundancy": "n_plus_1"
+      },
+      "backup_recovery": {
+        "tested": true,
+        "backup_frequency": "continuous",
+        "recovery_testing": "quarterly",
+        "rto": "4_hours",
+        "rpo": "15_minutes"
+      },
+      "logical_access": {
+        "unique_user_ids": {
+          "required": true
+        },
+        "strong_authentication": {
+          "enforced": true
+        },
+        "password_policy": {
+          "compliant": true
+        },
+        "session_management": {
+          "secure": true
+        },
+        "account_lockout": {
+          "configured": true
+        }
+      },
+      "privileged_access": {
+        "admin_accounts": {
+          "monitored": true
+        },
+        "elevated_permissions": {
+          "justified": true
+        },
+        "access_logging": {
+          "comprehensive": true
+        },
+        "approval_workflow": {
+          "documented": true
+        }
+      },
+      "access_reviews": {
+        "quarterly_review": {
+          "completed": true
+        },
+        "terminated_users": {
+          "removed_timely": true
+        },
+        "role_changes": {
+          "updated_promptly": true
+        },
+        "exceptions": {
+          "documented": true
+        }
+      },
+      "segregation_of_duties": {
+        "development_production": {
+          "separated": true
+        },
+        "financial_it": {
+          "separated": true
+        },
+        "conflicting_roles": {
+          "prevented": true
+        },
+        "compensating_controls": {
+          "implemented": true
+        }
+      },
+      "change_approval": {
+        "business_approval": {
+          "required": true
+        },
+        "technical_approval": {
+          "required": true
+        },
+        "security_review": {
+          "completed": true
+        },
+        "impact_assessment": {
+          "documented": true
+        },
+        "rollback_plan": {
+          "prepared": true
+        }
+      },
+      "change_testing": {
+        "development_testing": {
+          "completed": true
+        },
+        "user_acceptance_testing": {
+          "passed": true
+        },
+        "performance_testing": {
+          "satisfactory": true
+        },
+        "security_testing": {
+          "passed": true
+        },
+        "regression_testing": {
+          "completed": true
+        }
+      },
+      "emergency_changes": {
+        "approval_process": {
+          "expedited": true
+        },
+        "documentation": {
+          "post_implementation": true
+        },
+        "review_process": {
+          "timely": true
+        },
+        "permanent_fix": {
+          "implemented": true
+        }
+      },
+      "change_documentation": {
+        "requirements": {
+          "documented": true
+        },
+        "design_specifications": {
+          "complete": true
+        },
+        "test_results": {
+          "recorded": true
+        },
+        "implementation_guide": {
+          "available": true
+        }
+      },
+      "system_monitoring": {
+        "availability_monitoring": {
+          "real_time": true
+        },
+        "performance_monitoring": {
+          "continuous": true
+        },
+        "error_monitoring": {
+          "automated": true
+        },
+        "security_monitoring": {
+          "comprehensive": true
+        },
+        "alerting": {
+          "immediate": true
+        }
+      },
+      "incident_management": {
+        "incident_detection": {
+          "automated": true
+        },
+        "response_procedures": {
+          "documented": true
+        },
+        "escalation_process": {
+          "defined": true
+        },
+        "resolution_tracking": {
+          "maintained": true
+        },
+        "post_incident_review": {
+          "conducted": true
+        }
+      },
+      "capacity_management": {
+        "capacity_planning": {
+          "annual": true
+        },
+        "resource_monitoring": {
+          "continuous": true
+        },
+        "growth_projections": {
+          "documented": true
+        },
+        "scalability_testing": {
+          "periodic": true
+        }
+      },
+      "performance_monitoring": {
+        "response_time": {
+          "monitored": true
+        },
+        "throughput": {
+          "measured": true
+        },
+        "resource_utilization": {
+          "tracked": true
+        },
+        "trend_analysis": {
+          "performed": true
+        }
+      },
+      "sdlc": {
+        "methodology": {
+          "documented": true
+        },
+        "phases": {
+          "clearly_defined": true
+        },
+        "deliverables": {
+          "specified": true
+        },
+        "quality_gates": {
+          "implemented": true
+        },
+        "approval_checkpoints": {
+          "required": true
+        }
+      },
+      "security_requirements": {
+        "threat_modeling": {
+          "conducted": true
+        },
+        "security_controls": {
+          "designed": true
+        },
+        "vulnerability_assessment": {
+          "performed": true
+        },
+        "penetration_testing": {
+          "completed": true
+        }
+      },
+      "code_review": {
+        "peer_review": {
+          "required": true
+        },
+        "security_review": {
+          "mandatory": true
+        },
+        "automated_scanning": {
+          "performed": true
+        },
+        "findings_remediation": {
+          "tracked": true
+        }
+      },
+      "deployment": {
+        "automated_deployment": {
+          "implemented": true
+        },
+        "environment_consistency": {
+          "maintained": true
+        },
+        "rollback_capability": {
+          "tested": true
+        },
+        "deployment_verification": {
+          "automated": true
+        }
+      },
+      "physical_security": {
+        "access_controls": {
+          "multi_factor": true
+        },
+        "visitor_management": {
+          "controlled": true
+        },
+        "surveillance": {
+          "comprehensive": true
+        },
+        "access_logging": {
+          "complete": true
+        },
+        "security_guards": {
+          "present": true
+        }
+      },
+      "environmental": {
+        "temperature_control": {
+          "monitored": true
+        },
+        "humidity_control": {
+          "maintained": true
+        },
+        "fire_suppression": {
+          "tested": true
+        },
+        "water_detection": {
+          "implemented": true
+        },
+        "air_quality": {
+          "monitored": true
+        }
+      },
+      "power_systems": {
+        "ups_systems": {
+          "redundant": true
+        },
+        "backup_generators": {
+          "tested": true
+        },
+        "power_monitoring": {
+          "continuous": true
+        },
+        "load_balancing": {
+          "implemented": true
+        }
+      },
+      "network": {
+        "network_segmentation": {
+          "implemented": true
+        },
+        "firewall_management": {
+          "controlled": true
+        },
+        "intrusion_detection": {
+          "deployed": true
+        },
+        "network_monitoring": {
+          "comprehensive": true
+        }
+      },
+      "backup": {
+        "backup_frequency": {
+          "appropriate": true
+        },
+        "backup_verification": {
+          "automated": true
+        },
+        "offsite_storage": {
+          "implemented": true
+        },
+        "backup_encryption": {
+          "enforced": true
+        },
+        "retention_policy": {
+          "documented": true
+        }
+      },
+      "recovery": {
+        "recovery_testing": {
+          "quarterly": true
+        },
+        "recovery_time_objectives": {
+          "met": true
+        },
+        "recovery_point_objectives": {
+          "achieved": true
+        },
+        "recovery_documentation": {
+          "current": true
+        }
+      },
+      "disaster_recovery": {
+        "dr_plan": {
+          "documented": true
+        },
+        "dr_site": {
+          "configured": true
+        },
+        "dr_testing": {
+          "annual": true
+        },
+        "communication_plan": {
+          "defined": true
+        }
+      },
+      "business_continuity": {
+        "bcp_plan": {
+          "documented": true
+        },
+        "impact_analysis": {
+          "current": true
+        },
+        "alternative_processes": {
+          "defined": true
+        },
+        "staff_training": {
+          "conducted": true
+        }
+      }
+    },
+    "financial_systems": {
+      "access_controls": {
+        "role_based": true
+      },
+      "privileged_access": {
+        "restricted": true
+      },
+      "access_monitoring": {
+        "real_time": true
+      },
+      "access_certification": {
+        "quarterly": true
+      }
+    },
+    "financial_data": {
+      "data_validation": {
+        "comprehensive": true
+      },
+      "data_reconciliation": {
+        "automated": true
+      },
+      "data_archival": {
+        "secure": true
+      },
+      "data_retention": {
+        "compliant": true
+      }
+    },
+    "financial_processing": {
+      "transaction_processing": {
+        "controlled": true
+      },
+      "batch_processing": {
+        "monitored": true
+      },
+      "exception_handling": {
+        "documented": true
+      },
+      "processing_completeness": {
+        "verified": true
+      }
+    },
+    "financial_reporting": {
+      "report_generation": {
+        "controlled": true
+      },
+      "report_distribution": {
+        "authorized": true
+      },
+      "report_archival": {
+        "secure": true
+      },
+      "report_integrity": {
+        "maintained": true
+      }
+    },
+    "application_controls": {
+      "input_validation": {
+        "comprehensive": true
+      },
+      "processing_controls": {
+        "accurate": true
+      },
+      "output_controls": {
+        "complete": true
+      },
+      "data_integrity": {
+        "maintained": true
+      },
+      "error_handling": {
+        "robust": true
+      },
+      "transaction_logging": {
+        "complete": true
+      }
+    },
+    "input_validation": {
+      "data_type_validation": {
+        "enforced": true
+      },
+      "format_validation": {
+        "comprehensive": true
+      },
+      "range_validation": {
+        "implemented": true
+      },
+      "business_rule_validation": {
+        "active": true
+      },
+      "cross_field_validation": {
+        "configured": true
+      }
+    },
+    "data_entry": {
+      "mandatory_field_validation": {
+        "enforced": true
+      },
+      "duplicate_detection": {
+        "automated": true
+      },
+      "real_time_validation": {
+        "enabled": true
+      },
+      "error_highlighting": {
+        "implemented": true
+      },
+      "confirmation_screens": {
+        "required": true
+      }
+    },
+    "authorization": {
+      "transaction_authorization": {
+        "required": true
+      },
+      "authorization_limits": {
+        "enforced": true
+      },
+      "maker_checker": {
+        "implemented": true
+      },
+      "authorization_matrix": {
+        "current": true
+      },
+      "override_controls": {
+        "restricted": true
+      }
+    },
+    "input_completeness": {
+      "batch_totals": {
+        "verified": true
+      },
+      "record_counts": {
+        "validated": true
+      },
+      "hash_totals": {
+        "checked": true
+      },
+      "missing_data": {
+        "identified": true
+      }
+    },
+    "calculation_controls": {
+      "arithmetic_accuracy": {
+        "verified": true
+      },
+      "rounding_rules": {
+        "consistent": true
+      },
+      "formula_validation": {
+        "automated": true
+      },
+      "calculation_logs": {
+        "maintained": true
+      },
+      "recalculation_procedures": {
+        "documented": true
+      }
+    },
+    "sequence_controls": {
+      "transaction_sequencing": {
+        "verified": true
+      },
+      "batch_sequencing": {
+        "controlled": true
+      },
+      "missing_sequences": {
+        "detected": true
+      },
+      "duplicate_sequences": {
+        "prevented": true
+      }
+    },
+    "processing_completeness": {
+      "all_records_processed": {
+        "verified": true
+      },
+      "processing_totals": {
+        "reconciled": true
+      },
+      "incomplete_processing": {
+        "detected": true
+      },
+      "reprocessing_controls": {
+        "implemented": true
+      }
+    },
+    "exception_processing": {
+      "exception_identification": {
+        "automated": true
+      },
+      "exception_handling": {
+        "documented": true
+      },
+      "exception_resolution": {
+        "tracked": true
+      },
+      "exception_reporting": {
+        "comprehensive": true
+      }
+    },
+    "output_distribution": {
+      "authorized_recipients": {
+        "verified": true
+      },
+      "distribution_lists": {
+        "current": true
+      },
+      "sensitive_output": {
+        "protected": true
+      },
+      "transmission_security": {
+        "enforced": true
+      }
+    },
+    "output_completeness": {
+      "output_totals": {
+        "reconciled": true
+      },
+      "page_numbering": {
+        "sequential": true
+      },
+      "record_counts": {
+        "verified": true
+      },
+      "missing_output": {
+        "detected": true
+      }
+    },
+    "output_accuracy": {
+      "format_validation": {
+        "automated": true
+      },
+      "content_validation": {
+        "performed": true
+      },
+      "cross_reference_checks": {
+        "completed": true
+      },
+      "reasonableness_tests": {
+        "conducted": true
+      }
+    },
+    "output_authorization": {
+      "report_approval": {
+        "required": true
+      },
+      "release_authorization": {
+        "documented": true
+      },
+      "approval_matrix": {
+        "current": true
+      },
+      "authorization_logs": {
+        "maintained": true
+      }
+    },
+    "database_integrity": {
+      "constraint_enforcement": {
+        "active": true
+      },
+      "trigger_validation": {
+        "implemented": true
+      },
+      "stored_procedure_controls": {
+        "enforced": true
+      },
+      "transaction_rollback": {
+        "automatic": true
+      },
+      "deadlock_resolution": {
+        "automated": true
+      }
+    },
+    "transmission_integrity": {
+      "checksum_validation": {
+        "implemented": true
+      },
+      "encryption_in_transit": {
+        "enforced": true
+      },
+      "transmission_logs": {
+        "comprehensive": true
+      },
+      "retransmission_controls": {
+        "automated": true
+      }
+    },
+    "storage_integrity": {
+      "data_corruption_detection": {
+        "active": true
+      },
+      "backup_integrity_verification": {
+        "automated": true
+      },
+      "storage_monitoring": {
+        "continuous": true
+      },
+      "integrity_reporting": {
+        "regular": true
+      }
+    },
+    "referential_integrity": {
+      "foreign_key_constraints": {
+        "enforced": true
+      },
+      "cascade_operations": {
+        "controlled": true
+      },
+      "orphaned_records": {
+        "prevented": true
+      },
+      "integrity_checks": {
+        "automated": true
+      }
+    },
+    "error_detection": {
+      "real_time_validation": {
+        "enabled": true
+      },
+      "batch_validation": {
+        "comprehensive": true
+      },
+      "cross_system_validation": {
+        "implemented": true
+      },
+      "business_rule_validation": {
+        "active": true
+      }
+    },
+    "error_reporting": {
+      "error_classification": {
+        "detailed": true
+      },
+      "error_severity": {
+        "assigned": true
+      },
+      "error_tracking": {
+        "comprehensive": true
+      },
+      "error_escalation": {
+        "automated": true
+      }
+    },
+    "error_correction": {
+      "correction_authorization": {
+        "required": true
+      },
+      "correction_validation": {
+        "enforced": true
+      },
+      "correction_logging": {
+        "complete": true
+      },
+      "correction_approval": {
+        "documented": true
+      }
+    },
+    "error_prevention": {
+      "preventive_controls": {
+        "implemented": true
+      },
+      "trend_analysis": {
+        "performed": true
+      },
+      "root_cause_analysis": {
+        "conducted": true
+      },
+      "process_improvement": {
+        "continuous": true
+      }
+    },
+    "audit_trail": {
+      "transaction_logging": {
+        "complete": true
+      },
+      "user_activity_logging": {
+        "comprehensive": true
+      },
+      "system_event_logging": {
+        "detailed": true
+      },
+      "data_change_logging": {
+        "tracked": true
+      },
+      "access_logging": {
+        "monitored": true
+      }
+    },
+    "transaction_traceability": {
+      "unique_transaction_ids": {
+        "assigned": true
+      },
+      "transaction_timeline": {
+        "maintained": true
+      },
+      "source_documentation": {
+        "linked": true
+      },
+      "approval_trail": {
+        "documented": true
+      }
+    },
+    "log_integrity": {
+      "log_tampering_prevention": {
+        "implemented": true
+      },
+      "log_encryption": {
+        "enforced": true
+      },
+      "log_backup": {
+        "automated": true
+      },
+      "log_verification": {
+        "periodic": true
+      }
+    },
+    "log_retention": {
+      "retention_period": {
+        "compliant": true
+      },
+      "archive_procedures": {
+        "documented": true
+      },
+      "retrieval_procedures": {
+        "tested": true
+      },
+      "disposal_procedures": {
+        "secure": true
+      }
+    },
+    "general_ledger": {
+      "journal_entry_controls": {
+        "enforced": true
+      },
+      "chart_of_accounts": {
+        "maintained": true
+      },
+      "period_end_controls": {
+        "automated": true
+      },
+      "reconciliation_controls": {
+        "comprehensive": true
+      },
+      "reporting_controls": {
+        "accurate": true
+      }
+    },
+    "accounts_payable": {
+      "three_way_matching": {
+        "enforced": true
+      },
+      "vendor_master_controls": {
+        "maintained": true
+      },
+      "duplicate_payment_prevention": {
+        "automated": true
+      },
+      "payment_authorization": {
+        "required": true
+      },
+      "cash_disbursement_controls": {
+        "secure": true
+      }
+    },
+    "accounts_receivable": {
+      "invoice_generation_controls": {
+        "automated": true
+      },
+      "credit_limit_controls": {
+        "enforced": true
+      },
+      "collection_controls": {
+        "managed": true
+      },
+      "bad_debt_controls": {
+        "documented": true
+      },
+      "cash_receipt_controls": {
+        "secure": true
+      }
+    },
+    "payroll": {
+      "employee_master_controls": {
+        "maintained": true
+      },
+      "time_recording_controls": {
+        "accurate": true
+      },
+      "payroll_calculation_controls": {
+        "verified": true
+      },
+      "payroll_authorization_controls": {
+        "enforced": true
+      },
+      "payroll_distribution_controls": {
+        "secure": true
+      }
+    },
+    "treasury": {
+      "cash_management_controls": {
+        "comprehensive": true
+      },
+      "investment_controls": {
+        "authorized": true
+      },
+      "bank_reconciliation_controls": {
+        "automated": true
+      },
+      "foreign_exchange_controls": {
+        "managed": true
+      },
+      "debt_management_controls": {
+        "monitored": true
+      }
+    }
+  }
+}

@@ -1,0 +1,93 @@
+---
+# aws_stop_compliance_lab.yml — Stop compliance lab AWS instances
+#
+# Stops all EC2 instances tagged Name=compliance-lab* to save costs, then
+# CONFIRMS they actually reached the stopped state via an authoritative
+# re-describe.
+#
+# Why the re-describe: under amazon.aws on the EE's Ansible (2.16.3) the
+# amazon.aws.ec2_instance module returns STALE, pre-action data — after issuing
+# a stop it still reports state=running, and its own `wait` does not reliably
+# confirm the transition. amazon.aws.ec2_instance_info is reliable, so we issue
+# the stop with wait:false and poll ec2_instance_info with `until` until the
+# instances actually report stopped. This guarantees the "always stop the lab"
+# rule is truly satisfied (no cost bleed), not just reported.
+#
+# AAP Job Template: "AAC - Stop Compliance Lab"
+# Credentials:      AWS Compliance Lab (ID 5), Ansible Vault
+# EE:               AAC Compliance EE
+
+- name: Stop AWS Compliance Lab Instances
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    aws_region: "us-east-1"
+    lab_name_filter: "compliance-lab*"
+
+  tasks:
+
+    - name: Find lab instances that still need a stop command (running or pending)
+      amazon.aws.ec2_instance_info:
+        region: "{{ aws_region }}"
+        filters:
+          "tag:Name": "{{ lab_name_filter }}"
+          "instance-state-name": ["running", "pending"]
+      register: running_instances
+
+    - name: Record instance IDs to stop
+      ansible.builtin.set_fact:
+        stopping_ids: "{{ running_instances.instances | map(attribute='instance_id') | list }}"
+
+    - name: Show instances to stop
+      ansible.builtin.debug:
+        msg: "Found {{ stopping_ids | length }} running/pending instance(s): {{ running_instances.instances | map(attribute='tags.Name') | list }}"
+
+    - name: Issue stop (do not rely on module wait/return — see header)
+      amazon.aws.ec2_instance:
+        region: "{{ aws_region }}"
+        instance_ids: "{{ stopping_ids }}"
+        state: stopped
+        wait: false
+      when: stopping_ids | length > 0
+
+    # Confirm against the FULL lab set, not just the IDs we issued a stop on.
+    # An instance already in "stopping" when the play began is NOT in
+    # stopping_ids, yet must still be waited on before we can claim the lab is
+    # stopped. This poll passes only when NO lab instance remains
+    # running / pending / stopping — so it always runs, even when there was
+    # nothing to issue a stop against.
+    - name: Wait until no lab instance is still running, pending, or stopping
+      amazon.aws.ec2_instance_info:
+        region: "{{ aws_region }}"
+        filters:
+          "tag:Name": "{{ lab_name_filter }}"
+          "instance-state-name": ["running", "pending", "stopping"]
+      register: still_active
+      until: (still_active.instances | default([]) | length) == 0
+      retries: 30
+      delay: 10
+
+    - name: Describe final state of all lab instances
+      amazon.aws.ec2_instance_info:
+        region: "{{ aws_region }}"
+        filters:
+          "tag:Name": "{{ lab_name_filter }}"
+      register: lab_final
+
+    - name: Show final instance states (authoritative)
+      ansible.builtin.debug:
+        msg:
+          - "Instance: {{ item.tags.Name | default(item.instance_id) }}"
+          - "  State: {{ item.state.name }}"
+      loop: "{{ lab_final.instances | default([]) }}"
+      loop_control:
+        label: "{{ item.tags.Name | default(item.instance_id) }}"
+
+    - name: Confirm lab is fully stopped
+      ansible.builtin.debug:
+        msg: >-
+          {{ 'All compliance lab instances were already stopped (or none exist).'
+             if stopping_ids | length == 0
+             else (stopping_ids | length) ~ ' instance(s) stopped and confirmed.' }}

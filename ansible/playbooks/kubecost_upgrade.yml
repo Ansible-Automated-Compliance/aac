@@ -1,0 +1,224 @@
+---
+# kubecost_upgrade.yml — Upgrade Kubecost agent via Helm
+#
+# Upgrades the Kubecost cost-analyzer Helm release on a Kubernetes / OpenShift
+# cluster using the kubernetes.core collection.  Preserves existing Helm values
+# (--reuse-values), waits for the rollout to complete, verifies pod health, and
+# writes an audit record to PostgreSQL.
+#
+# AAP Job Template: "AAC - Kubecost Agent Upgrade"
+# Credentials:      Ansible Vault, Kubernetes (OpenShift) credential
+# EE:               AAC Compliance EE (must include kubernetes.core collection)
+# Survey:
+#   kubecost_release    — Helm release name             (default: kubecost)
+#   kubecost_namespace  — Namespace                     (default: kubecost)
+#   target_version      — Chart version or "latest"     (default: latest)
+#   dry_run             — Preview changes without apply (default: false)
+#   kubeconfig_path     — Path to kubeconfig file       (default: ~/.kube/config)
+
+- name: Kubecost Agent Upgrade
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - [ "../vars/vault_secrets.yml", "../vars/empty_fallback.yml" ]
+    - ../vars/site_config.yml
+
+  vars:
+    # kubecost_release: <set via extra_vars / survey / inventory>   # default 'kubecost'
+    # kubecost_namespace: <set via extra_vars / survey / inventory>   # default 'kubecost'
+    # target_version: <set via extra_vars / survey / inventory>   # default 'latest'
+    # dry_run: <set via extra_vars / survey / inventory>   # default false | bool
+    # kubeconfig_path: <set via extra_vars / survey / inventory>   # default '~/.kube/config'
+    rollout_timeout:      300    # seconds to wait for rollout to complete
+
+    helm_repo_name:  "kubecost"
+    helm_repo_url:   "https://kubecost.github.io/cost-analyzer/"
+    helm_chart_ref:  "kubecost/cost-analyzer"
+
+    pg_db:       "compliance"
+    pg_user:     "postgres"
+    pg_password: "{{ compliance_db_password }}"
+
+  tasks:
+
+    # -------------------------------------------------------------------------
+    # 0. Normalize dry_run. Survey / inventory values arrive as STRINGS and the
+    #    string 'false' is truthy in Jinja, which previously selected the
+    #    uninstall branch below. Resolve to a real boolean exactly once.
+    # -------------------------------------------------------------------------
+    - name: Validate dry_run is boolean-like
+      ansible.builtin.assert:
+        that:
+          - ((dry_run | default(false, true)) | string | trim | lower) in ['true', 'yes', 'on', '1', 'false', 'no', 'off', '0']
+        fail_msg: "dry_run must be true or false; got '{{ dry_run | default('<undefined>') }}'"
+        quiet: true
+
+    - name: Resolve dry_run to a boolean fact
+      ansible.builtin.set_fact:
+        _dry_run: "{{ ((dry_run | default(false, true)) | string | trim | lower) in ['true', 'yes', 'on', '1'] }}"
+
+    # -------------------------------------------------------------------------
+    # 1. Add / refresh the Kubecost Helm repository
+    # -------------------------------------------------------------------------
+    - name: Add Kubecost Helm repository
+      kubernetes.core.helm_repository:
+        name:     "{{ helm_repo_name }}"
+        repo_url: "{{ helm_repo_url }}"
+        state:    present
+      environment:
+        KUBECONFIG: "{{ (kubeconfig_path | default('~/.kube/config', true)) }}"
+
+    # -------------------------------------------------------------------------
+    # 2. Get current release info
+    # -------------------------------------------------------------------------
+    - name: Get current Kubecost release info
+      kubernetes.core.helm_info:
+        name:             "{{ (kubecost_release | default('kubecost', true)) }}"
+        release_namespace: "{{ (kubecost_namespace | default('kubecost', true)) }}"
+        kubeconfig:        "{{ (kubeconfig_path | default('~/.kube/config', true)) }}"
+      register: current_release
+      failed_when: false
+
+    - name: Set current version fact
+      set_fact:
+        current_version: >-
+          {{ current_release.status.chart | default('not-installed') | regex_replace('^.*-([0-9]+\\.[0-9]+\\.[0-9].*)$', '\\1') }}
+        release_exists: "{{ current_release.status is defined }}"
+
+    - name: Show current release status
+      debug:
+        msg:
+          - "Release:         {{ (kubecost_release | default('kubecost', true)) }}"
+          - "Namespace:       {{ (kubecost_namespace | default('kubecost', true)) }}"
+          - "Current version: {{ current_version }}"
+          - "Target version:  {{ (target_version | default('latest', true)) }}"
+          - "Dry run:         {{ (_dry_run | bool) }}"
+
+    # -------------------------------------------------------------------------
+    # 3. Bail out if already at target version (unless dry_run)
+    # -------------------------------------------------------------------------
+    - name: Skip if already at target version
+      meta: end_play
+      when:
+        - not (_dry_run | bool)
+        - (target_version | default('latest', true)) != 'latest'
+        - current_version == (target_version | default('latest', true))
+
+    # -------------------------------------------------------------------------
+    # 4. Back up current Helm values
+    # -------------------------------------------------------------------------
+    - name: Back up current Helm values
+      kubernetes.core.helm_info:
+        name:              "{{ (kubecost_release | default('kubecost', true)) }}"
+        release_namespace: "{{ (kubecost_namespace | default('kubecost', true)) }}"
+        kubeconfig:        "{{ (kubeconfig_path | default('~/.kube/config', true)) }}"
+      register: helm_values_backup
+      when: release_exists | bool
+      failed_when: false
+
+    # -------------------------------------------------------------------------
+    # 5. Perform the Helm upgrade (or dry-run)
+    # -------------------------------------------------------------------------
+    - name: "{{ '[DRY RUN] ' if (_dry_run | bool) else '' }}Upgrade Kubecost to {{ (target_version | default('latest', true)) }}"
+      kubernetes.core.helm:
+        name:              "{{ (kubecost_release | default('kubecost', true)) }}"
+        chart_ref:         "{{ helm_chart_ref }}"
+        chart_version:     "{{ omit if (target_version | default('latest', true)) == 'latest' else (target_version | default('latest', true)) }}"
+        release_namespace: "{{ (kubecost_namespace | default('kubecost', true)) }}"
+        kubeconfig:        "{{ (kubeconfig_path | default('~/.kube/config', true)) }}"
+        reuse_values:      true
+        wait:              true
+        wait_timeout:      "{{ rollout_timeout }}s"
+        atomic:            true      # auto-rollback on failure
+        state:             present   # preview is driven by check_mode below, never by uninstalling
+      register: helm_upgrade
+      check_mode: "{{ (_dry_run | bool) }}"
+
+    - name: Show upgrade result
+      debug:
+        msg:
+          - "Chart deployed:  {{ helm_upgrade.status.chart | default('n/a') }}"
+          - "App version:     {{ helm_upgrade.status.app_version | default('n/a') }}"
+          - "Release status:  {{ helm_upgrade.status.status | default('n/a') }}"
+      when: not (_dry_run | bool)
+
+    # -------------------------------------------------------------------------
+    # 6. Wait for all Kubecost pods to be Running / Ready
+    # -------------------------------------------------------------------------
+    - name: Wait for Kubecost pods to be Running
+      kubernetes.core.k8s_info:
+        kind:      Pod
+        namespace: "{{ (kubecost_namespace | default('kubecost', true)) }}"
+        label_selectors:
+          - "app.kubernetes.io/instance={{ (kubecost_release | default('kubecost', true)) }}"
+        kubeconfig: "{{ (kubeconfig_path | default('~/.kube/config', true)) }}"
+      register: pod_status
+      until: >-
+        pod_status.resources | length > 0 and
+        (pod_status.resources | selectattr('status.phase', 'equalto', 'Running') | list | length) ==
+        (pod_status.resources | length)
+      retries: "{{ (rollout_timeout / 10) | int }}"
+      delay: 10
+      when: not (_dry_run | bool)
+
+    # -------------------------------------------------------------------------
+    # 7. Verify cost-analyzer deployment is Available
+    # -------------------------------------------------------------------------
+    - name: Verify cost-analyzer deployment is Available
+      kubernetes.core.k8s_info:
+        kind:       Deployment
+        namespace:  "{{ (kubecost_namespace | default('kubecost', true)) }}"
+        label_selectors:
+          - "app=cost-analyzer"
+        kubeconfig: "{{ (kubeconfig_path | default('~/.kube/config', true)) }}"
+      register: deployment_info
+      failed_when: >-
+        deployment_info.resources | length == 0 or
+        (deployment_info.resources[0].status.availableReplicas | default(0)) == 0
+      when: not (_dry_run | bool)
+
+    - name: Set new version fact after upgrade
+      set_fact:
+        new_version: >-
+          {{ helm_upgrade.status.chart | default(current_version)
+             | regex_replace('^.*-([0-9]+\\.[0-9]+\\.[0-9].*)$', '\\1') }}
+      when: not (_dry_run | bool)
+
+    # -------------------------------------------------------------------------
+    # 8. Store audit record to PostgreSQL
+    # -------------------------------------------------------------------------
+    - name: Store upgrade audit to PostgreSQL
+      community.postgresql.postgresql_query:
+        login_host:     "{{ pg_host }}"
+        login_port: "{{ pg_port | default(5433) }}"
+        login_user:     "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db:             "{{ pg_db }}"
+        query: |
+          INSERT INTO remediation_actions
+            (hostname, action_type, performed_by, notes)
+          VALUES (%s, 'kubecost_upgrade', 'aap_admin', %s)
+        positional_args:
+          - "{{ (kubecost_namespace | default('kubecost', true)) }}/{{ (kubecost_release | default('kubecost', true)) }}"
+          - "{{ {'from_version': current_version, 'to_version': new_version | default((target_version | default('latest', true))), 'namespace': (kubecost_namespace | default('kubecost', true)), 'release': (kubecost_release | default('kubecost', true)), 'dry_run': (_dry_run | bool)} | to_json }}"
+      when: not (_dry_run | bool)
+      ignore_errors: true
+
+    # -------------------------------------------------------------------------
+    # 9. Summary
+    # -------------------------------------------------------------------------
+    - name: "=== Kubecost Upgrade Summary ==="
+      debug:
+        msg:
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "  KUBECOST AGENT UPGRADE{{ ' [DRY RUN]' if (_dry_run | bool) else '' }}"
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "  Release:         {{ (kubecost_release | default('kubecost', true)) }}"
+          - "  Namespace:       {{ (kubecost_namespace | default('kubecost', true)) }}"
+          - "  Previous version: {{ current_version }}"
+          - "  New version:     {{ new_version | default((target_version | default('latest', true))) }}"
+          - "  Pods running:    {{ pod_status.resources | selectattr('status.phase', 'equalto', 'Running') | list | length if not (_dry_run | bool) else 'n/a' }}"
+          - "  Status:          {{ '✅ SUCCESS' if not (_dry_run | bool) else '📋 DRY RUN COMPLETE' }}"
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

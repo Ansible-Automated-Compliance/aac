@@ -1,0 +1,324 @@
+---
+# Digital Sovereignty Assessment
+#
+# Evaluates organizational sovereignty posture across selected domains.
+# Run standalone or as part of the Digital Sovereignty Workflow.
+#
+# Survey Variables (set via AAP survey or extra_vars):
+#   organization_name:      Name for the report header
+#   domains_to_assess:      Newline-separated domain list (multiselect survey)
+#                           Values: data_residency, cryptographic_sovereignty,
+#                                   infrastructure_sovereignty, software_sovereignty,
+#                                   operational_sovereignty, network_sovereignty, ai_sovereignty
+#                           Default: all domains
+#   assessment_input_file:  Path to JSON input file (relative to project root)
+#   opa_server_url:         OPA server (default: opa-compliance :8182)
+#   fail_on_non_sovereign:  Fail job if level is NON_SOVEREIGN (default: true)
+
+- name: Digital Sovereignty Assessment
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - [ "../vars/vault_secrets.yml", "../vars/empty_fallback.yml" ]
+    - ../vars/site_config.yml
+
+  vars:
+    opa_server_url:         "{{ opa_compliance_url }}"
+    pg_db:                  "compliance"
+    pg_user:                "postgres"
+    pg_password:            "{{ compliance_db_password | mandatory }}"
+    organization_name:      "My Organization"
+    assessment_input_file:  "examples/digital_sovereignty/compliant.json"
+    fail_on_non_sovereign:  true
+    report_timestamp:       "{{ lookup('pipe', 'date +%Y%m%d_%H%M%S') }}"
+    report_path:            "/tmp/digital_sovereignty_report_{{ report_timestamp }}.json"
+
+    all_domains:
+      - data_residency
+      - cryptographic_sovereignty
+      - infrastructure_sovereignty
+      - software_sovereignty
+      - operational_sovereignty
+      - network_sovereignty
+      - ai_sovereignty
+      - breach_notification_sovereignty
+      - geopolitical_sovereignty
+      - dora_sovereignty
+      - cyber_resilience_sovereignty
+
+    domain_labels:
+      data_residency:                   "Data Residency"
+      cryptographic_sovereignty:        "Cryptographic Sovereignty"
+      infrastructure_sovereignty:       "Infrastructure Sovereignty"
+      software_sovereignty:             "Software Sovereignty"
+      operational_sovereignty:          "Operational Sovereignty"
+      network_sovereignty:              "Network Sovereignty"
+      ai_sovereignty:                   "AI/ML Sovereignty"
+      breach_notification_sovereignty:  "Breach Notification Sovereignty"
+      geopolitical_sovereignty:         "Geopolitical Event Triggers"
+      dora_sovereignty:                 "DORA — Digital Operational Resilience"
+      cyber_resilience_sovereignty:     "Cyber Resilience"
+
+    # Query package directly — the /report sub-path is undefined when boolean
+    # helper rules are undefined (Rego v1 behavior without default false).
+    # The package root returns compliant + violations reliably.
+    domain_opa_paths:
+      data_residency:                   "digital_sovereignty/data_residency"
+      cryptographic_sovereignty:        "digital_sovereignty/cryptographic_sovereignty"
+      infrastructure_sovereignty:       "digital_sovereignty/infrastructure_sovereignty"
+      software_sovereignty:             "digital_sovereignty/software_sovereignty"
+      operational_sovereignty:          "digital_sovereignty/operational_sovereignty"
+      network_sovereignty:              "digital_sovereignty/network_sovereignty"
+      ai_sovereignty:                   "digital_sovereignty/ai_sovereignty"
+      breach_notification_sovereignty:  "digital_sovereignty/breach_notification_sovereignty"
+      geopolitical_sovereignty:         "digital_sovereignty/geopolitical_sovereignty"
+      dora_sovereignty:                 "digital_sovereignty/dora_sovereignty"
+      cyber_resilience_sovereignty:     "digital_sovereignty/cyber_resilience_sovereignty"
+
+    domain_total_controls:
+      data_residency:                   10
+      cryptographic_sovereignty:        11
+      infrastructure_sovereignty:       13
+      software_sovereignty:             10
+      operational_sovereignty:          10
+      network_sovereignty:              11
+      ai_sovereignty:                   10
+      breach_notification_sovereignty:  10
+      geopolitical_sovereignty:          5
+      dora_sovereignty:                 13
+      cyber_resilience_sovereignty:     11
+
+  tasks:
+
+    # -----------------------------------------------------------------------
+    # Resolve which domains to assess
+    # -----------------------------------------------------------------------
+    - name: Resolve selected domains
+      set_fact:
+        selected_domains: >-
+          {%- if domains_to_assess is defined and domains_to_assess | length > 0 -%}
+            {%- if domains_to_assess is iterable and domains_to_assess is not string -%}
+              {{ domains_to_assess | list }}
+            {%- else -%}
+              {{ domains_to_assess | string | split('\n') | map('trim') | select | list }}
+            {%- endif -%}
+          {%- else -%}
+            {{ all_domains }}
+          {%- endif -%}
+
+    - name: Show assessment scope
+      debug:
+        msg:
+          - "Organization:  {{ organization_name }}"
+          - "Input file:    {{ assessment_input_file }}"
+          - "OPA server:    {{ opa_server_url }}"
+          - "Domains:       {{ selected_domains | join(', ') }}"
+
+    # -----------------------------------------------------------------------
+    # Load input data
+    # -----------------------------------------------------------------------
+    - name: Load assessment input data
+      set_fact:
+        sovereignty_input: "{{ lookup('file', playbook_dir + '/../../' + assessment_input_file) | from_json }}"
+
+    - name: Refresh time-sensitive dates to today (prevents demo expiry)
+      set_fact:
+        sovereignty_input: >-
+          {{ sovereignty_input | combine({
+            'input': sovereignty_input.input | combine({
+              'dependency_management': sovereignty_input.input.dependency_management | combine({
+                'vulnerability_scanning': sovereignty_input.input.dependency_management.vulnerability_scanning | combine({
+                  'last_scan_date': lookup('pipe', 'date -u +"%Y-%m-%dT%H:%M:%SZ"')
+                })
+              }, recursive=true),
+              'sbom': sovereignty_input.input.sbom | combine({
+                'last_updated': lookup('pipe', 'date -u +"%Y-%m-%dT%H:%M:%SZ"')
+              }, recursive=true)
+            }, recursive=true)
+          }, recursive=true) }}
+      when:
+        - sovereignty_input.input.dependency_management is defined
+        - sovereignty_input.input.sbom is defined
+
+    # -----------------------------------------------------------------------
+    # Query each selected domain
+    # -----------------------------------------------------------------------
+    - name: "Query OPA — {{ item }}"
+      uri:
+        use_proxy: false
+        url: "{{ opa_server_url }}/v1/data/{{ domain_opa_paths[item] }}"
+        method: POST
+        body_format: json
+        body: "{{ sovereignty_input }}"
+        return_content: true
+        status_code: 200
+        validate_certs: false
+      loop: "{{ selected_domains }}"
+      register: domain_results
+
+    # -----------------------------------------------------------------------
+    # Build consolidated report
+    # -----------------------------------------------------------------------
+    - name: Build domain results map
+      set_fact:
+        domain_map: >-
+          {%- set domain = selected_domains[idx] -%}
+          {%- set total  = domain_total_controls[domain] | default(10) -%}
+          {%- set viols  = item.json.result.violations | default([]) -%}
+          {{ domain_map | default({}) | combine({
+               domain: {
+                 'compliant':        item.json.result.compliant | default(false) | bool,
+                 'total_controls':   total,
+                 'passing_controls': (total - (viols | length)) | int,
+                 'violations':       viols,
+                 'label':            domain_labels[domain]
+               }
+             }) }}
+      loop: "{{ domain_results.results }}"
+      loop_control:
+        index_var: idx
+
+    - name: Calculate summary statistics
+      set_fact:
+        total_domains:    "{{ selected_domains | length }}"
+        domains_passing:  "{{ domain_map.values() | selectattr('compliant') | list | length }}"
+        total_violations: "{{ domain_map.values() | map(attribute='violations') | map('length') | sum }}"
+        critical_count: >-
+          {{ domain_map.values() | map(attribute='violations') | flatten
+             | selectattr('severity', 'equalto', 'critical') | list | length }}
+        high_count: >-
+          {{ domain_map.values() | map(attribute='violations') | flatten
+             | selectattr('severity', 'equalto', 'high') | list | length }}
+
+    - name: Determine sovereignty level
+      set_fact:
+        sovereignty_score: "{{ ((domains_passing | int * 100) / (total_domains | int)) | int }}"
+
+    - name: Classify sovereignty level
+      set_fact:
+        sovereignty_level: >-
+          {%- if critical_count | int > 0 -%}NON_SOVEREIGN
+          {%- elif domains_passing | int == total_domains | int and critical_count | int == 0 and high_count | int == 0 -%}SOVEREIGN
+          {%- elif sovereignty_score | int >= 85 and critical_count | int == 0 and high_count | int <= 2 -%}HIGH_ASSURANCE
+          {%- elif sovereignty_score | int >= 70 and critical_count | int == 0 -%}MODERATE_ASSURANCE
+          {%- elif sovereignty_score | int >= 50 -%}LIMITED_ASSURANCE
+          {%- else -%}NON_SOVEREIGN
+          {%- endif -%}
+
+    # -----------------------------------------------------------------------
+    # Print report
+    # -----------------------------------------------------------------------
+    - name: "=== Digital Sovereignty Assessment Report ==="
+      debug:
+        msg:
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "  DIGITAL SOVEREIGNTY ASSESSMENT"
+          - "  Organization: {{ organization_name }}"
+          - "  Date:         {{ lookup('pipe', 'date -u +\"%Y-%m-%d %H:%M UTC\"') }}"
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "  Sovereignty Level:  {{ sovereignty_level }}"
+          - "  Sovereignty Score:  {{ sovereignty_score }}%"
+          - "  Domains Assessed:   {{ total_domains }}"
+          - "  Domains Passing:    {{ domains_passing }}/{{ total_domains }}"
+          - "  Total Violations:   {{ total_violations }} (Critical: {{ critical_count }}, High: {{ high_count }})"
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+    - name: "--- Domain Results ---"
+      debug:
+        msg: >-
+          {{ '✅' if item.value.compliant else '❌' }}
+          {{ item.value.label }}: {{ 'PASS' if item.value.compliant else 'FAIL' }}
+          ({{ item.value.violations | length }} violations)
+      loop: "{{ domain_map | dict2items }}"
+
+    - name: "--- Violations ---"
+      debug:
+        msg: "[{{ item.severity | upper }}] {{ item.control_id | default('') }} — {{ item.message | default(item) }}"
+      loop: "{{ domain_map.values() | map(attribute='violations') | flatten | list }}"
+      when: total_violations | int > 0
+
+    - name: No violations found
+      debug:
+        msg: "All assessed domains are COMPLIANT."
+      when: total_violations | int == 0
+
+    # -----------------------------------------------------------------------
+    # Save report
+    # -----------------------------------------------------------------------
+    - name: Build report document
+      set_fact:
+        full_report:
+          standard:          "Digital Sovereignty Assessment"
+          organization:      "{{ organization_name }}"
+          assessment_date:   "{{ lookup('pipe', 'date -u +\"%Y-%m-%dT%H:%M:%SZ\"') }}"
+          sovereignty_level: "{{ sovereignty_level }}"
+          sovereignty_score: "{{ sovereignty_score | int }}"
+          domains_assessed:  "{{ total_domains | int }}"
+          domains_passing:   "{{ domains_passing | int }}"
+          domains:           "{{ domain_map }}"
+          violation_summary:
+            total:    "{{ total_violations | int }}"
+            critical: "{{ critical_count | int }}"
+            high:     "{{ high_count | int }}"
+
+    - name: Save report to file
+      copy:
+        content: "{{ full_report | to_nice_json }}"
+        dest: "{{ report_path }}"
+
+    - name: Report saved
+      debug:
+        msg: "Report saved to: {{ report_path }}"
+
+    # -----------------------------------------------------------------------
+    # Store results to PostgreSQL
+    # -----------------------------------------------------------------------
+    - name: Store Digital Sovereignty results to PostgreSQL (+ CAA)
+      include_role:
+        name: aac_store_results
+      vars:
+        aac_result_policy_name:    "Digital Sovereignty"
+        aac_result_framework:      "digital_sovereignty"
+        aac_result_policy_version: "ENISA/GAIA-X/BSI-C5/IRAP/DORA/CRA v2.0"
+        aac_result_total_controls: "{{ (domain_map.values() | map(attribute='total_controls') | sum) | int }}"
+        aac_result_failed_controls: "{{ total_violations | int }}"
+        aac_result_passed_controls: "{{ (domain_map.values() | map(attribute='passing_controls') | sum) | int }}"
+        aac_result_compliance_pct:  "{{ sovereignty_score | float }}"
+        aac_result_violations: "{{ domain_map.values() | map(attribute='violations') | flatten | list }}"
+        aac_result_metadata: "{{ {'organization': organization_name, 'sovereignty_level': sovereignty_level, 'domains_assessed': total_domains | int, 'domains_passing': domains_passing | int, 'critical_count': critical_count | int, 'high_count': high_count | int, 'input_file': assessment_input_file, 'domains': domain_map} }}"
+        aac_result_opa_server: "{{ opa_server_url }}"
+        # CAA opt-in — fleet-scoped, organization as scope_value.
+        # See docs/strategy/AAC_CERTIFIABLE_AUDIT_ARTIFACT_SPEC.md.
+        aac_caa_enabled: true
+        aac_result_caa_scope: "fleet"
+        aac_result_caa_scope_value: "{{ organization_name }}"
+        aac_result_caa_framework_version: "ENISA/GAIA-X/BSI-C5/IRAP/DORA/CRA v2.0"
+        aac_result_caa_result:
+          framework:             "digital_sovereignty"
+          standard:              "Digital Sovereignty (ENISA/GAIA-X/BSI-C5/IRAP/DORA/CRA v2.0)"
+          organization:          "{{ organization_name }}"
+          sovereignty_level:     "{{ sovereignty_level }}"
+          compliant:             "{{ sovereignty_level != 'NON_SOVEREIGN' }}"
+          compliance_percentage: "{{ sovereignty_score | float }}"
+          total_controls:        "{{ (domain_map.values() | map(attribute='total_controls') | sum) | int }}"
+          domains_assessed:      "{{ total_domains | int }}"
+          domains_passing:       "{{ domains_passing | int }}"
+          critical_count:        "{{ critical_count | int }}"
+          high_count:            "{{ high_count | int }}"
+          violations:            "{{ domain_map.values() | map(attribute='violations') | flatten | list }}"
+        aac_result_caa_input: "{{ sovereignty_input }}"
+
+    # -----------------------------------------------------------------------
+    # Fail if NON_SOVEREIGN (when configured to do so)
+    # -----------------------------------------------------------------------
+    - name: Fail if NON_SOVEREIGN
+      fail:
+        msg: >-
+          Digital Sovereignty assessment FAILED.
+          Level: {{ sovereignty_level }} | Score: {{ sovereignty_score }}% |
+          Critical violations: {{ critical_count }}
+      when:
+        - fail_on_non_sovereign | bool
+        - sovereignty_level == "NON_SOVEREIGN"

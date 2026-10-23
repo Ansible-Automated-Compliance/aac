@@ -1,0 +1,270 @@
+---
+# ai_draft_remediation.yml — ask Ansible Lightspeed to DRAFT a remediation task
+# for a detected finding, and record the draft as a PROPOSAL.
+#
+# ── What this is, and the boundary it respects ─────────────────────────────
+#
+# OPA decides compliance. This playbook never does. It runs AFTER a finding
+# already exists, and its only job is to draft the Ansible that would fix it.
+# The output is a PROPOSAL: it is not applied, not scored, and never written
+# into the evidence series as a measurement.
+#
+# The evidence rule this follows is the same one the CIS M365 attestation path
+# uses — a human assertion and a measured result are never conflated. Here the
+# third category is AI-generated, marked `evidence_source: ai_generated`, and
+# it is a proposal rather than evidence of anything.
+#
+# ── Why drafting and not explanation ───────────────────────────────────────
+#
+# Verified 2026-08-26 against the live endpoint: the Lightspeed model is
+# DOMAIN-LOCKED TO ANSIBLE. Asked "why does SELINUX=permissive weaken a RHEL
+# host" it declines and says it only covers Ansible and AAP. Asked to write the
+# lineinfile task that sets SELINUX=enforcing, it returns correct, usable YAML.
+#
+# So do not build an "explain this violation" step on this endpoint — it will
+# refuse. Drafting remediation is squarely inside its competence, and it is the
+# more useful half anyway.
+#
+# ── What happens to the draft ──────────────────────────────────────────────
+#
+# Nothing automatic. The draft is printed and optionally stored for review. To
+# execute it, it goes through the existing gated path — four-eyes approval,
+# pre-change backup, check mode, post-change validation, re-assessment. An AI
+# draft earns no shortcut through any of that; if anything it earns more
+# scrutiny, because nobody wrote it.
+#
+# ── Variables ──────────────────────────────────────────────────────────────
+#   finding_control_id   e.g. "CIP-010 R1"      (required)
+#   finding_description  what is wrong          (required)
+#   target_path          the file/setting at issue
+#   desired_state        what it should be
+#   store_draft          write to remediation_drafts   (default: false)
+#
+# Requires: in-cluster execution — the chatbot API has no external route, and
+# TLS is verified against the OpenShift service CA mounted alongside the
+# service-account token. Verification is never disabled.
+
+- name: Draft a remediation with Ansible Lightspeed (proposal only, never applied)
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ../vars/site_config.yml
+
+  vars:
+    store_draft: false
+    # target_path: <set via extra_vars / survey / inventory>
+    # desired_state: <set via extra_vars / survey / inventory>
+
+  tasks:
+    - name: Require a finding to draft against
+      ansible.builtin.assert:
+        that:
+          - finding_control_id | default('') | length > 0
+          - finding_description | default('') | length > 0
+        fail_msg: >-
+          finding_control_id and finding_description are both required. This
+          playbook drafts a fix for an EXISTING finding; it does not go looking
+          for problems, and it does not decide whether anything is wrong.
+
+    - name: Load vault secrets if present
+      ansible.builtin.include_vars: "{{ item }}"
+      loop: "{{ query('first_found', ['../vars/vault_secrets.yml'], errors='ignore') }}"
+      no_log: true
+
+    # The bearer lives in an OpenShift secret. Prefer an AAP credential
+    # injecting `lightspeed_api_key`; fall back to reading the secret directly
+    # when running somewhere with cluster access.
+    - name: Resolve the Lightspeed API key
+      when: lightspeed_api_key is not defined
+      block:
+        - name: Read the chatbot API key from the cluster
+          ansible.builtin.command:
+            argv:
+              - oc
+              - get
+              - secret
+              - aap-lightspeed-chatbot-api-key
+              - -n
+              - aap-operator
+              - -o
+              - jsonpath={.data.api_key}
+          register: ls_key_b64
+          changed_when: false
+          no_log: true
+
+        - name: Decode it
+          ansible.builtin.set_fact:
+            lightspeed_api_key: "{{ ls_key_b64.stdout | b64decode }}"
+          no_log: true
+
+    # Constrain the request to what this model will actually answer. Asking it
+    # to justify or assess would get a refusal; asking for Ansible gets Ansible.
+    - name: Build the drafting prompt
+      ansible.builtin.set_fact:
+        _prompt: >-
+          Write a single Ansible task that brings this system back into its
+          approved state. Return only the YAML task, no explanation.
+          {% if (target_path | default('', true)) %}File or setting: {{ (target_path | default('', true)) }}.{% endif %}
+          {% if (desired_state | default('', true)) %}Required state: {{ (desired_state | default('', true)) }}.{% endif %}
+          Observed problem: {{ finding_description }}.
+          Use fully-qualified collection names and make the task idempotent.
+
+    # TLS is verified against the OpenShift service CA. If the bundle is not
+    # present this fails rather than falling back to an unverified call —
+    # silently downgrading transport security to keep a demo running is how
+    # `validate_certs: false` ends up in production.
+    # vault_secrets.yml is optional, so a missing or placeholder password would
+    # otherwise surface as an obscure failure at the INSERT, long after the
+    # model call has already been paid for. Check it before doing any work.
+    - name: Require a usable database password when storing the draft
+      when: store_draft | bool
+      ansible.builtin.assert:
+        that:
+          - compliance_db_password is defined
+          - compliance_db_password | length > 0
+          - compliance_db_password != 'PLACEHOLDER'
+        fail_msg: >-
+          store_draft is true but compliance_db_password is unset or still
+          PLACEHOLDER. Attach the Ansible Vault credential, or run with
+          store_draft=false to print the draft without storing it.
+
+    - name: Look for a usable CA bundle
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop: "{{ lightspeed_ca_candidates }}"
+      register: ls_ca_stats
+
+    - name: Select the first bundle that exists
+      ansible.builtin.set_fact:
+        lightspeed_ca_path: >-
+          {{ (ls_ca_stats.results | selectattr('stat.exists') | map(attribute='item') | list | first) | default('', true) }}
+
+    - name: Fail closed if no CA bundle is available
+      ansible.builtin.assert:
+        that: lightspeed_ca_path | length > 0
+        fail_msg: >-
+          No CA bundle found. Checked: {{ lightspeed_ca_candidates | join(', ') }}.
+          The Lightspeed service cert is signed by the OpenShift service CA,
+          which is mounted alongside the service-account token in AAP's
+          platform pods but not in ephemeral EE job pods. Either mount the
+          service CA into the job pod, or add lightspeed_ca_candidates entry
+          pointing at a bundle that contains it. Do NOT disable verification —
+          this playbook drafts changes to managed systems and the integrity of
+          the response matters.
+
+    - name: Note which bundle is in use
+      ansible.builtin.debug:
+        msg: "Verifying Lightspeed TLS against {{ lightspeed_ca_path }}"
+
+    - name: Ask Lightspeed to draft the remediation
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "{{ lightspeed_chatbot_url }}{{ lightspeed_query_path }}"
+        method: POST
+        validate_certs: true
+        ca_path: "{{ lightspeed_ca_path }}"
+        headers:
+          Content-Type: application/json
+          Authorization: "Bearer {{ lightspeed_api_key }}"
+        body_format: json
+        body:
+          query: "{{ _prompt }}"
+        timeout: 120
+        status_code: [200]
+      register: ls_response
+      no_log: true
+
+    - name: Extract the draft
+      ansible.builtin.set_fact:
+        draft_text: "{{ ls_response.json.response | default('') }}"
+        draft_tokens_in: "{{ ls_response.json.input_tokens | default(0) }}"
+        draft_tokens_out: "{{ ls_response.json.output_tokens | default(0) }}"
+        draft_conversation_id: "{{ ls_response.json.conversation_id | default('') }}"
+
+    # The model declines anything outside Ansible. Catch a refusal rather than
+    # storing it as though it were a draft.
+    - name: Fail closed if the model declined
+      ansible.builtin.assert:
+        that:
+          - draft_text | length > 0
+          - "'I specialize exclusively in Ansible' not in draft_text"
+        fail_msg: >-
+          Lightspeed declined this request. It is domain-locked to Ansible and
+          AAP — it will not explain, assess or justify a finding. Rephrase as a
+          request for an Ansible task, or use a different model for analysis.
+
+    - name: "=== AI-DRAFTED REMEDIATION — PROPOSAL, NOT APPLIED ==="
+      ansible.builtin.debug:
+        msg: >-
+          {{
+            [
+              "Control:        " ~ finding_control_id,
+              "Finding:        " ~ finding_description,
+              "",
+              "PROPOSED TASK (ai_generated — review before use):",
+              draft_text,
+              "",
+              "Tokens in/out:  " ~ draft_tokens_in ~ " / " ~ draft_tokens_out,
+              "",
+              "NOT APPLIED. To execute, route through the gated remediation",
+              "path: approval, backup, check mode, validation, re-assessment.",
+            ]
+          }}
+
+    # Self-contained: the table is a proposal store, deliberately separate from
+    # compliance_results. An AI draft is not evidence and must not land in the
+    # evidence series.
+    - name: Ensure the proposal table exists
+      when: store_draft | bool
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host | mandatory }}"
+        login_port: "{{ pg_port | default(5432) }}"
+        login_user: "{{ pg_user | default('postgres') }}"
+        login_password: "{{ compliance_db_password }}"
+        login_db: "{{ pg_db | default('compliance') }}"
+        query: >-
+          CREATE TABLE IF NOT EXISTS remediation_drafts (
+            id                    SERIAL PRIMARY KEY,
+            control_id            VARCHAR(50)  NOT NULL,
+            finding_description   TEXT         NOT NULL,
+            draft_content         TEXT         NOT NULL,
+            evidence_source       VARCHAR(20)  NOT NULL DEFAULT 'ai_generated',
+            model_conversation_id VARCHAR(100),
+            tokens_in             INTEGER,
+            tokens_out            INTEGER,
+            applied               BOOLEAN      NOT NULL DEFAULT false,
+            reviewed_by           VARCHAR(100),
+            reviewed_at           TIMESTAMPTZ,
+            created_at            TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+          )
+
+    - name: Record the draft as a proposal
+      when: store_draft | bool
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host | mandatory }}"
+        login_port: "{{ pg_port | default(5432) }}"
+        login_user: "{{ pg_user | default('postgres') }}"
+        login_password: "{{ compliance_db_password }}"
+        login_db: "{{ pg_db | default('compliance') }}"
+        query: >-
+          INSERT INTO remediation_drafts
+            (control_id, finding_description, draft_content,
+             evidence_source, model_conversation_id, tokens_in, tokens_out,
+             applied, created_at)
+          VALUES (%s, %s, %s, 'ai_generated', %s, %s, %s, false, NOW())
+        positional_args:
+          - "{{ finding_control_id }}"
+          - "{{ finding_description }}"
+          - "{{ draft_text }}"
+          - "{{ draft_conversation_id }}"
+          - "{{ draft_tokens_in | int }}"
+          - "{{ draft_tokens_out | int }}"
+      register: draft_stored
+
+    - name: Note where the draft landed
+      when: store_draft | bool
+      ansible.builtin.debug:
+        msg: >-
+          Draft stored in remediation_drafts with evidence_source='ai_generated'
+          and applied=false. It is a proposal awaiting human review — it is not
+          in compliance_results and is not evidence of anything.

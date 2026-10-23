@@ -1,0 +1,125 @@
+# Ansible Automated Compliance (AAC) - Environment Configuration
+# Copy this file to environment.conf and customize for your environment
+# Usage: source environment.conf
+
+# =============================================================================
+# Installation Paths
+# =============================================================================
+
+# Where the compliance repository is cloned
+export INSTALL_DIR="/opt/compliance"
+
+# Scripts directory
+export SCRIPTS_DIR="${INSTALL_DIR}/scripts"
+
+# Ansible playbooks directory
+export PLAYBOOK_DIR="${INSTALL_DIR}/ansible/playbooks"
+
+# OPA policies directory
+export POLICIES_DIR="${INSTALL_DIR}/policies"
+
+# Reports output directory
+export REPORTS_OUTPUT_DIR="/var/log/compliance/reports"
+
+# =============================================================================
+# AAP Server Configuration
+# =============================================================================
+
+# AAP Controller host (IP or FQDN)
+export AAP_HOST="AAP_HOST"
+
+# AAP Controller URL
+export AAP_URL="https://${AAP_HOST}"
+
+# AAP user for SSH access
+export AAP_USER="aapuser1"
+
+# AAP admin username for API access
+export AAP_ADMIN_USER="admin"
+
+# AAP admin password (use Ansible Vault in production)
+# export AAP_ADMIN_PASSWORD=""
+
+# =============================================================================
+# OPA Server Configuration
+# =============================================================================
+
+# OPA server URL
+export OPA_URL="http://${AAP_HOST}:8181"
+
+# OPA container name
+export OPA_CONTAINER_NAME="opa-server"
+
+# =============================================================================
+# PostgreSQL Configuration
+# =============================================================================
+
+# PostgreSQL host
+export PG_HOST="${AAP_HOST}"
+
+# PostgreSQL port
+export PG_PORT="5432"
+
+# PostgreSQL database name
+export PG_DATABASE="compliance"
+
+# PostgreSQL user
+export PG_USER="compliance"
+
+# PostgreSQL password (use Ansible Vault in production)
+# export PG_PASSWORD=""
+
+# PostgreSQL container name
+export PG_CONTAINER_NAME="compliance-db"
+
+# =============================================================================
+# Container Runtime
+# =============================================================================
+
+# Container runtime: podman or docker
+export CONTAINER_RUNTIME="podman"
+
+# =============================================================================
+# Target Systems
+# =============================================================================
+
+# Default target hostname for compliance scans
+export TARGET_HOSTNAME=""
+
+# Ansible inventory file
+export ANSIBLE_INVENTORY="${INSTALL_DIR}/ansible/inventory/hosts.yml"
+
+# =============================================================================
+# Compliance Frameworks
+# =============================================================================
+
+# Default compliance framework (cis_rhel9, nist_800_53, pci_dss, etc.)
+export DEFAULT_FRAMEWORK="cis_rhel9"
+
+# =============================================================================
+# Logging and Debug
+# =============================================================================
+
+# Log level: DEBUG, INFO, WARNING, ERROR
+export LOG_LEVEL="INFO"
+
+# Log file location
+export LOG_FILE="/var/log/compliance/aac.log"
+
+# =============================================================================
+# Notifications (Optional)
+# =============================================================================
+
+# SMTP server for email notifications
+# export SMTP_HOST=""
+# export SMTP_PORT="587"
+# export SMTP_USER=""
+# export SMTP_PASSWORD=""
+# export SMTP_FROM="compliance@example.com"
+
+# Slack webhook URL for notifications
+# export SLACK_WEBHOOK_URL=""
+
+# =============================================================================
+# End of Configuration
+# =============================================================================

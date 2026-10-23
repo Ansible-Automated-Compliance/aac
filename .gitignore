@@ -1,0 +1,132 @@
+# Compliance Facts Collection - GitIgnore
+
+# Output directories
+cis_facts/
+nist_facts/
+collected_facts/
+
+# Sample/test facts files
+rocky_linux_8.4_facts.json
+*_facts.json
+
+# Claude Code
+.claude/
+!.claude/skills/
+!.claude/skills/**
+claude
+
+# OS Files
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+
+# Ansible
+*.retry
+.vault_pass
+
+# vault_secrets.yml is now committed as a placeholder-only schema.
+# Sensitive values stay as PLACEHOLDER in git; real secrets ship via
+# AAP inventory variables, extra_vars, or a runtime-mounted overlay.
+# Use vault_secrets.local.yml for per-host overrides (ignored by *.yml glob below).
+
+# Per-environment + per-cluster vault overlays.
+#   - vault_secrets.lab.yml             — the maintainers' lab (shape: aac-demos demos/lab-crc/vault_secrets.lab.yml.example)
+#   - vault_secrets.rhpds.<cluster>.yml — per RHPDS cluster, ephemeral
+# Glob covers both; the negation keeps .example schema files committed.
+ansible/vars/vault_secrets.yml
+ansible/vars/vault_secrets.*.yml
+!ansible/vars/vault_secrets.*.yml.example
+
+# Legacy single-cluster RHPDS vault — ignored during the Phase C migration to
+# per-cluster files; remove this line once nothing references vault_rhpds.yml.
+ansible/vars/vault_rhpds.yml
+
+# sed -i.bak backup files
+*.bak
+
+# Inventory files with real hosts — use *_example.ini/.yml as templates instead
+# Patterns: inventory_<IP>.ini, inventory_<hostname>.ini, local inventory overrides
+inventory_*.ini
+inventory_*.cfg
+# Keep example templates
+!inventory_example.ini
+!inventory_example.yml
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+*.swp
+*.swo
+*~
+
+# Build artifacts / installer packages
+aac-installer-*.tar.gz
+aac-installer-*.tar.gz.sha256
+bundle.tar.gz
+policy-bundle.tar.gz
+
+# Runtime databases / generated outputs
+compliance_metrics.db
+reports/
+
+# Customer-specific data (not for public repo)
+customer_success/
+context/
+ansible/vars/site_config.yml
+
+# M365 assessment config — holds tenant IDs / client secret refs / endpoints.
+# m365_config.example.yml is the committed template; the real file is per-operator.
+collections/ansible_collections/aac/m365/playbooks/vars/m365_config.yml
+
+# Operator's filled-in standard-install config (may hold customer hostnames);
+# install_config.example.yml is the committed template.
+install_config.yml
+ansible/vars/install_config.yml
+
+# Per-customer integration notes — committed README per integration,
+# notes/ folder stays local. .gitkeep preserves the empty dir.
+integrations/*/notes/*
+!integrations/*/notes/.gitkeep
+
+# Third-party RedHatOfficial/aap-demo clone used by install/mac-aap/
+aap-demo/
+
+# Customer POC / SOW documents — these may carry a customer name and must not
+# be committed to the repo. Matches "poc"/"sow" (any case) only as a delimited
+# filename token — bounded by _ - . or the start/end of the name — so words like
+# "pocket" or "software" are NOT ignored. Already-tracked template SOWs (e.g. m365)
+# stay tracked until explicitly removed.
+*[-_.][Pp][Oo][Cc][-_.]*
+*[-_.][Pp][Oo][Cc]
+[Pp][Oo][Cc][-_.]*
+*[-_.][Ss][Oo][Ww][-_.]*
+*[-_.][Ss][Oo][Ww]
+[Ss][Oo][Ww][-_.]*
+
+# Operator's filled-in install inventory — site-specific hosts, IPs and URLs.
+# Only the .example (placeholders) is tracked. A filled-in copy in git is how
+# one site's addresses reach another site's install.
+install/aac-install-inventory
+install/aac-install-inventory.*
+!install/aac-install-inventory.example
+ansible/vars/policy_selection.yml
+
+# Site attestations for the Oracle Database STIG (who verified what); copy from the .example
+ansible/vars/oracle_stig_attestations.yml
+# Site attestations for PQC Readiness (program facts only a person can state); copy from the .example
+ansible/vars/pqc_attestations.yml
+
+# Business documents (revenue/budget figures, customer or partner names, positioning,
+# SOWs, plans) live here, never in the public tree. Decision 2026-10-16.
+internal/

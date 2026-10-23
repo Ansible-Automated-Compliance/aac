@@ -1,0 +1,601 @@
+---
+# aac_bundle_consumer — pull the tenant's signed policy bundle from the
+# AAC Customer Portal, verify the ed25519 envelope, swap it into the
+# dedicated opa-customer container, and ack the outcome back to the
+# portal (bundle_delivery_events).
+#
+# Flow (block) with a rescue that restores the previous bundle,
+# RECREATES the container on it, and reports load_failed — the portal
+# always learns what happened.
+#
+# Concurrency: one active sync per tenant per host. The launcher is an
+# AAP job template, and AAP serializes runs of the same template unless
+# allow_simultaneous is set — KEEP IT UNSET (the default) on
+# "AAC - Sync Customer Policy Bundle". The role does not add a second
+# host-side lock on top of that.
+
+- name: Assert required configuration is present
+  assert:
+    that:
+      - aac_bundle_portal_url | length > 0
+      - aac_bundle_tenant_id | length > 0
+      - aac_bundle_token | length > 0
+      - aac_bundle_runtime_host | length > 0
+      # The name lands in podman argv (never a shell), but constrain it
+      # anyway so an exotic override can't smuggle flags or separators.
+      - aac_bundle_container_name is match('^[a-zA-Z0-9][a-zA-Z0-9_.-]*$')
+      # A TYPO'd validate_certs value ("treu") must fail, not coerce to
+      # false and silently disable TLS verification — validated on BOTH
+      # the survey-style input and the EFFECTIVE canonical value (a
+      # typo in site_config's aac_bundle_validate_certs would otherwise
+      # bypass the portal_* check).
+      - >-
+        portal_validate_certs is not defined
+        or (portal_validate_certs | string | lower)
+           in ['', 'true', 'false', 'yes', 'no', '1', '0']
+      - >-
+        (aac_bundle_validate_certs | string | lower)
+        in ['true', 'false', 'yes', 'no', '1', '0']
+    fail_msg: >-
+      aac_bundle_portal_url, aac_bundle_tenant_id and aac_bundle_token are
+      required, aac_bundle_runtime_host must resolve to the podman host
+      (defaults to aac_host), and aac_bundle_container_name must match
+      ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$. See roles/aac_bundle_consumer/README.md
+      for how to supply each variable.
+  tags: [aac_bundle]
+
+- name: Build the shared portal auth headers once (all portal calls use it)
+  set_fact:
+    _bundle_auth_headers: >-
+      {{ {'Authorization': 'Bearer ' + aac_bundle_token}
+         | combine({'X-Token-Id': aac_bundle_token_id} if aac_bundle_token_id | length > 0 else {}) }}
+  no_log: true
+  tags: [aac_bundle]
+
+- name: Sync customer bundle into OPA
+  tags: [aac_bundle]
+  block:
+
+    # ── Signing key: pinned, or PERSISTED trust-on-first-use ─────────────────
+    #
+    # Production posture: fail closed unless the key is pinned in config.
+    # aac_bundle_allow_tofu=true (lab bring-up) enables real TOFU: the
+    # first fetched key is persisted on the runtime host and every later
+    # run must match it — a rotated/attacker key becomes a hard failure,
+    # not a silent re-trust.
+
+    - name: Refuse to run unpinned without explicit TOFU opt-in
+      when:
+        - aac_bundle_signing_pubkey_b64 | length == 0
+        - not (aac_bundle_allow_tofu | bool)
+      fail:
+        msg: >-
+          aac_bundle_signing_pubkey_b64 is not pinned. Pin the portal
+          signing key (recommended for anything real) or set
+          aac_bundle_allow_tofu=true for lab bring-up (first fetched key
+          is persisted and enforced on subsequent runs).
+
+    - name: Refuse trust-on-first-use over unverified TLS
+      when:
+        - aac_bundle_signing_pubkey_b64 | length == 0
+        - not (aac_bundle_validate_certs | bool)
+        - not (aac_bundle_allow_insecure_tofu | bool)
+      fail:
+        msg: >-
+          TOFU is enabled but TLS verification is disabled — an active
+          MITM could supply its own signing key AND its own bundle. Pin
+          the key, enable aac_bundle_validate_certs, or — lab bring-up
+          only — set aac_bundle_allow_insecure_tofu=true.
+
+    - name: Check for a persisted TOFU key
+      when: aac_bundle_signing_pubkey_b64 | length == 0
+      stat:
+        path: "{{ aac_bundle_dir }}/pinned_signing_key.b64"
+      register: _tofu_pin
+      become: true
+      delegate_to: "{{ aac_bundle_runtime_host }}"
+
+    - name: Load the persisted TOFU key
+      when:
+        - aac_bundle_signing_pubkey_b64 | length == 0
+        - _tofu_pin.stat.exists
+      slurp:
+        src: "{{ aac_bundle_dir }}/pinned_signing_key.b64"
+      register: _tofu_key_file
+      become: true
+      delegate_to: "{{ aac_bundle_runtime_host }}"
+
+    - name: Fetch portal signing key (first TOFU run only)
+      when:
+        - aac_bundle_signing_pubkey_b64 | length == 0
+        - not _tofu_pin.stat.exists
+      uri:
+        url: "{{ aac_bundle_portal_url }}/api/portal/v1/bundles/signing-key"
+        validate_certs: "{{ aac_bundle_validate_certs }}"
+        return_content: true
+      register: _signing_key_resp
+      delegate_to: "{{ aac_bundle_runtime_host }}"
+
+    - name: Resolve effective signing key
+      set_fact:
+        _bundle_pubkey_b64: >-
+          {{ aac_bundle_signing_pubkey_b64
+             if aac_bundle_signing_pubkey_b64 | length > 0
+             else (
+               (_tofu_key_file.content | b64decode | trim)
+               if (_tofu_pin.stat.exists | default(false))
+               else _signing_key_resp.json.public_key_b64
+             ) }}
+
+    # ── Working directory (rootless-podman compatible) ───────────────────────
+    #
+    # 0755 dirs / 0644 files: podman runs rootless as the install user,
+    # so the container must be able to traverse and read what root (via
+    # become) wrote here. Matches the /etc/opa/* layout the other OPA
+    # containers already mount.
+
+    - name: Create bundle directories on the runtime host
+      file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0755"
+      loop:
+        - "{{ aac_bundle_dir }}"
+        - "{{ aac_bundle_dir }}/.incoming"
+      become: true
+      delegate_to: "{{ aac_bundle_runtime_host }}"
+
+    - name: Persist the TOFU key (first TOFU run only)
+      when:
+        - aac_bundle_signing_pubkey_b64 | length == 0
+        - not (_tofu_pin.stat.exists | default(true))
+      copy:
+        content: "{{ _signing_key_resp.json.public_key_b64 }}\n"
+        dest: "{{ aac_bundle_dir }}/pinned_signing_key.b64"
+        mode: "0644"
+      become: true
+      delegate_to: "{{ aac_bundle_runtime_host }}"
+
+    - name: Note TOFU persistence
+      when:
+        - aac_bundle_signing_pubkey_b64 | length == 0
+      debug:
+        msg: >-
+          TOFU mode: using
+          {{ 'the previously persisted' if (_tofu_pin.stat.exists | default(false)) else 'a freshly fetched (now persisted)' }}
+          portal signing key from {{ aac_bundle_dir }}/pinned_signing_key.b64.
+          Pin aac_bundle_signing_pubkey_b64 in config for production.
+
+    # ── Fetch + verify envelope ──────────────────────────────────────────────
+
+    - name: Fetch current bundle envelope
+      uri:
+        url: "{{ aac_bundle_portal_url }}/api/portal/v1/tenants/{{ aac_bundle_tenant_id }}/bundles/current/envelope"
+        headers: "{{ _bundle_auth_headers }}"
+        validate_certs: "{{ aac_bundle_validate_certs }}"
+        dest: "{{ aac_bundle_dir }}/.incoming/envelope.json"
+        mode: "0644"
+      no_log: true
+      become: true
+      delegate_to: "{{ aac_bundle_runtime_host }}"
+
+    - name: Stage envelope verifier
+      copy:
+        src: verify_envelope.py
+        dest: "{{ aac_bundle_dir }}/.incoming/verify_envelope.py"
+        mode: "0755"
+      become: true
+      delegate_to: "{{ aac_bundle_runtime_host }}"
+
+    - name: Verify envelope signature (ed25519 over canonical payload)
+      command:
+        argv: >-
+          {{ ['python3',
+              aac_bundle_dir ~ '/.incoming/verify_envelope.py',
+              '--envelope', aac_bundle_dir ~ '/.incoming/envelope.json',
+              '--public-key-b64', _bundle_pubkey_b64]
+             + (['--expected-key-id', aac_bundle_signing_key_id]
+                if aac_bundle_signing_key_id | length > 0 else []) }}
+      register: _verify
+      changed_when: false
+      delegate_to: "{{ aac_bundle_runtime_host }}"
+
+    - name: Extract verified payload
+      set_fact:
+        _bundle_payload: "{{ _verify.stdout | from_json }}"
+        _bundle_sha: "{{ (_verify.stdout | from_json).bundle_sha256 }}"
+
+    - name: Assert the signed payload is for THIS tenant
+      assert:
+        that: _bundle_payload.tenant_id == aac_bundle_tenant_id
+        fail_msg: >-
+          signed envelope is for tenant {{ _bundle_payload.tenant_id }},
+          expected {{ aac_bundle_tenant_id }} — refusing to install a
+          bundle signed for a different tenant.
+
+    # ── Fetch bundle bytes + integrity check ────────────────────────────────
+
+    - name: Fetch bundle by verified sha
+      uri:
+        url: "{{ aac_bundle_portal_url }}/api/portal/v1/tenants/{{ aac_bundle_tenant_id }}/bundles/{{ _bundle_sha }}"
+        headers: "{{ _bundle_auth_headers }}"
+        validate_certs: "{{ aac_bundle_validate_certs }}"
+        dest: "{{ aac_bundle_dir }}/.incoming/bundle.tar.gz"
+        mode: "0644"
+        status_code: 200
+      no_log: true
+      become: true
+      delegate_to: "{{ aac_bundle_runtime_host }}"
+
+    - name: Compute downloaded bundle sha256
+      stat:
+        path: "{{ aac_bundle_dir }}/.incoming/bundle.tar.gz"
+        checksum_algorithm: sha256
+      register: _dl
+      become: true
+      delegate_to: "{{ aac_bundle_runtime_host }}"
+
+    - name: Fail if bundle bytes do not match the signed sha256
+      assert:
+        that: _dl.stat.checksum == _bundle_sha
+        fail_msg: >-
+          downloaded bundle sha256 {{ _dl.stat.checksum }} does not match
+          signed envelope sha256 {{ _bundle_sha }}
+
+    # ── Atomic install with rollback copy ────────────────────────────────────
+
+    - name: Check for an existing live bundle
+      stat:
+        path: "{{ aac_bundle_dir }}/bundle.tar.gz"
+      register: _live
+      become: true
+      delegate_to: "{{ aac_bundle_runtime_host }}"
+
+    - name: Keep previous bundle for rescue rollback
+      ansible.builtin.command:
+        argv:
+          - cp
+          - -p
+          - "{{ aac_bundle_dir }}/bundle.tar.gz"
+          - "{{ aac_bundle_dir }}/bundle.tar.gz.prev"
+      when: _live.stat.exists
+      become: true
+      delegate_to: "{{ aac_bundle_runtime_host }}"
+
+    - name: Install verified bundle (atomic same-filesystem move)
+      ansible.builtin.command:
+        argv:
+          - mv
+          - "{{ aac_bundle_dir }}/.incoming/bundle.tar.gz"
+          - "{{ aac_bundle_dir }}/bundle.tar.gz"
+      become: true
+      delegate_to: "{{ aac_bundle_runtime_host }}"
+
+    - name: Record that the live bundle was replaced (for rescue)
+      set_fact:
+        _bundle_installed: true
+
+    # Rootless podman cannot relabel a root-owned dir (:z fails with
+    # lsetxattr EPERM — observed on the .62 e2e), so the mount is plain
+    # :ro and root applies the container-readable label here instead.
+    # mv preserves the source context (etc_t), so relabel after EVERY
+    # install, not once at dir creation.
+    - name: Probe SELinux mode
+      command:
+        argv: ["getenforce"]
+      register: _selinux
+      changed_when: false
+      failed_when: false
+      delegate_to: "{{ aac_bundle_runtime_host }}"
+
+    - name: Label bundle dir container-readable (SELinux)
+      command:
+        argv: ["chcon", "-R", "-t", "container_file_t", "{{ aac_bundle_dir }}"]
+      when: (_selinux.stdout | default('') | trim) in ['Enforcing', 'Permissive']
+      become: true
+      delegate_to: "{{ aac_bundle_runtime_host }}"
+
+    # ── Swap into the opa-customer container ────────────────────────────────
+
+    - name: Compute the container run command (shared with rescue)
+      set_fact:
+        _opa_run_argv:
+          - podman
+          - run
+          - -d
+          - --name
+          - "{{ aac_bundle_container_name }}"
+          - -p
+          - "{{ aac_bundle_port }}:8181"
+          - --restart=always
+          - -v
+          - "{{ aac_bundle_dir }}:/bundles:ro"
+          - "{{ aac_bundle_opa_image }}"
+          - run
+          - --server
+          - --addr
+          - ":8181"
+          - --bundle
+          - /bundles/bundle.tar.gz
+
+    - name: Pull OPA image
+      command:
+        argv: ["podman", "pull", "{{ aac_bundle_opa_image }}"]
+      changed_when: false
+      delegate_to: "{{ aac_bundle_runtime_host }}"
+
+    - name: Record that the container swap is beginning (for rescue)
+      set_fact:
+        _swap_started: true
+
+    - name: Stop existing {{ aac_bundle_container_name }} container
+      command:
+        argv: ["podman", "stop", "{{ aac_bundle_container_name }}"]
+      register: _stop
+      failed_when: false
+      changed_when: _stop.rc == 0
+      delegate_to: "{{ aac_bundle_runtime_host }}"
+
+    - name: Remove existing {{ aac_bundle_container_name }} container
+      command:
+        argv: ["podman", "rm", "{{ aac_bundle_container_name }}"]
+      register: _rm
+      failed_when: false
+      changed_when: _rm.rc == 0
+      delegate_to: "{{ aac_bundle_runtime_host }}"
+
+    - name: Start {{ aac_bundle_container_name }} with the verified bundle
+      command:
+        argv: "{{ _opa_run_argv }}"
+      delegate_to: "{{ aac_bundle_runtime_host }}"
+
+    # 127.0.0.1, not the inventory name: this uri runs ON the runtime
+    # host, and a host that can't resolve its own name must not fail
+    # the probe. The ack below still reports the externally reachable
+    # runtime-host URL as opa_endpoint.
+    - name: Wait for OPA to report healthy
+      uri:
+        url: "http://127.0.0.1:{{ aac_bundle_port }}/health"
+        status_code: 200
+      register: _health
+      until: _health.status == 200
+      retries: 12
+      delay: 5
+      delegate_to: "{{ aac_bundle_runtime_host }}"
+
+    - name: Read OPA version (best effort, for the ack)
+      command:
+        argv: ["podman", "exec", "{{ aac_bundle_container_name }}", "/opa", "version"]
+      register: _opa_version
+      changed_when: false
+      failed_when: false
+      delegate_to: "{{ aac_bundle_runtime_host }}"
+
+    # ── Ack success ──────────────────────────────────────────────────────────
+
+    - name: Ack loaded to the portal
+      uri:
+        url: "{{ aac_bundle_portal_url }}/api/portal/v1/tenants/{{ aac_bundle_tenant_id }}/bundles/{{ _bundle_sha }}/delivery"
+        method: POST
+        headers: "{{ _bundle_auth_headers }}"
+        body_format: json
+        body:
+          event: loaded
+          opa_endpoint: "http://{{ aac_bundle_runtime_host }}:{{ aac_bundle_port }}"
+          opa_version: "{{ (_opa_version.stdout_lines | default(['unknown'])) | first | regex_replace('^Version: ', '') }}"
+        validate_certs: "{{ aac_bundle_validate_certs }}"
+        status_code: 201
+      no_log: true
+      delegate_to: "{{ aac_bundle_runtime_host }}"
+
+    - name: Summary
+      debug:
+        msg: |
+          Customer bundle sync complete
+          =============================
+          Bundle sha256:  {{ _bundle_sha }}
+          Targets:        {{ _bundle_payload.target_count }}
+          OPA:            http://{{ aac_bundle_runtime_host }}:{{ aac_bundle_port }} ({{ aac_bundle_container_name }})
+          Query base:     http://{{ aac_bundle_runtime_host }}:{{ aac_bundle_port }}/v1/data/customer
+          Ack:            loaded (recorded in the portal's delivery timeline)
+
+  rescue:
+
+    - name: Restore previous bundle after failure
+      ansible.builtin.command:
+        argv:
+          - mv
+          - "{{ aac_bundle_dir }}/bundle.tar.gz.prev"
+          - "{{ aac_bundle_dir }}/bundle.tar.gz"
+      when:
+        - _bundle_installed | default(false)
+        - _live.stat.exists | default(false)
+      register: _restore
+      failed_when: false
+      become: true
+      delegate_to: "{{ aac_bundle_runtime_host }}"
+
+    - name: Relabel restored bundle container-readable (SELinux)
+      command:
+        argv: ["chcon", "-R", "-t", "container_file_t", "{{ aac_bundle_dir }}"]
+      when:
+        - _restore is not skipped
+        - _restore.rc | default(1) == 0
+        # (_selinux | default({})) guard: the rescue can run from a
+        # failure BEFORE the probe task registered anything.
+        - ((_selinux | default({})).stdout | default('') | trim) in ['Enforcing', 'Permissive']
+      become: true
+      failed_when: false
+      delegate_to: "{{ aac_bundle_runtime_host }}"
+
+    # The failure may have left EITHER no container (run failed) or an
+    # unhealthy replacement (run OK, health check failed). Clear the
+    # name whenever the swap BEGAN — independent of whether a previous
+    # bundle exists, so a first deployment can't leave a broken
+    # container squatting on the port — or `podman run --name` would
+    # refuse with "name already in use" on recreate/next run.
+    - name: Remove any half-started replacement container
+      command:
+        argv: ["podman", "rm", "-f", "{{ aac_bundle_container_name }}"]
+      when: _swap_started | default(false)
+      register: _rescue_rm
+      failed_when: false
+      changed_when: _rescue_rm.rc | default(1) == 0
+      delegate_to: "{{ aac_bundle_runtime_host }}"
+
+    # The old container was removed before the new one started, so a
+    # rescue must RECREATE it on the restored bundle — a bare restart
+    # would target a container that no longer exists. If this recovery
+    # itself fails, the final fail below reports both errors.
+    - name: Recreate {{ aac_bundle_container_name }} on the restored bundle
+      command:
+        argv: "{{ _opa_run_argv }}"
+      when:
+        - _restore is not skipped
+        - _restore.rc | default(1) == 0
+        - _opa_run_argv is defined
+      register: _recover_run
+      failed_when: false
+      delegate_to: "{{ aac_bundle_runtime_host }}"
+
+    - name: Verify recovered OPA health
+      uri:
+        url: "http://127.0.0.1:{{ aac_bundle_port }}/health"
+        status_code: 200
+      when: _recover_run is not skipped
+      register: _recover_health
+      until: _recover_health.status | default(0) == 200
+      retries: 6
+      delay: 5
+      failed_when: false
+      delegate_to: "{{ aac_bundle_runtime_host }}"
+
+    - name: Ack load_failed to the portal (best effort)
+      uri:
+        url: "{{ aac_bundle_portal_url }}/api/portal/v1/tenants/{{ aac_bundle_tenant_id }}/bundles/{{ _bundle_sha }}/delivery"
+        method: POST
+        headers: "{{ _bundle_auth_headers }}"
+        body_format: json
+        body:
+          event: load_failed
+          opa_endpoint: "http://{{ aac_bundle_runtime_host }}:{{ aac_bundle_port }}"
+          error: "{{ ((ansible_failed_task.name | default('unknown task')) ~ ': ' ~ (ansible_failed_result.msg | default('no detail'))) | truncate(3900) }}"
+        validate_certs: "{{ aac_bundle_validate_certs }}"
+        status_code: 201
+      when: _bundle_sha is defined
+      no_log: true
+      failed_when: false
+      delegate_to: "{{ aac_bundle_runtime_host }}"
+
+    - name: Re-raise the original failure (with recovery status)
+      vars:
+        _recovered: >-
+          {{ _recover_run is defined and _recover_run is not skipped
+             and (_recover_run.rc | default(1)) == 0
+             and (_recover_health.status | default(0)) == 200 }}
+        # Four distinct end states — an operator must not read
+        # "may be down" when the swap was never attempted and the
+        # existing bundle/container are untouched.
+        _rollback_msg: >-
+          {{ 'previous bundle restored, container recreated, health 200'
+             if (_recovered | bool)
+             else ('recovery attempted but NOT verified (run rc=' ~ (_recover_run.rc | default('n/a')) ~ ', health=' ~ (_recover_health.status | default('n/a')) ~ ') — opa-customer may be down'
+                   if (_recover_run is defined and _recover_run is not skipped)
+                   else ('half-started replacement removed; NO previous bundle to fall back to — opa-customer is NOT running'
+                         if (_swap_started | default(false))
+                         else 'swap NOT attempted — existing bundle and container unchanged')) }}
+      fail:
+        msg: >-
+          Bundle sync failed at task
+          '{{ ansible_failed_task.name | default('unknown') }}':
+          {{ ansible_failed_result.msg | default('no detail') }}.
+          Rollback: {{ _rollback_msg }}.
+
+# The container runs ROOTLESS (podman commands above are non-become),
+# so the unit must live in the USER manager — a rootful system unit
+# would recreate a SEPARATE rootful container at boot that later syncs
+# can't stop from the rootless store (name/port conflict). Generation
+# happens in a private 0700 dir owned by the run user, never in
+# world-writable /tmp (symlink-race hardening).
+#
+# No ignore_errors anywhere: a play that "succeeds" while silently
+# leaving the host without a working unit is exactly the failure mode
+# an operator can't see. Skip via aac_bundle_generate_systemd=false
+# instead if a target host shouldn't get a unit.
+- name: Generate and install systemd user unit
+  when: aac_bundle_generate_systemd | bool
+  tags: [aac_bundle, aac_bundle_systemd]
+  block:
+    - name: Identify the rootless run user
+      command:
+        argv: ["id", "-un"]
+      register: _run_user
+      changed_when: false
+      delegate_to: "{{ aac_bundle_runtime_host }}"
+
+    - name: Identify the run user's uid (for the user-manager bus)
+      command:
+        argv: ["id", "-u"]
+      register: _run_uid
+      changed_when: false
+      delegate_to: "{{ aac_bundle_runtime_host }}"
+
+    # file/command modules do NOT expand $HOME — resolve the run
+    # user's home to an absolute path once and use it everywhere.
+    - name: Resolve the run user's home directory
+      command:
+        argv: ["getent", "passwd", "{{ _run_user.stdout | trim }}"]
+      register: _run_passwd
+      changed_when: false
+      delegate_to: "{{ aac_bundle_runtime_host }}"
+
+    - name: Set home path fact
+      set_fact:
+        _run_home: "{{ (_run_passwd.stdout | trim).split(':')[5] }}"
+
+    - name: Create private unit-generation directory
+      file:
+        path: "{{ _run_home }}/.cache/aac-bundle-systemd"
+        state: directory
+        mode: "0700"
+      delegate_to: "{{ aac_bundle_runtime_host }}"
+
+    - name: Generate systemd unit for {{ aac_bundle_container_name }}
+      command:
+        argv: ["podman", "generate", "systemd", "--name", "{{ aac_bundle_container_name }}", "--files", "--new"]
+      args:
+        chdir: "{{ _run_home }}/.cache/aac-bundle-systemd"
+      changed_when: false
+      delegate_to: "{{ aac_bundle_runtime_host }}"
+
+    - name: Ensure the user systemd directory exists
+      file:
+        path: "{{ _run_home }}/.config/systemd/user"
+        state: directory
+        mode: "0755"
+      delegate_to: "{{ aac_bundle_runtime_host }}"
+
+    - name: Install unit into the user manager
+      ansible.builtin.command:
+        argv:
+          - mv
+          - "{{ _run_home }}/.cache/aac-bundle-systemd/container-{{ aac_bundle_container_name }}.service"
+          - "{{ _run_home }}/.config/systemd/user/"
+      delegate_to: "{{ aac_bundle_runtime_host }}"
+
+    - name: Enable linger so the user manager runs at boot
+      command:
+        argv: ["loginctl", "enable-linger", "{{ _run_user.stdout | trim }}"]
+      become: true
+      changed_when: false
+      delegate_to: "{{ aac_bundle_runtime_host }}"
+
+    - name: Reload the user manager and enable the unit
+      systemd:
+        name: "container-{{ aac_bundle_container_name }}"
+        scope: user
+        daemon_reload: true
+        enabled: true
+      environment:
+        XDG_RUNTIME_DIR: "/run/user/{{ _run_uid.stdout | trim }}"
+      delegate_to: "{{ aac_bundle_runtime_host }}"

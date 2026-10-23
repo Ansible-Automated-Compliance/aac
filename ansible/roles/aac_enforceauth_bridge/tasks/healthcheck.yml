@@ -1,0 +1,23 @@
+---
+# Poll /health until the API reports the database is reachable.
+# 503 means the container is up but the DB is unreachable — surface that clearly.
+
+- name: Wait for Compliance-State API /health
+  uri:
+    use_proxy: false
+    url: "http://{{ aac_host }}:{{ aac_eauth_port }}/health"
+    method: GET
+    status_code: [200, 503]
+    timeout: 5
+  register: eauth_health
+  until: eauth_health.status is defined and eauth_health.status in [200, 503]
+  retries: 12
+  delay: 5
+
+- name: Warn if API is up but database is unreachable
+  debug:
+    msg: >
+      Compliance-State API responded but the database is UNREACHABLE
+      ({{ aac_eauth_db_user }}@{{ aac_eauth_db_host }}:{{ aac_eauth_db_port }}).
+      Check aac_eauth_db_host — post-CRC the compliance DB may live in OpenShift.
+  when: eauth_health.status == 503

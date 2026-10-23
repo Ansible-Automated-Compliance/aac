@@ -1,0 +1,310 @@
+---
+# nerc_ami_remediation_report.yml — NERC-CIP + AMI 2.0 Remediation Report
+#
+# Reads from compliance_results table — no OPA queries, no SSH connections.
+# Reports latest results for:
+#   - NERC CIP (CIP-002 through CIP-015)
+#   - NERC CIP-015 INSM
+#   - AMI NIST IR 7628 Rev 1 (per utility: electric, gas, water)
+#   - AMI Device Compliance (per utility)
+#   - AMI Head-End Security (per utility)
+#
+# AAP Job Template: "NERC/AMI - Remediation Report"
+# Credentials: Ansible Vault
+# EE: AAC Compliance EE
+
+- name: NERC-CIP + AMI 2.0 Remediation Report
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - ../vars/site_config.yml
+
+  vars:
+    pg_password: "{{ compliance_db_password }}"
+
+  tasks:
+
+    # ── NERC-CIP: latest results ──────────────────────────────────────────────
+
+    - name: Query latest NERC CIP result
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port | default(5433) }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: |
+          SELECT policy_name, policy_version, compliance_percentage,
+                 passed_controls, failed_controls, total_controls,
+                 violations, metadata, evaluation_timestamp
+          FROM compliance_results
+          WHERE policy_name = 'NERC CIP'
+          ORDER BY evaluation_timestamp DESC LIMIT 1
+      register: nerc_cip_result
+
+    - name: Query latest NERC CIP-015 INSM result
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port | default(5433) }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: |
+          SELECT policy_name, policy_version, compliance_percentage,
+                 passed_controls, failed_controls, total_controls,
+                 violations, metadata, evaluation_timestamp
+          FROM compliance_results
+          WHERE policy_name = 'NERC CIP-015 INSM'
+          ORDER BY evaluation_timestamp DESC LIMIT 1
+      register: nerc_cip015_result
+
+    # ── AMI: latest results per utility ──────────────────────────────────────
+
+    - name: Query latest AMI results per policy and utility
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port | default(5433) }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: |
+          SELECT DISTINCT ON (policy_name, metadata->>'utility')
+                 policy_name,
+                 metadata->>'utility'   AS utility,
+                 compliance_percentage,
+                 passed_controls,
+                 failed_controls,
+                 total_controls,
+                 violations,
+                 metadata,
+                 evaluation_timestamp
+          FROM compliance_results
+          WHERE policy_name IN ('AMI NIST IR 7628 Rev 1', 'AMI Device Compliance', 'AMI Head-End Security')
+          ORDER BY policy_name, metadata->>'utility', evaluation_timestamp DESC
+      register: ami_results
+
+    # ── Derive summary values ─────────────────────────────────────────────────
+
+    - name: Set NERC CIP facts
+      set_fact:
+        nerc_cip_row:    "{{ nerc_cip_result.query_result[0]   | default({}) }}"
+        nerc_cip015_row: "{{ nerc_cip015_result.query_result[0] | default({}) }}"
+
+    - name: Group AMI results by policy
+      set_fact:
+        ami_nist_rows:    "{{ ami_results.query_result | selectattr('policy_name', 'equalto', 'AMI NIST IR 7628 Rev 1') | list }}"
+        ami_device_rows:  "{{ ami_results.query_result | selectattr('policy_name', 'equalto', 'AMI Device Compliance')  | list }}"
+        ami_headend_rows: "{{ ami_results.query_result | selectattr('policy_name', 'equalto', 'AMI Head-End Security')   | list }}"
+
+    # ── Report header ─────────────────────────────────────────────────────────
+
+    - name: Print report header
+      debug:
+        msg: |
+          ╔══════════════════════════════════════════════════════════════════════╗
+          ║       NERC-CIP + AMI 2.0 COMPLIANCE REMEDIATION REPORT              ║
+          ║       Generated: {{ ansible_date_time.iso8601 | default('now') }}
+          ╚══════════════════════════════════════════════════════════════════════╝
+
+    # ── NERC-CIP Section ──────────────────────────────────────────────────────
+
+    - name: Print NERC-CIP summary
+      vars:
+        cip_pct:    "{{ nerc_cip_row.compliance_percentage | default(0) | float | round(1) }}"
+        cip_passed: "{{ nerc_cip_row.passed_controls | default(0) }}"
+        cip_failed: "{{ nerc_cip_row.failed_controls | default(0) }}"
+        cip_total:  "{{ nerc_cip_row.total_controls  | default(0) }}"
+        cip_status: "{{ '✅ COMPLIANT' if (nerc_cip_row.compliance_percentage | default(0) | float) == 100 else '❌ NON-COMPLIANT' }}"
+        cip015_pct: "{{ nerc_cip015_row.compliance_percentage | default(0) | float | round(1) }}"
+        cip015_status: "{{ '✅ COMPLIANT' if (nerc_cip015_row.compliance_percentage | default(0) | float) == 100 else '❌ NON-COMPLIANT' }}"
+        cip_meta:   "{{ nerc_cip_row.metadata | default({}) }}"
+        cip_reqs:   "{{ (nerc_cip_row.metadata | default({})).get('requirements', {}) }}"
+        cip_violations: "{{ nerc_cip_row.violations | default([]) }}"
+      debug:
+        msg: |
+          ── NERC-CIP CRITICAL INFRASTRUCTURE PROTECTION ──────────────────────────
+          Organization : {{ cip_meta.get('organization', 'N/A') }}
+          Assessment   : {{ cip_meta.get('assessment_date', 'N/A') }}
+          Version      : {{ nerc_cip_row.policy_version | default('N/A') }}
+          Last Run     : {{ nerc_cip_row.evaluation_timestamp | default('N/A') }}
+
+          CIP-002 through CIP-013  {{ cip_status }}  ({{ cip_pct }}%  {{ cip_passed }}/{{ cip_total }} controls)
+          CIP-015 INSM             {{ cip015_status }}  ({{ cip015_pct }}%)
+
+          Standard-by-Standard Status:
+            CIP-002 BES Categorization        : {{ '✅' if cip_reqs.get('CIP_002_categorization', false)        else '❌' }}
+            CIP-003 Security Management       : {{ '✅' if cip_reqs.get('CIP_003_security_management', false)   else '❌' }}
+            CIP-004 Personnel & Training      : {{ '✅' if cip_reqs.get('CIP_004_personnel_training', false)    else '❌' }}
+            CIP-005 Electronic Security       : {{ '✅' if cip_reqs.get('CIP_005_electronic_security', false)   else '❌' }}
+            CIP-006 Physical Security         : {{ '✅' if cip_reqs.get('CIP_006_physical_security', false)     else '❌' }}
+            CIP-007 Systems Security          : {{ '✅' if cip_reqs.get('CIP_007_systems_security', false)      else '❌' }}
+            CIP-008 Incident Response         : {{ '✅' if cip_reqs.get('CIP_008_incident_response', false)     else '❌' }}
+            CIP-009 Recovery Plans            : {{ '✅' if cip_reqs.get('CIP_009_recovery_plans', false)        else '❌' }}
+            CIP-010 Config Management         : {{ '✅' if cip_reqs.get('CIP_010_configuration_management', false) else '❌' }}
+            CIP-011 Info Protection           : {{ '✅' if cip_reqs.get('CIP_011_information_protection', false) else '❌' }}
+            CIP-012 Comms Protection          : {{ '✅' if cip_reqs.get('CIP_012_communications_protection', false) else '❌' }}
+
+          Open Remediation Items: {{ cip_violations | length }}
+          {% if cip_violations | length == 0 %}
+            No violations. All NERC-CIP requirements satisfied. ✅
+          {% else %}
+          {% for v in cip_violations %}
+            [HIGH]  {{ v }}
+          {% endfor %}
+          {% endif %}
+
+    # ── AMI NIST IR 7628 Section ──────────────────────────────────────────────
+
+    - name: Print AMI NIST IR 7628 results per utility
+      vars:
+        row_violations: "{{ (item.violations | default({})).get('result', {}).get('all_violations', []) }}"
+        row_status: "{{ '✅ COMPLIANT' if (item.compliance_percentage | float) == 100 else ('⚠️  MOSTLY COMPLIANT' if (item.compliance_percentage | float) >= 80 else '❌ NON-COMPLIANT') }}"
+        ctrl_families: "{{ ((item.violations | default({})).get('result', {}).get('compliance_assessment', {}) | default({})).get('control_families', {}) }}"
+      debug:
+        msg: |
+          ── AMI 2.0 — NIST IR 7628 Rev 1 ({{ item.utility | upper }}) ─────────────────────
+          Status  : {{ row_status }}  ({{ item.compliance_percentage | float | round(1) }}%  {{ item.passed_controls }}/{{ item.total_controls }} controls)
+          Run     : {{ item.evaluation_timestamp }}
+
+          Control Family Status:
+            SG.AC (Access Control)         : {{ '✅' if ctrl_families.get('SG.AC', {}).get('compliant', false) else '❌' }}
+            SG.AU (Audit & Accountability) : {{ '✅' if ctrl_families.get('SG.AU', {}).get('compliant', false) else '❌' }}
+            SG.CM (Config Management)      : {{ '✅' if ctrl_families.get('SG.CM', {}).get('compliant', false) else '❌' }}
+            SG.IA (Identification & Auth)  : {{ '✅' if ctrl_families.get('SG.IA', {}).get('compliant', false) else '❌' }}
+            SG.IR (Incident Response)      : {{ '✅' if ctrl_families.get('SG.IR', {}).get('compliant', false) else '❌' }}
+            SG.SC (System & Comms Prot.)   : {{ '✅' if ctrl_families.get('SG.SC', {}).get('compliant', false) else '❌' }}
+
+          Open Remediation Items: {{ row_violations | length }}
+          {% if row_violations | length == 0 %}
+            No violations.
+          {% else %}
+          {% for v in row_violations %}
+            [MEDIUM]  {{ v }}
+          {% endfor %}
+          {% endif %}
+      loop: "{{ ami_nist_rows }}"
+      loop_control:
+        label: "{{ item.utility }}"
+
+    # ── AMI Device Compliance Section ─────────────────────────────────────────
+
+    - name: Print AMI Device Compliance results per utility
+      vars:
+        dev_report:    "{{ ((item.violations | default({})).get('result', {}) | default({})).get('compliance_report', {}) }}"
+        dev_violations: "{{ dev_report.get('all_violations', []) }}"
+        dev_critical:  "{{ ((item.violations | default({})).get('result', {}) | default({})).get('critical_violations', []) }}"
+        dev_per_device: "{{ dev_report.get('per_device_violations', {}) }}"
+        dev_compliant:  "{{ dev_report.get('compliant_devices', 0) }}"
+        dev_total:      "{{ dev_report.get('total_devices', 0) }}"
+        dev_status: "{{ '✅ COMPLIANT' if (item.compliance_percentage | float) == 100 else '❌ NON-COMPLIANT' }}"
+      debug:
+        msg: |
+          ── AMI 2.0 — DEVICE COMPLIANCE ({{ item.utility | upper }}) ───────────────────────
+          Status  : {{ dev_status }}  ({{ dev_compliant }}/{{ dev_total }} devices compliant)
+          Run     : {{ item.evaluation_timestamp }}
+          Standards: NIST IR 7628 | ANSI C12.22 | IEC 62351
+
+          Critical Violations: {{ dev_critical | length }}
+          {% for v in dev_critical %}
+            🚨 [CRITICAL]  {{ v }}
+          {% endfor %}
+
+          All Violations ({{ dev_violations | length }} total):
+          {% if dev_violations | length == 0 %}
+            No violations.
+          {% else %}
+          {% for v in dev_violations %}
+            {% if 'CRITICAL' in v %}
+            🚨 [CRITICAL]  {{ v }}
+            {% elif 'tamper' in v | lower %}
+            🚨 [CRITICAL]  {{ v }}
+            {% elif 'expired' in v | lower %}
+            [HIGH]     {{ v }}
+            {% elif 'overdue' in v | lower %}
+            [MEDIUM]   {{ v }}
+            {% else %}
+            [MEDIUM]   {{ v }}
+            {% endif %}
+          {% endfor %}
+          {% endif %}
+      loop: "{{ ami_device_rows }}"
+      loop_control:
+        label: "{{ item.utility }}"
+
+    # ── AMI Head-End Security Section ─────────────────────────────────────────
+
+    - name: Print AMI Head-End Security results per utility
+      vars:
+        he_result:     "{{ (item.violations | default({})).get('result', {}) | default({}) }}"
+        he_violations: "{{ he_result.get('violations', []) }}"
+        he_status: "{{ '✅ COMPLIANT' if (item.compliance_percentage | float) == 100 else '❌ NON-COMPLIANT' }}"
+        he_categories: "{{ he_result.get('compliance_report', {}).get('categories_assessed', []) }}"
+      debug:
+        msg: |
+          ── AMI 2.0 — HEAD-END SECURITY ({{ item.utility | upper }}) ──────────────────────
+          Status  : {{ he_status }}  ({{ item.compliance_percentage | float | round(1) }}%  {{ item.passed_controls }}/{{ item.total_controls }} controls)
+          Run     : {{ item.evaluation_timestamp }}
+          Standards: NIST IR 7628 | NIST SP 800-82 | IEC 62443
+
+          Categories Assessed: {{ he_categories | join(' | ') }}
+
+          Open Remediation Items: {{ he_violations | length }}
+          {% if he_violations | length == 0 %}
+            No violations.
+          {% else %}
+          {% for v in he_violations %}
+            [HIGH]  {{ v }}
+          {% endfor %}
+          {% endif %}
+      loop: "{{ ami_headend_rows }}"
+      loop_control:
+        label: "{{ item.utility }}"
+
+    # ── Consolidated Remediation Priorities ───────────────────────────────────
+
+    - name: Print consolidated remediation priority list
+      vars:
+        nerc_viols:    "{{ nerc_cip_row.violations | default([]) | length }}"
+        nist_viols:    "{{ ami_nist_rows    | sum(attribute='failed_controls') }}"
+        device_viols:  "{{ ami_device_rows  | sum(attribute='failed_controls') }}"
+        headend_viols: "{{ ami_headend_rows | sum(attribute='failed_controls') }}"
+        total_viols:   "{{ nerc_viols | int + nist_viols | int + device_viols | int + headend_viols | int }}"
+      debug:
+        msg: |
+          ══════════════════════════════════════════════════════════════════════
+          CONSOLIDATED REMEDIATION PRIORITIES
+          ══════════════════════════════════════════════════════════════════════
+
+          Framework                       Status       Open Items
+          ──────────────────────────────  ──────────   ──────────
+          NERC CIP (CIP-002 – CIP-013)    {{ '✅ COMPLIANT   ' if nerc_viols | int == 0 else '❌ NON-COMPLIANT' }}  {{ nerc_viols }}
+          NERC CIP-015 INSM               {{ '✅ COMPLIANT   ' if (nerc_cip015_row.compliance_percentage | default(0) | float) == 100 else '❌ NON-COMPLIANT' }}  0
+          AMI NIST IR 7628 (all utils)    {{ '⚠️  ACTION REQ.' if nist_viols | int > 0 else '✅ COMPLIANT   ' }}  {{ nist_viols }} (SG.IA — cert/key rotation)
+          AMI Device Compliance           {{ '❌ NON-COMPLIANT' if device_viols | int > 0 else '✅ COMPLIANT   ' }}  {{ device_viols }} (cert expiry, tamper, firmware)
+          AMI Head-End Security           {{ '❌ NON-COMPLIANT' if headend_viols | int > 0 else '✅ COMPLIANT   ' }}  {{ headend_viols }} (SSH direct access, patch SLA)
+
+          PRIORITY 1 — CRITICAL (act immediately):
+            🚨 AMI Device: Physical tamper detected on SM-*-0010 (electric, gas, water)
+            🚨 AMI Device: Certificate expired on SM-*-0005 (electric, gas, water)
+
+          PRIORITY 2 — HIGH (within 30 days):
+            ⚠  AMI Head-End: Direct SSH not blocked — bastion host required (all utilities)
+            ⚠  AMI Head-End: Patch management SLAs exceed limits (all utilities)
+            ⚠  AMI Device: Firmware 2.1.0 below minimum 3.2.1 on SM-*-0008
+
+          PRIORITY 3 — MEDIUM (within 90 days):
+            •  AMI NIST IR 7628: Key rotation overdue for MTR-001, MTR-003 (>90 days)
+            •  AMI Device: Key rotation overdue on SM-*-0006, SM-*-0007
+            •  AMI Device: Prohibited algorithms on SM-*-0009 (3DES, DES, MD5, RC4)
+            •  AMI Device: Mutual authentication not enabled on SM-*-0009
+            •  AMI Device: Secure boot not enabled on SM-*-0010
+
+          TOTAL OPEN ITEMS: {{ total_viols }}
+
+          ══════════════════════════════════════════════════════════════════════
+          Next steps:
+            Re-run audit : Workflow 99 "NERC/AMI - Nightly Audit + Report"
+            View in Grafana: {{ grafana_url }}
+          ══════════════════════════════════════════════════════════════════════

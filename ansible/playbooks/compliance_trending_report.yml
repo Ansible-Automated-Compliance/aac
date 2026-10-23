@@ -1,0 +1,143 @@
+---
+# Generate Compliance Trending Report from Historical Data
+# Queries PostgreSQL for compliance history and generates trend analysis
+
+- name: Generate Compliance Trending Report
+  hosts: localhost
+  gather_facts: no
+  connection: local
+
+  vars:
+    postgres_host: "localhost"
+    postgres_port: "5432"
+    postgres_db: "compliance"
+    postgres_user: "postgres"
+    # postgres_password: <set via extra_vars / survey / inventory>
+
+    # Report parameters
+    target_hostname: "{{ hostname | default('all', true) }}"
+    days_back: "{{ lookback_days | default(30, true) | int }}"
+    report_output: "/tmp/compliance_trend_report_{{ ansible_date_time.epoch }}.json"
+
+  tasks:
+    - name: Query compliance history for trending
+      community.postgresql.postgresql_query:
+        login_host: "{{ postgres_host }}"
+        login_port: "{{ postgres_port }}"
+        login_db: "{{ postgres_db }}"
+        login_user: "{{ postgres_user }}"
+        # survey filters are bound parameters, never spliced into SQL text
+        named_args:
+          days_back: "{{ days_back | int }}"
+          target_hostname: "{{ target_hostname }}"
+        query: |
+          SELECT
+            cf.hostname,
+            cf.platform,
+            cr.policy_name,
+            cr.policy_version,
+            cr.evaluation_timestamp,
+            cr.total_controls,
+            cr.passed_controls,
+            cr.failed_controls,
+            cr.compliance_percentage,
+            cr.violations,
+            cf.collection_timestamp
+          FROM compliance_results cr
+          JOIN compliance_facts cf ON cr.facts_id = cf.id
+          WHERE
+            cr.evaluation_timestamp >= NOW() - make_interval(days => %(days_back)s)
+            {% if target_hostname != 'all' %}
+            AND cf.hostname = %(target_hostname)s
+            {% endif %}
+          ORDER BY cf.hostname, cr.evaluation_timestamp DESC;
+      register: compliance_history
+
+    - name: Calculate trending statistics
+      set_fact:
+        trend_data: "{{ compliance_history.query_result | groupby('hostname') }}"
+
+    - name: Generate trending analysis per host
+      set_fact:
+        trending_report: |
+          {% set report = {} %}
+          {% for hostname, records in compliance_history.query_result | groupby('hostname') %}
+          {% set _ = report.update({
+            hostname: {
+              'total_assessments': records | length,
+              'current_score': records[0].compliance_percentage if records else 0,
+              'average_score': (records | map(attribute='compliance_percentage') | list | sum / records | length) if records else 0,
+              'trend': 'improving' if records | length > 1 and records[0].compliance_percentage > records[-1].compliance_percentage else 'degrading' if records | length > 1 and records[0].compliance_percentage < records[-1].compliance_percentage else 'stable',
+              'assessments': records | list
+            }
+          }) %}
+          {% endfor %}
+          {{ report }}
+
+    - name: Query violation trends
+      community.postgresql.postgresql_query:
+        login_host: "{{ postgres_host }}"
+        login_port: "{{ postgres_port }}"
+        login_db: "{{ postgres_db }}"
+        login_user: "{{ postgres_user }}"
+        # survey filters are bound parameters, never spliced into SQL text
+        named_args:
+          days_back: "{{ days_back | int }}"
+          target_hostname: "{{ target_hostname }}"
+        query: |
+          SELECT
+            pv.control_id,
+            pv.severity,
+            COUNT(*) as occurrence_count,
+            MIN(cr.evaluation_timestamp) as first_seen,
+            MAX(cr.evaluation_timestamp) as last_seen
+          FROM policy_violations pv
+          JOIN compliance_results cr ON pv.result_id = cr.id
+          JOIN compliance_facts cf ON cr.facts_id = cf.id
+          WHERE
+            cr.evaluation_timestamp >= NOW() - make_interval(days => %(days_back)s)
+            {% if target_hostname != 'all' %}
+            AND cf.hostname = %(target_hostname)s
+            {% endif %}
+          GROUP BY pv.control_id, pv.severity
+          ORDER BY occurrence_count DESC
+          LIMIT 20;
+      register: violation_trends
+
+    - name: Build comprehensive trending report
+      set_fact:
+        full_report:
+          metadata:
+            generated_at: "{{ ansible_date_time.iso8601 }}"
+            lookback_period_days: "{{ days_back }}"
+            target_systems: "{{ target_hostname }}"
+            total_records: "{{ compliance_history.query_result | length }}"
+          compliance_trends: "{{ trending_report | from_yaml }}"
+          top_violations: "{{ violation_trends.query_result }}"
+          summary:
+            total_systems: "{{ compliance_history.query_result | map(attribute='hostname') | unique | list | length }}"
+            date_range:
+              start: "{{ compliance_history.query_result | map(attribute='evaluation_timestamp') | list | min if compliance_history.query_result else 'N/A' }}"
+              end: "{{ compliance_history.query_result | map(attribute='evaluation_timestamp') | list | max if compliance_history.query_result else 'N/A' }}"
+
+    - name: Save trending report to file
+      copy:
+        content: "{{ full_report | to_nice_json }}"
+        dest: "{{ report_output }}"
+
+    - name: Display trending summary
+      debug:
+        msg:
+          - "✓ Compliance Trending Report Generated"
+          - "  Report file: {{ report_output }}"
+          - "  Lookback period: {{ days_back }} days"
+          - "  Systems analyzed: {{ full_report.summary.total_systems }}"
+          - "  Total assessments: {{ full_report.metadata.total_records }}"
+          - ""
+          - "Per-System Trends:"
+          - "{{ full_report.compliance_trends }}"
+
+    - name: Display top recurring violations
+      debug:
+        msg: "Top 10 Recurring Violations: {{ violation_trends.query_result[:10] }}"
+      when: violation_trends.query_result | length > 0

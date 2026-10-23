@@ -1,0 +1,84 @@
+---
+# close_helpdesk_ticket.yml — Close Help Desk Ticket
+#
+# Marks the most-recent OPEN helpdesk_tickets row for the target host
+# as resolved (status='closed', resolved_at=NOW()). Idempotent: a no-op
+# if no open ticket exists.
+#
+# Called as the FINAL node of the "AAC_GoldenImage_Enforcement" mitigation
+# workflow, after the re-Check verifies that rollback restored the system
+# to baseline. The ticket was opened by AAC_GoldenImage_NotifyHelpDesk;
+# closing it here completes the audit trail with a resolved timestamp.
+#
+# AAP Job Template:  "AAC_GoldenImage_CloseHelpdeskTicket"
+# Credentials:       Ansible Vault
+# EE:                AAC Compliance EE
+# Survey / extra_vars:
+#   target_host       — hostname whose ticket should be closed (default: demo-rhel9)
+
+- name: Close Help Desk ticket — mark most recent open ticket as resolved
+  hosts: localhost
+  connection: local
+  gather_facts: true
+
+  vars_files:
+    - [ "../vars/vault_secrets.yml", "../vars/empty_fallback.yml" ]
+    - ../vars/site_config.yml
+
+  vars:
+    pg_password: "{{ compliance_db_password }}"
+    # Demo default. Override per environment with -e / an AAP survey or extra_vars.
+    target_host: "demo-rhel9"
+
+  tasks:
+
+    - name: Close the most recent OPEN ticket for {{ target_host }}
+      community.postgresql.postgresql_query:
+        login_host:     "{{ pg_host }}"
+        login_port:     "{{ pg_port | default(5432) }}"
+        login_user:     "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db:             "{{ pg_db }}"
+        query: |
+          UPDATE helpdesk_tickets
+          SET    status      = 'closed',
+                 resolved_at = NOW()
+          WHERE  id = (
+            SELECT id FROM helpdesk_tickets
+            WHERE  hostname = %s AND status = 'open'
+            ORDER BY created_at DESC
+            LIMIT 1
+          )
+          RETURNING id, hostname, incident_type, severity, created_at, resolved_at
+        positional_args:
+          - "{{ target_host }}"
+      register: close_result
+
+    - name: Decide whether a ticket was actually closed
+      set_fact:
+        closed_ticket: "{{ (close_result.query_result | default([]) | length > 0) | ternary(close_result.query_result[0], {}) }}"
+
+    - name: "=== HELP DESK TICKET CLOSED ==="
+      debug:
+        msg:
+          - "┌─────────────────────────────────────────────────────────────────┐"
+          - "│  HELP DESK TICKET CLOSED                                         │"
+          - "├─────────────────────────────────────────────────────────────────┤"
+          - "│  Ticket ID:    {{ '%-55s' | format(closed_ticket.id | default('(no open ticket)') | string) }}│"
+          - "│  Host:         {{ '%-55s' | format(target_host) }}│"
+          - "│  Type:         {{ '%-55s' | format(closed_ticket.incident_type | default('-') | string) }}│"
+          - "│  Severity:     {{ '%-55s' | format(closed_ticket.severity | default('-') | string | upper) }}│"
+          - "│  Opened:       {{ '%-55s' | format(closed_ticket.created_at | default('-') | string) }}│"
+          - "│  Resolved:     {{ '%-55s' | format(closed_ticket.resolved_at | default(ansible_date_time.iso8601) | string) }}│"
+          - "├─────────────────────────────────────────────────────────────────┤"
+          - "│  Status:       {{ '%-55s' | format('CLOSED — system restored to baseline') }}│"
+          - "└─────────────────────────────────────────────────────────────────┘"
+
+    - name: Resolution summary
+      debug:
+        msg: >-
+          {% if closed_ticket.id is defined %}
+          ✅ Closed ticket #{{ closed_ticket.id }} for {{ target_host }} — system back to baseline.
+          {% else %}
+          ⓘ  No open ticket found for {{ target_host }} — nothing to close.
+          {% endif %}

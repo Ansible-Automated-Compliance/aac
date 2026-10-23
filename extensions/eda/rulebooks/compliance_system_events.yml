@@ -1,0 +1,166 @@
+---
+# EDA Rulebook: System Event Compliance Monitoring
+#
+# Monitors the systemd journal for security-relevant events and triggers
+# CIS RHEL 9 re-assessment via AAP job template.
+#
+# Framework Support: CIS RHEL 9, FISMA, NERC-CIP, SOC 2, PCI-DSS
+#
+# NOT covered here (dedicated rulebooks):
+#   - file-level config changes  → compliance_drift_detection.yml
+#   - scheduled drift checks     → compliance_scheduled_drift.yml
+#   - authorized_keys injection  → authorized_keys_drift.yml
+#
+# AAP Job Template: "CIS RHEL 9 Assessment" (ID 10)
+
+- name: Compliance System Event Monitoring
+  hosts: all
+  sources:
+    - name: journald_monitor
+      ansible.eda.journald:
+        match:
+          - "systemd"
+          - "sshd"
+          - "auditd"
+          - "firewalld"
+          - "sudo"
+          - "su"
+
+  rules:
+
+    # ── Package installation / removal ───────────────────────────────────
+    # Package changes can introduce vulnerable software or remove security
+    # tooling. CIS 2.x (unnecessary services/packages) and NERC-CIP
+    # CIP-010 (change management) require detecting software changes.
+    - name: Package Installed or Removed
+      condition: >
+        event.MESSAGE is match(".*installed.*|.*removed.*|.*upgraded.*") and
+        event._SYSTEMD_UNIT is match("packagekit\\.service|dnf\\.service|yum\\.service")
+      throttle:
+        once_within: 15 minutes
+        group_by_attributes:
+          - event.meta.host
+      action:
+        run_job_template:
+          name: "CIS RHEL 9 Assessment"
+          organization: Default
+          job_args:
+            limit: "{{ event.meta.host }}"
+            extra_vars:
+              compliance_trigger: package_change
+              event_message: "{{ event.MESSAGE }}"
+              priority: critical
+
+    # ── Critical service state changes ───────────────────────────────────
+    # sshd, auditd, and firewalld stopping or failing are immediate
+    # compliance violations (CIS 4.1, 5.2, 3.x; NERC-CIP CIP-007).
+    - name: Critical Service State Changed
+      condition: >
+        event._SYSTEMD_UNIT is match("sshd\\.service|auditd\\.service|firewalld\\.service") and
+        event.MESSAGE is match(".*Started.*|.*Stopped.*|.*Failed.*")
+      throttle:
+        once_within: 5 minutes
+        group_by_attributes:
+          - event.meta.host
+          - event._SYSTEMD_UNIT
+      action:
+        run_job_template:
+          name: "CIS RHEL 9 Assessment"
+          organization: Default
+          job_args:
+            limit: "{{ event.meta.host }}"
+            extra_vars:
+              compliance_trigger: critical_service_change
+              service_unit: "{{ event._SYSTEMD_UNIT }}"
+              event_message: "{{ event.MESSAGE }}"
+              priority: critical
+
+    # ── User account modifications ────────────────────────────────────────
+    # Account additions, deletions, and password changes affect CIS 6.2
+    # (user/group security) and are audit events under FISMA and SOC 2.
+    - name: User Account Modified
+      condition: >
+        event.MESSAGE is match(".*useradd.*|.*usermod.*|.*userdel.*|.*passwd.*")
+      throttle:
+        once_within: 5 minutes
+        group_by_attributes:
+          - event.meta.host
+      action:
+        run_job_template:
+          name: "CIS RHEL 9 Assessment"
+          organization: Default
+          job_args:
+            limit: "{{ event.meta.host }}"
+            extra_vars:
+              compliance_trigger: user_account_change
+              event_message: "{{ event.MESSAGE }}"
+              priority: high
+
+    # ── Sudo privilege escalation ─────────────────────────────────────────
+    # Sudo activity is logged to confirm that privilege escalation follows
+    # approved patterns (CIS 5.3). A compliance re-assessment validates the
+    # sudoers configuration hasn't been altered as part of the escalation.
+    - name: Sudo Privilege Escalation
+      condition: >
+        event.SYSLOG_IDENTIFIER == "sudo" and
+        event.MESSAGE is match(".*COMMAND.*")
+      throttle:
+        once_within: 30 minutes
+        group_by_attributes:
+          - event.meta.host
+      action:
+        run_job_template:
+          name: "CIS RHEL 9 Assessment"
+          organization: Default
+          job_args:
+            limit: "{{ event.meta.host }}"
+            extra_vars:
+              compliance_trigger: sudo_activity
+              event_message: "{{ event.MESSAGE }}"
+              priority: medium
+
+    # ── SSH authentication events ─────────────────────────────────────────
+    # Failed and invalid SSH auth attempts indicate potential brute-force
+    # or unauthorized access attempts. Triggers assessment to verify SSH
+    # configuration hasn't drifted (CIS 5.2, FISMA AC-17, SOC 2 CC6.1).
+    - name: SSH Authentication Event
+      condition: >
+        event.SYSLOG_IDENTIFIER == "sshd" and
+        event.MESSAGE is match(".*Accepted.*|.*Failed.*|.*Invalid.*")
+      throttle:
+        once_within: 5 minutes
+        group_by_attributes:
+          - event.meta.host
+      action:
+        run_job_template:
+          name: "CIS RHEL 9 Assessment"
+          organization: Default
+          job_args:
+            limit: "{{ event.meta.host }}"
+            extra_vars:
+              compliance_trigger: ssh_auth_activity
+              event_message: "{{ event.MESSAGE }}"
+              priority: medium
+
+    # ── Audit daemon events ───────────────────────────────────────────────
+    # auditd starting/stopping or config changes are critical signals —
+    # audit logging is a core FISMA, NERC-CIP CIP-007, and CIS 4.1
+    # requirement. Any interruption to the audit daemon must be assessed.
+    - name: Audit Daemon Event
+      condition: >
+        event.SYSLOG_IDENTIFIER == "auditd" and
+        event.MESSAGE is match(".*started.*|.*stopped.*|.*configuration.*")
+      throttle:
+        once_within: 5 minutes
+        group_by_attributes:
+          - event.meta.host
+      action:
+        run_job_template:
+          name: "CIS RHEL 9 Assessment"
+          organization: Default
+          job_args:
+            limit: "{{ event.meta.host }}"
+            extra_vars:
+              compliance_trigger: audit_system_event
+              event_message: "{{ event.MESSAGE }}"
+              priority: critical

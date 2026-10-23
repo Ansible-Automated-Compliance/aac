@@ -1,0 +1,53 @@
+---
+# AAC AMI 2.0 Execution Environment
+#
+# Dedicated EE for Advanced Metering Infrastructure 2.0 — smart-meter and
+# grid-edge device work.
+#
+# NOTE ON THE ACRONYM: "AMI" here is Advanced Metering Infrastructure
+# (NIST IR 7628, IEC 62443, smart meters / head-end), NOT an Amazon
+# Machine Image. Nothing in this EE builds EC2 images.
+#
+# Used by:
+#   aac-demos repo: demos/ami_nerc/playbooks/ami_compliance_audit_and_store.yml
+#   ansible/tasks/ami_compliance_per_utility.yml
+#   aac-demos repo: demos/ami_nerc/playbooks/ami_device_assessment.yml
+#   aac-demos repo: demos/ami_nerc/playbooks/ami_drift_introduce.yml
+#
+# NOT used by:
+#   CIS / STIG / NERC-CIP fleet assessments — aac-compliance-ee
+#   trivy + kubescape                        — aac-policy-tools-ee
+#   Zift authz migration                     — aac-zift-ee
+#   Digital Sovereignty                      — aac-sovereignty-ee
+#   Windows golden image                     — aac-windows-ee
+#
+# ── Why a separate EE? ────────────────────────────────────────────────
+# AMI device work has its own collection set (ansible.utils for device
+# fact parsing, ansible.posix for file/mount primitives) and is where
+# controller-side LwM2M/CoAP Python tooling lands when it arrives: it goes
+# in requirements.txt here and core never moves.
+#
+# History: until 2026-10 this EE also vendored the repo-local
+# geisa.device_management collection via additional_build_files. The
+# collection and its only playbook moved to the aac-demos repository
+# (demos/geisa/); nothing in the product called them, and the build no
+# longer stages anything.
+#
+# Image: quay.io/rh-ee-tcoulter/aac-ami-ee:vX.Y.Z (linux/amd64)
+
+version: 3
+
+images:
+  base_image:
+    name: quay.io/ansible/creator-ee:v24.2.0
+
+dependencies:
+  galaxy: requirements.yml
+  python: requirements.txt
+  ansible_core:
+    package_pip: ansible-core>=2.15.0
+  ansible_runner:
+    package_pip: ansible-runner>=2.3.0
+
+options:
+  package_manager_path: /usr/bin/microdnf

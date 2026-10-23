@@ -1,0 +1,733 @@
+{
+  "organization": {
+    "name": "Department of Public Services",
+    "entity_type": "federal_agency",
+    "fisma_registration": "DPS-002",
+    "assessment_date": "2025-01-06T10:00:00Z"
+  },
+  "system_information": {
+    "system_name": "Legacy Data Management System",
+    "system_abbreviation": "LDMS",
+    "system_id": "DPS-LDMS-002",
+    "system_version": "2.1.0",
+    "operational_status": "operational",
+    "deployment_model": "agency_hosted"
+  },
+  "fisma": {
+    "prepare": {
+      "risk_strategy": {
+        "documented": false,
+        "approved": false,
+        "communicated": false,
+        "review_frequency_defined": false
+      },
+      "roles": {
+        "authorizing_official": {
+          "assigned": false
+        },
+        "senior_agency_iso": {
+          "assigned": true,
+          "name": "John Smith",
+          "title": "IT Security Manager",
+          "certification": "Security+"
+        },
+        "system_owner": {
+          "assigned": true,
+          "name": "Mary Johnson",
+          "title": "Data Manager",
+          "responsibilities_documented": false
+        },
+        "information_system_security_officer": {
+          "assigned": false
+        },
+        "control_assessor": {
+          "assigned": false
+        }
+      },
+      "common_controls": [],
+      "impact_prioritization": {
+        "high_impact_systems_identified": false,
+        "moderate_impact_systems_identified": false,
+        "low_impact_systems_identified": true,
+        "prioritization_criteria_documented": false
+      },
+      "continuous_monitoring": {
+        "strategy_documented": false,
+        "frequency_defined": false,
+        "automation_level_defined": false,
+        "reporting_requirements_defined": false
+      }
+    },
+    "categorize": {
+      "system_categorization": {
+        "confidentiality_impact": "undefined",
+        "integrity_impact": "medium",
+        "availability_impact": "low",
+        "overall_impact": "unknown"
+      },
+      "information_types": [],
+      "impact_analysis": {
+        "methodology_documented": false,
+        "assumptions_documented": false,
+        "risk_factors_identified": false,
+        "business_impact_assessed": false
+      },
+      "approval": {
+        "system_owner_approved": false,
+        "senior_agency_iso_reviewed": false,
+        "authorizing_official_endorsed": false
+      }
+    },
+    "select": {
+      "control_baselines": {
+        "baseline_applied": "low",
+        "nist_sp_800_53_revision": "4",
+        "selected_controls": ["AC-1", "AU-1", "CA-1"]
+      },
+      "tailoring": {
+        "tailored_controls": []
+      },
+      "compensating_controls": [],
+      "allocation": {
+        "system_specific_controls_identified": false,
+        "hybrid_controls_identified": false,
+        "common_controls_identified": false,
+        "responsibility_matrix_documented": false
+      }
+    },
+    "implement": {
+      "controls": {
+        "implementation_percentage": 60,
+        "configuration_management_applied": false,
+        "change_control_applied": false
+      },
+      "documentation": {
+        "control_descriptions_complete": false,
+        "implementation_guidance_followed": false,
+        "responsible_entities_identified": false,
+        "implementation_parameters_documented": false
+      },
+      "ssp": {
+        "document_exists": false,
+        "current_version": false,
+        "complete_control_descriptions": false,
+        "system_boundary_documented": false,
+        "interconnections_documented": false
+      },
+      "evidence": {
+        "artifacts_collected": false,
+        "testing_results_documented": false,
+        "configuration_baselines_established": false,
+        "procedures_documented": false
+      }
+    },
+    "assess": {
+      "assessment": {
+        "independent_assessor": false,
+        "assessment_plan_approved": false,
+        "all_controls_assessed": false,
+        "assessment_procedures_nist_800_53a": false
+      },
+      "procedures": {
+        "examine_procedures_used": false,
+        "interview_procedures_used": false,
+        "test_procedures_used": false,
+        "depth_coverage_adequate": false
+      },
+      "findings": {
+        "security_assessment_report_complete": false,
+        "deficiencies_identified": false,
+        "recommendations_provided": false,
+        "risk_ratings_assigned": false
+      },
+      "remediation": {
+        "plan_of_actions": []
+      }
+    },
+    "authorize": {
+      "package": {
+        "system_security_plan_current": false,
+        "security_assessment_report_current": false,
+        "plan_of_action_milestones_current": false,
+        "risk_assessment_current": false
+      },
+      "risk_assessment": {
+        "methodology_documented": false,
+        "threat_analysis_completed": false,
+        "vulnerability_analysis_completed": false,
+        "risk_determination_documented": false,
+        "residual_risk_acceptable": false
+      },
+      "decision": {
+        "authorizing_official_decision": null,
+        "decision_rationale_documented": false,
+        "authorization_letter_issued": false
+      },
+      "terms_conditions": {
+        "authorization_boundary_defined": false,
+        "authorization_period_defined": false,
+        "conditions_compliance_required": false,
+        "reporting_requirements_defined": false
+      }
+    },
+    "monitor": {
+      "continuous_monitoring": {
+        "strategy_implemented": false,
+        "automated_tools_deployed": false,
+        "manual_assessments_scheduled": false,
+        "frequency_requirements_met": false
+      },
+      "configuration_management": {
+        "baseline_configurations_maintained": false,
+        "change_control_enforced": false,
+        "configuration_deviations_tracked": false,
+        "unauthorized_changes_detected": false
+      },
+      "reporting": {
+        "security_status_reports_current": false,
+        "metrics_collection_automated": false,
+        "dashboard_updates_current": false,
+        "escalation_procedures_followed": false
+      },
+      "ongoing_assessments": {
+        "risk_reassessments_scheduled": false,
+        "control_assessments_ongoing": false,
+        "threat_intelligence_integrated": false,
+        "vulnerability_assessments_current": false
+      }
+    }
+  },
+  "ssp": {
+    "document": {
+      "format": "docx",
+      "version_control": false,
+      "approval_signatures_present": false,
+      "table_of_contents_present": false,
+      "page_numbering_consistent": false
+    },
+    "system_identification": {
+      "system_name": "Legacy Data Management System",
+      "system_abbreviation": "LDMS",
+      "system_description": "Old database system",
+      "system_purpose": "",
+      "system_version": "2.1.0",
+      "boundary": {
+        "physical_boundary_described": false,
+        "logical_boundary_described": false,
+        "network_architecture_documented": false,
+        "data_flows_documented": false,
+        "components": []
+      },
+      "ownership": {
+        "system_owner": {
+          "name": "Mary Johnson",
+          "title": "Data Manager",
+          "organization": "",
+          "contact_info": ""
+        },
+        "authorizing_official": {
+          "name": "",
+          "title": ""
+        }
+      }
+    },
+    "categorization": {
+      "confidentiality": {
+        "impact_level": "undefined",
+        "rationale": ""
+      },
+      "integrity": {
+        "impact_level": "medium",
+        "rationale": "Some data integrity requirements"
+      },
+      "availability": {
+        "impact_level": "low",
+        "rationale": ""
+      },
+      "overall_impact_level": "unknown",
+      "information_types": [],
+      "impact_analysis": {
+        "methodology_described": false,
+        "assumptions_documented": false,
+        "threat_sources_identified": false,
+        "vulnerability_considerations": false
+      },
+      "rationale": {
+        "confidentiality_rationale": "",
+        "integrity_rationale": "",
+        "availability_rationale": "",
+        "overall_rationale": ""
+      }
+    },
+    "controls": {
+      "baseline": {
+        "nist_sp_800_53_baseline": "low",
+        "revision": "4",
+        "selected_controls": ["AC-1"]
+      },
+      "implemented_controls": [
+        {
+          "control_id": "AC-1",
+          "control_name": "Access Control Policy and Procedures",
+          "control_description": "",
+          "implementation_status": "planned",
+          "implementation_description": "",
+          "responsible_role": "",
+          "implementation_guidance": "",
+          "responsibility": "unknown",
+          "responsible_entity": ""
+        }
+      ]
+    },
+    "environment": {
+      "hardware": [],
+      "software": [],
+      "network": {
+        "architecture_diagram_current": false,
+        "network_topology_documented": false,
+        "network_connections": []
+      },
+      "data_flows": []
+    },
+    "roles": {
+      "authorizing_official": {
+        "name": "",
+        "role_title": "",
+        "responsibilities": "",
+        "authority_level": "",
+        "required_qualifications": "",
+        "contact_info": {
+          "email": "",
+          "phone": "",
+          "organization": "",
+          "mailing_address": ""
+        }
+      },
+      "senior_agency_iso": {
+        "name": "John Smith",
+        "role_title": "IT Security Manager",
+        "responsibilities": "",
+        "authority_level": "",
+        "required_qualifications": "",
+        "contact_info": {
+          "email": "",
+          "phone": "",
+          "organization": "",
+          "mailing_address": ""
+        }
+      },
+      "system_owner": {
+        "name": "Mary Johnson",
+        "role_title": "Data Manager",
+        "responsibilities": "",
+        "authority_level": "",
+        "required_qualifications": "",
+        "contact_info": {
+          "email": "",
+          "phone": "",
+          "organization": "",
+          "mailing_address": ""
+        }
+      },
+      "isso": {
+        "name": "",
+        "role_title": "",
+        "responsibilities": "",
+        "authority_level": "",
+        "required_qualifications": "",
+        "contact_info": {
+          "email": "",
+          "phone": "",
+          "organization": "",
+          "mailing_address": ""
+        }
+      },
+      "system_administrator": {
+        "name": "",
+        "role_title": "",
+        "responsibilities": "",
+        "authority_level": "",
+        "required_qualifications": "",
+        "contact_info": {
+          "email": "",
+          "phone": "",
+          "organization": "",
+          "mailing_address": ""
+        }
+      },
+      "delegation": {
+        "delegation_agreements_current": false,
+        "backup_personnel_identified": false,
+        "succession_planning_documented": false
+      }
+    },
+    "maintenance": {
+      "version_control": {
+        "version_numbering_scheme": "",
+        "change_tracking_implemented": false,
+        "approval_workflow_defined": false,
+        "historical_versions_maintained": false
+      },
+      "review_cycle": {
+        "frequency": "never",
+        "review_criteria_defined": false,
+        "responsible_parties_assigned": false,
+        "next_review_date": ""
+      },
+      "change_management": {
+        "change_request_process": false,
+        "impact_assessment_required": false,
+        "approval_authorities_defined": false,
+        "notification_procedures": false
+      },
+      "distribution": {
+        "controlled_distribution": false,
+        "authorized_recipients_list": false,
+        "distribution_tracking": false,
+        "confidentiality_marking": false
+      }
+    }
+  },
+  "continuous_monitoring": {
+    "program": {
+      "iscm_strategy_documented": false,
+      "scope_defined": false,
+      "objectives_stated": false,
+      "governance_structure_established": false,
+      "risk_tolerance_defined": false
+    },
+    "roles": {
+      "iscm_program_manager": {
+        "assigned": false
+      },
+      "system_owners": {
+        "responsibilities_defined": false
+      },
+      "security_control_assessors": {
+        "responsibilities_defined": false
+      },
+      "authorizing_officials": {
+        "responsibilities_defined": false
+      },
+      "risk_executive": {
+        "responsibilities_defined": false
+      }
+    },
+    "automation": {
+      "automated_tools_deployed": false,
+      "tool_integration_implemented": false,
+      "automated_data_collection": false,
+      "automated_analysis_capabilities": false,
+      "dashboard_capabilities": false
+    },
+    "metrics": {
+      "security_metrics": []
+    },
+    "strategy": {
+      "configuration_monitoring": {
+        "frequency": "never"
+      },
+      "vulnerability_scanning": {
+        "frequency": "never"
+      },
+      "control_assessments": {
+        "frequency": "never"
+      },
+      "penetration_testing": {
+        "frequency": "never"
+      }
+    },
+    "procedures": {
+      "configuration_monitoring_procedures": false,
+      "vulnerability_assessment_procedures": false,
+      "malware_detection_procedures": false,
+      "network_monitoring_procedures": false,
+      "log_analysis_procedures": false
+    },
+    "scope": {
+      "monitored_systems": []
+    },
+    "tools": {
+      "deployed_tools": []
+    },
+    "configuration": {
+      "baseline_configurations_maintained": false,
+      "configuration_changes_tracked": false,
+      "unauthorized_changes_detected": false,
+      "configuration_drift_monitored": false,
+      "remediation_automated": false
+    },
+    "vulnerabilities": {
+      "scanning_current": false,
+      "vulnerability_database_current": false,
+      "risk_scoring_implemented": false,
+      "remediation_tracking": false,
+      "false_positive_management": false
+    },
+    "controls": {
+      "control_effectiveness_monitored": false,
+      "control_failures_detected": false,
+      "compensating_controls_monitored": false,
+      "control_inheritance_verified": false
+    },
+    "threat_intelligence": {
+      "feeds_integrated": false,
+      "indicators_monitored": false,
+      "threat_hunting_conducted": false,
+      "attribution_analysis": false
+    },
+    "assessments": {
+      "control_assessments": {
+        "schedule_maintained": false,
+        "assessment_procedures_current": false,
+        "findings_tracked": false,
+        "remediation_monitored": false
+      }
+    },
+    "risk_assessments": {
+      "risk_assessment_current": false,
+      "threat_assessment_current": false,
+      "vulnerability_assessment_current": false,
+      "impact_analysis_current": false
+    },
+    "penetration_testing": {
+      "testing_scheduled": false,
+      "scope_defined": false,
+      "results_analyzed": false,
+      "remediation_tracked": false
+    },
+    "red_team": {
+      "exercises_conducted": false,
+      "scenarios_realistic": false,
+      "findings_documented": false,
+      "improvements_implemented": false
+    },
+    "incident_response": {
+      "detection_capabilities": {
+        "siem_deployed": false,
+        "ids_ips_deployed": false,
+        "endpoint_detection": false,
+        "network_monitoring": false,
+        "user_behavior_analytics": false
+      },
+      "procedures": {
+        "incident_response_plan_current": false,
+        "escalation_procedures_defined": false,
+        "containment_procedures_defined": false,
+        "recovery_procedures_defined": false
+      },
+      "data_collection": {
+        "forensic_capabilities": false,
+        "log_preservation": false,
+        "evidence_handling": false,
+        "chain_of_custody": false
+      },
+      "lessons_learned": {
+        "post_incident_reviews": false,
+        "process_improvements": false,
+        "control_updates": false,
+        "training_updates": false
+      }
+    },
+    "reporting": {
+      "management": {
+        "dashboard_current": false,
+        "executive_summaries_provided": false,
+        "trend_analysis_provided": false,
+        "risk_posture_reported": false
+      },
+      "regulatory": {
+        "fisma_reporting_current": false,
+        "omb_reporting_compliant": false,
+        "agency_reporting_compliant": false,
+        "timeline_compliance": false
+      },
+      "stakeholder": {
+        "authorizing_officials_informed": false,
+        "system_owners_informed": false,
+        "users_notified": false,
+        "feedback_mechanisms": false
+      },
+      "metrics": {
+        "security_metrics_current": false,
+        "performance_trends_analyzed": false,
+        "benchmarking_conducted": false,
+        "improvement_recommendations": false
+      }
+    }
+  },
+  "ato": {
+    "authorization_package": {
+      "ssp": {
+        "document_current": false,
+        "version_approved": false,
+        "system_categorization_documented": false,
+        "control_implementation_documented": false,
+        "system_boundary_defined": false,
+        "interconnections_documented": false,
+        "responsible_parties_identified": false
+      },
+      "sar": {
+        "independent_assessment_conducted": false,
+        "assessment_procedures_followed": false,
+        "all_controls_assessed": false,
+        "findings_documented": false,
+        "recommendations_provided": false,
+        "risk_ratings_assigned": false,
+        "assessment_current": false
+      },
+      "poam": {
+        "action_items": [],
+        "risk_tolerance_acceptable": false
+      },
+      "risk_assessment": {
+        "methodology_documented": false,
+        "threat_sources_identified": false,
+        "vulnerabilities_identified": false,
+        "likelihood_determined": false,
+        "impact_analyzed": false,
+        "risk_determination_made": false,
+        "current_assessment": false
+      },
+      "supporting_docs": {
+        "contingency_plan_current": false,
+        "configuration_management_plan": false,
+        "incident_response_plan": false,
+        "continuous_monitoring_plan": false,
+        "privacy_impact_assessment": false,
+        "interconnection_agreements": false
+      }
+    },
+    "risk_assessment": {
+      "threats": {
+        "threat_sources": [],
+        "threat_intelligence_considered": false
+      },
+      "vulnerabilities": {
+        "vulnerability_scan_current": false,
+        "penetration_test_current": false,
+        "configuration_review_current": false,
+        "code_review_conducted": false,
+        "identified_vulnerabilities": []
+      },
+      "analysis": {
+        "threat_vulnerability_pairing": false,
+        "likelihood_determination": false,
+        "impact_analysis": false,
+        "risk_calculation": false,
+        "uncertainty_factors_considered": false
+      },
+      "residual_risk": {
+        "overall_risk_level": "high",
+        "high_risks_mitigated": false,
+        "risk_tolerance_within_limits": false,
+        "compensating_controls_effective": false
+      }
+    },
+    "controls": {
+      "implementation": {
+        "implementation_percentage": 40,
+        "evidence_artifacts_available": false,
+        "configuration_verified": false,
+        "procedures_documented": false
+      },
+      "testing": {
+        "examine_procedures_conducted": false,
+        "interview_procedures_conducted": false,
+        "test_procedures_conducted": false,
+        "sampling_adequate": false,
+        "independent_testing": false
+      },
+      "deficiencies": {
+        "critical_deficiencies_resolved": false,
+        "high_deficiencies_plan_approved": false,
+        "moderate_deficiencies_documented": false,
+        "compensating_controls_implemented": false
+      },
+      "inheritance": {
+        "common_controls_authorized": false,
+        "inheritance_documented": false,
+        "provider_assessments_current": false,
+        "responsibility_matrix_accurate": false
+      }
+    },
+    "poam": {
+      "completeness": {
+        "all_weaknesses_documented": false,
+        "root_cause_analysis_conducted": false,
+        "risk_ratings_accurate": false,
+        "dependencies_identified": false
+      },
+      "remediation": {
+        "strategies_documented": false,
+        "alternative_approaches_considered": false,
+        "cost_benefit_analyzed": false,
+        "feasibility_assessed": false
+      },
+      "resources": {
+        "funding_identified": false,
+        "personnel_assigned": false,
+        "technical_resources_available": false,
+        "vendor_support_confirmed": false
+      },
+      "timeline": {
+        "milestones_reasonable": false,
+        "dependencies_considered": false,
+        "contingency_planning": false,
+        "progress_tracking_implemented": false
+      }
+    },
+    "authorizing_official": {
+      "role": {
+        "authority_documented": false,
+        "responsibilities_understood": false,
+        "accountability_accepted": false,
+        "decision_criteria_established": false
+      },
+      "decision_framework": {
+        "risk_tolerance_defined": false,
+        "decision_criteria_documented": false,
+        "escalation_procedures": false,
+        "review_process_established": false
+      },
+      "oversight": {
+        "monitoring_requirements_defined": false,
+        "reporting_requirements_established": false,
+        "review_cycles_scheduled": false,
+        "performance_metrics_defined": false
+      },
+      "accountability": {
+        "responsibility_matrix_signed": false,
+        "delegation_documented": false,
+        "backup_ao_identified": false,
+        "succession_planning": false
+      }
+    },
+    "ongoing": {
+      "continuous_monitoring": {
+        "strategy_approved": false,
+        "tools_configured": false,
+        "procedures_documented": false,
+        "reporting_established": false
+      },
+      "reauthorization": {
+        "schedule_established": false,
+        "triggers_defined": false,
+        "process_documented": false,
+        "resource_planning": false
+      },
+      "change_management": {
+        "change_control_process": false,
+        "impact_assessment_procedures": false,
+        "authorization_updates": false,
+        "stakeholder_notification": false
+      },
+      "incident_response": {
+        "incident_procedures_current": false,
+        "coordination_mechanisms": false,
+        "impact_assessment_process": false,
+        "authorization_review_triggers": false
+      }
+    }
+  }
+}

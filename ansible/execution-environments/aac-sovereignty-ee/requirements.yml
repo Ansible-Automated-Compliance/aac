@@ -1,0 +1,19 @@
+---
+# Minimal collection set for the Digital Sovereignty assessment playbooks.
+# Only what those playbooks actually call:
+#   - community.postgresql.postgresql_query  (store assessment + CAA rows)
+#   - ansible.builtin.*                      (uri → OPA, set_fact, debug)
+#
+# ansible.utils is included because the DS scoring path uses ipaddr/json
+# filters when evaluating region and residency facts.
+#
+# We intentionally do NOT pull in infra.aap_configuration, amazon.aws,
+# ansible.windows or community.windows — those are aac-compliance-ee
+# concerns and would bloat this image without serving the DS flow.
+collections:
+  - name: community.postgresql
+    version: ">=3.0.0"
+  - name: community.general
+    version: ">=8.0.0"
+  - name: ansible.utils
+    version: ">=2.10.0"

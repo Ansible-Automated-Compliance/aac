@@ -1,0 +1,73 @@
+{
+  "repository": "ansible-automated-compliance/aac",
+  "branch": "feature/new-automation",
+  "commit": "abc1234",
+  "audit_year": 2026,
+  "audit_month": 3,
+  "playbooks": [
+    {
+      "path": "ansible/playbooks/deploy_app.yml",
+      "metadata": {
+        "author": "John",
+        "purpose": "Deploy app",
+        "version": "v1",
+        "date_modified": "2025-01-10"
+      },
+      "plays": [
+        {
+          "name": "Deploy",
+          "hosts": "all",
+          "tasks": [
+            { "name": "Install packages", "tags": ["install"] },
+            { "name": "Copy config", "tags": ["config"] },
+            { "name": "", "tags": [] },
+            { "name": "", "tags": [] },
+            { "name": "Start service", "tags": ["service"] }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "ansible/playbooks/configure_database.yml",
+      "metadata": {
+        "author": "TODO",
+        "purpose": "TBD",
+        "version": "0.0.1",
+        "date_modified": "2024-06-01",
+        "owner_team": "unknown"
+      },
+      "plays": [
+        {
+          "name": "DB",
+          "hosts": "databases",
+          "tasks": [
+            { "name": "Install PostgreSQL", "tags": ["install"] },
+            { "name": "Configure pg_hba.conf", "tags": ["config"] }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "ansible/playbooks/emergency_patch.yml",
+      "metadata": {
+        "author": "Jane Smith",
+        "purpose": "Apply emergency security patches to all production servers immediately",
+        "version": "1.0.0",
+        "date_modified": "2026-02-20"
+      },
+      "plays": [
+        {
+          "name": "Apply emergency security patches to production",
+          "hosts": "production_servers",
+          "tasks": [
+            { "name": "Check current patch level", "tags": ["check"] },
+            { "name": "Download patch from vendor", "tags": ["download"] },
+            { "name": "Apply security patch", "tags": ["patch"] },
+            { "name": "Verify patch applied successfully", "tags": ["verify"] },
+            { "name": "Restart affected services", "tags": ["restart"] }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,148 @@
+---
+# Setup EDA Drift Detection for AAC
+# Creates project, credential, and rulebook activation
+
+- name: Setup EDA Drift Detection
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    eda_host: "https://{{ aac_host }}"
+    eda_username: "admin"
+    eda_password: "{{ vault_eda_admin_password | default(lookup('env', 'EDA_PASSWORD')) }}"  # Set via vault_eda_admin_password or EDA_PASSWORD env var
+    eda_validate_certs: false
+
+    controller_host: "https://{{ aac_host }}"
+    controller_username: "admin"
+    controller_password: "{{ vault_aap_admin_password | default(lookup('env', 'CONTROLLER_PASSWORD')) }}"  # Set via vault_aap_admin_password or CONTROLLER_PASSWORD env var
+
+  tasks:
+    - name: Get EDA API token
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "{{ eda_host }}/api/eda/v1/auth/session/login/"
+        method: POST
+        body_format: json
+        body:
+          username: "{{ eda_username }}"
+          password: "{{ eda_password }}"
+        validate_certs: "{{ eda_validate_certs }}"
+        status_code: [200, 204]
+      register: eda_login
+      no_log: true
+
+    - name: Set auth headers
+      ansible.builtin.set_fact:
+        eda_headers:
+          Cookie: "{{ eda_login.cookies_string }}"
+          Content-Type: "application/json"
+          Referer: "{{ eda_host }}"
+
+    - name: Check for existing project
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "{{ eda_host }}/api/eda/v1/projects/?name=AAC%20Compliance%20Automation"
+        method: GET
+        headers: "{{ eda_headers }}"
+        validate_certs: "{{ eda_validate_certs }}"
+      register: existing_project
+
+    - name: Create EDA Project
+      ansible.builtin.uri:
+        url: "{{ eda_host }}/api/eda/v1/projects/"
+        method: POST
+        headers: "{{ eda_headers }}"
+        body_format: json
+        body:
+          name: "AAC Compliance Automation"
+          description: "Ansible Automated Compliance - Drift Detection Rulebooks"
+          url: "https://github.com/ansible-automated-compliance/aac.git"
+          scm_branch: "main"
+        validate_certs: "{{ eda_validate_certs }}"
+        status_code: [201, 400]
+      register: project_result
+      when: existing_project.json.count == 0
+
+    - name: Get project ID
+      ansible.builtin.set_fact:
+        project_id: "{{ project_result.json.id | default(existing_project.json.results[0].id) }}"
+
+    - name: Wait for project sync
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "{{ eda_host }}/api/eda/v1/projects/{{ project_id }}/"
+        method: GET
+        headers: "{{ eda_headers }}"
+        validate_certs: "{{ eda_validate_certs }}"
+      register: project_status
+      until: project_status.json.import_state == "completed"
+      retries: 30
+      delay: 10
+      when: project_result is changed
+
+    - name: Get decision environments
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "{{ eda_host }}/api/eda/v1/decision-environments/"
+        method: GET
+        headers: "{{ eda_headers }}"
+        validate_certs: "{{ eda_validate_certs }}"
+      register: decision_envs
+
+    - name: Set decision environment ID
+      ansible.builtin.set_fact:
+        de_id: "{{ decision_envs.json.results[0].id }}"
+      when: decision_envs.json.count > 0
+
+    - name: Check for existing activation
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "{{ eda_host }}/api/eda/v1/activations/?name=Compliance%20Drift%20Detection"
+        method: GET
+        headers: "{{ eda_headers }}"
+        validate_certs: "{{ eda_validate_certs }}"
+      register: existing_activation
+
+    - name: Create Rulebook Activation
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "{{ eda_host }}/api/eda/v1/activations/"
+        method: POST
+        headers: "{{ eda_headers }}"
+        body_format: json
+        body:
+          name: "Compliance Drift Detection"
+          description: "Monitors security-critical files for changes and triggers compliance re-assessment"
+          project_id: "{{ project_id }}"
+          rulebook_id: null  # Will be set after finding the rulebook
+          decision_environment_id: "{{ de_id }}"
+          restart_policy: "on-failure"
+          is_enabled: true
+          awx_token_id: null  # Will need to be configured
+        validate_certs: "{{ eda_validate_certs }}"
+        status_code: [201, 400]
+      register: activation_result
+      when:
+        - existing_activation.json.count == 0
+        - de_id is defined
+      ignore_errors: true
+
+    - name: Display setup status
+      ansible.builtin.debug:
+        msg:
+          - "============================================"
+          - "EDA Drift Detection Setup Status"
+          - "============================================"
+          - "Project: AAC Compliance Automation (ID: {{ project_id }})"
+          - "Decision Environment: {{ de_id | default('Not found') }}"
+          - ""
+          - "Next Steps:"
+          - "1. Log into AAP EDA UI: {{ eda_host }}"
+          - "2. Navigate to: Automation Decisions > Rulebook Activations"
+          - "3. Create activation manually if needed:"
+          - "   - Project: AAC Compliance Automation"
+          - "   - Rulebook: extensions/eda/rulebooks/compliance_drift_detection.yml"
+          - "   - Decision Environment: Default Decision Environment"
+          - "4. Add Controller Token for job template execution"
+          - "5. Enable the activation"

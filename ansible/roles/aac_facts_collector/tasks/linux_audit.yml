@@ -1,0 +1,49 @@
+---
+# linux_audit.yml — Collect audit and logging configuration facts
+
+- name: Get auditd rules
+  shell: auditctl -l 2>/dev/null || cat /etc/audit/rules.d/*.rules 2>/dev/null || echo ""
+  register: auditd_rules_raw
+  changed_when: false
+  failed_when: false
+
+- name: Get auditd daemon config
+  shell: cat /etc/audit/auditd.conf 2>/dev/null || echo ""
+  register: auditd_conf_raw
+  changed_when: false
+  failed_when: false
+
+- name: Check auditd service status
+  shell: systemctl is-active auditd 2>/dev/null || echo "inactive"
+  register: auditd_status_raw
+  changed_when: false
+  failed_when: false
+
+- name: Get rsyslog/journald config
+  shell: |
+    echo "=== rsyslog ===" && cat /etc/rsyslog.conf 2>/dev/null || echo "not installed"
+    echo "=== journald ===" && cat /etc/systemd/journald.conf 2>/dev/null || echo "not installed"
+  register: logging_raw
+  changed_when: false
+  failed_when: false
+
+- name: Check log forwarding
+  shell: |
+    grep -rE "^\s*\*\.\*|@@|@[^@]" /etc/rsyslog.conf /etc/rsyslog.d/*.conf 2>/dev/null \
+      | grep -v "^#" || echo "none"
+  register: log_forwarding_raw
+  changed_when: false
+  failed_when: false
+
+- name: Set audit facts
+  set_fact:
+    aac_audit:
+      service_active:   "{{ auditd_status_raw.stdout | default('unknown') }}"
+      rules_raw:        "{{ auditd_rules_raw.stdout | default('') }}"
+      conf_raw:         "{{ auditd_conf_raw.stdout | default('') }}"
+      logging_raw:      "{{ logging_raw.stdout | default('') }}"
+      log_forwarding:   "{{ log_forwarding_raw.stdout_lines | default([]) }}"
+      log_space_left: >-
+        {{ auditd_conf_raw.stdout | regex_search('space_left\s*=\s*(\d+)', '\1') | default([], true) | first | default('not_set') }}
+      max_log_file_action: >-
+        {{ auditd_conf_raw.stdout | regex_search('max_log_file_action\s*=\s*(\S+)', '\1') | default([], true) | first | default('not_set') }}

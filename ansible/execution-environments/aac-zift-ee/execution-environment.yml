@@ -1,0 +1,63 @@
+---
+# AAC Zift Execution Environment
+#
+# Dedicated EE for the EnforceAuth Zift authorization-migration tool.
+# Zift scans application code for embedded authorization logic and
+# extracts it into Policy-as-Code — Rego (for OPA) or Cedar (for AWS
+# Verified Permissions and Cedar-compatible engines).
+#
+# Used by:
+#   ansible/playbooks/zift_sentinel_demo.yml
+#
+# NOT used by:
+#   AAC's core assessments (CIS, NERC-CIP, AMI, DS, Sentinel-terraform,
+#   Tech Debt, Golden Image) — those run on aac-compliance-ee.
+#   State-assessment tools (trivy, kubescape) — those run on
+#   aac-policy-tools-ee.
+#
+# Why a separate EE? Same rationale as aac-policy-tools-ee: each domain
+# of external tooling gets its own EE so image size and update cadence
+# stay decoupled. Zift is a policy *generator* (not an assessment
+# tool), so it belongs in its own domain.
+#
+# ── Arch ──────────────────────────────────────────────────────────────
+# Zift v0.2.3 ships a Linux binary for x86_64 only (no aarch64 Linux
+# release yet). This EE is single-arch: build on an x86_64 host.
+# When upstream adds aarch64-unknown-linux-gnu, switch to the multi-arch
+# pattern used by aac-policy-tools-ee (uname -m case + manifest step).
+#
+# Image: quay.io/rh-ee-tcoulter/aac-zift-ee:vX.Y.Z (linux/amd64)
+#
+# Upstream:
+#   Zift        https://github.com/EnforceAuth/zift
+#   Homepage    https://enforceauth.com
+
+version: 3
+
+images:
+  base_image:
+    name: quay.io/ansible/creator-ee:v24.2.0
+
+dependencies:
+  galaxy: requirements.yml
+  python: requirements.txt
+  ansible_core:
+    package_pip: ansible-core>=2.15.0
+  ansible_runner:
+    package_pip: ansible-runner>=2.3.0
+
+options:
+  package_manager_path: /usr/bin/microdnf
+
+additional_build_steps:
+  append_final:
+    # Zift (Apache-2.0) — pinned to v0.2.3 (2026-05-29 release).
+    # Prebuilt Linux x86_64 binary from GitHub Releases — no Rust
+    # toolchain needed at build time (upstream binary is ~7 MB compressed).
+    - |
+      RUN curl -fsSLo /tmp/zift.tar.gz \
+            "https://github.com/EnforceAuth/zift/releases/download/v0.2.3/zift-x86_64-unknown-linux-gnu.tar.gz" && \
+          cd /tmp && tar -xzf zift.tar.gz && \
+          install -m 0755 zift /usr/local/bin/zift && \
+          rm -rf /tmp/zift.tar.gz /tmp/zift && \
+          zift --version

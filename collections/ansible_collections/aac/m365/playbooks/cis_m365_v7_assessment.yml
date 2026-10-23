@@ -1,0 +1,29 @@
+---
+# CIS Microsoft 365 Foundations Benchmark v7.0.0 — full assessment.
+#
+# Supersedes full_cis_assessment.yml, which targets the pre-v7 cis_m365
+# packages and the Graph-only collectors. Those control ids do not
+# correspond to any CIS benchmark; see the deprecation notice on
+# policies/benchmarks/cis/saas/m365/README.md.
+#
+# Execution environment: aac-m365-ee. The Graph and Fabric sections run
+# anywhere, but sections 2, 3, 6, 7 and 8 need pwsh and the M365
+# PowerShell modules. Running this on an EE without them is not silently
+# wrong -- those sections report every fact unavailable and fail closed --
+# but it is not an assessment either.
+
+- name: Assess Microsoft 365 against CIS Foundations Benchmark v7.0.0
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  # Load the real, gitignored config if the operator has created it
+  # (copy vars/m365_config.example.yml -> vars/m365_config.yml and fill in,
+  # including opa_security_url + pg_host); otherwise fall back to the
+  # example, whose empty endpoints make the role preflight fail fast and
+  # loud rather than silently POSTing nowhere.
+  vars_files:
+    - "{{ lookup('ansible.builtin.first_found', ['vars/m365_config.yml', 'vars/m365_config.example.yml']) }}"
+
+  roles:
+    - role: aac.m365.m365_assessment

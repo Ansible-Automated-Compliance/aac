@@ -1,0 +1,37 @@
+---
+# Environment profile: mac-aap (local CRC MicroShift, AAP 2.7)
+#
+# Also OpenShift, also the `aac` namespace — so in-cluster service DNS is
+# IDENTICAL to lab for Execution-Environment (in-cluster) runs. The profiles
+# differ only in EXTERNAL access (route hostname) and which cluster you're on.
+# Kept as a distinct profile so the operator declares intent explicitly and so
+# external_aap_url is right for CLI runs from the Mac.
+
+env_profile_name: macaap
+topology: openshift
+
+# --- AAP ---
+aap_url: "http://aap.aap-operator.svc.cluster.local"
+external_aap_url: "https://aap-aap-operator.apps.127.0.0.1.nip.io"
+aap_admin_user: "admin"
+aap_ssh_user: "aapuser1"
+
+# --- OPA / Grafana / MCP / PostgreSQL (in-cluster service DNS) ---
+opa_security_url:   "http://opa-security.aac.svc.cluster.local:8181"
+opa_compliance_url: "http://opa-compliance.aac.svc.cluster.local:8181"
+# Host-side consumers (the MCP server container) cannot resolve in-cluster DNS
+# and need an externally reachable OPA route. Not defined for this profile:
+# set external_opa_compliance_url (site_config.yml or -e) before running
+# deploy_mcp_server.yml; the role refuses to start without it.
+opa_ot_url:         "http://opa-ot.aac.svc.cluster.local:8181"
+grafana_url: "http://grafana.aac.svc.cluster.local:3000"
+mcp_url:     "http://aap-eda-api.aap-operator.svc.cluster.local:8000"
+pg_host: "compliance-db.aac.svc.cluster.local"
+pg_port: 5432
+pg_user: "postgres"
+pg_db:   "compliance"
+
+# --- Execution Environment ---
+ee_image: "image-registry.openshift-image-registry.svc:5000/aac/aac-compliance-ee:v1.3.0"
+
+secret_source: aap_credential

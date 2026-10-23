@@ -1,0 +1,224 @@
+---
+# rhpds_bootstrap.yml
+#
+# Idempotent bootstrap for a fresh RHPDS AAP on OpenShift.
+# Uses infra.aap_configuration dispatch role — safe to re-run at any time.
+#
+# What this does (in dependency order):
+#   1. Execution Environment  — registers AAC Compliance EE image
+#   2. Credentials            — GitHub PAT, Ansible Vault, SSH machine cred
+#   3. Project                — Compliance Automation (GitHub, main branch)
+#   4. Inventory + Hosts      — Compliance Infrastructure, localhost, aap-controller-ssh
+#   5. Job Templates          — all ~50 AAC demo templates
+#   6. Workflow Templates     — GoldenImage_Enforcement, DS_FullAssessment, NERC_FullAudit
+#   7. Schedules              — nightly OPA reload, NERC-CIP, AMI, tech debt
+#   8. EDA Credentials        — controller auth for EDA activations
+#   9. EDA Project            — Compliance Automation EDA (same repo)
+#  10. EDA Rulebook Activations — Golden Image :5004, Sentinel :5003, Webhook :5000
+#
+# Required survey variables:
+#   rhpds_cluster              — cluster hostname, e.g. cluster-abc123.dynamic.redhatworkshops.io
+#   rhpds_gateway_password     — AAP gateway admin password
+#   rhpds_controller_password  — AAP controller admin password
+#
+# Optional survey variables:
+#   rhpds_ssh_user             — EC2 SSH user (default: ec2-user)
+#   aac_demo_host              — AWS EC2 public IP (default: PENDING_AWS_EC2_IP)
+#   aac_organization           — AAP org name (default: Default)
+#   aac_decision_environment   — EDA decision environment name (default: Default Decision Environment)
+#
+# Run from local AAP (<aac-host>) or from any host with the collections installed:
+#   ansible-playbook ansible/config_as_code/rhpds/rhpds_bootstrap.yml \
+#     -e "rhpds_cluster=cluster-abc123.dynamic.redhatworkshops.io" \
+#     -e "rhpds_gateway_password=<password>" \
+#     -e "rhpds_controller_password=<password>"
+
+- name: Bootstrap RHPDS AAP — AAC Full Demo Environment
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - ../../vars/vault_secrets.yml
+
+  vars:
+    aac_organization: "{{ aac_organization | default('Default') }}"
+    aac_decision_environment: "{{ aac_decision_environment | default('Default Decision Environment') }}"
+    aap_controller_url: "https://aap-controller-aap.apps.{{ rhpds_cluster }}"
+    aap_gateway_url:    "https://aap-aap.apps.{{ rhpds_cluster }}"
+
+    # infra.aap_configuration connection vars
+    controller_hostname:     "{{ aap_controller_url }}"
+    controller_username:     admin
+    controller_password:     "{{ rhpds_controller_password }}"
+    controller_validate_certs: false
+
+    # Config-as-Code file directory
+    config_dir: "{{ playbook_dir }}"
+
+  pre_tasks:
+
+    # infra.aap_configuration roles hardcode ansible.controller.* module names.
+    # ansible.controller from Galaxy is a metadata stub with an empty plugins/modules/
+    # directory. awx.awx is the community equivalent with identical modules.
+    # This task symlinks ansible.controller → awx.awx so the roles resolve correctly
+    # when running outside an EE (direct ansible-playbook invocation).
+    - name: Symlink ansible.controller → awx.awx (community workaround outside EE)
+      block:
+        # Use stat (not find) so the task doesn't fail when the path doesn't exist
+        - name: Check whether awx.awx collection is installed
+          ansible.builtin.stat:
+            path: "{{ lookup('env', 'HOME') }}/.ansible/collections/ansible_collections/awx/awx"
+          register: awx_awx_stat
+
+        - name: Check ansible.controller destination path
+          ansible.builtin.stat:
+            path: "{{ lookup('env', 'HOME') }}/.ansible/collections/ansible_collections/ansible/controller"
+            follow: false
+          register: ansible_controller_dest_stat
+          when: awx_awx_stat.stat.exists | default(false)
+
+        - name: Check whether existing ansible.controller has real plugins/modules
+          ansible.builtin.stat:
+            path: "{{ lookup('env', 'HOME') }}/.ansible/collections/ansible_collections/ansible/controller/plugins/modules"
+          register: ansible_controller_modules_stat
+          when:
+            - awx_awx_stat.stat.exists | default(false)
+            - ansible_controller_dest_stat.stat.exists | default(false)
+            - ansible_controller_dest_stat.stat.isdir | default(false)
+            - not (ansible_controller_dest_stat.stat.islnk | default(false))
+
+        - name: Remove Galaxy ansible.controller stub (empty plugins/modules — safe to replace)
+          ansible.builtin.file:
+            path: "{{ lookup('env', 'HOME') }}/.ansible/collections/ansible_collections/ansible/controller"
+            state: absent
+          when:
+            - awx_awx_stat.stat.exists | default(false)
+            - ansible_controller_dest_stat.stat.exists | default(false)
+            - ansible_controller_dest_stat.stat.isdir | default(false)
+            - not (ansible_controller_dest_stat.stat.islnk | default(false))
+            - not (ansible_controller_modules_stat.stat.isdir | default(false))
+
+        - name: Create ansible namespace parent directory
+          ansible.builtin.file:
+            path: "{{ lookup('env', 'HOME') }}/.ansible/collections/ansible_collections/ansible"
+            state: directory
+            mode: "0755"
+          when: awx_awx_stat.stat.exists | default(false)
+
+        - name: Symlink ansible.controller to awx.awx
+          ansible.builtin.file:
+            src: "{{ lookup('env', 'HOME') }}/.ansible/collections/ansible_collections/awx/awx"
+            dest: "{{ lookup('env', 'HOME') }}/.ansible/collections/ansible_collections/ansible/controller"
+            state: link
+            force: true
+          when:
+            - awx_awx_stat.stat.exists | default(false)
+            - >
+              not (ansible_controller_dest_stat.stat.exists | default(false))
+              or (ansible_controller_dest_stat.stat.islnk | default(false))
+              or (
+                (ansible_controller_dest_stat.stat.isdir | default(false))
+                and not (ansible_controller_dest_stat.stat.islnk | default(false))
+                and not (ansible_controller_modules_stat.stat.isdir | default(false))
+              )
+
+        - name: Keep existing ansible.controller (real Automation Hub install detected)
+          ansible.builtin.debug:
+            msg: "ansible.controller has plugins/modules — Automation Hub install detected; leaving it unchanged"
+          when:
+            - awx_awx_stat.stat.exists | default(false)
+            - ansible_controller_dest_stat.stat.exists | default(false)
+            - ansible_controller_dest_stat.stat.isdir | default(false)
+            - not (ansible_controller_dest_stat.stat.islnk | default(false))
+            - ansible_controller_modules_stat.stat.isdir | default(false)
+
+        - name: Skip symlink — awx.awx not installed (EE or Automation Hub must provide ansible.controller)
+          ansible.builtin.debug:
+            msg: "awx.awx not found; assuming ansible.controller is provided by the EE or Automation Hub"
+          when: not (awx_awx_stat.stat.exists | default(false))
+      tags: always
+
+    - name: Verify required survey variables are set
+      assert:
+        that:
+          - rhpds_cluster is defined and rhpds_cluster | length > 0
+          - rhpds_gateway_password is defined
+          - rhpds_controller_password is defined
+        fail_msg: >
+          Missing required variables. Provide rhpds_cluster, rhpds_gateway_password,
+          and rhpds_controller_password via -e or AAP survey.
+
+    - name: Load all config_as_code YAML files
+      include_vars:
+        file: "{{ config_dir }}/{{ item }}"
+      loop:
+        - controller_execution_environments.yml
+        - controller_credentials.yml
+        - controller_projects.yml
+        - controller_inventories.yml
+        - controller_hosts.yml
+        - controller_templates.yml
+        - controller_workflows.yml
+        - controller_schedules.yml
+        - eda_decision_environments.yml
+        - eda_credentials.yml
+        - eda_projects.yml
+        - eda_rulebook_activations.yml
+
+  roles:
+
+    # ── Phase 1–7: AAP Controller objects ────────────────────────────────────
+    - role: infra.aap_configuration.dispatch
+      vars:
+        aap_configuration_dispatcher_roles:
+          - execution_environments
+          - credentials
+          - projects
+          - inventories
+          - hosts
+          - job_templates
+          - workflow_job_templates
+          - schedules
+
+    # ── Phase 8–10: EDA objects ───────────────────────────────────────────────
+    - role: infra.aap_configuration.dispatch
+      vars:
+        aap_configuration_dispatcher_roles:
+          - eda_decision_environments
+          - eda_credentials
+          - eda_projects
+          - eda_rulebook_activations
+
+  post_tasks:
+
+    - name: Bootstrap complete — summary
+      debug:
+        msg: |
+          ═══════════════════════════════════════════════════════════════
+          AAC RHPDS Bootstrap Complete
+          ═══════════════════════════════════════════════════════════════
+          Cluster:      {{ rhpds_cluster }}
+          Controller:   {{ aap_controller_url }}
+          Organization: {{ aac_organization }}
+
+          Objects configured:
+            • Execution Environment:  AAC Compliance EE
+            • Credentials:            GitHub PAT, Ansible Vault, SSH
+            • Project:                Compliance Automation
+            • Inventory:              Compliance Infrastructure (2 hosts)
+            • Job Templates:          ~54 (all 6 demo groups + infra + backup/restore)
+            • Workflow Templates:     3 (GoldenImage, DS, NERC)
+            • Schedules:              4 nightly jobs
+            • EDA Activations:        3 (Golden Image :5004, Sentinel :5003, Webhook :5000)
+
+          ┌─────────────────────────────────────────────────────────────┐
+          │  NEXT STEPS                                                  │
+          │  1. Set EC2 IP: update aac_demo_host in AAP inventory vars  │
+          │  2. Add SSH private key to "AAC Demo Host (SSH)" credential │
+          │  3. Sync project: trigger AAC project update in AAP         │
+          │  4. Run: AAC_Infra_SeedRHPDSDatabase (rhpds_demo_host_ip=…) │
+          │  5. Run: AAC_Infra_DeployAllDashboards                      │
+          │  6. Run: AAC - Verify Installation                          │
+          └─────────────────────────────────────────────────────────────┘
+          ═══════════════════════════════════════════════════════════════

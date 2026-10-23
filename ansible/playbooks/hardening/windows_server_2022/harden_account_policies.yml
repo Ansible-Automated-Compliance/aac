@@ -1,0 +1,352 @@
+---
+# harden_account_policies.yml — CIS Windows Server 2022 Hardening: Account Policies
+#
+# Configures password policy, account lockout (Section 1 — 11 controls),
+# user rights assignments (Section 2.2 — 20 controls), and
+# security options (Section 2.3 — 20 of 22 controls addressable without
+# breaking WinRM connectivity).
+#
+# Domain ownership: Identity & Access Management (IAM)
+# Controls addressed: 11 + 20 + 20 = 51 controls
+# NOTE: 2 security_options controls are intentionally skipped:
+#   - CIS 2.3.1.1 (disable Administrator account) — WinRM requires it enabled
+#   - CIS 2.3.1.5 (rename Administrator account) — WinRM credentials use this name
+#
+# AAP Job Template: "CIS Windows 2022 Harden - Account Policies" (IAM team)
+# Credentials: Windows Compliance Lab (ID 7) + Ansible Vault (ID 8)
+# EE: AAC Compliance EE
+
+- name: CIS Windows Server 2022 — Account Policies Hardening
+  hosts: "{{ target_hosts | default('all') }}"
+  gather_facts: false
+
+  vars_files:
+    - [ "../../vars/vault_secrets.yml", "../../vars/empty_fallback.yml" ]
+
+  tasks:
+
+    # ── Section 1.1: Password Policy (secedit) ────────────────────────────────
+
+    - name: Export current security policy
+      win_shell: |
+        secedit /export /cfg C:\Windows\Temp\secedit_current.cfg /quiet
+      changed_when: false
+      failed_when: false
+
+    - name: Apply CIS password and lockout policy via secedit
+      win_shell: |
+        $lines = @(
+          '[Unicode]',
+          'Unicode=yes',
+          '[System Access]',
+          'PasswordHistorySize = 24',
+          'MaximumPasswordAge = 90',
+          'MinimumPasswordAge = 1',
+          'MinimumPasswordLength = 14',
+          'PasswordComplexity = 1',
+          'ClearTextPassword = 0',
+          'LockoutBadCount = 5',
+          'LockoutDuration = 15',
+          'ResetLockoutCount = 15',
+          '[Version]',
+          'signature="$CHICAGO$"',
+          'Revision=1'
+        )
+        $lines | Out-File -FilePath C:\Windows\Temp\secedit_cis.cfg -Encoding Unicode
+        secedit /configure /cfg C:\Windows\Temp\secedit_cis.cfg /areas SECURITYPOLICY /quiet
+        Remove-Item C:\Windows\Temp\secedit_cis.cfg -Force -ErrorAction SilentlyContinue
+        Remove-Item C:\Windows\Temp\secedit_current.cfg -Force -ErrorAction SilentlyContinue
+      changed_when: true
+      failed_when: false
+
+    - name: Enable RelaxMinimumPasswordLengthLimits (CIS 1.1.6)
+      win_regedit:
+        path: HKLM:\SYSTEM\CurrentControlSet\Control\SAM
+        name: RelaxMinimumPasswordLengthLimits
+        data: 1
+        type: dword
+
+    - name: Enable AllowAdministratorLockout (CIS 1.2.3)
+      win_regedit:
+        path: HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon
+        name: AllowAdministratorLockout
+        data: 1
+        type: dword
+
+    # ── Section 2.2: User Rights Assignment ───────────────────────────────────
+
+    - name: Clear Access Credential Manager right (CIS 2.2.1)
+      ansible.windows.win_user_right:
+        name: SeTrustedCredManAccessPrivilege
+        users: []
+        action: set
+
+    - name: Set Access this computer from the network (CIS 2.2.2)
+      ansible.windows.win_user_right:
+        name: SeNetworkLogonRight
+        users:
+          - Administrators
+          - Authenticated Users
+        action: set
+
+    - name: Restrict Allow log on locally to Administrators (CIS 2.2.5)
+      ansible.windows.win_user_right:
+        name: SeInteractiveLogonRight
+        users:
+          - Administrators
+        action: set
+
+    - name: Restrict Allow log on through RDS (CIS 2.2.6)
+      ansible.windows.win_user_right:
+        name: SeRemoteInteractiveLogonRight
+        users:
+          - Administrators
+          - Remote Desktop Users
+        action: set
+
+    - name: Restrict Back up files and directories to Administrators (CIS 2.2.7)
+      ansible.windows.win_user_right:
+        name: SeBackupPrivilege
+        users:
+          - Administrators
+        action: set
+
+    - name: Restrict Create symbolic links to Administrators (CIS 2.2.11)
+      ansible.windows.win_user_right:
+        name: SeCreateSymbolicLinkPrivilege
+        users:
+          - Administrators
+        action: set
+
+    - name: Restrict Debug programs to Administrators (CIS 2.2.13)
+      ansible.windows.win_user_right:
+        name: SeDebugPrivilege
+        users:
+          - Administrators
+        action: set
+
+    - name: Deny network access to Guests (CIS 2.2.14)
+      ansible.windows.win_user_right:
+        name: SeDenyNetworkLogonRight
+        users:
+          - Guests
+        action: add
+
+    - name: Deny batch logon to Guests (CIS 2.2.15)
+      ansible.windows.win_user_right:
+        name: SeDenyBatchLogonRight
+        users:
+          - Guests
+        action: add
+
+    - name: Deny service logon to Guests (CIS 2.2.16)
+      ansible.windows.win_user_right:
+        name: SeDenyServiceLogonRight
+        users:
+          - Guests
+        action: add
+
+    - name: Deny local logon to Guests (CIS 2.2.17)
+      ansible.windows.win_user_right:
+        name: SeDenyInteractiveLogonRight
+        users:
+          - Guests
+        action: add
+
+    - name: Deny RDP logon to Guests (CIS 2.2.18)
+      ansible.windows.win_user_right:
+        name: SeDenyRemoteInteractiveLogonRight
+        users:
+          - Guests
+        action: add
+
+    - name: Clear Enable trusted for delegation right (CIS 2.2.19 — member server)
+      ansible.windows.win_user_right:
+        name: SeEnableDelegationPrivilege
+        users: []
+        action: set
+
+    - name: Restrict Force shutdown from remote to Administrators (CIS 2.2.21)
+      ansible.windows.win_user_right:
+        name: SeRemoteShutdownPrivilege
+        users:
+          - Administrators
+        action: set
+
+    - name: Restrict Manage auditing and security log to Administrators (CIS 2.2.26)
+      ansible.windows.win_user_right:
+        name: SeSecurityPrivilege
+        users:
+          - Administrators
+        action: set
+
+    - name: Restrict Restore files and directories to Administrators (CIS 2.2.32)
+      ansible.windows.win_user_right:
+        name: SeRestorePrivilege
+        users:
+          - Administrators
+        action: set
+
+    - name: Restrict Shut down the system to Administrators (CIS 2.2.33)
+      ansible.windows.win_user_right:
+        name: SeShutdownPrivilege
+        users:
+          - Administrators
+        action: set
+
+    - name: Restrict Take ownership to Administrators (CIS 2.2.35)
+      ansible.windows.win_user_right:
+        name: SeTakeOwnershipPrivilege
+        users:
+          - Administrators
+        action: set
+
+    # ── Section 2.3: Security Options ─────────────────────────────────────────
+
+    # NOTE: CIS 2.3.1.1 (disable Admin account) and 2.3.1.5 (rename Admin) are SKIPPED
+    # These would break WinRM connectivity. Accept 2 violations in this section.
+
+    - name: Disable Guest account (CIS 2.3.1.3)
+      win_user:
+        name: Guest
+        account_disabled: true
+        state: present
+      failed_when: false
+
+    - name: Limit blank password use to console only (CIS 2.3.1.4)
+      win_regedit:
+        path: HKLM:\SYSTEM\CurrentControlSet\Control\Lsa
+        name: LimitBlankPasswordUse
+        data: 1
+        type: dword
+
+    - name: Rename Guest account (CIS 2.3.1.6)
+      win_shell: |
+        $guestSid = Get-LocalUser | Where-Object { $_.SID -like '*-501' } | Select-Object -First 1
+        if ($guestSid -and $guestSid.Name -ieq 'Guest') {
+          Rename-LocalUser -Name 'Guest' -NewName 'GuestDisabled'
+        }
+      changed_when: true
+      failed_when: false
+
+    - name: Block Microsoft accounts (CIS 2.3.1.2)
+      win_regedit:
+        path: HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System
+        name: NoConnectedUser
+        data: 3
+        type: dword
+
+    - name: Require CTRL+ALT+DEL at logon (CIS 2.3.7.1)
+      win_regedit:
+        path: HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System
+        name: DisableCAD
+        data: 0
+        type: dword
+
+    - name: Don't display last signed-in username (CIS 2.3.7.2)
+      win_regedit:
+        path: HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System
+        name: DontDisplayLastUserName
+        data: 1
+        type: dword
+
+    - name: Set machine inactivity limit to 900 seconds (CIS 2.3.7.4)
+      win_regedit:
+        path: HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System
+        name: InactivityTimeoutSecs
+        data: 900
+        type: dword
+
+    - name: Set password expiry warning to 14 days (CIS 2.3.7.7)
+      win_regedit:
+        path: HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon
+        name: PasswordExpiryWarning
+        data: 14
+        type: dword
+
+    - name: Allow Local System to use computer identity for NTLM (CIS 2.3.11.1)
+      win_regedit:
+        path: HKLM:\SYSTEM\CurrentControlSet\Control\Lsa
+        name: UseMachineId
+        data: 1
+        type: dword
+
+    - name: Set LAN Manager authentication level to NTLMv2 only (CIS 2.3.11.5)
+      win_regedit:
+        path: HKLM:\SYSTEM\CurrentControlSet\Control\Lsa
+        name: LmCompatibilityLevel
+        data: 5
+        type: dword
+
+    - name: Set LDAP client signing to Negotiate (CIS 2.3.11.6)
+      win_regedit:
+        path: HKLM:\SYSTEM\CurrentControlSet\Services\ldap
+        name: LDAPClientIntegrity
+        data: 1
+        type: dword
+
+    - name: Set NTLM minimum session security for clients (CIS 2.3.11.7)
+      win_regedit:
+        path: HKLM:\SYSTEM\CurrentControlSet\Control\Lsa\MSV1_0
+        name: NTLMMinClientSec
+        data: 537395200
+        type: dword
+
+    - name: Set NTLM minimum session security for servers (CIS 2.3.11.8)
+      win_regedit:
+        path: HKLM:\SYSTEM\CurrentControlSet\Control\Lsa\MSV1_0
+        name: NTLMMinServerSec
+        data: 537395200
+        type: dword
+
+    - name: Require case insensitivity for non-Windows subsystems (CIS 2.3.15.1)
+      win_regedit:
+        path: HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Kernel
+        name: ObCaseInsensitive
+        data: 1
+        type: dword
+
+    - name: Enable UAC Admin Approval Mode for built-in Administrator (CIS 2.3.17.1)
+      win_regedit:
+        path: HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System
+        name: FilterAdministratorToken
+        data: 1
+        type: dword
+
+    - name: Set UAC admin elevation to prompt on secure desktop (CIS 2.3.17.2)
+      win_regedit:
+        path: HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System
+        name: ConsentPromptBehaviorAdmin
+        data: 2
+        type: dword
+
+    - name: Set UAC standard users to auto-deny elevation (CIS 2.3.17.3)
+      win_regedit:
+        path: HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System
+        name: ConsentPromptBehaviorUser
+        data: 0
+        type: dword
+
+    - name: Enable UAC detection of app installations (CIS 2.3.17.4)
+      win_regedit:
+        path: HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System
+        name: EnableInstallerDetection
+        data: 1
+        type: dword
+
+    - name: Enable UAC Admin Approval Mode for all administrators (CIS 2.3.17.8)
+      win_regedit:
+        path: HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System
+        name: EnableLUA
+        data: 1
+        type: dword
+
+    - name: Account policies hardening complete
+      debug:
+        msg: |
+          Account policies hardening complete.
+          NOTE: 2 controls intentionally skipped (WinRM compatibility):
+            - CIS 2.3.1.1: Administrator account remains enabled (required for WinRM)
+            - CIS 2.3.1.5: Administrator account name unchanged (required for WinRM credentials)
+          Expected section violations after hardening: 2 (out of 22 security_options controls)
+          Run assessment to verify compliance score improvement.

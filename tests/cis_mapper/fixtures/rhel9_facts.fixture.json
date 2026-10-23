@@ -1,0 +1,120 @@
+{
+ "ansible_facts": {
+  "architecture": "x86_64",
+  "default_ipv4": {
+   "address": "192.0.2.10",
+   "interface": "eth0"
+  },
+  "distribution": "RedHat",
+  "distribution_major_version": "9",
+  "distribution_version": "9.4",
+  "fqdn": "rhel9-fixture.example.com",
+  "hostname": "rhel9-fixture",
+  "interfaces": [
+   "lo",
+   "eth0"
+  ],
+  "kernel": "5.14.0-427.el9.x86_64",
+  "memtotal_mb": 3800,
+  "mounts": [
+   {
+    "device": "/dev/mapper/luks-root",
+    "fstype": "xfs",
+    "mount": "/",
+    "options": "rw,relatime"
+   },
+   {
+    "device": "tmpfs",
+    "fstype": "tmpfs",
+    "mount": "/tmp",
+    "options": "rw,nosuid,nodev,noexec"
+   },
+   {
+    "device": "tmpfs",
+    "fstype": "tmpfs",
+    "mount": "/dev/shm",
+    "options": "rw,nosuid,nodev,noexec"
+   }
+  ],
+  "os_family": "RedHat",
+  "pkg_mgr": "dnf",
+  "processor_cores": 2,
+  "selinux": {
+   "config_mode": "enforcing",
+   "mode": "enforcing",
+   "status": "enabled",
+   "type": "targeted"
+  },
+  "service_mgr": "systemd",
+  "services": {
+   "auditd.service": {
+    "source": "systemd",
+    "state": "running",
+    "status": "enabled"
+   },
+   "chronyd.service": {
+    "source": "systemd",
+    "state": "running",
+    "status": "enabled"
+   },
+   "crond.service": {
+    "source": "systemd",
+    "state": "running",
+    "status": "enabled"
+   },
+   "firewalld.service": {
+    "source": "systemd",
+    "state": "running",
+    "status": "enabled"
+   },
+   "rsyslog.service": {
+    "source": "systemd",
+    "state": "running",
+    "status": "enabled"
+   },
+   "systemd-journald.service": {
+    "source": "systemd",
+    "state": "running",
+    "status": "static"
+   }
+  }
+ },
+ "custom_facts": {
+  "account_policy_raw": "umask|/etc/profile.d/cis.sh|027\numask|/etc/login.defs|027\ntmout|/etc/profile.d/cis.sh|900\ninactive|30\nend:ok",
+  "auditd_conf_raw": "log_file = /var/log/audit/audit.log\nmax_log_file = 8\nmax_log_file_action = keep_logs\nspace_left_action = email\nadmin_space_left_action = single\n",
+  "auditd_rules_raw": "-e 2\n-w /etc/passwd -p wa -k identity\n-a always,exit -F path=/usr/bin/sudo -F perm=x -F auid>=1000 -F auid!=unset -k privileged\n-a always,exit -F path=/usr/bin/su -F perm=x -F auid>=1000 -F auid!=unset -k privileged\n",
+  "authorized_keys_raw": "sshdir|alice|0700|/home/alice/.ssh\nakfile|alice|alice|0600|/home/alice/.ssh/authorized_keys\nakkey|/home/alice/.ssh/authorized_keys|256|SHA256:AAAAexampleFingerprint0000000000000000000000|ED25519|alice@example.com\nend:ok",
+  "banners_raw": "=== /etc/motd ===\nAuthorized uses only. All activity may be monitored.\n=== /etc/issue ===\nAuthorized uses only.\n=== /etc/issue.net ===\nAuthorized uses only.\n",
+  "boot_raw": "pkg|aide|yes\npkg|prelink|no\npkg|abrt|no\naide_db|yes\naide_cron|no\naide_timer|yes\ngrub_pw_hashed|1\ngrub_pw_plain|0\nsulogin|rescue.service|yes\nsulogin|emergency.service|yes\nsysctl|fs.suid_dumpable|0\nsysctl|kernel.randomize_va_space|2\nsysctl|kernel.kptr_restrict|1\nsysctl|kernel.dmesg_restrict|1\nhard_core|0\ncoredump_present|yes\ncoredump|Storage|none\ncoredump|ProcessSizeMax|0\nenabled|abrtd|no\nenabled|kdump|no\nend:ok",
+  "certs_raw": "cert|365|RSA|3072|sha256WithRSAEncryption|/etc/pki/tls/certs/svc.crt|CN=svc.example.com\nca_bundle_intact|yes\nend:ok",
+  "cron_access_raw": "=== cron.allow ===\nroot\n=== cron.deny ===\nnot_present\n=== at.allow ===\nroot\n",
+  "file_modes_raw": "stat|0600|root|root|/boot/grub2/grub.cfg\nabsent|/boot/grub/grub.cfg\nstat|0600|root|root|/boot/grub2/user.cfg\nstat|0644|root|root|/etc/motd\nstat|0644|root|root|/etc/issue\nstat|0644|root|root|/etc/issue.net\nstat|0600|root|root|/etc/crontab\nstat|0700|root|root|/etc/cron.hourly\nstat|0700|root|root|/etc/cron.daily\nstat|0700|root|root|/etc/cron.weekly\nstat|0700|root|root|/etc/cron.monthly\nstat|0700|root|root|/etc/cron.d\nstat|0600|root|root|/etc/cron.allow\nabsent|/etc/cron.deny\nstat|0600|root|root|/etc/at.allow\nabsent|/etc/at.deny\naudit_log_file|/var/log/audit/audit.log\nstat|0600|root|root|/var/log/audit/audit.log\nstat|0700|root|root|/var/log/audit\nauditcfg|0640|root|root|/etc/audit/auditd.conf\nauditcfg|0640|root|root|/etc/audit/rules.d/cis.rules\nend:ok",
+  "findmnt_raw": "",
+  "firewall_raw": "type:firewalld\nrunning\n",
+  "grub_raw": "GRUB_CMDLINE_LINUX=\"audit=1 audit_backlog_limit=8192\"\n",
+  "kernel_modules_raw": "cramfs:disabled\nfreevxfs:disabled\njffs2:disabled\nhfs:disabled\nhfsplus:disabled\nsquashfs:disabled\nudf:disabled\nusb-storage:disabled\n",
+  "logging_raw": "=== rsyslog ===\n$FileCreateMode 0640\n*.info /var/log/messages\n=== journald ===\nStorage=persistent\nCompress=yes\nForwardToSyslog=yes\n",
+  "mac_status_raw": "type:selinux\nSELinux status: enabled\n",
+  "network_raw": "sysctl|net.ipv4.ip_forward|0\nsysctl|net.ipv6.conf.all.forwarding|0\nsysctl|net.ipv4.conf.all.send_redirects|0\nsysctl|net.ipv4.conf.default.send_redirects|0\nsysctl|net.ipv4.conf.all.accept_source_route|0\nsysctl|net.ipv4.conf.default.accept_source_route|0\nsysctl|net.ipv6.conf.all.accept_source_route|0\nsysctl|net.ipv6.conf.default.accept_source_route|0\nsysctl|net.ipv4.conf.all.accept_redirects|0\nsysctl|net.ipv4.conf.default.accept_redirects|0\nsysctl|net.ipv6.conf.all.accept_redirects|0\nsysctl|net.ipv6.conf.default.accept_redirects|0\nsysctl|net.ipv4.conf.all.secure_redirects|0\nsysctl|net.ipv4.conf.default.secure_redirects|0\nsysctl|net.ipv4.conf.all.log_martians|1\nsysctl|net.ipv4.conf.default.log_martians|1\nsysctl|net.ipv4.icmp_echo_ignore_broadcasts|1\nsysctl|net.ipv4.icmp_ignore_bogus_error_responses|1\nsysctl|net.ipv4.conf.all.rp_filter|1\nsysctl|net.ipv4.conf.default.rp_filter|1\nsysctl|net.ipv4.tcp_syncookies|1\nsysctl|net.ipv6.conf.all.accept_ra|0\nsysctl|net.ipv6.conf.default.accept_ra|0\nsysctl|net.ipv6.conf.all.accept_ra_defrtr|1\nsysctl|net.ipv4.conf.all.arp_ignore|0\nipv6|enabled\nipv6_addresses|2\nfirewall|firewalld\nend:ok",
+  "pam_config_raw": "=== common-password ===\n=== system-auth ===\nauth        required      pam_env.so\nauth        required      pam_faillock.so preauth silent deny=5 unlock_time=900\nauth        sufficient    pam_unix.so\npassword    requisite     pam_pwquality.so local_users_only\npassword    required      pam_pwhistory.so remember=5 use_authtok\npassword    sufficient    pam_unix.so sha512 shadow use_authtok\n=== password-auth ===\nauth        required      pam_env.so\nauth        required      pam_faillock.so preauth silent deny=5 unlock_time=900\nauth        sufficient    pam_unix.so\npassword    requisite     pam_pwquality.so local_users_only\npassword    required      pam_pwhistory.so remember=5 use_authtok\npassword    sufficient    pam_unix.so sha512 shadow use_authtok\n",
+  "password_aging_raw": "PASS_MAX_DAYS\t365\nPASS_MIN_DAYS\t1\nPASS_WARN_AGE\t7\n",
+  "pkg_trust_raw": "family|rpm\ngpgkey|gpg-pubkey-fd431d51-4ae0493b\nrepo|rhel-9-for-x86_64-baseos-rpms|1|1\nrepo|rhel-9-for-x86_64-appstream-rpms||\nrepo|rhel-9-debug-rpms|0|0\nmain_gpgcheck|1\ncrypto_policy|DEFAULT\nend:ok",
+  "pwquality_conf_raw": "minlen = 14\nminclass = 4\n",
+  "sshd_config_raw": "port 22\nlistenaddress 192.0.2.10:22\nusepam yes\nlogingracetime 60\nloglevel VERBOSE\nmaxauthtries 4\nmaxsessions 10\nmaxstartups 10:30:60\nclientaliveinterval 15\nclientalivecountmax 3\npermitrootlogin no\npermitemptypasswords no\npermituserenvironment no\nhostbasedauthentication no\nignorerhosts yes\ngssapiauthentication no\ndisableforwarding yes\nbanner /etc/issue.net\nciphers aes256-gcm@openssh.com,chacha20-poly1305@openssh.com,aes256-ctr,aes128-gcm@openssh.com,aes128-ctr\nmacs hmac-sha2-256-etm@openssh.com,hmac-sha2-512-etm@openssh.com,hmac-sha2-256,hmac-sha2-512\nkexalgorithms curve25519-sha256,curve25519-sha256@libssh.org,ecdh-sha2-nistp256,ecdh-sha2-nistp384,diffie-hellman-group16-sha512\nallowgroups sshusers\n",
+  "storage_raw": "fips|0\nmnt|/dev/mapper/luks-root|/|yes|yes\nmnt|/dev/vda1|/boot|no|yes\nfstab|/dev/mapper/luks-root|/|yes|yes\nfstab|/dev/vda1|/boot|no|yes\nluks|/dev/vda2|2|aes-xts-plain64|0\ncrypttab|luks-root|UUID=00000000-0000-4000-8000-000000000001|discard\nswap|/dev/mapper/luks-swap|yes\nend:ok",
+  "sudoers_raw": "Defaults use_pty\nDefaults logfile=/var/log/sudo.log\nDefaults timestamp_timeout=15\nroot ALL=(ALL) ALL\n",
+  "suid_sgid_files": [
+   "/usr/bin/sudo"
+  ],
+  "user_group_raw": "pw|root|0|0|/root|/bin/bash\npw|bin|1|1|/bin|/sbin/nologin\npw|sync|5|0|/sbin|/bin/sync\npw|alice|1000|1000|/home/alice|/bin/bash\ngrp|root|0\ngrp|bin|1\ngrp|wheel|10\ngrp|alice|1000\nroot_path|/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin\npathdir|/usr/local/sbin|yes|no\npathdir|/usr/local/bin|yes|no\npathdir|/usr/sbin|yes|no\npathdir|/usr/bin|yes|no\nhome|root|/root|yes|root|0550|no\nhome|alice|/home/alice|yes|alice|0700|no\nend:ok",
+  "users_raw": "root:0:0:/root:/bin/bash\nalice:1000:1000:/home/alice:/bin/bash\n",
+  "world_writable_files": [],
+  "kmod_raw": "kmod|cramfs|yes|yes|no\nkmod|freevxfs|yes|yes|no\nkmod|hfs|yes|yes|no\nkmod|hfsplus|yes|yes|no\nkmod|jffs2|yes|yes|no\nkmod|overlay|yes|no|yes\nkmod|squashfs|yes|yes|no\nkmod|udf|yes|yes|no\nkmod|firewire-core|no|no|no\nkmod|usb-storage|yes|yes|no\nkmod|dccp|no|no|no\nkmod|tipc|no|no|no\nkmod|rds|no|no|no\nkmod|sctp|yes|yes|no\nkmod|atm|no|no|no\nkmod|can|no|no|no\nend:ok",
+  "sysctl_raw": "run|fs.protected_hardlinks|1\nrun|fs.protected_symlinks|1\nrun|fs.suid_dumpable|0\nrun|kernel.dmesg_restrict|1\nrun|kernel.kptr_restrict|1\nrun|kernel.randomize_va_space|2\nrun|kernel.yama.ptrace_scope|1\nrun|net.ipv4.ip_forward|0\nrun|net.ipv4.conf.all.forwarding|0\nrun|net.ipv4.conf.default.forwarding|0\nrun|net.ipv4.conf.all.send_redirects|0\nrun|net.ipv4.conf.default.send_redirects|0\nrun|net.ipv4.conf.all.accept_redirects|0\nrun|net.ipv4.conf.default.accept_redirects|0\nrun|net.ipv4.conf.all.secure_redirects|0\nrun|net.ipv4.conf.default.secure_redirects|0\nrun|net.ipv4.conf.all.accept_source_route|0\nrun|net.ipv4.conf.default.accept_source_route|0\nrun|net.ipv4.conf.all.route_localnet|0\nrun|net.ipv4.conf.default.route_localnet|0\nrun|net.ipv6.conf.all.forwarding|0\nrun|net.ipv6.conf.default.forwarding|0\nrun|net.ipv6.conf.all.accept_redirects|0\nrun|net.ipv6.conf.default.accept_redirects|0\nrun|net.ipv6.conf.all.accept_source_route|0\nrun|net.ipv6.conf.default.accept_source_route|0\nrun|net.ipv6.conf.all.accept_ra|0\nrun|net.ipv6.conf.default.accept_ra|0\nrun|net.ipv4.icmp_ignore_bogus_error_responses|1\nrun|net.ipv4.icmp_echo_ignore_broadcasts|1\nrun|net.ipv4.conf.all.rp_filter|1\nrun|net.ipv4.conf.default.rp_filter|1\nrun|net.ipv4.conf.all.log_martians|1\nrun|net.ipv4.conf.default.log_martians|1\nrun|net.ipv4.tcp_syncookies|1\npersist|fs.protected_hardlinks|1\npersist|fs.protected_symlinks|1\npersist|fs.suid_dumpable|0\npersist|kernel.dmesg_restrict|1\npersist|kernel.kptr_restrict|1\npersist|kernel.randomize_va_space|2\npersist|net.ipv4.ip_forward|0\npersist|net.ipv4.conf.all.forwarding|0\npersist|net.ipv4.conf.default.forwarding|0\npersist|net.ipv4.conf.all.send_redirects|0\npersist|net.ipv4.conf.default.send_redirects|0\npersist|net.ipv4.conf.all.accept_redirects|0\npersist|net.ipv4.conf.default.accept_redirects|0\npersist|net.ipv4.conf.all.secure_redirects|0\npersist|net.ipv4.conf.default.secure_redirects|0\npersist|net.ipv4.conf.all.accept_source_route|0\npersist|net.ipv4.conf.default.accept_source_route|0\npersist|net.ipv4.conf.all.route_localnet|0\npersist|net.ipv4.conf.default.route_localnet|0\npersist|net.ipv6.conf.all.forwarding|0\npersist|net.ipv6.conf.default.forwarding|0\npersist|net.ipv6.conf.all.accept_redirects|0\npersist|net.ipv6.conf.default.accept_redirects|0\npersist|net.ipv6.conf.all.accept_source_route|0\npersist|net.ipv6.conf.default.accept_source_route|0\npersist|net.ipv6.conf.all.accept_ra|0\npersist|net.ipv6.conf.default.accept_ra|0\npersist|net.ipv4.icmp_ignore_bogus_error_responses|1\npersist|net.ipv4.icmp_echo_ignore_broadcasts|1\npersist|net.ipv4.conf.all.rp_filter|1\npersist|net.ipv4.conf.default.rp_filter|1\npersist|net.ipv4.conf.all.log_martians|1\npersist|net.ipv4.conf.default.log_martians|1\npersist|net.ipv4.tcp_syncookies|1\nend:ok",
+  "pkg_state_raw": "family|rpm\npkg|aide|yes\npkg|at|no\npkg|audit|yes\npkg|audit-libs|yes\npkg|authselect|yes\npkg|autofs|no\npkg|avahi|no\npkg|bind|no\npkg|bluez|no\npkg|chrony|yes\npkg|cockpit-ws|no\npkg|cronie|yes\npkg|cups|no\npkg|cyrus-imapd|no\npkg|dhcp-server|no\npkg|dnsmasq|no\npkg|dovecot|no\npkg|exim|no\npkg|firewalld|yes\npkg|ftp|no\npkg|gdm|no\npkg|gnome-shell|no\npkg|httpd|no\npkg|iptables-services|no\npkg|libpwquality|yes\npkg|mcstrans|no\npkg|net-snmp|no\npkg|nfs-utils|no\npkg|nginx|no\npkg|openldap-clients|no\npkg|pam|yes\npkg|postfix|yes\npkg|rpcbind|no\npkg|rsync-daemon|no\npkg|rsyslog|yes\npkg|rsyslog-gnutls|yes\npkg|rsyslog-openssl|no\npkg|samba|no\npkg|sendmail|no\npkg|setroubleshoot|no\npkg|squid|no\npkg|sudo|yes\npkg|telnet|no\npkg|telnet-server|no\npkg|tftp|no\npkg|tftp-server|no\npkg|ufw|no\npkg|vsftpd|no\npkg|xorg-x11-server-common|no\npkg|xorg-x11-server-Xorg|no\npkg|xorg-x11-server-Xwayland|no\npkgver|pam|1.5.1-21.el9_5\npkgver|authselect|1.2.6-2.el9\npkgver|libpwquality|1.4.4-8.el9\nunit|nftables.service|not-found|inactive|\nunit|systemd-journal-remote.socket|not-found|inactive|\nunit|systemd-journal-remote.service|not-found|inactive|\nunit|cups.socket|not-found|inactive|\nunit|rpcbind.socket|not-found|inactive|\ndefault_target|multi-user.target\nend:ok",
+  "config_raw": "file|crypto_pol\ntxt|crypto_pol|cipher = AES-256-GCM AES-256-CCM CHACHA20-POLY1305 AES-256-CTR AES-128-GCM AES-128-CCM AES-128-CTR\ntxt|crypto_pol|mac = AEAD HMAC-SHA2-256 UMAC-128 HMAC-SHA2-384 HMAC-SHA2-512\ntxt|crypto_pol|hash = SHA2-256 SHA2-384 SHA2-512 SHA3-256 SHA3-384 SHA3-512\ntxt|crypto_pol|sign = ECDSA-SHA2-256 ECDSA-SHA2-384 ECDSA-SHA2-512 EDDSA-ED25519 RSA-PSS-SHA2-256 RSA-SHA2-256\ntxt|crypto_pol|sha1_in_certs = 0\ntxt|crypto_pol|hash@rpm = SHA2-256 SHA2-384 SHA2-512 SHA1\npq_module|no\nfile|dnf\ntxt|dnf|[main]\ntxt|dnf|gpgcheck=1\ntxt|dnf|installonly_limit=3\ntxt|dnf|clean_requirements_on_remove=True\ntxt|dnf|best=True\nfile|faillock\ntxt|faillock|deny = 5\ntxt|faillock|unlock_time = 900\ntxt|faillock|even_deny_root\ntxt|faillock|root_unlock_time = 60\nfile|pwhistory\ntxt|pwhistory|remember = 24\ntxt|pwhistory|enforce_for_root\nauthselect_profile|sssd\nauthselect_check|yes\nchrony_servers|0\nchrony_pools|1\nchrony_options|-F 2\nmta_probe|yes\nmta_listen|127.0.0.1\nmta_listen|[::1]\nmta_inet|localhost\nfw_backend|nftables\nfw_log_denied|off\nfwzone|public|default|default|no|timestamp-reply timestamp-request|eth0\nsu_wheel|sugroup|0\ntxt|augenrules|/sbin/augenrules: No change\naide_conf|yes\naideopt|auditctl|p+i+n+u+g+s+b+acl+xattrs+sha512\naideopt|auditd|p+i+n+u+g+s+b+acl+xattrs+sha512\naideopt|ausearch|p+i+n+u+g+s+b+acl+xattrs+sha512\naideopt|aureport|p+i+n+u+g+s+b+acl+xattrs+sha512\naideopt|autrace|p+i+n+u+g+s+b+acl+xattrs+sha512\naideopt|augenrules|p+i+n+u+g+s+b+acl+xattrs+sha512\naide_report|syslog:LOG_LOCAL0\nend:ok",
+  "perms_raw": "f|ssh_config|0600|root|root|/etc/ssh/sshd_config\nf|ssh_dropin_dir|0700|root|root|/etc/ssh/sshd_config.d\nf|ssh_dropin|0600|root|root|/etc/ssh/sshd_config.d/50-redhat.conf\nf|ssh_hostkey|0640|root|ssh_keys|/etc/ssh/ssh_host_ecdsa_key\nf|ssh_hostkey|0600|root|root|/etc/ssh/ssh_host_ed25519_key\nf|ssh_hostpub|0644|root|root|/etc/ssh/ssh_host_ecdsa_key.pub\nf|ssh_hostpub|0644|root|root|/etc/ssh/ssh_host_ed25519_key.pub\nf|sudoers|0440|root|root|/etc/sudoers\nf|sudoers_d_dir|0750|root|root|/etc/sudoers.d\nf|sudoers_d|0440|root|root|/etc/sudoers.d/admins\nf|critical|0644|root|root|/etc/passwd\nf|critical|0644|root|root|/etc/passwd-\nf|critical|0644|root|root|/etc/group\nf|critical|0644|root|root|/etc/group-\nf|critical|0000|root|root|/etc/shadow\nf|critical|0000|root|root|/etc/shadow-\nf|critical|0000|root|root|/etc/gshadow\nf|critical|0000|root|root|/etc/gshadow-\nf|critical|0644|root|root|/etc/shells\nf|critical|0600|root|root|/etc/security/opasswd\nabsent|critical|/etc/security/opasswd.old\nabsent|cron_yearly|/etc/cron.yearly\nf|rsyslog_conf|0640|root|root|/etc/rsyslog.conf\nf|rsyslog_d|0755|root|root|/etc/rsyslog.d\nf|rsyslog_work|0700|root|root|/var/lib/rsyslog\nf|audit_tool|0755|root|root|/sbin/auditctl\nf|audit_tool|0755|root|root|/sbin/aureport\nf|audit_tool|0755|root|root|/sbin/ausearch\nf|audit_tool|0755|root|root|/sbin/autrace\nf|audit_tool|0755|root|root|/sbin/auditd\nf|audit_tool|0755|root|root|/sbin/augenrules\nf|grub|0600|root|root|/boot/grub2/grub.cfg\nf|grub|0600|root|root|/boot/grub2/grubenv\nf|grub|0600|root|root|/boot/grub2/user.cfg\nf|logf|0600|root|root|/var/log/messages\nf|logf|0600|root|root|/var/log/secure\nf|logf|0664|root|utmp|/var/log/wtmp\nf|logf|0660|root|utmp|/var/log/btmp\nf|logf|0644|root|root|/var/log/dnf.log\nend:ok",
+  "accounts_raw": "sh|root|P|20000|99999|7|\nsh|bin|L|20000|99999|7|\nsh|sync|L|20000|99999|7|\nsh|alice|P|20000|365|7|30\nuid_min|1000\nencrypt_method|SHA512\nshell|/bin/sh\nshell|/bin/bash\nshell|/usr/bin/sh\nshell|/usr/bin/bash\ntmout_ro|/etc/profile.d/cis.sh\ntmout_export|/etc/profile.d/cis.sh\nroot_umask|0027\npathent|root|0755|/usr/local/sbin\npathent|root|0755|/usr/local/bin\npathent|root|0555|/usr/sbin\npathent|root|0555|/usr/bin\nend:ok",
+  "fs_sweep_raw": "priv|/usr/bin/sudo\npriv|/usr/bin/su\npriv|/usr/bin/passwd\ncount|unowned|0\ncount|ungrouped|0\ncount|nosticky|0\ncount|priv|3\ncontainer_storage|unowned|0\ncontainer_storage|ungrouped|0\ncontainer_storage|nosticky|0\ncontainer_storage|priv|0\nend:ok"
+ }
+}

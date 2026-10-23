@@ -1,0 +1,224 @@
+---
+# patch_install.yml — install the patch and reboot if required
+#
+# Implements docs/patch_remediation_lifecycle.md Stage 9 (apply) and the reboot
+# half of the change window.
+#
+# PRECONDITION: the host has been drained. This playbook does NOT drain — it
+# asserts that drain already happened, because a playbook that quietly patches a
+# host still under load is the failure this whole arc exists to prevent.
+#
+# FIX VERSION: taken from patch_worklist.fixed_version. Where that is NULL —
+# which is the current state of every catalog-matched row, because vendor
+# remediation enrichment is not built — this playbook REFUSES to run rather than
+# falling back to "update to latest". "Latest" is not the fix that was assessed,
+# approved and change-recorded; installing it would make the change record a lie.
+#
+# dry_run=yes performs a check-mode transaction and changes nothing.
+#
+# AAP Job Template: "AAC - Patch Install"
+# Credentials: Ansible Vault + Machine    EE: AAC Compliance EE
+
+- name: Resolve the patch work for this host
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - [ "../vars/vault_secrets.yml", "../vars/empty_fallback.yml" ]
+    - ../vars/site_config.yml
+
+  vars:
+    pg_port: "{{ compliance_db_port | default(5432) }}"
+    pg_db: "compliance"
+    pg_user: "postgres"
+    pg_password: "{{ compliance_db_password }}"
+    target_host: "{{ target_hostname | default('') }}"
+    cve_id: "{{ cve | default('') }}"
+
+  tasks:
+
+    - name: Require a target host
+      ansible.builtin.assert:
+        that: target_host | length > 0
+        fail_msg: "target_host must be set (target_hostname is accepted for backward compatibility)."
+
+    - name: Confirm the host was drained before patching
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: "SELECT state FROM patch_traffic_current WHERE hostname = %(host)s"
+        named_args:
+          host: "{{ target_host }}"
+      register: traffic
+
+    - name: Refuse to patch a host that is still in service
+      ansible.builtin.fail:
+        msg: >-
+          {{ target_host }} is '{{ traffic.query_result[0].state | default("in_service") }}'
+          — it is still taking traffic. Patching and rebooting a host under load drops
+          live requests. Run the drain node first, or set allow_in_service_patch=true
+          deliberately if this asset genuinely has no traffic to drain.
+      when:
+        - not (allow_in_service_patch | default(false) | bool)
+        - (traffic.query_result | length == 0) or
+          (traffic.query_result[0].state != 'drained')
+
+    - name: Read the work items for this host
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: |
+          SELECT cve_id, product, installed_version, fixed_version,
+                 package_manager, kev_member
+            FROM patch_worklist
+           WHERE hostname = %(host)s
+             AND (%(cve)s = '' OR cve_id = %(cve)s)
+           ORDER BY kev_member DESC, product
+        named_args:
+          host: "{{ target_host }}"
+          cve: "{{ cve_id }}"
+      register: work
+
+    - name: Stop when there is nothing to patch
+      ansible.builtin.fail:
+        msg: "No work items in patch_worklist for {{ target_host }}. Run the identification node first."
+      when: work.query_result | length == 0
+
+    - name: Split resolved from unresolved work
+      ansible.builtin.set_fact:
+        resolved: "{{ work.query_result | selectattr('fixed_version', 'string')
+                      | rejectattr('fixed_version', 'equalto', '') | list }}"
+        unresolved: "{{ work.query_result | rejectattr('fixed_version', 'string') | list
+                        + (work.query_result | selectattr('fixed_version', 'equalto', '') | list) }}"
+
+    - name: Report the work
+      ansible.builtin.debug:
+        msg:
+          - "Host                 : {{ target_host }}"
+          - "Work items           : {{ work.query_result | length }}"
+          - "With a fix version   : {{ resolved | length }}"
+          - "WITHOUT a fix version: {{ unresolved | length }}"
+
+    - name: Refuse to patch without a resolved fix version
+      ansible.builtin.fail:
+        msg: >-
+          {{ unresolved | length }} of {{ work.query_result | length }} work items have NO
+          fixed_version, and none are resolved. Vendor remediation enrichment
+          (lifecycle §13 build-sequence #1) has not run.
+
+          This playbook will NOT fall back to "update to latest". The change record,
+          the approval and the assurance check all reference a specific version; installing
+          something else makes every one of them inaccurate. Populate
+          cve_vendor_remediations first.
+      when: resolved | length == 0
+
+    - name: Publish the package list for the target play
+      ansible.builtin.set_fact:
+        patch_packages: >-
+          {{ resolved | map(attribute='product') | list }}
+        patch_spec: "{{ resolved }}"
+
+    - name: Warn about items being skipped
+      when: unresolved | length > 0
+      ansible.builtin.debug:
+        msg: >-
+          SKIPPING {{ unresolved | length }} item(s) with no known fix version:
+          {{ unresolved | map(attribute='product') | unique | join(', ') }}.
+          These remain exposed and their SLA clock keeps running.
+
+
+# See the note in patch_backup.yml. `target_hostname` is not set by the workflow or
+# any survey, so this fell back to localhost — meaning the install play targeted the
+# execution environment rather than the host being patched. `dry_run` is what kept
+# that from installing packages into the EE.
+- name: Install the patch on the target  # Falls back to a SENTINEL that matches no host in any inventory — never
+  # 'localhost', because a localhost fallback is what silently ran these plays
+  # inside the execution environment. The gate play above is the real control and
+  # stops the run with a clear message; this is the second line of defence and it
+  # resolves to nothing rather than to the wrong machine.
+  #
+  # A sentinel rather than an empty string because `syntax-check` is unskippable
+  # in ansible-lint: an empty `hosts` is a fatal lint error, and excluding these
+  # files to excuse it would drop lint coverage from the very playbooks that
+  # carried the Jinja defect.
+  hosts: "{{ target_host | default('', true) or target_hostname | default('', true) or '__no_target_host_set__' }}"
+  gather_facts: true
+  become: true
+
+  vars:
+    dry: "{{ dry_run | default('yes') }}"
+
+  tasks:
+
+    - name: Resolve the package specification
+      ansible.builtin.set_fact:
+        spec: "{{ hostvars['localhost'].patch_spec }}"
+
+    - name: Show what will be installed
+      ansible.builtin.debug:
+        msg: "{{ item.product }}: {{ item.installed_version }} → {{ item.fixed_version }} (via {{ item.package_manager }})"
+      loop: "{{ spec }}"
+      loop_control:
+        label: "{{ item.product }}"
+
+    - name: DRY RUN — nothing will be changed
+      when: dry | bool
+      ansible.builtin.debug:
+        msg: >-
+          dry_run is enabled. The package transaction is NOT executed. Set dry_run=no to
+          apply. Everything upstream — ticket, backup, drain — has really happened, so
+          the undrain and close nodes still matter on this path.
+
+    - name: Install the fixed versions
+      when: not (dry | bool)
+      ansible.builtin.package:
+        # Version-pin syntax is per package manager: dnf/yum/zypper take
+        # name-version, apt takes name=version. patch_worklist already
+        # carries package_manager, so use it rather than assuming rpm.
+        name: >-
+          {{ item.product }}{{ "=" if (item.package_manager | default("dnf")) in ["apt", "apt-get"]
+             else "-" }}{{ item.fixed_version }}
+        state: present
+      loop: "{{ spec }}"
+      loop_control:
+        label: "{{ item.product }}-{{ item.fixed_version }}"
+      register: install_result
+
+    - name: Determine whether a reboot is required
+      when: not (dry | bool)
+      ansible.builtin.command: needs-restarting -r
+      register: needs_restart
+      changed_when: false
+      failed_when: false
+
+    - name: Reboot when the patch requires it
+      when:
+        - not (dry | bool)
+        - needs_restart.rc | default(0) != 0
+      ansible.builtin.reboot:
+        msg: "AAC patch lifecycle — reboot to activate patched components"
+        reboot_timeout: "{{ reboot_timeout | default(600) | int }}"
+        post_reboot_delay: 15
+
+    - name: Reboot not required
+      when:
+        - not (dry | bool)
+        - needs_restart.rc | default(0) == 0
+      ansible.builtin.debug:
+        msg: >-
+          needs-restarting reports no reboot required. Skipping it — an unnecessary
+          reboot is an unnecessary outage, and the change window is not free.
+
+    - name: Report the outcome
+      ansible.builtin.debug:
+        msg: >-
+          {{ 'DRY RUN — no change applied.' if (dry | bool)
+             else 'Patch applied. Reboot: ' ~ ('performed' if (needs_restart.rc | default(0) != 0) else 'not required') ~ '.' }}
+          The host is still OUT OF SERVICE — the assurance and undrain nodes follow.

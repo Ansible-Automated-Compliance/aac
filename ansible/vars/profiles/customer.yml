@@ -1,0 +1,44 @@
+---
+# Environment profile: customer remote (customer-provided AAP + external DB)
+#
+# Customer-provided AAP 2.6 (containerized), an EXTERNAL PostgreSQL database,
+# and AAC installed remotely onto customer-designated host(s). This is the
+# classic host:port topology (three OPA containers on 8181/8182/8183), NOT the
+# in-cluster OpenShift service model.
+#
+# All values below are PLACEHOLDERS — set them in install_config.yml. No lab
+# IPs, ever. Secrets come from an AAP credential (or a vault file for CLI runs).
+
+env_profile_name: customer
+topology: containers
+
+# --- AAP (customer-provided) ---
+aap_url: "https://<aap-host>"
+external_aap_url: "https://<aap-host>"
+# Externally reachable OPA routes for host-side consumers (MCP server); same as
+# the in-cluster URLs below when OPA is reachable from the host directly.
+external_opa_compliance_url: "http://<opa-host>:8182"
+aap_admin_user: "admin"
+aap_ssh_user: "<ssh-user>"
+
+# --- OPA (three containers on one host, classic port layout) ---
+opa_security_url:   "http://<opa-host>:8181"
+opa_compliance_url: "http://<opa-host>:8182"
+opa_ot_url:         "http://<opa-host>:8183"
+
+# --- Grafana / MCP ---
+grafana_url: "https://<grafana-host>:3000"
+mcp_url:     "http://<mcp-host>:8004"
+
+# --- PostgreSQL — EXTERNAL customer database (schema-only install) ---
+pg_host: "<db-host>"          # e.g. db-host.example.com
+pg_port: 5432
+pg_user: "<db-owner>"
+pg_db:   "compliance"
+# External DB: do NOT deploy a PostgreSQL container — install the schema only.
+aac_db_skip_container_deploy: true
+
+# --- Execution Environment ---
+ee_image: "quay.io/rh-ee-tcoulter/aac-compliance-ee:v1.3.0"
+
+secret_source: aap_credential

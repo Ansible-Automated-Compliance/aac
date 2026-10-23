@@ -1,0 +1,43 @@
+---
+# Fail on missing credentials BEFORE collecting, not after. A run that
+# gets halfway and then reports everything unavailable costs an operator
+# far more time than one that says up front what is missing.
+
+- name: Require Graph credentials
+  ansible.builtin.assert:
+    that:
+      - (m365_tenant_id | default('', true)) | length > 0
+      - (m365_client_id | default('', true)) | length > 0
+      - (m365_client_secret | default('', true)) | length > 0
+    fail_msg: >-
+      m365_tenant_id, m365_client_id and m365_client_secret are required
+      for every section.
+    quiet: true
+
+- name: Determine which requested sections need PowerShell
+  ansible.builtin.set_fact:
+    m365_powershell_sections: >-
+      {{ m365_sections | intersect(['exchange', 'sharepoint', 'teams', 'purview', 'defender']) }}
+
+- name: Require certificate credentials when a PowerShell section is requested
+  ansible.builtin.assert:
+    that:
+      - (m365_organization | default('', true)) | length > 0
+      - (m365_certificate_path | default('', true)) | length > 0
+      - (m365_certificate_password | default('', true)) | length > 0
+    fail_msg: >-
+      Sections {{ m365_powershell_sections | join(', ') }} are audited through
+      PowerShell, which requires app-only CERTIFICATE authentication -- a
+      client secret does not work for Exchange Online PowerShell. Set
+      m365_organization, m365_certificate_path and
+      m365_certificate_password, or set
+      m365_include_powershell_sections=false to skip them deliberately.
+    quiet: true
+  when:
+    - m365_powershell_sections | length > 0
+    - m365_include_powershell_sections | bool
+
+- name: Record sections skipped by configuration
+  ansible.builtin.set_fact:
+    m365_skipped_sections: >-
+      {{ (m365_powershell_sections if not (m365_include_powershell_sections | bool) else []) }}

@@ -1,0 +1,130 @@
+---
+# deploy_network_simulators.yml — Deploy AAC Network Infrastructure Simulators
+#
+# Deploys a single Python container that simulates four network/storage devices:
+#   :8091 — Cisco IOS-XE router   (CIS violations: telnet, SNMPv1, no banners)
+#   :8092 — Juniper Junos switch   (CIS violations: SNMP v1, BGP no auth, root SSH)
+#   :8093 — Palo Alto PAN-OS FW    (CIS violations: any/any rule, no URL filtering)
+#   :8094 — S3 object storage      (CIS violations: public bucket, no encryption)
+#
+# After deployment, run "AAC - Gather Network Facts" to collect facts into
+# host_facts table, then run any network/CIS assessment against stored data.
+#
+# AAP Job Template: "AAC - Deploy Network Simulators"
+
+- name: Deploy AAC Network Infrastructure Simulators
+  hosts: "{{ target_host | default('aap-controller') }}"
+  gather_facts: false
+  become: true
+
+  vars_files:
+    - [ "{{ playbook_dir }}/../vars/vault_secrets.yml", "{{ playbook_dir }}/../vars/empty_fallback.yml" ]
+    - "{{ playbook_dir }}/../vars/site_config.yml"
+
+  vars:
+    sim_dir:  "/opt/aac-network-sim"
+    sim_dest: "/opt/aac-network-sim/network_sim.py"
+    sim_pid:  "/opt/aac-network-sim/network_sim.pid"
+    sim_log:  "/opt/aac-network-sim/network_sim.log"
+
+  tasks:
+
+    - name: Ensure simulator source directory exists on host
+      file:
+        path: "{{ sim_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Copy simulator script to host
+      copy:
+        src: "{{ playbook_dir }}/../../examples/simulators/network/network_sim.py"
+        dest: "{{ sim_dest }}"
+        mode: "0755"
+
+    - name: Stop existing simulator process (if running)
+      shell: |
+        if [ -f {{ sim_pid }} ]; then
+          kill $(cat {{ sim_pid }}) 2>/dev/null || true
+          rm -f {{ sim_pid }}
+        fi
+        pkill -f "network_sim.py" 2>/dev/null || true
+        sleep 1
+      changed_when: false
+      failed_when: false
+
+    - name: Start network simulator as background process
+      shell: |
+        nohup python3 {{ sim_dest }} > {{ sim_log }} 2>&1 &
+        echo $! > {{ sim_pid }}
+        echo "Started PID $(cat {{ sim_pid }})"
+      register: sim_start
+      changed_when: true
+
+    - name: Check if firewalld is running
+      shell: systemctl is-active firewalld
+      register: firewalld_status
+      changed_when: false
+      failed_when: false
+
+    - name: Open simulator ports in firewalld
+      firewalld:
+        port: "{{ item }}/tcp"
+        permanent: true
+        state: enabled
+        immediate: true
+      loop: [8091, 8092, 8093, 8094]
+      when: firewalld_status.stdout == "active"
+
+    - name: Check if nftables is managing firewall (no firewalld)
+      shell: nft list ruleset 2>/dev/null | grep -c "inet\|ip filter" || echo 0
+      register: nftables_status
+      changed_when: false
+      failed_when: false
+      when: firewalld_status.stdout != "active"
+
+    - name: Open simulator ports via iptables (fallback when no firewalld)
+      shell: |
+        iptables -C INPUT -p tcp --dport {{ item }} -j ACCEPT 2>/dev/null || \
+        iptables -I INPUT -p tcp --dport {{ item }} -j ACCEPT
+      loop: [8091, 8092, 8093, 8094]
+      changed_when: true
+      failed_when: false
+      when: firewalld_status.stdout != "active"
+
+    - name: Verify simulator ports are listening
+      shell: ss -tlnp | grep -E ':(8091|8092|8093|8094)\b'
+      register: port_check
+      changed_when: false
+      failed_when: false
+
+    - name: Show listening ports
+      debug:
+        msg: "{{ port_check.stdout_lines }}"
+
+    - name: Wait for simulators to be ready
+      uri:
+        use_proxy: false
+        url: "http://127.0.0.1:{{ item }}/health"
+        method: GET
+        status_code: 200
+      loop: [8091, 8092, 8093, 8094]
+      register: health_check
+      retries: 10
+      delay: 3
+      until: health_check is not failed
+      ignore_errors: true
+
+    - name: Simulator deployment summary
+      debug:
+        msg:
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "  AAC Network Infrastructure Simulators — Deployed"
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "  :8091  Cisco IOS-XE router   (violations: telnet, SNMPv1)"
+          - "  :8092  Juniper Junos switch  (violations: SNMPv1, BGP no auth)"
+          - "  :8093  Palo Alto firewall    (violations: any/any, no URL filter)"
+          - "  :8094  S3 object storage     (violations: public bucket, no encrypt)"
+          - ""
+          - "  Next: Run 'AAC - Gather Network Facts' to collect into host_facts"
+          - "  Then: Run CIS assessments — no SSH to devices required"
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

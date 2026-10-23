@@ -1,0 +1,102 @@
+---
+# aws_ec2.yml — AWS EC2 dynamic inventory for AAC fact collection
+#
+# Discovers all running EC2 instances across configured regions.
+# Credentials come from the AAP AWS credential (not from this file).
+#
+# Groups created:
+#   aws_ec2          — all EC2 instances
+#   tag_<Name>_<val> — instances by tag value
+#   <region>         — instances by region
+#   linux            — Linux instances (used by aac_gather_facts.yml)
+#   windows          — Windows instances
+
+plugin: amazon.aws.aws_ec2
+
+regions:
+  - us-east-1
+  - us-east-2
+  - us-west-1
+  - us-west-2
+  - eu-central-1
+  - eu-west-1
+  - ap-southeast-2
+
+# Only include running instances
+filters:
+  instance-state-name: running
+
+# Use private IP when available (controller is on same network or VPN),
+# fall back to public IP for instances without private connectivity
+hostnames:
+  - private-ip-address
+  - ip-address
+  - dns-name
+
+# Compose useful variables from AWS instance metadata
+compose:
+  # Stable host ID: use instance ID (doesn't change on stop/start like IP does)
+  aac_host_id:         instance_id
+  aac_cloud_provider:  "'aws'"
+  aac_aws_region:      placement.region
+  aac_aws_az:          placement.availability_zone
+  aac_aws_instance_id: instance_id
+  aac_aws_instance_type: instance_type
+  aac_aws_vpc_id:      vpc_id
+  aac_aws_subnet_id:   subnet_id
+  aac_aws_ami_id:      image_id
+  aac_aws_tags:        tags
+  # Use Name tag as ansible_host display name
+  ansible_host: >-
+    private_ip_address if private_ip_address else public_ip_address
+  # Set correct SSH user per distro:
+  #   Ubuntu AMIs use 'ubuntu', RHEL/Amazon Linux use 'ec2-user'
+  #   Windows uses 'Administrator' but connects via WinRM (not SSH)
+  ansible_user: >-
+    'ubuntu' if (
+      'ubuntu' in tags.get('Name', '').lower() or
+      'ubuntu' in tags.get('OS', '').lower() or
+      'ubuntu' in (image_description | default('')) | lower
+    ) else (
+      'Administrator' if platform == 'windows'
+      else 'ec2-user'
+    )
+  # Windows: force WinRM connection; Linux: SSH
+  ansible_connection: >-
+    'winrm' if platform == 'windows' else 'ssh'
+
+# Dynamic group assignments
+groups:
+  # All AWS instances
+  aws_ec2: true
+
+  # Linux instances (RHEL, Amazon Linux, Ubuntu, Debian, Rocky)
+  linux: >-
+    platform is not defined or platform != 'windows'
+
+  # Windows instances
+  windows: >-
+    platform is defined and platform == 'windows'
+
+  # Group by environment tag
+  aws_production:    "'production' in tags.get('Environment', '').lower()"
+  aws_staging:       "'staging' in tags.get('Environment', '').lower()"
+  aws_development:   "'development' in tags.get('Environment', '').lower() or 'dev' in tags.get('Environment', '').lower()"
+
+  # Compliance lab instances (AAC demo environment)
+  compliance_lab:    "'compliance-lab' in tags.get('Name', '').lower()"
+
+keyed_groups:
+  # Group by region: e.g., us-east-1, eu-central-1
+  - prefix: ""
+    key: placement.region
+
+  # Group by OS platform tag if set
+  - prefix: "os"
+    key: tags.OS
+    separator: "_"
+
+  # Group by environment tag
+  - prefix: "env"
+    key: tags.Environment
+    separator: "_"

@@ -1,0 +1,168 @@
+---
+# build_domain_ee.yml — build any AAC domain execution environment
+#
+# One parameterized build for the domain EEs, instead of a near-identical
+# playbook per EE. Pass `ee_name` and `ee_version`:
+#
+#   ee_name: aac-sovereignty-ee | aac-windows-ee | aac-ami-ee
+#            (also works for aac-policy-tools-ee / aac-zift-ee)
+#
+# ── Two deliberate differences from the older per-EE build playbooks ──
+#
+# 1. ansible-builder runs IN the EE source directory, not on a copy in
+#    /tmp. The older playbooks copy a hardcoded five-file list
+#    (execution-environment.yml, requirements.yml, requirements.txt,
+#    bindep.txt, ansible.cfg) into a temp dir and build there. That
+#    silently breaks any EE using `additional_build_files`, because its
+#    `src:` paths resolve relative to the definition file. Building in
+#    place keeps those paths valid and stops the file list from needing
+#    maintenance.
+#
+# 2. No receptor podman-store load. The older playbooks end by loading the
+#    image into /home/aapuser1/aap/containers/storage.conf — the
+#    pre-CRC layout where AAP ran as podman containers on the RHEL host.
+#    Post-CRC (2026-06-27) AAP runs in OpenShift and pulls EE images from
+#    a registry; that step is now a no-op at best. Those playbooks have
+#    not been updated and still carry it.
+#
+# Platform: linux/amd64 — build MUST run on the amd64 build host, not on
+# an aarch64 Mac.
+#
+# AAP Job Template: "AAC - Build Domain EE" (survey: ee_name, ee_version)
+# Credentials: Ansible Vault, Machine (for delegate_to SSH)
+
+- name: Build an AAC domain execution environment
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - [ "../vars/vault_secrets.yml", "../vars/empty_fallback.yml" ]
+    - ../vars/site_config.yml
+
+  vars:
+    aap_host:      "{{ aac_host }}"
+    aap_user:      "{{ aap_ssh_user }}"
+    ee_registry:   "quay.io/rh-ee-tcoulter"
+    ee_version:    "v0.1.0"
+    ee_source_dir: "{{ playbook_dir }}/../execution-environments/{{ ee_name | default('') }}"
+    ee_image:      "{{ ee_registry }}/{{ ee_name | default('') }}"
+    ee_context:    "/tmp/{{ ee_name | default('ee') }}-context"
+
+  tasks:
+    - name: Require ee_name
+      ansible.builtin.assert:
+        that:
+          - ee_name is defined
+          - ee_name | length > 0
+        fail_msg: >-
+          Pass ee_name, e.g. -e ee_name=aac-ami-ee. Valid values are the
+          directory names under ansible/execution-environments/.
+
+    - name: Confirm the EE definition exists
+      ansible.builtin.stat:
+        path: "{{ ee_source_dir }}/execution-environment.yml"
+      register: ee_def
+
+    - name: Fail clearly when the EE definition is missing
+      ansible.builtin.fail:
+        msg: >-
+          No execution-environment.yml at {{ ee_source_dir }}. Check ee_name
+          matches a directory under ansible/execution-environments/.
+      when: not ee_def.stat.exists
+
+    - name: Install ansible-builder if not present
+      ansible.builtin.command: pip3 install ansible-builder
+      args:
+        creates: /usr/local/bin/ansible-builder
+
+    # chdir into the SOURCE dir so any additional_build_files src: paths
+    # resolve relative to the definition file.
+    - name: Generate the build context with ansible-builder
+      ansible.builtin.command: >-
+        ansible-builder create --context {{ ee_context }}
+      args:
+        chdir: "{{ ee_source_dir }}"
+      environment:
+        HOME: /root
+      register: builder_create
+
+    - name: Add the build host for direct SSH (bypasses the AAP receptor)
+      ansible.builtin.add_host:
+        name: aap_physical_host
+        ansible_host: "{{ aap_host }}"
+        ansible_user: "{{ aap_user }}"
+        ansible_connection: ssh
+        ansible_ssh_common_args: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+
+    - name: Ensure the context directory exists on the build host
+      ansible.builtin.file:
+        path: "{{ ee_context }}"
+        state: directory
+        mode: '0755'
+      delegate_to: aap_physical_host
+
+    - name: Copy the build context to the build host
+      ansible.builtin.copy:
+        src: "{{ ee_context }}/"
+        dest: "{{ ee_context }}/"
+        mode: preserve
+      delegate_to: aap_physical_host
+
+    - name: Build the image with podman
+      ansible.builtin.shell: >-
+        /usr/bin/podman build
+        -f {{ ee_context }}/Dockerfile
+        -t {{ ee_image }}:{{ ee_version }}
+        {{ ee_context }}
+      delegate_to: aap_physical_host
+
+    # Per-EE smoke test. Each domain EE gets one assertion that its reason
+    # for existing actually made it into the image — a build that succeeds
+    # but drops the thing the EE exists for is the failure mode worth
+    # catching here rather than at demo time.
+    - name: Verify the WinRM stack is importable (aac-windows-ee)
+      ansible.builtin.shell: >-
+        /usr/bin/podman run --rm {{ ee_image }}:{{ ee_version }}
+        python3 -c "import winrm, requests_credssp; print('winrm ok')"
+      delegate_to: aap_physical_host
+      register: winrm_check
+      when: ee_name == 'aac-windows-ee'
+
+    - name: Tag latest
+      ansible.builtin.shell: >-
+        /usr/bin/podman tag {{ ee_image }}:{{ ee_version }} {{ ee_image }}:latest
+      delegate_to: aap_physical_host
+
+    - name: Login to the registry
+      ansible.builtin.shell: >-
+        /usr/bin/podman login quay.io
+        -u {{ vault_quay_username }}
+        -p {{ vault_quay_password }}
+      delegate_to: aap_physical_host
+      no_log: true
+
+    - name: Push the versioned tag
+      ansible.builtin.shell: "/usr/bin/podman push {{ ee_image }}:{{ ee_version }}"
+      delegate_to: aap_physical_host
+
+    - name: Push the latest tag
+      ansible.builtin.shell: "/usr/bin/podman push {{ ee_image }}:latest"
+      delegate_to: aap_physical_host
+
+    - name: Clean up the build context on the host
+      ansible.builtin.file:
+        path: "{{ ee_context }}"
+        state: absent
+      delegate_to: aap_physical_host
+
+    - name: Build complete
+      ansible.builtin.debug:
+        msg:
+          - "✅ {{ ee_image }}:{{ ee_version }} built and pushed"
+          - "✅ {{ ee_image }}:latest tagged and pushed"
+          - "{{ 'WinRM: ' ~ (winrm_check.stdout | default('n/a')) if ee_name == 'aac-windows-ee' else '' }}"
+          - "NEXT: register this image as an Execution Environment in AAP,"
+          - "      then point the relevant job templates at it. AAP pulls from"
+          - "      the registry — there is no receptor podman store to load"
+          - "      post-CRC."

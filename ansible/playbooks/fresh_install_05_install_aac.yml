@@ -1,0 +1,180 @@
+---
+# AAC Fresh Install — Phase 5: Install AAC
+#
+# Clones the compliance repo to the target, deploys vault_secrets.yml,
+# creates ~/.vault_pass, then runs:
+#   scripts/install.sh   — deploys OPA containers + PostgreSQL + schema
+#   scripts/configure_aap.sh — creates project, job templates, runs bootstrap
+#
+# Survey variables (required):
+#   target_host            — public IP from Phase 1
+#   new_aap_admin_password — AAP admin password set in Phase 4
+#   vault_password         — vault decryption password (NOT stored in vault)
+#
+# Runtime: ~15-20 minutes
+#
+# AAP Job Template: "AAC - Fresh Install: 05 Install AAC"
+# Credentials: Ansible Vault, Compliance SSH Credential
+# EE: AAC Compliance EE
+
+- name: Install AAC on Target Host
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - [ "../vars/vault_secrets.yml", "../vars/empty_fallback.yml" ]
+    - ../vars/site_config.yml
+
+  vars:
+    target_host:            "{{ target_host }}"
+    new_aap_admin_password: "{{ new_aap_admin_password }}"
+    vault_password:         "{{ vault_password }}"
+    repo_url:   "https://github.com/ansible-automated-compliance/aac.git"
+    repo_dir:   "/home/ec2-user/compliance"
+    repo_branch: "main"
+
+  tasks:
+
+    # ── Clone the compliance repo ──────────────────────────────────────────────
+    - name: Clone compliance repo to target
+      ansible.builtin.git:
+        repo: "{{ repo_url }}"
+        dest: "{{ repo_dir }}"
+        version: "{{ repo_branch }}"
+        force: true
+      delegate_to: "{{ target_host }}"
+      vars:
+        ansible_user: ec2-user
+
+    - name: Verify repo cloned successfully
+      ansible.builtin.shell: |
+        ls {{ repo_dir }}/scripts/install.sh
+        git -C {{ repo_dir }} log --oneline -3
+      delegate_to: "{{ target_host }}"
+      vars:
+        ansible_user: ec2-user
+      register: repo_check
+
+    - name: Show repo state
+      ansible.builtin.debug:
+        msg: "{{ repo_check.stdout_lines }}"
+
+    # ── Deploy Ansible Vault secrets ──────────────────────────────────────────
+    # The vault file from this AAP controller (which has all credentials) is read
+    # and written to the target. This is safe — it remains encrypted.
+    - name: Read vault_secrets.yml from controller
+      ansible.builtin.slurp:
+        src: "{{ playbook_dir }}/../vars/vault_secrets.yml"
+      register: vault_secrets_content
+
+    - name: Deploy vault_secrets.yml to target
+      ansible.builtin.copy:
+        content: "{{ vault_secrets_content.content | b64decode }}"
+        dest: "{{ repo_dir }}/ansible/vars/vault_secrets.yml"
+        owner: ec2-user
+        group: ec2-user
+        mode: '0600'
+      delegate_to: "{{ target_host }}"
+      vars:
+        ansible_user: ec2-user
+      become: true
+
+    - name: Create ~/.vault_pass on target
+      ansible.builtin.copy:
+        content: "{{ vault_password }}"
+        dest: "/home/ec2-user/.vault_pass"
+        owner: ec2-user
+        group: ec2-user
+        mode: '0600'
+      delegate_to: "{{ target_host }}"
+      vars:
+        ansible_user: ec2-user
+      become: true
+
+    # ── Run scripts/install.sh ─────────────────────────────────────────────────
+    # Deploys OPA containers and PostgreSQL with full schema
+    - name: Run install.sh (OPA containers + PostgreSQL)
+      ansible.builtin.shell: |
+        cd {{ repo_dir }}
+        ./scripts/install.sh \
+          --pg-password "$(ansible-vault view ansible/vars/vault_secrets.yml \
+            --vault-password-file ~/.vault_pass 2>/dev/null | \
+            grep compliance_db_password | awk '{print $2}')" \
+          --init-schema \
+          2>&1
+      delegate_to: "{{ target_host }}"
+      vars:
+        ansible_user: ec2-user
+      register: install_result
+      async: 600
+      poll: 15
+
+    - name: Show install.sh output
+      ansible.builtin.debug:
+        msg: "{{ install_result.stdout_lines[-30:] | default(['no output']) }}"
+
+    - name: Fail if install.sh failed
+      ansible.builtin.fail:
+        msg: "scripts/install.sh failed. See output above. Check /var/log/ on target."
+      when: install_result.rc is defined and install_result.rc != 0
+
+    # ── Run scripts/configure_aap.sh ──────────────────────────────────────────
+    # Creates AAP project, templates, runs bootstrap sequence
+    - name: Run configure_aap.sh (create AAP project + templates)
+      ansible.builtin.shell: |
+        cd {{ repo_dir }}
+        ./scripts/configure_aap.sh \
+          --aap-host {{ target_host }} \
+          --aap-password "{{ new_aap_admin_password }}" \
+          2>&1
+      delegate_to: "{{ target_host }}"
+      vars:
+        ansible_user: ec2-user
+      register: configure_result
+      async: 1200
+      poll: 20
+
+    - name: Show configure_aap.sh output
+      ansible.builtin.debug:
+        msg: "{{ configure_result.stdout_lines[-40:] | default(['no output']) }}"
+
+    - name: Fail if configure_aap.sh failed
+      ansible.builtin.fail:
+        msg: "scripts/configure_aap.sh failed. See output above."
+      when: configure_result.rc is defined and configure_result.rc != 0
+
+    # ── Quick sanity check ────────────────────────────────────────────────────
+    - name: Check OPA containers are running
+      ansible.builtin.shell: |
+        podman ps --filter name=opa- --format "{{.Names}}: {{.Status}}"
+      delegate_to: "{{ target_host }}"
+      vars:
+        ansible_user: ec2-user
+      register: opa_status
+
+    - name: Check PostgreSQL is running
+      ansible.builtin.shell: |
+        podman ps --filter name=postgresql --format "{{.Names}}: {{.Status}}"
+      delegate_to: "{{ target_host }}"
+      vars:
+        ansible_user: ec2-user
+      register: pg_status
+
+    - name: "=== Phase 5 Complete ==="
+      ansible.builtin.debug:
+        msg:
+          - "╔══════════════════════════════════════════════════════════╗"
+          - "║               AAC Installation Complete                  ║"
+          - "╚══════════════════════════════════════════════════════════╝"
+          - ""
+          - "  Containers running:"
+          - "{{ opa_status.stdout_lines | map('regex_replace', '^', '    ') | list | join('\n') }}"
+          - "{{ pg_status.stdout_lines | map('regex_replace', '^', '    ') | list | join('\n') }}"
+          - ""
+          - "  AAP:       https://{{ target_host }}"
+          - "  OPA sec:   http://{{ target_host }}:8181/health"
+          - "  OPA comp:  http://{{ target_host }}:8182/health"
+          - "  OPA OT:    http://{{ target_host }}:8183/health"
+          - ""
+          - "  Run Phase 06 (Validate) with target_host = {{ target_host }}"

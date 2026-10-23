@@ -1,0 +1,241 @@
+---
+# migrate_schema_v2.yml — Phase 1 schema migration
+#
+# Adds to compliance_facts: is_baseline, baseline_label
+# Creates: remediation_status, fact_changes, remediation_actions
+#
+# Safe to run multiple times (IF NOT EXISTS / ADD COLUMN IF NOT EXISTS throughout).
+#
+# AAP Job Template: "AAC - Migrate Schema v2"
+# Credentials: Ansible Vault
+
+- name: Migrate compliance database to schema v2
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - [ "../vars/vault_secrets.yml", "../vars/empty_fallback.yml" ]
+    - ../vars/site_config.yml
+
+  vars:
+    pg_password: "{{ compliance_db_password }}"
+
+  tasks:
+
+    # ── Extend compliance_facts ────────────────────────────────────────────────
+
+    - name: Add is_baseline column to compliance_facts
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port | default(5433) }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: "ALTER TABLE compliance_facts ADD COLUMN IF NOT EXISTS is_baseline BOOLEAN DEFAULT false"
+
+    - name: Add baseline_label column to compliance_facts
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port | default(5433) }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: "ALTER TABLE compliance_facts ADD COLUMN IF NOT EXISTS baseline_label VARCHAR(100)"
+
+    - name: Add index for baseline lookups
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port | default(5433) }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: >
+          CREATE INDEX IF NOT EXISTS idx_facts_baseline
+          ON compliance_facts(hostname, is_baseline)
+          WHERE is_baseline = true
+
+    # ── remediation_status ────────────────────────────────────────────────────
+    # One row per host+policy. Updated on every evaluation run.
+    # status lifecycle:
+    #   open → in_progress → resolved (auto when violations=0)
+    #   accepted_risk (sticky — human decision, not auto-cleared)
+    #   needs_reassessment (auto when policy_version changes)
+
+    - name: Create remediation_status table
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port | default(5433) }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: |
+          CREATE TABLE IF NOT EXISTS remediation_status (
+            id               BIGSERIAL PRIMARY KEY,
+            hostname         VARCHAR(255) NOT NULL,
+            policy_name      VARCHAR(255) NOT NULL,
+            policy_version   VARCHAR(100),
+            latest_result_id BIGINT REFERENCES compliance_results(id) ON DELETE SET NULL,
+            status           VARCHAR(20) NOT NULL DEFAULT 'open'
+                             CHECK (status IN (
+                               'open', 'in_progress', 'resolved',
+                               'accepted_risk', 'needs_reassessment'
+                             )),
+            violation_count  INTEGER NOT NULL DEFAULT 0,
+            first_detected   TIMESTAMPTZ NOT NULL DEFAULT now(),
+            last_assessed    TIMESTAMPTZ,
+            resolved_at      TIMESTAMPTZ,
+            owner            VARCHAR(255),
+            due_date         DATE,
+            ticket_id        VARCHAR(100),
+            notes            TEXT,
+            created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+            updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+            UNIQUE (hostname, policy_name)
+          )
+
+    - name: Create indexes on remediation_status
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port | default(5433) }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: |
+          CREATE INDEX IF NOT EXISTS idx_remediation_hostname
+            ON remediation_status(hostname);
+          CREATE INDEX IF NOT EXISTS idx_remediation_policy
+            ON remediation_status(policy_name);
+          CREATE INDEX IF NOT EXISTS idx_remediation_status
+            ON remediation_status(status);
+          CREATE INDEX IF NOT EXISTS idx_remediation_due_date
+            ON remediation_status(due_date)
+            WHERE due_date IS NOT NULL
+
+    # ── fact_changes ──────────────────────────────────────────────────────────
+    # Records diffs between consecutive fact snapshots for a host.
+    # Populated by Phase 2 (drift detection). Schema created now so
+    # Phase 1 queries can left-join against it without errors.
+
+    - name: Create fact_changes table
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port | default(5433) }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: |
+          CREATE TABLE IF NOT EXISTS fact_changes (
+            id                BIGSERIAL PRIMARY KEY,
+            hostname          VARCHAR(255) NOT NULL,
+            previous_facts_id BIGINT REFERENCES compliance_facts(id) ON DELETE SET NULL,
+            current_facts_id  BIGINT REFERENCES compliance_facts(id) ON DELETE SET NULL,
+            detected_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+            changed_keys      JSONB,
+            change_summary    TEXT,
+            is_authorized     BOOLEAN DEFAULT false,
+            change_ticket     VARCHAR(100),
+            authorized_by     VARCHAR(255),
+            authorized_at     TIMESTAMPTZ
+          )
+
+    - name: Create indexes on fact_changes
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port | default(5433) }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: |
+          CREATE INDEX IF NOT EXISTS idx_fact_changes_hostname
+            ON fact_changes(hostname);
+          CREATE INDEX IF NOT EXISTS idx_fact_changes_detected_at
+            ON fact_changes(detected_at DESC);
+          CREATE INDEX IF NOT EXISTS idx_fact_changes_unauthorized
+            ON fact_changes(hostname, detected_at)
+            WHERE is_authorized = false
+
+    # ── remediation_actions ───────────────────────────────────────────────────
+    # Audit trail of every remediation action taken on a host.
+
+    - name: Create remediation_actions table
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port | default(5433) }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: |
+          CREATE TABLE IF NOT EXISTS remediation_actions (
+            id              BIGSERIAL PRIMARY KEY,
+            hostname        VARCHAR(255) NOT NULL,
+            policy_name     VARCHAR(255),
+            action_type     VARCHAR(20)
+                            CHECK (action_type IN (
+                              'reset_to_baseline', 'manual_fix',
+                              'accepted_risk', 'false_positive'
+                            )),
+            facts_before_id BIGINT REFERENCES compliance_facts(id) ON DELETE SET NULL,
+            facts_after_id  BIGINT REFERENCES compliance_facts(id) ON DELETE SET NULL,
+            playbook_used   VARCHAR(255),
+            aap_job_id      INTEGER,
+            performed_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+            performed_by    VARCHAR(255),
+            notes           TEXT
+          )
+
+    - name: Create indexes on remediation_actions
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port | default(5433) }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: |
+          CREATE INDEX IF NOT EXISTS idx_remediation_actions_hostname
+            ON remediation_actions(hostname);
+          CREATE INDEX IF NOT EXISTS idx_remediation_actions_policy
+            ON remediation_actions(policy_name);
+          CREATE INDEX IF NOT EXISTS idx_remediation_actions_performed_at
+            ON remediation_actions(performed_at DESC)
+
+    # ── Verify ────────────────────────────────────────────────────────────────
+
+    - name: Verify new tables exist
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port | default(5433) }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: |
+          SELECT table_name
+          FROM information_schema.tables
+          WHERE table_schema = 'public'
+          ORDER BY table_name
+      register: table_list
+
+    - name: Verify remediation_status columns
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port | default(5433) }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: |
+          SELECT column_name, data_type
+          FROM information_schema.columns
+          WHERE table_name = 'compliance_facts'
+            AND column_name IN ('is_baseline', 'baseline_label')
+          ORDER BY column_name
+      register: new_columns
+
+    - name: Migration summary
+      debug:
+        msg:
+          - "✅ Schema v2 migration complete"
+          - "   Tables: {{ table_list.query_result | map(attribute='table_name') | list | join(', ') }}"
+          - "   New compliance_facts columns: {{ new_columns.query_result | map(attribute='column_name') | list | join(', ') }}"
+          - "   NEW TABLE: remediation_status  (host+policy remediation tracking)"
+          - "   NEW TABLE: fact_changes        (drift detection — Phase 2)"
+          - "   NEW TABLE: remediation_actions (remediation audit trail)"

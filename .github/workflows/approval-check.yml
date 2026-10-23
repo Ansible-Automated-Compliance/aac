@@ -1,0 +1,220 @@
+name: Change Approval Check
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches:
+      - main
+
+jobs:
+  approval-check:
+    name: Validate Approvals
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      # issues:write is required by the "Comment on PR" step below —
+      # github-script's issues.createComment targets the *issues* comment
+      # endpoint even for a pull request, and pull-requests:write does not
+      # cover it. Declaring any permissions block puts Actions in explicit
+      # mode, so a missing grant is a hard 403.
+      issues: write
+      pull-requests: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Get changed files
+        id: changed-files
+        run: |
+          # Get list of changed files in this PR
+          git diff --name-only origin/${{ github.base_ref }}...HEAD > changed_files.txt
+          echo "Changed files:"
+          cat changed_files.txt
+
+      - name: Install OPA
+        run: |
+          curl -L -o opa https://github.com/open-policy-agent/opa/releases/download/v1.10.0/opa_linux_amd64_static
+          chmod +x opa
+          mkdir -p "$RUNNER_TEMP/bin" && mv opa "$RUNNER_TEMP/bin/"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/bin/opa" version
+
+      - name: Check approval policy syntax
+        run: |
+          opa check policies/enforcement/git/
+
+      - name: Check if approval required
+        id: check-approval
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          # Get PR HEAD commit message (not the synthetic merge commit created by Actions)
+          PR_HEAD_MSG=$(git log --pretty=%B "$PR_HEAD_SHA" -1 2>/dev/null \
+            || git log -2 --pretty=%B | tail -n +3)
+
+          # Build input JSON safely using jq to avoid shell injection from commit messages
+          # Do NOT truncate the message. Trailers are conventionally last, so a
+          # `head -n` here silently drops `Approved-By:` on any commit longer
+          # than the limit and the policy sees an unapproved change. Pass the
+          # whole message; jq handles the size and OPA only scans for the
+          # trailer line.
+          jq -n \
+            --arg commit_message "$PR_HEAD_MSG" \
+            --argjson changed_files "$(cat changed_files.txt | jq -R -s -c 'split("\n")[:-1]')" \
+            --arg author "$PR_AUTHOR" \
+            --argjson pr_number "$PR_NUMBER" \
+            '{commit_message: $commit_message, changed_files: $changed_files, author: $author, pr_number: $pr_number}' \
+            > input.json
+
+          echo "Input for OPA:"
+          cat input.json
+
+          # Evaluate approval policy
+          opa eval -d policies/enforcement/git/ -i input.json \
+            'data.corporate.git_approval.decision' --format pretty > decision.json
+
+          echo "OPA Decision:"
+          cat decision.json
+
+          # Check if approved (opa eval --format pretty wraps result at top level)
+          APPROVED=$(jq -r 'if type == "array" then .[0].expressions[0].value.approved else .approved end' decision.json)
+          REQUIRES_APPROVAL=$(jq -r 'if type == "array" then .[0].expressions[0].value.requires_approval else .requires_approval end' decision.json)
+
+          echo "approved=$APPROVED" >> $GITHUB_OUTPUT
+          echo "requires_approval=$REQUIRES_APPROVAL" >> $GITHUB_OUTPUT
+
+      - name: Check PR approvals
+        if: steps.check-approval.outputs.requires_approval == 'true'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+        with:
+          script: |
+            // Allow repository owner to self-approve (single-developer repo)
+            const { data: repoInfo } = await github.rest.repos.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+            });
+            const prAuthor = context.payload.pull_request.user.login;
+            if (prAuthor === repoInfo.owner.login) {
+              core.info(`Repository owner ${prAuthor} — self-approval allowed`);
+              return;
+            }
+
+            const { data: reviews } = await github.rest.pulls.listReviews({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number,
+            });
+
+            const approvedReviews = reviews.filter(r => r.state === 'APPROVED');
+
+            if (approvedReviews.length === 0) {
+              core.setFailed('This PR requires approval from an authorized reviewer');
+            } else {
+              core.info(`PR approved by: ${approvedReviews.map(r => r.user.login).join(', ')}`);
+            }
+
+      - name: Comment on PR
+        if: steps.check-approval.outputs.requires_approval == 'true'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+        with:
+          script: |
+            const fs = require('fs');
+            const raw = JSON.parse(fs.readFileSync('./decision.json', 'utf8'));
+
+            // OPA eval --format pretty wraps result: [{expressions:[{value:{...}}]}]
+            const decisionValue = Array.isArray(raw)
+              ? raw[0]?.expressions?.[0]?.value
+              : raw;
+
+            const protectedPaths = decisionValue?.affected_protected_paths || [];
+            const paths = protectedPaths.map(p => '- `' + p + '`').join('\n');
+
+            const comment = '## 🔐 Approval Required\n\n' +
+              'This PR modifies protected paths and requires approval:\n\n' +
+              paths + '\n\n' +
+              '**Required Actions:**\n' +
+              '1. Request review from an authorized approver\n' +
+              '2. Wait for approval\n' +
+              '3. Checks will pass once approved\n\n' +
+              '**Authorized Approvers:**\n' +
+              '- Security Team\n' +
+              '- Compliance Team\n' +
+              '- Repository Administrators';
+
+            github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: comment
+            });
+
+      - name: Upload decision artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: approval-decision
+          path: decision.json
+
+  policy-validation:
+    name: Validate Policy Changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    if: github.event_name == 'pull_request'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+
+      - name: Install OPA
+        run: |
+          curl -L -o opa https://github.com/open-policy-agent/opa/releases/download/v1.10.0/opa_linux_amd64_static
+          chmod +x opa
+          mkdir -p "$RUNNER_TEMP/bin" && mv opa "$RUNNER_TEMP/bin/"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      - name: Validate Rego syntax
+        run: |
+          echo "Validating Rego policies..."
+          find policies -name "*.rego" -exec opa check {} \;
+
+      # The library tests itself on every library change (rego_policy_libraries
+      # CI). Here the pinned library is exercised through the compliance suites:
+      # thousands of library cases on a 2-core runner hit the per-test timeout
+      # and blocked every PR once the pin grew (2026-10-19).
+      - name: Run the compliance suites against the pinned library
+        run: |
+          for suite in unit_tests.rego comprehensive_test_suite.rego integration_tests.rego performance_tests.rego; do
+            echo "== tests/$suite"
+            opa test policies/ --ignore ".github" --ignore converters --ignore "*_test.rego" --ignore "test_*.rego" "tests/$suite" --timeout 60s
+          done
+
+      # A pointer bump must land on a commit the library has merged, not a
+      # branch tip that may be rewritten or never merged.
+      - name: Pinned library commit is on the library's main
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          pin=$(git ls-tree HEAD policies | awk '{print $3}')
+          # The submodule checkout has neither history nor origin/main, so ask
+          # GitHub: "behind" or "identical" means main already contains the pin.
+          status=$(curl -sS -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/ynotbhatc/rego_policy_libraries/compare/main...$pin" \
+            | python3 -c 'import sys,json; print(json.load(sys.stdin).get("status","unknown"))')
+          echo "pin $pin vs rego_policy_libraries main: $status"
+          case "$status" in
+            identical|behind) ;;
+            *) echo "::error::policies pin $pin is not on rego_policy_libraries main (compare status: $status)"; exit 1 ;;
+          esac
+
+      - name: Format check
+        run: |
+          echo "Checking Rego formatting..."
+          find policies -name "*.rego" -exec opa fmt --fail {} \;

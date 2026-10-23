@@ -1,0 +1,52 @@
+---
+# Sentinel Pre-flight Gate — include_tasks version
+#
+# Drop this at the top of any AAP playbook to validate it against OPA
+# before execution proceeds. If OPA denies, the job fails immediately.
+#
+# Usage:
+#   tasks:
+#     - name: Sentinel pre-flight check
+#       include_tasks: ../tasks/aac_comply_preflight.yml
+#       vars:
+#         sentinel_playbook_path: "{{ playbook_dir }}/this_playbook.yml"
+#         sentinel_environment:   "production"
+#
+# Required vars (set before include or via job template extra_vars):
+#   sentinel_playbook_path  — absolute path to the playbook file being executed
+#   sentinel_environment    — "production" | "staging" | "development"
+
+- name: "[Sentinel] Load playbook for pre-flight validation"
+  set_fact:
+    _sentinel_plays: "{{ lookup('file', sentinel_playbook_path) | from_yaml }}"
+    _sentinel_env:   "{{ sentinel_environment | default('production') }}"
+
+- name: "[Sentinel] Evaluate playbook against OPA"
+  uri:
+    use_proxy: false
+    url: "{{ sentinel_opa_url | default(opa_compliance_url) }}/v1/data/sentinel/ansible/result"
+    method: POST
+    body_format: json
+    body:
+      input:
+        plays:       "{{ _sentinel_plays }}"
+        environment: "{{ _sentinel_env }}"
+    return_content: true
+    status_code: 200
+    validate_certs: false
+  register: _sentinel_opa_response
+
+- name: "[Sentinel] Extract result"
+  set_fact:
+    _sentinel_result: "{{ _sentinel_opa_response.json.result }}"
+
+- name: "[Sentinel] Report pre-flight result"
+  debug:
+    msg: "Sentinel pre-flight: {{ 'ALLOW ✅' if _sentinel_result.allow else 'DENY ❌' }} — {{ _sentinel_result.violation_count }} violation(s)"
+
+- name: "[Sentinel] BLOCK execution — policy violations detected"
+  fail:
+    msg: |
+      SENTINEL PRE-FLIGHT DENY: {{ _sentinel_result.violation_count }} violation(s) block execution.
+      {{ _sentinel_result.violations | to_nice_yaml }}
+  when: not _sentinel_result.allow | bool

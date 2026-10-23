@@ -1,0 +1,171 @@
+# opa-routing — AO decision/routing OPA
+
+The `opa-routing` OPA instance (namespace `aac-policy`, service `opa-routing:8181`,
+image `openpolicyagent/opa:0.70.0-static`) is the policy brain the **Automation
+Orchestrator** golden-image and GPU-flex workflows call at their decision node. It is
+separate from the three assessment OPAs in namespace `aac` (security / compliance / ot)
+and holds only AAC-specific *routing* logic — never vendor-neutral library policy, which
+lives in the `policies/` submodule.
+
+These are the source-of-truth copies. The running container loads them from the
+`routing-policy` ConfigMap; keep this directory and the ConfigMap in sync.
+
+Two further routing policies used by the Mythos patch demonstration (agent-score validation and composed routing over converged scores) are not included in this release.
+
+## Policies
+
+| File | Package / entrypoint | Purpose |
+|---|---|---|
+| `policies/routing.rego` | base routing | shared routing helpers used by the AO demos |
+| `policies/drift_routing.rego` | `aac.golden.routing` → `decision` | golden-image drift → `route ∈ {none, auto, approve, investigate, hold}` (`none` = no drift observed, nothing to roll back) |
+| `policies/gpuflex_routing.rego` | GPU cross-domain flex | routing for the GPU capacity-dispatch demo |
+| `policies/golden_config.json` | `data.aac.golden.config` | editable data the drift policy reads (see below) |
+| `policies/tanium_drift_routing.rego` | `aac.tanium.drift_routing` → `decision` | Tanium-comparison governed drift → `route ∈ {compliant, auto_remediate, approve_remediate}`; fail-closed to a human |
+| `policies/ami_routing.rego` | `aac.ami.routing` → `decision` | AMI Golden Meter: meter variance + bad-actor triage → rollback / approve / CIP-008 incident |
+
+**Captured 2026-10-08:** the last four files existed only in the live `routing-policy` ConfigMap
+(deployment revision 15, 2026-10-07). They were captured byte-identical and then **hardened in the
+same PR** (review of #778), so this directory is now *ahead* of the lab ConfigMap until the loader
+job runs again:
+
+- `tanium_drift_routing` — total boolean normalization plus an `invalid_input` guard: a malformed
+  fact (`"yes"`, `1`, `[]`) or an absent `any_drift` can no longer reach `compliant` or
+  `auto_remediate`; both land on `approve_remediate` with the reason recorded.
+- `ami_routing` — `bad_actor_suspected` is accepted as native `true` **or** the templated string
+  `"true"` (the AO body quotes it); a malformed flag routes to `approve`, never `auto`. If the
+  asset-criticality gate (`data.aac.ami.gate`) is not loaded, the asset is treated as critical.
+  **That gate is not in this directory or the ConfigMap today**, so the AMI auto-rollback path
+  routes to `approve` until the gate policy is versioned and loaded.
+
+Every route of all five decision policies is covered by `policies/tests/` (`opa test`, run in CI by
+"Validate AO Routing Policies"). The six AO workflows that call them are exported under
+[`../ao/`](../ao/README.md).
+
+## Managed-change / rollback-pause (the `hold` route)
+
+`drift_routing.rego` reads an editable data document, seeded from `golden_config.json`:
+
+```json
+{ "aac": { "golden": { "config": {
+  "rollback_paused": false,
+  "authorized_change_hosts": []
+} } } }
+```
+
+`route == "hold"` wins over `auto`/`approve`/`investigate` when **either**:
+
+- `rollback_paused` is `true` — a global enforcement freeze (maintenance window), **or**
+- the drifting host (`facts.target_host`) is in `authorized_change_hosts` — a per-host
+  authorized-change window.
+
+A `hold` means drift was observed but enforcement is intentionally suspended: the AO
+workflow **records** it (opens a `HELD_MANAGED_CHANGE` help-desk record) and does **not**
+roll back work-in-progress. When the config returns to the default, enforcement resumes
+automatically on the next run.
+
+> The policy references the config leaves directly with defaults
+> (`default rollback_paused := false` …). Reading the parent `data.aac.golden` would pull
+> in this package (which lives under `data.aac.golden.routing`) and raise a recursion error.
+
+## Flipping the pause
+
+Use the job template **"AAC - Golden Image: Set Rollback Pause"**, backed by
+`ansible/playbooks/golden_image_set_rollback_pause.yml`. Survey variables:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `rollback_paused` | `no` | global freeze on/off |
+| `authorized_change_hosts` | `""` | comma-separated hosts under an authorized change |
+
+The playbook writes the document via the OPA Data API (`PUT /v1/data/aac/golden/config`)
+— a **live** change, effective immediately, no pod restart — **and**, when the
+`OpenShift In-Cluster (aac-demo-runner)` credential is attached to the job, also persists
+the same state into the `routing-policy` ConfigMap so it **survives a pod restart**.
+
+**Durability:** the live PUT alone lives in OPA's in-memory store and is lost if the
+`opa-routing` pod restarts. The ConfigMap holds the durable copy OPA reloads at startup.
+With the OpenShift credential attached, the toggle patches both, so an active
+change-window is not silently undone by a restart. Without the credential the toggle
+applies the live change and warns that it is not durable.
+
+## Deploy / reload the ConfigMap
+
+**Automated (preferred):** the **"AAC - Load OPA Routing Policies"** job template
+(`ansible/playbooks/load_opa_routing.yml`) patches the ConfigMap from the versioned
+policies in this directory and rolls `opa-routing` so OPA reloads them — this is what
+keeps the running policy from diverging from the repo. It uses the least-privilege RBAC
+in `deploy/rbac.yaml` (the `aac-demo-runner` SA may patch **only** the `routing-policy`
+ConfigMap and `opa-routing` Deployment). Apply the RBAC once as a cluster-admin:
+
+```bash
+oc apply -f ansible/opa-routing/deploy/rbac.yaml
+```
+
+**Manual (cluster-admin fallback):**
+
+```bash
+oc create configmap routing-policy -n aac-policy \
+  --from-file=routing.rego=policies/routing.rego \
+  --from-file=drift_routing.rego=policies/drift_routing.rego \
+  --from-file=gpuflex_routing.rego=policies/gpuflex_routing.rego \
+  --from-file=tanium_drift_routing.rego=policies/tanium_drift_routing.rego \
+  --from-file=ami_routing.rego=policies/ami_routing.rego \
+  --from-file=golden_config.json=policies/golden_config.json \
+  --dry-run=client -o yaml | oc apply -f -
+
+oc rollout restart deploy/opa-routing -n aac-policy
+```
+
+The deployment loads every file explicitly (order matters — data file last). The file list in the
+Deployment args, in `routing_files` of `ansible/playbooks/load_opa_routing.yml` and in the recipe
+above must be the same five `.rego` files; a policy missing from any of them is one a fresh
+environment never loads, and the AO endpoint that calls it returns an empty result:
+
+```
+opa run --server --addr=0.0.0.0:8181 --log-level=info --set=decision_logs.console=true \
+  /policies/routing.rego /policies/drift_routing.rego /policies/gpuflex_routing.rego \
+  /policies/tanium_drift_routing.rego /policies/ami_routing.rego \
+  /policies/golden_config.json
+```
+
+Check what the running Deployment actually lists:
+
+```bash
+oc -n aac-policy get deploy opa-routing -o jsonpath='{.spec.template.spec.containers[0].args}'
+```
+
+## Verify
+
+`opa-routing` has no external route and the OPA image has no shell/curl — probe it with a
+throwaway pod:
+
+```bash
+oc run tmp -n aac-policy --rm -i --restart=Never \
+  --image=registry.access.redhat.com/ubi9/ubi-minimal --command -- \
+  curl -s http://opa-routing.aac-policy.svc.cluster.local:8181/v1/data/aac/golden/config
+
+# The GET above shows the DEFAULT config (rollback_paused=false, no hosts), under
+# which a decision returns "auto" — NOT "hold". To see a hold you must first
+# enable a hold condition. Authorize the host (live PUT), then decide:
+oc run tmp -n aac-policy --rm -i --restart=Never \
+  --image=registry.access.redhat.com/ubi9/ubi-minimal --command -- \
+  curl -s -X PUT -d '{"rollback_paused":false,"authorized_change_hosts":["demo-rhel9"]}' \
+  http://opa-routing.aac-policy.svc.cluster.local:8181/v1/data/aac/golden/config
+
+# now a decision for that host → expect "hold"
+oc run tmp -n aac-policy --rm -i --restart=Never \
+  --image=registry.access.redhat.com/ubi9/ubi-minimal --command -- \
+  curl -s -X POST -d '{"input":{"facts":{"any_drift":true,"target_host":"demo-rhel9"}}}' \
+  http://opa-routing.aac-policy.svc.cluster.local:8181/v1/data/aac/golden/routing/decision
+
+# restore the safe default when done
+oc run tmp -n aac-policy --rm -i --restart=Never \
+  --image=registry.access.redhat.com/ubi9/ubi-minimal --command -- \
+  curl -s -X PUT -d '{"rollback_paused":false,"authorized_change_hosts":[]}' \
+  http://opa-routing.aac-policy.svc.cluster.local:8181/v1/data/aac/golden/config
+```
+
+> Offline check (no cluster): `opa test ansible/opa-routing/policies/` exercises every route of
+> all five decision policies — golden-image drift (pause, per-host hold, approve, fail-closed
+> baseline), Tanium drift, AMI meter routing, Mythos score validation and the composed Mythos
+> route — including the malformed-input cases that must never reach an automatic action.

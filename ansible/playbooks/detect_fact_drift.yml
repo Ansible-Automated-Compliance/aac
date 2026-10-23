@@ -1,0 +1,415 @@
+---
+# detect_fact_drift.yml — Phase 2 database-driven drift detection
+#
+# Compares the two most recent fact snapshots for each host using a Python
+# diff engine. Stores structured diffs in fact_changes with:
+#   - changed_keys JSONB: machine-readable per-path changes
+#   - change_summary TEXT: human-readable description
+#   - is_authorized: false by default (security team must authorize)
+#
+# Complements the EDA file-watch rulebook (extensions/eda/rulebooks/compliance_drift_detection.yml):
+#   EDA      = real-time file events on monitored hosts (requires EDA agent)
+#   This job = scheduled diff of stored fact snapshots (no agent required,
+#              works on any host that has had facts collected via AAC)
+#
+# After detecting drift, this playbook optionally triggers evaluate_stored_facts
+# so you immediately see the compliance impact of each change.
+#
+# AAP Job Template: "AAC - Detect Fact Drift"
+# Credentials: Ansible Vault
+# EE: AAC Compliance EE
+# Survey:
+#   target_hostname      — specific hostname or "all" (default: all)
+#   reassess_on_drift    — run evaluate_stored_facts for drifted hosts (default: true)
+
+- name: Detect configuration drift from stored fact snapshots
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - [ "../vars/vault_secrets.yml", "../vars/empty_fallback.yml" ]
+    - ../vars/site_config.yml
+
+  vars:
+    pg_password: "{{ compliance_db_password }}"
+    # target_hostname: <set via extra_vars / survey / inventory>   # default 'all'
+    # reassess_on_drift: <set via extra_vars / survey / inventory>   # default 'true'
+
+    # Paths in facts_data that are security-relevant — changes here are flagged
+    # with severity in the fact_changes record.
+    # Format: "dot.path.in.facts_data": "severity"
+    security_paths:
+      custom_facts.sshd_config_raw:    critical
+      custom_facts.sudoers_raw:        critical
+      custom_facts.auditd_rules_raw:   critical
+      custom_facts.firewall_raw:       critical
+      custom_facts.users_raw:          critical
+      custom_facts.mac_status_raw:     critical
+      ansible_facts.selinux:           critical
+      custom_facts.pam_config_raw:     high
+      custom_facts.password_aging_raw: high
+      custom_facts.pwquality_conf_raw: high
+      custom_facts.auditd_conf_raw:    high
+      custom_facts.grub_raw:           high
+      custom_facts.kernel_modules_raw: high
+      custom_facts.suid_sgid_files:    medium
+      custom_facts.world_writable_files: medium
+      ansible_facts.mounts:            medium
+      ansible_facts.services:          medium
+
+  tasks:
+
+    # ── Step 1: Find host pairs that have unprocessed changes ─────────────────
+
+    - name: Query unprocessed snapshot pairs (checksum changed, not yet in fact_changes)
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port | default(5433) }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: |
+          SELECT
+            curr.hostname,
+            prev.id          AS prev_id,
+            curr.id          AS curr_id,
+            prev.checksum    AS prev_checksum,
+            curr.checksum    AS curr_checksum,
+            prev.collection_timestamp AS prev_collected,
+            curr.collection_timestamp AS curr_collected,
+            prev.facts_data  AS prev_data,
+            curr.facts_data  AS curr_data
+          FROM (
+            SELECT DISTINCT ON (hostname)
+              id, hostname, checksum, collection_timestamp, facts_data
+            FROM compliance_facts
+            {% if (target_hostname | default('all', true)) != 'all' %}
+            WHERE hostname = %s
+            {% endif %}
+            ORDER BY hostname, collection_timestamp DESC
+          ) curr
+          JOIN LATERAL (
+            SELECT id, hostname, checksum, collection_timestamp, facts_data
+            FROM compliance_facts
+            WHERE hostname = curr.hostname
+              AND id < curr.id
+            ORDER BY collection_timestamp DESC
+            LIMIT 1
+          ) prev ON true
+          WHERE curr.checksum != prev.checksum
+            AND NOT EXISTS (
+              SELECT 1 FROM fact_changes fc
+              WHERE fc.previous_facts_id = prev.id
+                AND fc.current_facts_id  = curr.id
+            )
+          ORDER BY curr.hostname
+        positional_args: >-
+          {%- set args = [] -%}
+          {%- if (target_hostname | default('all', true)) != 'all' -%}{{ args.append((target_hostname | default('all', true))) or '' }}{%- endif -%}
+          {{ args }}
+      register: pairs_query
+
+    - name: Report scope
+      debug:
+        msg: "Found {{ pairs_query.query_result | length }} host(s) with unprocessed fact changes: {{ pairs_query.query_result | map(attribute='hostname') | list | join(', ') if pairs_query.query_result else 'none' }}"
+
+    - name: End play if nothing to process
+      meta: end_play
+      when: pairs_query.query_result | length == 0
+
+    # ── Step 2: Write Python diff engine to temp file (once) ──────────────────
+
+    - name: Write Python diff engine
+      copy:
+        dest: /tmp/aac_drift_compare.py
+        content: |
+          #!/usr/bin/env python3
+          """
+          AAC Fact Drift Comparison Engine
+          Compares two compliance_facts snapshots and returns a structured diff.
+          Paths listed in SECURITY_PATHS are flagged with severity levels.
+          """
+          import json
+          import sys
+
+          SECURITY_PATHS = {
+              "custom_facts.sshd_config_raw":       "critical",
+              "custom_facts.sudoers_raw":            "critical",
+              "custom_facts.auditd_rules_raw":       "critical",
+              "custom_facts.firewall_raw":           "critical",
+              "custom_facts.users_raw":              "critical",
+              "custom_facts.mac_status_raw":         "critical",
+              "ansible_facts.selinux":               "critical",
+              "custom_facts.pam_config_raw":         "high",
+              "custom_facts.password_aging_raw":     "high",
+              "custom_facts.pwquality_conf_raw":     "high",
+              "custom_facts.auditd_conf_raw":        "high",
+              "custom_facts.grub_raw":               "high",
+              "custom_facts.kernel_modules_raw":     "high",
+              "custom_facts.suid_sgid_files":        "medium",
+              "custom_facts.world_writable_files":   "medium",
+              "ansible_facts.mounts":                "medium",
+              "ansible_facts.services":              "medium",
+          }
+
+          EXCLUDE_TOP_KEYS = {"collection_timestamp", "schema_version"}
+
+          SEVERITY_RANK = {"critical": 4, "high": 3, "medium": 2, "low": 1, "none": 0}
+
+
+          def get_severity(path):
+              for sec_path, sev in SECURITY_PATHS.items():
+                  if path == sec_path or path.startswith(sec_path + "."):
+                      return sev
+              return None
+
+
+          def compare_values(old, new, path):
+              """Recursively compare two values and return a list of change records."""
+              changes = []
+
+              if isinstance(old, dict) and isinstance(new, dict):
+                  all_keys = sorted(set(old) | set(new))
+                  for k in all_keys:
+                      if k in EXCLUDE_TOP_KEYS and not path:
+                          continue
+                      child_path = f"{path}.{k}" if path else k
+                      if k not in old:
+                          changes.append({"path": child_path, "type": "added"})
+                      elif k not in new:
+                          changes.append({"path": child_path, "type": "removed"})
+                      else:
+                          changes.extend(compare_values(old[k], new[k], child_path))
+
+              elif isinstance(old, list) and isinstance(new, list):
+                  if old != new:
+                      added   = [x for x in new if x not in old]
+                      removed = [x for x in old if x not in new]
+                      if added or removed:
+                          changes.append({
+                              "path":            path,
+                              "type":            "list_changed",
+                              "added_count":     len(added),
+                              "removed_count":   len(removed),
+                              "added_sample":    [str(x)[:120] for x in added[:5]],
+                              "removed_sample":  [str(x)[:120] for x in removed[:5]],
+                          })
+
+              else:
+                  if old != new:
+                      old_str = str(old)
+                      new_str = str(new)
+                      record = {"path": path, "type": "modified"}
+                      if len(old_str) > 200 or len(new_str) > 200:
+                          # Large config file — record lengths, not full values
+                          record["old_length"] = len(old_str)
+                          record["new_length"] = len(new_str)
+                          record["changed"]    = True
+                      else:
+                          record["old_value"] = old_str[:150]
+                          record["new_value"] = new_str[:150]
+                      changes.append(record)
+
+              return changes
+
+
+          def main():
+              with open(sys.argv[1]) as f:
+                  old_data = json.load(f)
+              with open(sys.argv[2]) as f:
+                  new_data = json.load(f)
+
+              changes = compare_values(old_data, new_data, "")
+
+              # Annotate with severity
+              annotated = []
+              for c in changes:
+                  sev = get_severity(c["path"])
+                  annotated.append({**c, "severity": sev} if sev else c)
+
+              security_changes = [c for c in annotated if c.get("severity")]
+              highest_sev = max(
+                  (SEVERITY_RANK.get(c.get("severity", "none"), 0) for c in security_changes),
+                  default=0
+              )
+              highest_sev_label = next(
+                  (k for k, v in SEVERITY_RANK.items() if v == highest_sev),
+                  "none"
+              )
+
+              # Build human-readable summary
+              if not changes:
+                  summary = "No changes detected"
+              else:
+                  parts = []
+                  critical_paths = sorted({c["path"] for c in security_changes if c.get("severity") == "critical"})
+                  high_paths     = sorted({c["path"] for c in security_changes if c.get("severity") == "high"})
+                  medium_paths   = sorted({c["path"] for c in security_changes if c.get("severity") == "medium"})
+                  if critical_paths:
+                      parts.append("CRITICAL: " + ", ".join(p.split(".")[-1] for p in critical_paths))
+                  if high_paths:
+                      parts.append("HIGH: " + ", ".join(p.split(".")[-1] for p in high_paths))
+                  if medium_paths:
+                      parts.append("MEDIUM: " + ", ".join(p.split(".")[-1] for p in medium_paths))
+                  non_sec = len(changes) - len(security_changes)
+                  if non_sec > 0:
+                      parts.append(f"{non_sec} non-security change(s)")
+                  summary = "; ".join(parts)
+
+              print(json.dumps({
+                  "total_changes":         len(changes),
+                  "security_change_count": len(security_changes),
+                  "highest_severity":      highest_sev_label,
+                  "has_security_changes":  len(security_changes) > 0,
+                  "changes":              annotated[:100],   # cap at 100 records
+                  "change_summary":        summary,
+              }))
+
+
+          if __name__ == "__main__":
+              main()
+        mode: '0755'
+
+    # ── Step 3: For each pair, write fact files and run diff ───────────────────
+
+    - name: Write previous facts to temp file
+      copy:
+        content: "{{ item.prev_data | to_json }}"
+        dest: "/tmp/drift_prev_{{ item.prev_id }}.json"
+      loop: "{{ pairs_query.query_result }}"
+      loop_control:
+        label: "{{ item.hostname }} (prev {{ item.prev_id }})"
+
+    - name: Write current facts to temp file
+      copy:
+        content: "{{ item.curr_data | to_json }}"
+        dest: "/tmp/drift_curr_{{ item.curr_id }}.json"
+      loop: "{{ pairs_query.query_result }}"
+      loop_control:
+        label: "{{ item.hostname }} (curr {{ item.curr_id }})"
+
+    - name: Run diff comparison for each host
+      shell: >
+        python3 /tmp/aac_drift_compare.py
+        /tmp/drift_prev_{{ item.prev_id }}.json
+        /tmp/drift_curr_{{ item.curr_id }}.json
+      loop: "{{ pairs_query.query_result }}"
+      loop_control:
+        label: "{{ item.hostname }}"
+      register: diff_results
+
+    # ── Step 4: Store diffs in fact_changes ───────────────────────────────────
+
+    - name: Insert drift records into fact_changes
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port | default(5433) }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: |
+          INSERT INTO fact_changes
+            (hostname, previous_facts_id, current_facts_id,
+             detected_at, changed_keys, change_summary, is_authorized)
+          VALUES (%s, %s, %s, now(), %s::jsonb, %s, false)
+          RETURNING id
+        positional_args:
+          - "{{ item.item.hostname }}"
+          - "{{ item.item.prev_id }}"
+          - "{{ item.item.curr_id }}"
+          - "{{ item.stdout }}"
+          - "{{ (item.stdout | from_json).change_summary }}"
+      loop: "{{ diff_results.results }}"
+      loop_control:
+        label: "{{ item.item.hostname }}"
+      when: (item.stdout | from_json).total_changes > 0
+      register: insert_results
+
+    # ── Step 5: Report findings ────────────────────────────────────────────────
+
+    - name: Build drift summary
+      set_fact:
+        drift_summary: >-
+          {%- set items = [] -%}
+          {%- for r in diff_results.results -%}
+            {%- set diff = r.stdout | from_json -%}
+            {%- if diff.total_changes > 0 -%}
+              {{- items.append({
+                'hostname': r.item.hostname,
+                'total_changes': diff.total_changes,
+                'security_changes': diff.security_change_count,
+                'severity': diff.highest_severity,
+                'summary': diff.change_summary
+              }) or '' -}}
+            {%- endif -%}
+          {%- endfor -%}
+          {{ items }}
+
+    - name: Print drift report
+      debug:
+        msg: |
+          ══════════════════════════════════════════════════════════════════
+          AAC FACT DRIFT DETECTION REPORT
+          {{ ansible_date_time.iso8601 | default('') }}
+          Hosts scanned: {{ pairs_query.query_result | length }}
+          Hosts with changes: {{ drift_summary | length }}
+          ══════════════════════════════════════════════════════════════════
+
+          {% if drift_summary | length == 0 %}
+          ✅ No configuration drift detected.
+          {% else %}
+          {% for item in drift_summary %}
+          {{ '[!!CRITICAL]' if item.severity == 'critical' else '[! HIGH   ]' if item.severity == 'high' else '[  MEDIUM ]' if item.severity == 'medium' else '[  INFO   ]' }}
+          Host:     {{ item.hostname }}
+          Changes:  {{ item.total_changes }} total ({{ item.security_changes }} security-relevant)
+          Severity: {{ item.severity | upper }}
+          Detail:   {{ item.summary }}
+          Action:   Run 'AAC - Drift Report' to review; 'AAC - Authorize Change' to mark as approved
+
+          {% endfor %}
+          {% endif %}
+          All changes marked is_authorized=false pending review.
+          Unauthorized changes will appear in AAC - Drift Report.
+          ══════════════════════════════════════════════════════════════════
+
+    # ── Step 6: Optionally re-evaluate compliance for drifted hosts ───────────
+
+    - name: Re-evaluate compliance for hosts with security-relevant drift
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port | default(5433) }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: |
+          UPDATE remediation_status
+          SET status = 'needs_reassessment',
+              notes  = COALESCE(notes, '') || E'\n[' || now()::date || '] Drift detected: ' || %s,
+              updated_at = now()
+          WHERE hostname = %s
+            AND status NOT IN ('accepted_risk', 'resolved')
+        positional_args:
+          - "{{ item.summary | truncate(100) }}"
+          - "{{ item.hostname }}"
+      loop: "{{ drift_summary }}"
+      loop_control:
+        label: "{{ item.hostname }}"
+      when:
+        - drift_summary | length > 0
+        - item.security_changes | int > 0
+
+    # ── Step 7: Cleanup temp files ────────────────────────────────────────────
+
+    - name: Remove temp fact files
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop: >-
+        {%- set files = ['/tmp/aac_drift_compare.py'] -%}
+        {%- for p in pairs_query.query_result -%}
+          {{- files.append('/tmp/drift_prev_' ~ p.prev_id ~ '.json') or '' -}}
+          {{- files.append('/tmp/drift_curr_' ~ p.curr_id ~ '.json') or '' -}}
+        {%- endfor -%}
+        {{ files }}
+      failed_when: false

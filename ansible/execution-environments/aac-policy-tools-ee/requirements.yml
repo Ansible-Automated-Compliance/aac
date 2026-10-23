@@ -1,0 +1,14 @@
+---
+# Minimal collection set for the trivy + kubescape playbooks.
+# Only what's actually called from those two playbooks:
+#   - community.postgresql.postgresql_query  (record_to_db)
+#   - ansible.builtin.*                       (file, command, set_fact, debug)
+#
+# We intentionally do NOT pull in infra.aap_configuration, amazon.aws,
+# ansible.windows, etc. — those are AAC-core EE concerns and would bloat
+# this image without adding value to the K8s/Dockerfile assessment flow.
+collections:
+  - name: community.postgresql
+    version: ">=3.0.0"
+  - name: community.general
+    version: ">=8.0.0"

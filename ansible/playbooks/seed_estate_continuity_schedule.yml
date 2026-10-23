@@ -1,0 +1,303 @@
+---
+# seed_estate_continuity_schedule.yml
+#
+# Creates the "AAC - Estate Continuity Check" job template in AAP, attaches its
+# credentials, and gives it a daily schedule (03:00 UTC, after the 02:00
+# nightly assessments, so a host that failed tonight is classified tonight).
+# The template backs ansible/playbooks/estate_continuity_check.yml: every
+# expected host is either evaluated recently, explained (stopped, retired
+# under a decommission record) or reported (missing, removed without a record,
+# unreachable, failing, never targeted, retired but still answering).
+#
+# Same shape and safeguards as seed_verify_evidence_chain_schedule.yml: token
+# from the "AAP Token (extra_vars)" credential inside AAP with the API base
+# pinned to this controller, exactly-one binding for every named object, the
+# project must track main with no override, no free-form launch variables,
+# convergent schedule. Idempotent.
+#
+# Connection values (pg_host, opa_compliance_url, the EC2 regions) are written
+# onto the template from an install profile: -e env_profile=lab reads
+# ansible/vars/profiles/lab.yml. Without a profile, pass them in
+# ec_template_extra_vars.
+# AAP Job Template: "AAC - Seed Estate Continuity Schedule"
+
+- name: Seed Estate Continuity Check template and daily schedule
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    template_name: "AAC - Estate Continuity Check"
+    schedule_name: "AAC - Estate Continuity Check (Daily)"
+    # The main-branch project. The lookup is by name, but the project must
+    # also report scm_branch == ec_project_branch or the seeder stops.
+    ec_project_name:   "Compliance Automation (main)"
+    ec_project_branch: "main"
+    # 03:00 UTC daily — after the 02:00 nightly assessments.
+    ec_rrule: "DTSTART:20261018T030000Z RRULE:FREQ=DAILY;INTERVAL=1"
+    # Credentials by name. The AWS one is attached only when EC2 regions are set.
+    ec_credential_names:
+      - "Ansible Vault"
+      - "AAC Compliance DB Password"
+      - "AAP Token (extra_vars)"
+    ec_aws_credential_name: "AWS Compliance Lab"
+    ec_template_extra_vars: {}
+    ec_schedule_enabled: true
+    _validate_certs: "{{ aap_validate_certs | default(true) | bool }}"
+
+  tasks:
+
+    # ── Config and token: operator machine or AAP job template ───────────
+
+    - name: Load optional local config (operator machine only)
+      ansible.builtin.include_vars: "{{ item }}"
+      with_first_found:
+        - files: ["{{ playbook_dir }}/../vars/site_config.yml"]
+          skip: true
+
+    - name: Load optional local secrets (operator machine only)
+      ansible.builtin.include_vars: "{{ item }}"
+      with_first_found:
+        - files:
+            - "{{ playbook_dir }}/../vars/vault_secrets.lab.yml"
+            - "{{ playbook_dir }}/../vars/vault_secrets.yml"
+          skip: true
+
+    - name: Load the install profile, when one is named
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/../vars/profiles/{{ env_profile }}.yml"
+        name: _profile
+      when: env_profile | default('', true) | length > 0
+
+    - name: Compose the template's extra_vars
+      ansible.builtin.set_fact:
+        _template_vars: >-
+          {{ ({'pg_host': _profile.pg_host, 'opa_compliance_url': _profile.opa_compliance_url,
+               'estate_continuity_aws_regions': _profile.estate_continuity_aws_regions | default([])}
+              if (_profile is defined) else {}) | combine(ec_template_extra_vars) }}
+
+    - name: Resolve controller URL, token and object names
+      ansible.builtin.set_fact:
+        # Inside AAP the job environment is the source; aap_url is only
+        # consulted outside AAP. The pin below re-reads the environment at
+        # assert time, so overriding this fact with -e changes nothing.
+        _aap_url: >-
+          {{ (lookup('env', 'CONTROLLER_HOST') | default(lookup('env', 'AWX_HOST'), true)
+              if (lookup('env', 'JOB_ID') | length > 0)
+              else aap_url | default('')) | regex_replace('/+$', '') }}
+        aap_api_token: "{{ aap_token | default(vault_aap_local_mcp_token | default('', true), true) }}"
+        _inventory_name:  "{{ aap_inventory_name | default('Compliance Infrastructure') }}"
+        _ee_name:         "{{ aap_ee_name | default('AAC Compliance EE') }}"
+        _cred_names: >-
+          {{ ec_credential_names
+             + ([ec_aws_credential_name]
+                if (_template_vars.estate_continuity_aws_regions | default([]) | length > 0) else []) }}
+
+    - name: Require a controller URL the token may be sent to, and a token
+      ansible.builtin.assert:
+        that:
+          - _aap_url | length > 0
+          - _aap_url is match('^https://[A-Za-z0-9.-]+(:[0-9]+)?$')
+            or _aap_url is match('^http://[a-z0-9.-]+\\.svc(\\.cluster\\.local)?(:[0-9]+)?$')
+          - aap_api_token | length > 0
+        fail_msg: >-
+          A controller URL and an API token are required, and the bearer token
+          is only sent to an https controller or to an in-cluster http *.svc
+          service — got "{{ _aap_url }}". From AAP: attach the
+          "AAP Token (extra_vars)" credential (the URL comes from the job
+          environment). From an operator machine: set aap_url in site_config.yml.
+        quiet: true
+
+    - name: Set the API base
+      ansible.builtin.set_fact:
+        aap_api: "{{ _aap_url }}/api/controller/v2"
+
+    - name: Pin the API base to this controller when running as an AAP job
+      ansible.builtin.assert:
+        that:
+          # Not an AAP job (no JOB_ID): the operator machine path, gated above.
+          - lookup('env', 'JOB_ID') | length == 0
+            or (
+              (lookup('env', 'CONTROLLER_HOST') | default(lookup('env', 'AWX_HOST'), true) | length > 0)
+              and aap_api == ((lookup('env', 'CONTROLLER_HOST') | default(lookup('env', 'AWX_HOST'), true))
+                              | regex_replace('/+$', '')) ~ '/api/controller/v2'
+            )
+        fail_msg: >-
+          Running as AAP job {{ lookup('env', 'JOB_ID') }}: the API base must be
+          this controller's own URL from the job environment
+          (CONTROLLER_HOST/AWX_HOST = "{{ lookup('env', 'CONTROLLER_HOST')
+          | default(lookup('env', 'AWX_HOST'), true) }}"), got "{{ aap_api }}".
+          No fallback: the bearer token is not sent anywhere else.
+        quiet: true
+
+    - name: Set request headers
+      ansible.builtin.set_fact:
+        aap_headers:
+          Authorization: "Bearer {{ aap_api_token }}"
+          Content-Type:  "application/json"
+      no_log: true
+
+    # ── Resolve AAP object IDs (exactly one match each) ──────────────────
+
+    - name: Look up the three prerequisite objects by name
+      ansible.builtin.uri:
+        use_proxy: false
+        url:     "{{ aap_api }}/{{ item.endpoint }}/?name={{ item.name | urlencode }}"
+        headers: "{{ aap_headers }}"
+        validate_certs: "{{ _validate_certs }}"
+      loop:
+        - { key: project,    endpoint: projects,               name: "{{ ec_project_name }}" }
+        - { key: inventory,  endpoint: inventories,            name: "{{ _inventory_name }}" }
+        - { key: ee,         endpoint: execution_environments, name: "{{ _ee_name }}" }
+      loop_control:
+        label: "{{ item.endpoint }} '{{ item.name }}'"
+      register: lookups
+      failed_when: lookups.json.count != 1
+      # 0 = missing, 2+ = ambiguous: a same-named object in another
+      # organization would otherwise be bound to the publishing template.
+
+    - name: Look up each credential by name (exactly one match)
+      ansible.builtin.uri:
+        use_proxy: false
+        url:     "{{ aap_api }}/credentials/?name={{ item | urlencode }}"
+        headers: "{{ aap_headers }}"
+        validate_certs: "{{ _validate_certs }}"
+      loop: "{{ _cred_names }}"
+      register: cred_lookups
+      failed_when: cred_lookups.json.count != 1
+
+    - name: Index the resolved objects
+      ansible.builtin.set_fact:
+        obj: "{{ dict(lookups.results | map(attribute='item.key')
+                 | zip(lookups.results | map(attribute='json.results.0'))) }}"
+
+    - name: Require the project to track the main branch explicitly
+      ansible.builtin.assert:
+        that:
+          - obj.project.scm_branch == ec_project_branch
+          - not (obj.project.allow_override | bool)
+        fail_msg: >-
+          Project "{{ ec_project_name }}" (id {{ obj.project.id }}) reports
+          scm_branch "{{ obj.project.scm_branch }}" with allow_override
+          {{ obj.project.allow_override }}; publication requires scm_branch
+          "{{ ec_project_branch }}" and no branch override, so a demo
+          branch can never be published.
+        quiet: true
+
+    # ── Create or update job template ────────────────────────────────────
+
+    - name: Check if template already exists
+      ansible.builtin.uri:
+        use_proxy: false
+        url:     "{{ aap_api }}/job_templates/?name={{ template_name | urlencode }}"
+        headers: "{{ aap_headers }}"
+        validate_certs: "{{ _validate_certs }}"
+      register: template_check
+      failed_when: template_check.json.count > 1
+
+    - name: Create or update job template
+      ansible.builtin.uri:
+        use_proxy: false
+        url: >-
+          {{ aap_api }}/job_templates/{{
+            template_check.json.results[0].id ~ '/'
+            if template_check.json.count == 1 else '' }}
+        method: "{{ 'PATCH' if template_check.json.count == 1 else 'POST' }}"
+        headers: "{{ aap_headers }}"
+        validate_certs: "{{ _validate_certs }}"
+        body_format: json
+        body:
+          name:                    "{{ template_name }}"
+          description: >-
+            Classifies every expected host: evaluated recently, explained
+            (stopped, retired under a decommission record) or reported (missing,
+            removed without a record, unreachable, failing, never targeted,
+            retired but still answering). One evidence row per host.
+          job_type:                "run"
+          inventory:               "{{ obj.inventory.id | int }}"
+          project:                 "{{ obj.project.id | int }}"
+          playbook:                "ansible/playbooks/estate_continuity_check.yml"
+          execution_environment:   "{{ obj.ee.id | int }}"
+          # No free-form extra_vars at launch; connection values are fixed here.
+          ask_variables_on_launch: false
+          extra_vars:              "{{ _template_vars | to_json }}"
+          survey_enabled:          false
+        status_code: [200, 201]
+      register: template_result
+
+    - name: Set template ID
+      ansible.builtin.set_fact:
+        template_id: "{{ template_result.json.id }}"
+
+    # ── Credentials: attach only what is missing, require success ────────
+
+    - name: Read the template's attached credentials
+      ansible.builtin.uri:
+        use_proxy: false
+        url:     "{{ aap_api }}/job_templates/{{ template_id }}/credentials/?page_size=200"
+        headers: "{{ aap_headers }}"
+        validate_certs: "{{ _validate_certs }}"
+      register: attached
+
+    - name: Attach the missing credentials
+      ansible.builtin.uri:
+        use_proxy: false
+        url:     "{{ aap_api }}/job_templates/{{ template_id }}/credentials/"
+        method:  POST
+        headers: "{{ aap_headers }}"
+        validate_certs: "{{ _validate_certs }}"
+        body_format: json
+        body:
+          id: "{{ item | int }}"
+        status_code: [204]
+      loop: >-
+        {{ cred_lookups.results | map(attribute='json.results.0.id') | list
+           | difference(attached.json.results | map(attribute='id') | list) }}
+      loop_control:
+        label: "credential {{ item }}"
+
+    # ── Schedule: create, or converge the existing one ───────────────────
+
+    - name: Check if schedule already exists
+      ansible.builtin.uri:
+        use_proxy: false
+        url:     "{{ aap_api }}/job_templates/{{ template_id }}/schedules/?name={{ schedule_name | urlencode }}"
+        headers: "{{ aap_headers }}"
+        validate_certs: "{{ _validate_certs }}"
+      register: schedule_check
+      failed_when: schedule_check.json.count > 1
+
+    - name: Create or update the daily schedule
+      ansible.builtin.uri:
+        use_proxy: false
+        url: >-
+          {{ aap_api ~ '/schedules/' ~ schedule_check.json.results[0].id ~ '/'
+             if schedule_check.json.count == 1
+             else aap_api ~ '/job_templates/' ~ template_id ~ '/schedules/' }}
+        method: "{{ 'PATCH' if schedule_check.json.count == 1 else 'POST' }}"
+        headers: "{{ aap_headers }}"
+        validate_certs: "{{ _validate_certs }}"
+        body_format: json
+        body:
+          name:        "{{ schedule_name }}"
+          description: "Daily estate continuity check — {{ ec_rrule }}"
+          enabled:     "{{ ec_schedule_enabled | bool }}"
+          rrule:       "{{ ec_rrule }}"
+          extra_data:  {}
+        status_code: [200, 201]
+      register: schedule_result
+
+    # ── Summary ───────────────────────────────────────────────────────────
+
+    - name: "=== Estate Continuity Check Ready ==="
+      ansible.builtin.debug:
+        msg:
+          - "  Template:    {{ template_name }} (ID {{ template_id }})"
+          - "  Project:     {{ ec_project_name }} (scm_branch {{ obj.project.scm_branch }})"
+          - "  Credentials: {{ _cred_names | join(', ') }}"
+          - "  Extra vars:  {{ _template_vars | to_json }}"
+          - "  Schedule:    {{ schedule_name }} (ID {{ schedule_result.json.id }}), enabled={{ ec_schedule_enabled | bool }}"
+          - "               {{ ec_rrule }}"
+          - "               next run: {{ schedule_result.json.next_run | default('n/a') }}"
+          - ""
+          - "  Run it now:  AAP → Templates → {{ template_name }} → Launch"

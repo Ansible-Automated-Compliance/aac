@@ -1,0 +1,155 @@
+---
+# authorize_change.yml — Mark a fact_changes record as authorized
+#
+# Called when a security team member reviews a drift event and confirms
+# the change was expected (e.g. a scheduled patching window, approved
+# configuration change, or a known false positive).
+#
+# Accepted_risk vs authorized:
+#   authorized   = this specific change was expected and approved
+#   accepted_risk = in remediation_status means "we know it's non-compliant
+#                   and we accept that risk indefinitely"
+#
+# AAP Job Template: "AAC - Authorize Change"
+# Credentials: Ansible Vault
+# EE: AAC Compliance EE
+# Survey:
+#   change_id       — ID from fact_changes table (required)
+#   change_ticket   — ServiceNow / Jira ticket reference (optional)
+#   authorized_by   — Name or username of approver (required)
+#   notes           — Free-form context (optional)
+
+- name: Authorize a fact change record
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - [ "../vars/vault_secrets.yml", "../vars/empty_fallback.yml" ]
+    - ../vars/site_config.yml
+
+  vars:
+    pg_password: "{{ compliance_db_password }}"
+
+  tasks:
+
+    - name: Validate required inputs
+      fail:
+        msg: "change_id and authorized_by are required. Run this template with a survey."
+      when: change_id is not defined or authorized_by is not defined or authorized_by == ''
+
+    - name: Fetch change record to display before authorizing
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port | default(5433) }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: |
+          SELECT
+            fc.id,
+            fc.hostname,
+            fc.detected_at,
+            fc.change_summary,
+            fc.is_authorized,
+            fc.change_ticket,
+            fc.authorized_by,
+            fc.authorized_at,
+            prev.collection_timestamp AS prev_snapshot,
+            curr.collection_timestamp AS curr_snapshot,
+            (fc.changed_keys->>'total_changes')::int     AS total_changes,
+            (fc.changed_keys->>'security_change_count')::int AS security_changes,
+            fc.changed_keys->>'highest_severity' AS severity
+          FROM fact_changes fc
+          LEFT JOIN compliance_facts prev ON prev.id = fc.previous_facts_id
+          LEFT JOIN compliance_facts curr ON curr.id = fc.current_facts_id
+          WHERE fc.id = %s
+        positional_args:
+          - "{{ change_id | int }}"
+      register: change_record
+
+    - name: Fail if change not found
+      fail:
+        msg: "No fact_changes record found with ID={{ change_id }}"
+      when: change_record.query_result | length == 0
+
+    - name: Show change details
+      debug:
+        msg: |
+          ── Change Record ID {{ change_id }} ─────────────────────────────
+          Host:        {{ change_record.query_result[0].hostname }}
+          Detected:    {{ change_record.query_result[0].detected_at }}
+          Severity:    {{ change_record.query_result[0].severity | upper }}
+          Changes:     {{ change_record.query_result[0].total_changes }} total ({{ change_record.query_result[0].security_changes }} security-relevant)
+          Summary:     {{ change_record.query_result[0].change_summary }}
+          Snapshot:    {{ change_record.query_result[0].prev_snapshot }} → {{ change_record.query_result[0].curr_snapshot }}
+          {% if change_record.query_result[0].is_authorized %}
+          Status:      Already authorized by {{ change_record.query_result[0].authorized_by }} on {{ change_record.query_result[0].authorized_at }}
+          {% else %}
+          Status:      Unauthorized (pending review)
+          {% endif %}
+
+    - name: Warn if already authorized
+      debug:
+        msg: "WARNING: This change record is already authorized. It will be updated with the new authorization details."
+      when: change_record.query_result[0].is_authorized | bool
+
+    - name: Authorize the change
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port | default(5433) }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: |
+          UPDATE fact_changes SET
+            is_authorized  = true,
+            change_ticket  = %s,
+            authorized_by  = %s,
+            authorized_at  = now(),
+            change_summary = change_summary || ' [Authorized: ' || %s || ']'
+          WHERE id = %s
+        positional_args:
+          - "{{ change_ticket | default('') }}"
+          - "{{ authorized_by }}"
+          - "{{ authorized_by }}"
+          - "{{ change_id | int }}"
+
+    - name: Log to remediation_actions
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port | default(5433) }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: |
+          INSERT INTO remediation_actions
+            (hostname, policy_name, action_type,
+             facts_before_id, facts_after_id,
+             performed_by, notes)
+          SELECT
+            fc.hostname,
+            'change_authorization',
+            'manual_fix',
+            fc.previous_facts_id,
+            fc.current_facts_id,
+            %s,
+            %s
+          FROM fact_changes fc
+          WHERE fc.id = %s
+        positional_args:
+          - "{{ authorized_by }}"
+          - "Change ID {{ change_id }} authorized{% if change_ticket is defined and change_ticket != '' %} — ticket: {{ change_ticket }}{% endif %}{% if notes is defined and notes != '' %} — {{ notes }}{% endif %}"
+          - "{{ change_id | int }}"
+
+    - name: Confirmation
+      debug:
+        msg:
+          - "✅ Change ID {{ change_id }} authorized"
+          - "   Host:        {{ change_record.query_result[0].hostname }}"
+          - "   Authorized by: {{ authorized_by }}"
+          - "   Ticket:      {{ change_ticket | default('none') }}"
+          - "   Notes:       {{ notes | default('none') }}"
+          - ""
+          - "   This change will no longer appear in the unauthorized drift report."
+          - "   Run 'AAC - Drift Report' to verify."

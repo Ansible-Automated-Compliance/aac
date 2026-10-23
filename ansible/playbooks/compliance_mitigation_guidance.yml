@@ -1,0 +1,155 @@
+---
+# AAC - Compliance Mitigation Guidance (F2)
+#
+# The decisioning layer's "what to do" function: pairs each OPEN finding with
+# its fix (where / what / method), turning a finding into a plan. Framework-
+# agnostic — the logic is generic (scripts/mitigation.py); the guidance is a
+# per-framework catalog under ansible/vars/mitigation/<framework>.yml.
+#
+# Reads the FINDINGS layer (compliance_findings) — the same foundation as F1 —
+# read-only; writes nothing to the database and evaluates no policy. Runs
+# wherever the evidence store is; data never leaves that environment.
+#
+# ── Variables ────────────────────────────────────────────────────────
+#   mit_framework    framework key (default: cis_m365_v7). Loads
+#                    ansible/vars/mitigation/<framework>.yml, falling back to
+#                    ansible/vars/mitigation/_default.yml.
+#   mit_output_dir   EE-local output directory (default: /tmp)
+#   report_publish_host / report_publish_user / report_publish_dir
+#                    optional scp publication of the outputs
+#
+# ── AAP Job Template ─────────────────────────────────────────────────
+#   "AAC - Compliance Mitigation Guidance" — EE: AAC Compliance EE, hosts:
+#   localhost (reads PostgreSQL only).
+
+- name: Pair open compliance findings with mitigation guidance (F2)
+  hosts: localhost
+  connection: local
+  gather_facts: true
+  become: false
+
+  vars:
+    mit_framework: "cis_m365_v7"
+    mit_output_dir: "/tmp"
+    mit_tag: "{{ mit_framework }}-{{ ansible_date_time.date }}"
+    mit_json: "{{ mit_output_dir }}/mitigation_guidance-{{ mit_tag }}.json"
+    mit_csv: "{{ mit_output_dir }}/mitigation_guidance-{{ mit_tag }}.csv"
+
+  tasks:
+    - name: Load site configuration when present
+      ansible.builtin.include_vars: "{{ item }}"
+      with_first_found:
+        - files: ["../vars/site_config.yml"]
+          skip: true
+
+    - name: Load vault secrets when present
+      ansible.builtin.include_vars: "{{ item }}"
+      with_first_found:
+        - files: ["../vars/vault_secrets.yml"]
+          skip: true
+
+    - name: Validate inputs
+      ansible.builtin.assert:
+        that:
+          - mit_framework is match('^[A-Za-z0-9][A-Za-z0-9_-]*$')
+          - mit_output_dir is match('^/[A-Za-z0-9/_.-]+$')
+          - "'..' not in mit_output_dir"
+        fail_msg: "mit_framework must be a safe key and mit_output_dir an absolute path without '..'."
+
+    - name: Load the framework mitigation catalog (fall back to the generic default)
+      ansible.builtin.include_vars:
+        file: "{{ item }}"
+        name: mit_catalog
+      with_first_found:
+        - files:
+            - "../vars/mitigation/{{ mit_framework }}.yml"
+            - "../vars/mitigation/_default.yml"
+
+    - name: Query open findings
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host | mandatory }}"
+        login_port: "{{ pg_port | default(5432) }}"
+        login_user: "{{ pg_user | default('postgres') }}"
+        login_password: "{{ compliance_db_password }}"
+        login_db: "{{ pg_database | default('compliance') }}"
+        ssl_mode: "{{ pg_ssl_mode | default('prefer') }}"
+        query: |
+          SELECT framework, control_id, subject, finding_type, title
+          FROM compliance_findings
+          WHERE framework = %(fw)s AND status = 'open'
+        named_args:
+          fw: "{{ mit_framework }}"
+      register: findings_query
+
+    - name: Refuse to run on an empty set
+      ansible.builtin.assert:
+        that: findings_query.query_result | length > 0
+        fail_msg: >-
+          No open findings for framework {{ mit_framework }} in
+          compliance_findings. Run the assessment and findings sync first.
+
+    - name: Apply mitigation guidance (JSON)
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/../../scripts/mitigation.py"
+          - --format
+          - json
+        stdin: "{{ {'findings': findings_query.query_result, 'catalog': mit_catalog} | to_json }}"
+      register: mit_json_out
+      changed_when: true
+
+    - name: Apply mitigation guidance (CSV)
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/../../scripts/mitigation.py"
+          - --format
+          - csv
+        stdin: "{{ {'findings': findings_query.query_result, 'catalog': mit_catalog} | to_json }}"
+      register: mit_csv_out
+      changed_when: true
+
+    - name: Write the mitigation guidance (JSON)
+      ansible.builtin.copy:
+        dest: "{{ mit_json }}"
+        content: "{{ mit_json_out.stdout }}"
+        mode: "0644"
+
+    - name: Write the mitigation guidance (CSV)
+      ansible.builtin.copy:
+        dest: "{{ mit_csv }}"
+        content: "{{ mit_csv_out.stdout }}"
+        mode: "0644"
+
+    - name: Publish outputs to persistent storage
+      when: report_publish_host | default('') | length > 0
+      ansible.builtin.command:
+        argv:
+          - scp
+          - -o
+          - StrictHostKeyChecking=accept-new
+          - -o
+          - BatchMode=yes
+          - "{{ mit_json }}"
+          - "{{ mit_csv }}"
+          - "{{ report_publish_user | default('aapuser1') }}@{{ report_publish_host }}:{{ report_publish_dir | default('/var/tmp') }}/"
+      changed_when: true
+
+    - name: Warn when no persistent publication is configured
+      when: report_publish_host | default('') | length == 0
+      ansible.builtin.debug:
+        msg: >-
+          WARNING: outputs written only to the execution environment
+          ({{ mit_output_dir }}) and will vanish when this job ends. Set
+          report_publish_host to copy them to persistent storage.
+
+    - name: Mitigation guidance summary
+      vars:
+        result: "{{ mit_json_out.stdout | from_json }}"
+      ansible.builtin.debug:
+        msg:
+          - "Mitigation guidance — framework {{ mit_framework }}"
+          - "  Findings paired: {{ result.findings | length }}"
+          - "  JSON: {{ mit_json }}"
+          - "  CSV:  {{ mit_csv }}"

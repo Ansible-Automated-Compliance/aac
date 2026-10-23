@@ -1,0 +1,264 @@
+---
+# =============================================================================
+# AAC Standards Update Sweep — the standards calendar, run from AAP
+#
+# Monthly change-detection over every standard the rego library implements.
+# For each entry in ansible/vars/standards_watch.yml:
+#
+#   1. Fetch the public watch URL.
+#   2. Hash the content (sha256).
+#   3. Compare against the last sweep's hash in PostgreSQL
+#      (standards_watch_state — created idempotently below).
+#   4. First sighting  → record baseline, no alert.
+#
+#   Hashing is noise-resistant: scripts/styles removed, remaining markup
+#   stripped, whitespace collapsed — so nonce/asset churn doesn't flag,
+#   only visible text changes do. Changing this normalization changes
+#   every hash: re-baseline (truncate standards_watch_state, run once
+#   with create_issues=false) after touching it.
+#      Hash changed    → update state, open a GitHub issue in
+#                        ynotbhatc/rego_policy_libraries titled
+#                        "sweep: <framework> watch page changed" (deduped —
+#                        skipped if an open issue with that title exists).
+#      Fetch failed    → reported in the job summary, state untouched.
+#
+# This is CHANGE DETECTION, not version parsing: a hit means "a human
+# looks at the upstream", per the process in the library's
+# STANDARDS_UPDATE_REGISTRY.md. Expect occasional false positives from
+# dynamic pages; the dedup keeps them to one open issue per framework.
+#
+# AAP: run as job template "AAC - Standards Update Sweep" on a monthly
+# schedule. No survey variables required.
+#
+#   create_issues   Set false to run detection-only (default true)
+# =============================================================================
+
+- name: AAC Standards Update Sweep
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - [ "../vars/vault_secrets.yml", "../vars/empty_fallback.yml" ]
+    - ../vars/site_config.yml
+    - ../vars/standards_watch.yml
+
+  vars:
+    create_issues: true
+    github_repo: "ynotbhatc/rego_policy_libraries"
+    # Site values follow the #472 convention: inventory variables first
+    # (Compliance Infrastructure inventory), file-based vars as fallback.
+    sweep_db: "{{ compliance_db_name | default('compliance') }}"
+    sweep_db_user: "{{ compliance_db_user | default('postgres') }}"
+    sweep_db_password: "{{ compliance_db_password | mandatory }}"
+    sweep_db_host: "{{ compliance_db_host | default(pg_host | default(aac_host, true), true) }}"
+
+  tasks:
+    # -------------------------------------------------------------------------
+    # State table (idempotent)
+    # -------------------------------------------------------------------------
+    - name: Ensure standards_watch_state table exists
+      community.postgresql.postgresql_query:
+        login_db: "{{ sweep_db }}"
+        login_user: "{{ sweep_db_user }}"
+        login_password: "{{ sweep_db_password }}"
+        login_host: "{{ sweep_db_host }}"
+        query: |
+          CREATE TABLE IF NOT EXISTS standards_watch_state (
+            framework            varchar(100) PRIMARY KEY,
+            watch_url            text         NOT NULL,
+            implemented_version  text,
+            content_hash         varchar(64),
+            last_checked         timestamptz,
+            last_changed         timestamptz
+          )
+
+    - name: Load current state
+      community.postgresql.postgresql_query:
+        login_db: "{{ sweep_db }}"
+        login_user: "{{ sweep_db_user }}"
+        login_password: "{{ sweep_db_password }}"
+        login_host: "{{ sweep_db_host }}"
+        query: "SELECT framework, content_hash FROM standards_watch_state"
+      register: state_rows
+
+    - name: Index previous hashes by framework
+      set_fact:
+        previous_hashes: >-
+          {{ dict(state_rows.query_result | map(attribute='framework')
+                  | zip(state_rows.query_result | map(attribute='content_hash'))) }}
+
+    # -------------------------------------------------------------------------
+    # Fetch + hash every watch URL
+    # -------------------------------------------------------------------------
+    - name: Fetch watch pages
+      uri:
+        url: "{{ item.watch_url }}"
+        method: GET
+        return_content: true
+        follow_redirects: all
+        timeout: 30
+        status_code: [200]
+        headers:
+          User-Agent: "AAC-standards-sweep/1.0"
+      loop: "{{ standards_watch | rejectattr('manual', 'defined') | list }}"
+      loop_control:
+        label: "{{ item.framework }}"
+      register: fetches
+      failed_when: false
+
+    - name: Classify results
+      set_fact:
+        sweep_results: >-
+          {{ sweep_results | default([]) + [ {
+               'framework': item.item.framework,
+               'watch_url': item.item.watch_url,
+               'implemented': item.item.implemented,
+               'ok': (item.status | default(0)) == 200,
+               'hash': ((item.content | default('')
+                          | regex_replace('(?s)<script.*?</script>', '')
+                          | regex_replace('(?s)<style.*?</style>', '')
+                          | regex_replace('<[^>]+>', ' ')
+                          | regex_replace('\\s+', ' ')
+                         ) | hash('sha256')) if ((item.status | default(0)) == 200) else '',
+               'previous': previous_hashes.get(item.item.framework, ''),
+             } ] }}
+      loop: "{{ fetches.results }}"
+      loop_control:
+        label: "{{ item.item.framework }}"
+
+    # Pure-Jinja partition (no jmespath/json_query dependency in the EE):
+    # each row lands in exactly one bucket based on ok/previous/hash.
+    - name: Partition into new / changed / unchanged / failed
+      set_fact:
+        rows_failed: "{{ (rows_failed | default([])) + ([item] if not item.ok else []) }}"
+        rows_new: "{{ (rows_new | default([])) + ([item] if (item.ok and item.previous == '') else []) }}"
+        rows_changed: "{{ (rows_changed | default([])) + ([item] if (item.ok and item.previous != '' and item.hash != item.previous) else []) }}"
+        rows_unchanged: "{{ (rows_unchanged | default([])) + ([item] if (item.ok and item.previous != '' and item.hash == item.previous) else []) }}"
+      loop: "{{ sweep_results }}"
+      loop_control:
+        label: "{{ item.framework }}"
+
+    - name: Default empty partitions
+      set_fact:
+        rows_failed: "{{ rows_failed | default([]) }}"
+        rows_new: "{{ rows_new | default([]) }}"
+        rows_changed: "{{ rows_changed | default([]) }}"
+        rows_unchanged: "{{ rows_unchanged | default([]) }}"
+
+    # -------------------------------------------------------------------------
+    # Persist state
+    # -------------------------------------------------------------------------
+    - name: Upsert baseline for new frameworks
+      community.postgresql.postgresql_query:
+        login_db: "{{ sweep_db }}"
+        login_user: "{{ sweep_db_user }}"
+        login_password: "{{ sweep_db_password }}"
+        login_host: "{{ sweep_db_host }}"
+        query: |
+          INSERT INTO standards_watch_state
+            (framework, watch_url, implemented_version, content_hash, last_checked, last_changed)
+          VALUES (%(fw)s, %(url)s, %(impl)s, %(hash)s, now(), NULL)
+          ON CONFLICT (framework) DO UPDATE
+            SET watch_url = EXCLUDED.watch_url,
+                implemented_version = EXCLUDED.implemented_version,
+                content_hash = EXCLUDED.content_hash,
+                last_checked = now()
+        named_args:
+          fw: "{{ item.framework }}"
+          url: "{{ item.watch_url }}"
+          impl: "{{ item.implemented }}"
+          hash: "{{ item.hash }}"
+      loop: "{{ rows_new }}"
+      loop_control:
+        label: "{{ item.framework }}"
+
+    - name: Update state for changed frameworks
+      community.postgresql.postgresql_query:
+        login_db: "{{ sweep_db }}"
+        login_user: "{{ sweep_db_user }}"
+        login_password: "{{ sweep_db_password }}"
+        login_host: "{{ sweep_db_host }}"
+        query: |
+          UPDATE standards_watch_state
+             SET content_hash = %(hash)s, last_checked = now(), last_changed = now()
+           WHERE framework = %(fw)s
+        named_args:
+          fw: "{{ item.framework }}"
+          hash: "{{ item.hash }}"
+      loop: "{{ rows_changed }}"
+      loop_control:
+        label: "{{ item.framework }}"
+
+    - name: Touch last_checked for unchanged frameworks
+      community.postgresql.postgresql_query:
+        login_db: "{{ sweep_db }}"
+        login_user: "{{ sweep_db_user }}"
+        login_password: "{{ sweep_db_password }}"
+        login_host: "{{ sweep_db_host }}"
+        query: |
+          UPDATE standards_watch_state SET last_checked = now() WHERE framework = %(fw)s
+        named_args:
+          fw: "{{ item.framework }}"
+      loop: "{{ rows_unchanged }}"
+      loop_control:
+        label: "{{ item.framework }}"
+
+    # -------------------------------------------------------------------------
+    # GitHub issues for changed frameworks (deduped)
+    # -------------------------------------------------------------------------
+    - name: Check for existing open sweep issue
+      uri:
+        url: "https://api.github.com/search/issues?q=repo:{{ github_repo }}+in:title+%22sweep:+{{ item.framework }}+watch+page+changed%22+state:open"
+        headers:
+          Authorization: "Bearer {{ vault_github_pat }}"
+          Accept: "application/vnd.github+json"
+        timeout: 30
+      loop: "{{ rows_changed }}"
+      loop_control:
+        label: "{{ item.framework }}"
+      register: issue_searches
+      when: create_issues | bool
+      failed_when: false
+
+    - name: Open sweep issue for changed frameworks
+      uri:
+        url: "https://api.github.com/repos/{{ github_repo }}/issues"
+        method: POST
+        status_code: [201]
+        headers:
+          Authorization: "Bearer {{ vault_github_pat }}"
+          Accept: "application/vnd.github+json"
+        body_format: json
+        body:
+          title: "sweep: {{ item.item.framework }} watch page changed"
+          body: |
+            The monthly standards sweep (AAP job) detected a content change on the watch page for **{{ item.item.framework }}**.
+
+            - Watch URL: {{ item.item.watch_url }}
+            - Implemented version: {{ item.item.implemented }}
+            - Registry: `STANDARDS_UPDATE_REGISTRY.md`
+
+            This is change detection, not version parsing — a human should check whether the upstream published a new release/amendment. If yes, follow the registry's regeneration process; if it's page noise, close with a note.
+          labels: ["standards-sweep"]
+      loop: "{{ issue_searches.results | default([]) }}"
+      loop_control:
+        label: "{{ item.item.framework }}"
+      when:
+        - create_issues | bool
+        - item is not skipped
+        - (item.json.total_count | default(1)) == 0
+      failed_when: false
+
+    # -------------------------------------------------------------------------
+    # Summary
+    # -------------------------------------------------------------------------
+    - name: Sweep summary
+      debug:
+        msg:
+          - "Standards sweep complete: {{ standards_watch | rejectattr('manual', 'defined') | list | length }} frameworks checked"
+          - "Changed since last sweep: {{ rows_changed | map(attribute='framework') | list }}"
+          - "Baseline recorded (first sighting): {{ rows_new | map(attribute='framework') | list }}"
+          - "Unchanged: {{ rows_unchanged | length }}"
+          - "Fetch failures (state untouched): {{ rows_failed | map(attribute='framework') | list }}"
+          - "Manual-check rows (not fetched): {{ standards_watch | selectattr('manual', 'defined') | map(attribute='framework') | list }}"

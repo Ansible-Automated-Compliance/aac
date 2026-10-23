@@ -1,0 +1,131 @@
+---
+# tasks file for gather_auditd_facts
+
+- name: Check if audit package is installed
+  shell: rpm -q audit
+  register: audit_package_check
+  changed_when: false
+  failed_when: false
+
+- name: Set audit package installed fact
+  set_fact:
+    audit_package_installed: "{{ audit_package_check.rc == 0 }}"
+
+- name: Gather auditd service status
+  systemd:
+    name: auditd
+  register: auditd_service
+  when: audit_package_installed
+
+- name: Read auditd configuration file
+  slurp:
+    src: "{{ auditd_conf_file }}"
+  register: auditd_conf_content
+  when: audit_package_installed
+  failed_when: false
+
+- name: Parse auditd configuration
+  set_fact:
+    auditd_config_parsed: "{{ auditd_conf_content.content | b64decode | regex_findall('^([^#]\\S+)\\s*=\\s*(.+)$', multiline=True) | items2dict }}"
+  when:
+    - audit_package_installed
+    - auditd_conf_content is defined
+    - auditd_conf_content.content is defined
+
+- name: Get active audit rules from auditctl
+  shell: auditctl -l 2>/dev/null || echo "No audit rules"
+  register: active_audit_rules
+  changed_when: false
+  when: audit_package_installed
+
+- name: Get audit rules from rules directory
+  shell: |
+    if [ -d "{{ audit_rules_dir }}" ]; then
+      cat {{ audit_rules_dir }}/*.rules 2>/dev/null | grep -v '^#' | grep -v '^$' || echo "No rules files"
+    else
+      echo "Rules directory not found"
+    fi
+  register: disk_audit_rules
+  changed_when: false
+  when: audit_package_installed
+
+- name: Check if audit is enabled in grub
+  shell: |
+    grubby --info=ALL | grep -i 'args.*audit=1' > /dev/null && echo "true" || echo "false"
+  register: grub_audit_check
+  changed_when: false
+
+- name: Check audit_backlog_limit in grub
+  shell: |
+    LIMIT=$(grubby --info=ALL | grep -oP 'audit_backlog_limit=\K[0-9]+' | head -1)
+    if [ -z "$LIMIT" ]; then
+      echo "0"
+    else
+      echo "$LIMIT"
+    fi
+  register: grub_audit_backlog
+  changed_when: false
+
+- name: Find all privileged commands
+  shell: |
+    find / -xdev \( -perm -4000 -o -perm -2000 \) -type f 2>/dev/null | head -100
+  register: privileged_commands
+  changed_when: false
+  async: 300
+  poll: 5
+
+- name: Check if running config matches on-disk config
+  shell: |
+    # Compare active rules with disk rules
+    ACTIVE_COUNT=$(auditctl -l 2>/dev/null | grep -v "^No rules" | wc -l)
+    DISK_COUNT=$(cat {{ audit_rules_dir }}/*.rules 2>/dev/null | grep -v '^#' | grep -v '^$' | wc -l)
+    if [ "$ACTIVE_COUNT" -eq "$DISK_COUNT" ]; then
+      echo "true"
+    else
+      echo "false"
+    fi
+  register: audit_config_sync_check
+  changed_when: false
+  when:
+    - audit_package_installed
+    - check_config_sync
+
+- name: Check for specific audit rules
+  set_fact:
+    audit_rule_coverage: |
+      {
+        {% for rule in required_audit_rules %}
+        "{{ rule.name }}": {{ 'true' if rule.pattern in active_audit_rules.stdout else 'false' }}{{ ',' if not loop.last else '' }}
+        {% endfor %}
+      }
+  when:
+    - audit_package_installed
+    - active_audit_rules is defined
+
+- name: Set comprehensive auditd facts
+  set_fact:
+    host_auditd_facts:
+      package_installed: "{{ audit_package_installed }}"
+      service_enabled: "{{ auditd_service.status.UnitFileState | default('unknown') if audit_package_installed else 'N/A' }}"
+      service_running: "{{ auditd_service.status.ActiveState | default('unknown') if audit_package_installed else 'N/A' }}"
+      auditd_config: "{{ auditd_config_parsed | default({}) }}"
+      active_audit_rules: "{{ active_audit_rules.stdout_lines | default([]) }}"
+      disk_audit_rules: "{{ disk_audit_rules.stdout_lines | default([]) }}"
+      audit_grub_configured: "{{ grub_audit_check.stdout | bool }}"
+      audit_backlog_limit: "{{ grub_audit_backlog.stdout | int }}"
+      privileged_commands: "{{ privileged_commands.stdout_lines | default([]) }}"
+      config_synced: "{{ audit_config_sync_check.stdout | default('unknown') | bool if check_config_sync else 'not_checked' }}"
+      rule_coverage: "{{ audit_rule_coverage | default({}) }}"
+      collection_timestamp: "{{ ansible_date_time.iso8601 }}"
+
+- name: Display auditd facts summary
+  debug:
+    msg:
+      - "Audit package installed: {{ host_auditd_facts.package_installed }}"
+      - "Auditd service enabled: {{ host_auditd_facts.service_enabled }}"
+      - "Auditd service running: {{ host_auditd_facts.service_running }}"
+      - "Active audit rules: {{ host_auditd_facts.active_audit_rules | length }}"
+      - "Audit configured in GRUB: {{ host_auditd_facts.audit_grub_configured }}"
+      - "Audit backlog limit: {{ host_auditd_facts.audit_backlog_limit }}"
+      - "Config synced: {{ host_auditd_facts.config_synced }}"
+  when: audit_package_installed

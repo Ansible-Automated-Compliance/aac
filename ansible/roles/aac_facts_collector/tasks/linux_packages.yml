@@ -1,0 +1,43 @@
+---
+# linux_packages.yml — Collect installed package inventory
+
+- name: Gather package facts
+  package_facts:
+    manager: auto
+  failed_when: false
+
+- name: Get recently installed/updated packages (last 30 days)
+  shell: |
+    if command -v rpm &>/dev/null; then
+      rpm -qa --queryformat '%{NAME}|%{VERSION}|%{RELEASE}|%{INSTALLTIME:date}\n' \
+        2>/dev/null | sort -t'|' -k4 -r | head -50
+    elif command -v dpkg &>/dev/null; then
+      grep " install " /var/log/dpkg.log 2>/dev/null | tail -50 || echo ""
+    fi
+  register: recent_packages_raw
+  changed_when: false
+  failed_when: false
+
+- name: Check for known vulnerable package patterns
+  shell: |
+    pkgs=""
+    for p in openssl openssh-server curl wget log4j; do
+      if command -v rpm &>/dev/null; then
+        v=$(rpm -q "$p" --queryformat '%{VERSION}' 2>/dev/null) && pkgs="$pkgs $p=$v"
+      elif command -v dpkg-query &>/dev/null; then
+        v=$(dpkg-query -W -f='${Version}' "$p" 2>/dev/null) && pkgs="$pkgs $p=$v"
+      fi
+    done
+    echo "$pkgs"
+  register: key_packages_raw
+  changed_when: false
+  failed_when: false
+
+- name: Set package facts
+  set_fact:
+    aac_packages:
+      installed:       "{{ ansible_facts.packages | default({}) }}"
+      total_count:     "{{ ansible_facts.packages | default({}) | length }}"
+      recent_changes:  "{{ recent_packages_raw.stdout_lines | default([]) }}"
+      key_packages_raw: "{{ key_packages_raw.stdout | default('') }}"
+      package_manager: "{{ ansible_pkg_mgr | default('unknown') }}"

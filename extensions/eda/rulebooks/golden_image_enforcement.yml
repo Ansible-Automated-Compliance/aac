@@ -1,0 +1,37 @@
+---
+# EDA Rulebook: Golden Image Enforcement
+#
+# Webhook-based drift detection for RHPDS OCP deployment.
+# EDA runs inside OCP pods and cannot access EC2 bind-mount files directly,
+# so file_watch is not used here. Instead, demo_introduce_drift.yml POSTs
+# to this webhook endpoint after modifying config files on EC2.
+#
+# Within OCP the service is reachable at:
+#   http://golden-image-enforcement.aap.svc.cluster.local:5004/endpoint
+#
+# For local AAP (<aac-host>) where file_watch works, use the combined
+# golden_image_enforcement_local.yml rulebook instead.
+#
+# Expected payload fields: drift_trigger, changed_file, target_host, severity
+
+- name: Golden Image Enforcement — demo-rhel9
+  hosts: all
+  sources:
+    - ansible.eda.webhook:
+        host: 0.0.0.0
+        port: 5004
+
+  rules:
+    - name: Drift detected — trigger golden image enforcement
+      condition: event.payload is defined
+      action:
+        run_workflow_template:
+          name: "AAC_GoldenImage_Enforcement"
+          organization: "Default"
+          job_args:
+            extra_vars:
+              drift_trigger: "{{ event.payload.drift_trigger | default('webhook') }}"
+              changed_file: "{{ event.payload.changed_file | default('') }}"
+              change_type: "{{ event.payload.change_type | default('modified') }}"
+              target_host: "{{ event.payload.target_host | default('demo-rhel9') }}"
+              auto_rollback: "true"

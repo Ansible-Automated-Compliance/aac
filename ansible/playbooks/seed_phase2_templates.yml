@@ -1,0 +1,327 @@
+---
+# seed_phase2_templates.yml — Create Phase 2 AAP job templates
+#
+# Creates the four Phase 1/2 job templates via the AAP Controller API:
+#   - AAC - Migrate Schema v2
+#   - AAC - Collect Facts
+#   - AAC - Evaluate Stored Facts
+#   - AAC - Remediation Report
+#
+# Run once after deploying Phase 1 playbooks.
+# Safe to re-run — uses name-based lookup to avoid duplicates.
+#
+# AAP Job Template: "AAC - Seed Phase 2 Templates"
+# Credentials: Ansible Vault
+
+- name: Seed Phase 2 AAP job templates
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - ../vars/site_config.yml
+
+  vars:
+    aap_api: "{{ aap_url }}/api/controller/v2"
+    aap_token: "{{ aap_token }}"
+    aap_headers:
+      Authorization: "Bearer {{ aap_token }}"
+      Content-Type: "application/json"
+
+  tasks:
+
+    # ── Resolve object IDs by name ────────────────────────────────────────────
+
+    - name: Look up inventory ID by name
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/inventories/?name={{ aap_inventory_name | urlencode }}"
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+      register: inv_lookup
+    - name: Set inventory_id
+      set_fact:
+        inventory_id: "{{ inv_lookup.json.results[0].id }}"
+
+    - name: Look up EE ID by name
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/execution_environments/?name={{ aap_ee_name | urlencode }}"
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+      register: ee_lookup
+    - name: Set ee_id
+      set_fact:
+        ee_id: "{{ ee_lookup.json.results[0].id }}"
+
+    - name: Look up Vault credential ID by name
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/credentials/?name={{ aap_vault_credential_name | urlencode }}&credential_type__kind=vault"
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+      register: vault_cred_lookup
+    - name: Fail if vault credential not found
+      fail:
+        msg: "Vault credential '{{ aap_vault_credential_name }}' not found. Check site_config.yml aap_vault_credential_name."
+      when: vault_cred_lookup.json.count == 0
+    - name: Set vault_cred_id
+      set_fact:
+        vault_cred_id: "{{ vault_cred_lookup.json.results[0].id }}"
+
+    - name: Look up SSH credential ID by name
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/credentials/?name={{ aap_ssh_credential_name | urlencode }}&credential_type__kind=ssh"
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+      register: ssh_cred_lookup
+    - name: Set ssh_cred_id
+      set_fact:
+        ssh_cred_id: "{{ ssh_cred_lookup.json.results[0].id | default(0) }}"
+
+    - name: Look up project ID by name
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/projects/?name={{ aap_project_name | urlencode }}"
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+      register: project_lookup
+    - name: Set project_id
+      set_fact:
+        project_id: "{{ project_lookup.json.results[0].id }}"
+
+    # ── Define templates ──────────────────────────────────────────────────────
+
+    - name: Set template definitions
+      set_fact:
+        phase2_templates:
+
+          - name: "AAC - Migrate Schema v2"
+            description: >
+              Adds is_baseline/baseline_label to compliance_facts; creates
+              remediation_status, fact_changes, and remediation_actions tables.
+              Safe to re-run (IF NOT EXISTS throughout).
+            playbook: "ansible/playbooks/migrate_schema_v2.yml"
+            credentials: ["{{ vault_cred_id | int }}"]
+            needs_ssh: false
+            survey: []
+
+          - name: "AAC - Collect Facts"
+            description: >
+              SSHes to managed Linux hosts and stores a complete fact snapshot
+              in compliance_facts (PostgreSQL). No OPA evaluation.
+              Decouples collection from evaluation — run on a schedule.
+              After collection, run 'AAC - Evaluate Stored Facts' to assess
+              against any policy without additional SSH.
+            playbook: "ansible/playbooks/collect_all_facts.yml"
+            credentials: ["{{ vault_cred_id | int }}", "{{ ssh_cred_id | int }}"]
+            needs_ssh: true
+            survey:
+              - question_name: Target Hosts
+                question_description: "Inventory group to collect from (default: linux)"
+                variable: target_hosts
+                type: text
+                default: "linux"
+                required: false
+
+          - name: "AAC - Evaluate Stored Facts"
+            description: >
+              Reads fact snapshots from compliance_facts (PostgreSQL), evaluates
+              against OPA policies, stores in compliance_results, and upserts
+              remediation_status. No SSH required.
+              Use after policy updates to re-assess all hosts instantly.
+              Use to evaluate existing facts against a new framework retroactively.
+            playbook: "ansible/playbooks/evaluate_stored_facts.yml"
+            credentials: ["{{ vault_cred_id | int }}"]
+            needs_ssh: false
+            survey:
+              - question_name: Target Hostname
+                question_description: "Hostname to evaluate, or 'all' for all stored hosts"
+                variable: target_hostname
+                type: text
+                default: "all"
+                required: false
+              - question_name: Target Policy
+                question_description: "Policy to evaluate (CIS RHEL 9 / CIS Ubuntu 22.04 / all)"
+                variable: target_policy
+                type: multiplechoice
+                choices: "all\nCIS RHEL 9\nCIS Ubuntu 22.04\nCIS Amazon Linux 2023\nCIS Windows Server 2022"
+                default: "all"
+                required: false
+              - question_name: Facts Snapshot
+                question_description: "Use 'latest' or a date YYYY-MM-DD for historical re-assessment"
+                variable: facts_snapshot
+                type: text
+                default: "latest"
+                required: false
+
+          - name: "AAC - Deploy Infrastructure"
+            description: >
+              Single-click deployment of the full AAC infrastructure stack:
+              PostgreSQL container + schema (aac_compliance_db role), then all
+              three OPA containers (aac_opa_containers role). After this runs,
+              execute 'AAC - Load OPA Policies' (ID 27) to load Rego files.
+              Safe to re-run — container recreation is idempotent.
+            playbook: "ansible/playbooks/deploy_infrastructure.yml"
+            credentials: ["{{ vault_cred_id | int }}"]
+            needs_ssh: false
+            survey: []
+
+          - name: "AAC - Remediation Report"
+            description: >
+              Queries remediation_status to show open issues, ownership, due dates,
+              policy version drift, and top violations across the fleet.
+              No SSH required.
+            playbook: "ansible/playbooks/remediation_report.yml"
+            credentials: ["{{ vault_cred_id | int }}"]
+            needs_ssh: false
+            survey:
+              - question_name: Status Filter
+                question_description: "Filter by remediation status"
+                variable: report_status
+                type: multiplechoice
+                choices: "all\nopen\nin_progress\nneeds_reassessment\naccepted_risk\nresolved"
+                default: "all"
+                required: false
+              - question_name: Hostname Filter
+                question_description: "Specific hostname or 'all'"
+                variable: report_hostname
+                type: text
+                default: "all"
+                required: false
+              - question_name: Policy Filter
+                question_description: "Policy name or 'all'"
+                variable: report_policy
+                type: text
+                default: "all"
+                required: false
+
+    # ── Create or verify each template ───────────────────────────────────────
+
+    - name: Check if template already exists
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/job_templates/?name={{ item.name | urlencode }}"
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+      register: existing_templates
+      loop: "{{ phase2_templates }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Create job template if it does not exist
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/job_templates/"
+        method: POST
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+        body_format: json
+        body:
+          name: "{{ item.item.name }}"
+          description: "{{ item.item.description }}"
+          job_type: "run"
+          inventory: "{{ inventory_id | int }}"
+          project: "{{ project_id | int }}"
+          playbook: "{{ item.item.playbook }}"
+          execution_environment: "{{ ee_id | int }}"
+          ask_variables_on_launch: false
+          survey_enabled: "{{ item.item.survey | length > 0 }}"
+        status_code: [200, 201]
+      loop: "{{ existing_templates.results }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+      when: item.json.count == 0
+      register: created_templates
+
+    - name: Collect template IDs (new + existing)
+      set_fact:
+        template_ids: >-
+          {%- set ids = {} -%}
+          {%- for r in existing_templates.results -%}
+            {%- if r.json.count > 0 -%}
+              {{- ids.update({r.item.name: r.json.results[0].id}) or '' -}}
+            {%- endif -%}
+          {%- endfor -%}
+          {%- for r in created_templates.results | default([]) -%}
+            {%- if r.json is defined -%}
+              {{- ids.update({r.item.item.name: r.json.id}) or '' -}}
+            {%- endif -%}
+          {%- endfor -%}
+          {{ ids }}
+
+    - name: Attach vault credential to each template
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/job_templates/{{ template_ids[item.name] }}/credentials/"
+        method: POST
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+        body_format: json
+        body:
+          id: "{{ vault_cred_id | int }}"
+        status_code: [200, 201, 204]
+      loop: "{{ phase2_templates }}"
+      loop_control:
+        label: "{{ item.name }}"
+      failed_when: false
+
+    - name: Attach SSH credential to collect_facts template
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/job_templates/{{ template_ids['AAC - Collect Facts'] }}/credentials/"
+        method: POST
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+        body_format: json
+        body:
+          id: "{{ ssh_cred_id | int }}"
+        status_code: [200, 201, 204]
+      failed_when: false
+
+    - name: Add survey to templates that have one
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/job_templates/{{ template_ids[item.name] }}/survey_spec/"
+        method: POST
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+        body_format: json
+        body:
+          name: "{{ item.name }} Survey"
+          description: ""
+          spec: >-
+            {%- set spec = [] -%}
+            {%- for q in item.survey -%}
+              {{- spec.append({
+                'question_name': q.question_name,
+                'question_description': q.question_description | default(''),
+                'variable': q.variable,
+                'type': q.type,
+                'default': q.default | default(''),
+                'required': q.required | default(false),
+                'choices': q.choices | default('')
+              }) or '' -}}
+            {%- endfor -%}
+            {{ spec }}
+        status_code: [200, 201]
+      loop: "{{ phase2_templates }}"
+      loop_control:
+        label: "{{ item.name }}"
+      when: item.survey | length > 0
+      failed_when: false
+
+    # ── Summary ───────────────────────────────────────────────────────────────
+
+    - name: Seed complete
+      debug:
+        msg:
+          - "✅ Phase 2 AAP job templates ready"
+          - ""
+          - "  STEP 1 — Run 'AAC - Migrate Schema v2'   (one time, adds new tables)"
+          - "  STEP 2 — Run 'AAC - Collect Facts'        (scheduled, SSH required)"
+          - "  STEP 3 — Run 'AAC - Evaluate Stored Facts' (on demand / after policy update, no SSH)"
+          - "  STEP 4 — Run 'AAC - Remediation Report'   (on demand, no SSH)"
+          - ""
+          - "  Template IDs: {{ template_ids }}"

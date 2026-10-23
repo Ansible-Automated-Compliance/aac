@@ -1,0 +1,32 @@
+---
+collections:
+  - name: infra.aap_configuration
+    version: ">=2.9.0"
+  # REQUIRED, do not remove. The OpenShift Compliance Operator playbooks
+  # (capture_ocp_baseline, collate_ocp_nerc_cip, remediate_ocp_nerc_cip) read
+  # and write every cluster object through kubernetes.core.k8s / k8s_info.
+  #
+  # It was present in the v1.3.0 image WITHOUT being declared here -- pulled in
+  # as a transitive dependency -- so a rebuild could silently have dropped it
+  # and broken those three playbooks with no change to them. Declared now so
+  # the image contents follow from this file rather than from luck.
+  #
+  # This is also the collection that makes redhat.openshift unnecessary; see
+  # collections/README.md for why that must not come back as a project-level
+  # requirement.
+  - name: kubernetes.core
+    version: ">=3.0.0"
+  - name: community.postgresql
+    version: ">=3.0.0"
+  - name: community.general
+    version: ">=8.0.0"
+  - name: ansible.posix
+    version: ">=1.5.0"
+  - name: ansible.utils
+    version: ">=2.10.0"
+  - name: ansible.windows
+    version: ">=2.0.0"
+  - name: community.windows
+    version: ">=2.0.0"
+  - name: amazon.aws
+    version: ">=8.0.0"

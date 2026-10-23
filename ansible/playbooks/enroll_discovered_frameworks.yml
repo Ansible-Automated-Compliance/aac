@@ -1,0 +1,159 @@
+---
+# enroll_discovered_frameworks.yml
+#
+# The discovery → framework-enablement bridge (the reserved "Piece #23"). Reads
+# the technologies AAC has already discovered (host_facts_latest, inventory_catalog)
+# and AUTO-ENABLES the matching framework bundles in customer_frameworks, so
+# `load_opa_policies.yml source=database` then loads only what the environment
+# actually runs. Zero-touch and audited (enabled_by='discovery').
+#
+# Discovery is additive and non-destructive: it INSERTs newly-implied frameworks
+# and does NOT override an operator's existing enable/disable decision
+# (ON CONFLICT DO NOTHING) — so a manually-disabled framework stays disabled.
+#
+# Run AFTER "AAC - Gather Facts". AAP Job Template: "AAC - Enroll Discovered Frameworks".
+# Execution Environment: AAC Compliance EE (has community.postgresql).
+#
+# Survey variables:
+#   tenant_id   — tenant/environment key (default 'default')
+#   trigger_load — yes|no: also launch the loader (source=database) after (default no)
+
+- name: Enroll frameworks implied by discovered technologies
+  hosts: localhost
+  connection: local
+  gather_facts: true
+
+  vars:
+    tenant_id: "{{ enroll_tenant_id | default('default') }}"
+    pg_login_host: "{{ aac_result_pg_host | default(pg_host | default('', true), true) | mandatory }}"
+    pg_login_password: "{{ compliance_db_password | default('') | mandatory }}"
+
+  tasks:
+    - name: Load optional local config
+      ansible.builtin.include_vars: "{{ item }}"
+      with_first_found:
+        - files: ["{{ playbook_dir }}/../vars/site_config.yml"]
+          skip: true
+
+    - name: Load optional local secrets
+      ansible.builtin.include_vars: "{{ item }}"
+      with_first_found:
+        - files: ["{{ playbook_dir }}/../vars/vault_secrets.yml"]
+          skip: true
+
+    # ── Read discovered signals ──────────────────────────────────────────────
+    - name: Read discovered OS / cloud signals from host_facts_latest
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_login_host }}"
+        login_user: "{{ pg_user | default('postgres') }}"
+        login_password: "{{ pg_login_password }}"
+        login_db: "{{ pg_database | default('compliance') }}"
+        query: >
+          SELECT DISTINCT os_family, os_distribution, os_version, cloud_provider
+          FROM host_facts_latest
+      register: _host_signals
+      failed_when: _host_signals.failed | default(false)
+
+    - name: Read discovered products from inventory_catalog (best-effort)
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_login_host }}"
+        login_user: "{{ pg_user | default('postgres') }}"
+        login_password: "{{ pg_login_password }}"
+        login_db: "{{ pg_database | default('compliance') }}"
+        query: >
+          SELECT DISTINCT package_vendor AS vendor, product
+          FROM inventory_catalog
+      register: _product_signals
+      failed_when: false
+
+    - name: Assemble discovered-signals set
+      ansible.builtin.set_fact:
+        _signals: "{{ (_host_signals.query_result | default([])) + (_product_signals.query_result | default([])) }}"
+
+    - name: Nothing discovered — stop cleanly
+      ansible.builtin.meta: end_play
+      when: _signals | length == 0
+
+    # ── Map signals → loader_keys via the shared tech map (file, not stdin) ───
+    - name: Write signals to a temp file (avoids Ansible stdin JSON coercion)
+      ansible.builtin.copy:
+        content: "{{ _signals | to_json }}"
+        dest: "{{ _signals_path }}"
+        mode: "0600"
+      vars:
+        _signals_path: "/tmp/aac_discovered_signals_{{ ansible_date_time.iso8601_basic_short }}.json"
+      register: _sig_file
+
+    - name: Derive loader_keys from discovered signals
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/../../scripts/discovered_tech.py"
+      environment:
+        SIGNALS_FILE: "{{ _sig_file.dest }}"
+      register: _derived
+      changed_when: false
+
+    - name: Parse discovered loader_keys
+      ansible.builtin.set_fact:
+        _loader_keys: "{{ _derived.stdout_lines | map('trim') | reject('equalto', '') | list }}"
+
+    - name: Remove the temp signals file
+      ansible.builtin.file:
+        path: "{{ _sig_file.dest }}"
+        state: absent
+
+    - name: No mappable technologies discovered — stop cleanly
+      ansible.builtin.meta: end_play
+      when: _loader_keys | length == 0
+
+    # ── Auto-enable in customer_frameworks (additive, respects overrides) ─────
+    - name: Upsert discovered frameworks into customer_frameworks (add-only)
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_login_host }}"
+        login_user: "{{ pg_user | default('postgres') }}"
+        login_password: "{{ pg_login_password }}"
+        login_db: "{{ pg_database | default('compliance') }}"
+        query: >
+          INSERT INTO customer_frameworks (tenant_id, loader_key, enabled, enabled_by, notes)
+          VALUES (%(tenant_id)s, %(loader_key)s, true, 'discovery',
+                  'auto-enabled from discovered technology')
+          ON CONFLICT (tenant_id, loader_key) DO NOTHING
+        named_args:
+          tenant_id: "{{ tenant_id }}"
+          loader_key: "{{ item }}"
+      loop: "{{ _loader_keys }}"
+      register: _enroll
+      # A loader_key not present in framework_catalog would violate the FK — skip
+      # it loudly rather than failing the whole run.
+      failed_when:
+        - _enroll.failed | default(false)
+        - "'foreign key' not in (_enroll.msg | default(''))"
+
+    - name: Report enrolled frameworks
+      ansible.builtin.debug:
+        msg: |
+          ═══════════════════════════════════════════════════════════
+          Discovery Enrollment
+          ═══════════════════════════════════════════════════════════
+          Tenant:       {{ tenant_id }}
+          Signals:      {{ _signals | length }}
+          Loader keys:  {{ _loader_keys | join(', ') }}
+          (New rows are add-only; existing operator choices untouched.)
+          ═══════════════════════════════════════════════════════════
+
+    - name: Publish result via set_stats
+      ansible.builtin.set_stats:
+        data:
+          discovered_loader_keys: "{{ _loader_keys }}"
+          discovery_tenant: "{{ tenant_id }}"
+
+    # Loading is a separate playbook/JT — chain "AAC - Load OPA Policies"
+    # (source=database) after this node in the workflow, or run it manually. The
+    # discovered_loader_keys set_stats above is available to that node.
+    - name: Next step reminder
+      ansible.builtin.debug:
+        msg: >-
+          Enabled set updated. Run "AAC - Load OPA Policies" with source=database
+          to load the newly-enabled frameworks (the DS/refresh workflow chains
+          this automatically).

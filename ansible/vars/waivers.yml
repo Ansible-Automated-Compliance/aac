@@ -1,0 +1,25 @@
+---
+# Security exception waivers — waived, never hidden.
+#
+# Each entry moves a matching finding from active violations to a documented
+# waived set. The finding is still stored and reported, annotated with the
+# waiver's justification, approver, and expiry — an assessor sees a documented
+# exception, not an absence. When the expiry passes the finding automatically
+# reverts to an active violation.
+#
+# Entries load into OPA as data via "AAC - Load OPA Policies" (re-run it after
+# editing this file). The policy layer is
+# policies/governance/exceptions/waivers.rego; matching is by control_id
+# substring against the violation text, host and framework exact or "*".
+#
+# Every entry MUST carry:
+#   host        hostname as it appears in stored results, or "*"
+#   framework   opa_framework_map key (e.g. cis_rhel9), or "*"
+#   control_id  substring that identifies the finding (control number, CVE id)
+#   reason      why this is accepted risk / what compensating control exists
+#   approver    who signed off — a person, not a team alias
+#   expires     YYYY-MM-DD (before year 2262); entries without one never match
+#
+# See examples/waivers_example.yml for filled-in samples.
+
+waiver_entries: []

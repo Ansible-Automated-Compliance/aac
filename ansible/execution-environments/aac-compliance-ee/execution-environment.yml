@@ -1,0 +1,37 @@
+---
+version: 3
+
+images:
+  base_image:
+    name: quay.io/ansible/creator-ee:v24.2.0
+
+dependencies:
+  galaxy: requirements.yml
+  python: requirements.txt
+  ansible_core:
+    package_pip: ansible-core>=2.15.0
+  ansible_runner:
+    package_pip: ansible-runner>=2.3.0
+
+options:
+  package_manager_path: /usr/bin/microdnf
+
+additional_build_steps:
+  append_final:
+    - RUN microdnf install -y unzip && microdnf clean all
+    - RUN curl -Lo /tmp/terraform.zip https://releases.hashicorp.com/terraform/1.10.5/terraform_1.10.5_linux_amd64.zip && cd /tmp && unzip terraform.zip && mv terraform /usr/local/bin/terraform && chmod +x /usr/local/bin/terraform && rm /tmp/terraform.zip
+    - RUN terraform version
+    # Mitogen — pip install makes ansible_mitogen importable.
+    # Create /opt/mitogen_strategies with ONLY the strategy .py files (no mitogen.py)
+    # to avoid circular import: mitogen_linear.py imports ansible_mitogen.strategy which
+    # imports mitogen.core, but if the plugin dir is in sys.path, mitogen.py in that dir
+    # shadows the real mitogen package causing AttributeError/circular import.
+    - RUN pip install mitogen
+    - RUN mkdir -p /opt/mitogen_strategies && python3 -c "import ansible_mitogen.plugins.strategy as s, os, shutil; [shutil.copy(os.path.join(os.path.dirname(os.path.abspath(s.__file__)), f), '/opt/mitogen_strategies/') for f in ['mitogen_linear.py', 'mitogen_free.py', 'mitogen_host_pinned.py']]"
+    - RUN python3 -c "import sys; sys.path.insert(0,'/opt/mitogen_strategies'); import importlib.util; spec=importlib.util.spec_from_file_location('mitogen_linear','/opt/mitogen_strategies/mitogen_linear.py'); mod=importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); print('Mitogen OK')"
+    # Cosign v2.6.3 — signs Certifiable Audit Artifact (CAA) rows so an auditor
+    # can verify them offline with cosign verify-blob against the public key at
+    # docs/security/caa-signing-key-v1.pub. Pinned to v2.x because v3+ requires
+    # a signing-config to skip Rekor, which we don't want for the private-key
+    # workflow. Apache-2.0.
+    - RUN curl -fsSLo /usr/local/bin/cosign https://github.com/sigstore/cosign/releases/download/v2.6.3/cosign-linux-amd64 && chmod +x /usr/local/bin/cosign && cosign version | head -20

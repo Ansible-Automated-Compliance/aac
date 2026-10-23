@@ -1,0 +1,91 @@
+---
+# ── What to assess ────────────────────────────────────────────────────
+# Sections are opt-out rather than opt-in: the benchmark's own scope is
+# all nine, and a section silently missing from a run is indistinguishable
+# from one that passed.
+m365_sections:
+  - admin_center     # 1
+  - defender         # 2
+  - purview          # 3
+  - intune           # 4
+  - entra            # 5
+  - exchange         # 6
+  - sharepoint       # 7
+  - teams            # 8
+  - fabric           # 9
+
+# ── Credentials ───────────────────────────────────────────────────────
+# Graph and Fabric take client credentials. Exchange, Teams, SharePoint
+# and Purview require app-only CERTIFICATE auth -- Exchange Online
+# PowerShell does not accept a client secret at all.
+m365_tenant_id: ""
+m365_client_id: ""
+m365_client_secret: ""
+m365_organization: ""            # contoso.onmicrosoft.com
+m365_certificate_path: ""        # PFX, for the PowerShell-backed sections
+m365_certificate_password: ""
+m365_certificate_thumbprint: ""  # Teams takes a thumbprint, not a path
+m365_sharepoint_admin_url: ""    # https://contoso-admin.sharepoint.com
+
+# ── Network / proxy ───────────────────────────────────────────────────
+# The Graph and Fabric collectors honour an execution-environment proxy by
+# default (m365_use_proxy=true -> the module opens a pooled, retrying session
+# and uses the EE's HTTP(S)_PROXY). Set m365_proxy to a URL to FORCE a specific
+# proxy for the Graph/Fabric calls regardless of the environment; leave it blank
+# to use the environment. Set m365_use_proxy=false to force a direct connection.
+# (The PowerShell-backed sections use their own proxy path and are unaffected.)
+m365_use_proxy: true
+m365_proxy: ""
+
+# ── Evaluation ────────────────────────────────────────────────────────
+# opa_security_url / pg_host come from the running play's vars (per environment)
+# — NOT a hardcoded default. For cis_m365_v7_assessment.yml that is
+# playbooks/vars/m365_config.yml (or AAP job-template extra_vars/survey); that
+# play does NOT load ansible/vars/site_config.yml. A silent in-cluster fallback
+# here masked a wrong/missing endpoint at a customer site and sent the evaluation
+# to an assumed address. main.yml asserts these are set before any collection
+# runs, so a misconfiguration fails fast and loud.
+#
+# Bucket: the cis_m365_v7 policies live at policies/benchmarks/cis/saas/m365_v7/,
+# which the OPA loader (load_opa_policies.yml) sends to opa-security along with
+# every other benchmarks/cis/** tree. That loader routing is the authoritative
+# reason for the security bucket. Note cis_m365_v7 is deliberately NOT registered
+# in opa_framework_map — this role resolves its own endpoint here rather than
+# going through the generic resolve_opa_url path (which only the framework-map
+# assessments use). Querying opa-compliance (the previous default) returns {}
+# because cis_m365_v7 is not loaded there, and the assessment then fails at
+# "OPA returned an empty report / a rule is undefined".
+m365_opa_url: "{{ opa_security_url }}"
+m365_opa_package: "cis_m365_v7"
+
+# ── Persistence ───────────────────────────────────────────────────────
+m365_store_results: true
+m365_framework_name: "cis_m365_v7"
+m365_db_host: "{{ pg_host }}"
+m365_db_name: compliance
+# The DB user honours the platform-wide name compliance_db_user when set (the
+# preflight message has pointed customers at that name since #626), else the
+# historical literal. A blank override of m365_db_user itself still fails
+# closed in the preflight: that is deliberate (#626).
+m365_db_user: "{{ compliance_db_user | default('postgres', true) }}"
+m365_db_password: "{{ compliance_db_password | default('') }}"
+
+# ── Security exception waivers ────────────────────────────────────────
+# Ask OPA's exceptions module (entries from ansible/vars/waivers.yml) which
+# violations carry an active, documented waiver before persisting. Waived
+# findings are stored in metadata.waivers_applied — visible, never hidden —
+# and the findings workbook reports them as accepted deviations with their
+# expiry. OPA unreachable or module not loaded ⇒ nothing is waived.
+m365_waivers_enabled: true
+
+# ── Behaviour ─────────────────────────────────────────────────────────
+# The PowerShell-backed sections need an execution environment carrying
+# pwsh (aac-m365-ee). When it is absent the collectors report every fact
+# as unavailable and the Rego fails closed, which is correct but noisy --
+# set this false to skip them deliberately and have the report say so.
+m365_include_powershell_sections: true
+
+# Fail the play when a section cannot be evaluated at all. Off by default
+# so a partial assessment still produces evidence; the report always
+# records which sections were incomplete either way.
+m365_fail_on_incomplete: false

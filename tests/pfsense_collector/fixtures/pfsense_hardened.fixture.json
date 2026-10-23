@@ -1,0 +1,47 @@
+{
+  "_comment": "Synthetic pfSense CE device (RFC 5737 addresses, example.com). config is config.xml parsed to JSON: a single repeated element arrives as an object, a checkbox flag as an empty string or empty object, <any/> as an empty object.",
+  "config": {
+    "version": "2.7.2-RELEASE",
+    "platform": "pfsense",
+    "system": {
+      "hostname": "fw-edge-01",
+      "domain": "example.com",
+      "dnsserver": ["192.0.2.53", "198.51.100.53"],
+      "timezone": "Etc/UTC",
+      "timeservers": "0.pool.ntp.org 1.pool.ntp.org",
+      "disableconsolemenu": "",
+      "sshguard_threshold": "20",
+      "sshguard_blocktime": "600",
+      "authserver": {"refid": "5f0c0a1b2c3d4", "type": "ldap", "name": "corp-ldap", "host": "ldap.example.com"},
+      "webgui": {"protocol": "https", "port": "443", "session_timeout": "10"},
+      "ssh": {"enable": "enabled", "sshdkeyonly": "enabled"}
+    },
+    "interfaces": {
+      "wan": {"if": "vtnet0", "enable": "", "blockpriv": "", "blockbogons": "", "descr": "WAN"},
+      "lan": {"if": "vtnet1", "enable": "", "ipaddr": "192.0.2.1", "subnet": "24", "descr": "LAN"}
+    },
+    "filter": {
+      "rule": [
+        {"type": "block", "interface": "wan", "source": {"any": {}}, "destination": {"any": {}},
+         "log": "", "descr": "Default deny WAN inbound", "tracker": "1000000101"},
+        {"type": "pass", "interface": "lan", "protocol": "tcp", "source": {"network": "lan"},
+         "destination": {"address": "198.51.100.10", "port": "443"}, "log": "",
+         "descr": "LAN to proxy HTTPS", "tracker": "1000000102"},
+        {"type": "pass", "interface": "lan", "protocol": "icmp", "icmptype": "echoreq",
+         "source": {"network": "lan"}, "destination": {"address": "198.51.100.10"}, "log": {},
+         "descr": "LAN ping to proxy", "tracker": "1000000103"}
+      ]
+    },
+    "snmpd": {"syslocation": "dc1", "syscontact": "noc@example.com", "trapenable": "", "trapserver": "192.0.2.162"},
+    "syslog": {"enable": "", "remoteserver": "192.0.2.20:514", "logall": ""},
+    "unbound": {"enable": "", "dnssec": ""},
+    "hasync": {"pfsyncenabled": "on", "synchronizetoip": "192.0.2.3", "username": "admin"},
+    "openvpn": {
+      "openvpn-server": {"vpnid": "1", "mode": "server_user", "authmode": "corp-ldap",
+                         "data_ciphers": "AES-256-GCM,CHACHA20-POLY1305", "digest": "SHA256",
+                         "description": "remote-access"}
+    }
+  },
+  "sshd_config": "# pfSense sshd_config\nPort 22\n#Banner none\nBanner /etc/issue.net\nPermitRootLogin no\n",
+  "motd": "Authorized use only. Activity on this device is monitored.\n"
+}

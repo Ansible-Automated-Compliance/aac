@@ -1,0 +1,82 @@
+---
+# validate_rego_library.yml — is the policy library configured correctly?
+#
+# Runs the same sweep that found, on one night (2026-08-30/31):
+#   - 14 aggregate reports undefined on missing input (five distinct causes,
+#     including the half-defaulted object.get(input.x, ...) trap and a missing
+#     `default compliant := false`)
+#   - 7 <key>.main bridges in opa_framework_map serving EMPTY compliance_report
+#     -- the generic assessment stores {} for those frameworks, green
+#   - 4 assessment playbooks that fabricated a 100% score when OPA was
+#     unreachable (fixed the same night; this playbook validates the library
+#     half of that contract: a populated report object must always exist)
+#
+# Checks, all fail-closed:
+#   1. opa check          -- the whole tree compiles
+#   2. opa test           -- the full suite passes, with a count floor so a
+#                            silently-skipped suite cannot pass vacuously
+#   3. validate_rego_library.py
+#        - every declared aggregate populates on EMPTY input (the {} collapse)
+#        - import rego.v1 everywhere
+#        - no lab identifiers outside the hygiene policy's own address list
+#        - every opa_framework_map key resolves to a package whose
+#          compliance_report populates
+#
+# AAP Job Template: "AAC - Validate Rego Library" (seeded; inventory 2 for env
+# vars; no credentials needed -- read-only, no managed hosts touched).
+
+- name: Validate the Rego policy library
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    policies_dir: "{{ playbook_dir }}/../../policies"
+    # Floor for the test count. 548 passed when this was written; a run that
+    # finds far fewer has lost part of the suite and must fail, not pass.
+    min_tests: 400
+
+  tasks:
+    - name: The library must be checked out
+      ansible.builtin.stat:
+        path: "{{ policies_dir }}/LICENSE"
+      register: lib
+      failed_when: not lib.stat.exists
+
+    - name: 1. opa check — the tree compiles
+      ansible.builtin.command:
+        argv: [opa, check, "{{ policies_dir }}", --ignore, .github]
+      changed_when: false
+
+    - name: 2. opa test — the full suite
+      ansible.builtin.command:
+        argv: [opa, test, "{{ policies_dir }}", --ignore, .github]
+      register: opa_tests
+      changed_when: false
+
+    - name: The suite actually ran (vacuous-pass tripwire)
+      ansible.builtin.assert:
+        that:
+          - opa_tests.stdout is search('PASS')
+          - (opa_tests.stdout | regex_search('PASS: (\\d+)/', '\\1') | first | int) >= (min_tests | int)
+        fail_msg: >-
+          opa test output does not show at least {{ min_tests }} passing tests:
+          {{ opa_tests.stdout | trim }}. Either the suite shrank dramatically or
+          part of the tree was not loaded — both must fail here rather than
+          pass quietly.
+
+    - name: 3. Structural validation (collapse, rego.v1, lab IPs, framework map)
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/../../scripts/validate_rego_library.py"
+          - --policies-dir
+          - "{{ policies_dir }}"
+          - --site-config
+          - "{{ playbook_dir }}/../vars/site_config.yml.example"
+      register: structural
+      changed_when: false
+
+    - name: Report
+      ansible.builtin.debug:
+        msg: "{{ (opa_tests.stdout_lines | last) }} — {{ structural.stdout_lines | last }}"

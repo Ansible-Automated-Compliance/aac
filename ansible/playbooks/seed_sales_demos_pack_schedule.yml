@@ -1,0 +1,325 @@
+---
+# seed_sales_demos_pack_schedule.yml
+#
+# Creates the "AAC - Sync AAC Pack" job template in AAP, attaches the two
+# credentials sync_sales_demos_pack.yml needs (Ansible Vault + "GitHub PAT
+# (extra_vars)"), gives it a one-question survey (sync_dry_run — the only
+# variable a launcher may set; pack_repo/pack_branch are not overridable), and
+# a weekly schedule (default Monday 06:00 UTC, pack_rrule). Every name lookup
+# must resolve to exactly one object, and the project must explicitly track
+# the main branch, so a demo-branch project is never bound to publication.
+#
+# The template backs ansible/playbooks/sync_sales_demos_pack.yml, which
+# publishes the AAC pack to the public repository ynotbhatc/aac-pack (push
+# main + tag vYYYY.MM.DD).
+#
+# Idempotent and convergent: template fields, credential set, survey and the
+# schedule's RRULE/enabled state are all brought to the requested values on
+# every run.
+#
+# TLS: verification defaults ON (fail closed). Environments with self-signed
+# controller certs pass -e aap_validate_certs=false explicitly at launch.
+#
+# Where the token goes. Inside an AAP job (JOB_ID is in the environment) the
+# API base MUST equal the controller's own URL from the job environment
+# (CONTROLLER_HOST / AWX_HOST, set by the controller, not settable by a
+# launcher). The check reads the environment inline at assert time, so it
+# cannot be bypassed by overriding any variable with -e (extra vars outrank
+# set_fact), and there is no fallback: an AAP job without CONTROLLER_HOST
+# stops. On an operator machine aap_url comes from site_config.yml. Either
+# way the URL must be https to a bare host, or http only to an in-cluster
+# *.svc service. Do not enable "prompt on launch" for variables on the seed
+# template; it needs none.
+# Run from a job template with the "AAP Token (extra_vars)" credential
+# (site_config.yml is not in a synced project checkout), or from an operator
+# machine where site_config.yml and vault_secrets.yml provide URL and token.
+# AAP Job Template: "AAC - Seed AAC Pack Sync Schedule"
+
+- name: Seed AAC Pack sync template and weekly schedule
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    template_name: "AAC - Sync AAC Pack"
+    schedule_name: "AAC - Sync AAC Pack (Weekly)"
+    # The main-branch project. The lookup is by name, but the project must
+    # also report scm_branch == pack_project_branch or the seeder stops.
+    pack_project_name:   "Compliance Automation (main)"
+    pack_project_branch: "main"
+    pack_pat_credential_name: "GitHub PAT (extra_vars)"
+    pack_pat_credential_type: "AAC - GitHub PAT (extra_vars)"
+    # Monday 06:00 UTC — ahead of a working week of demo builds.
+    pack_rrule: "DTSTART:20261012T060000Z RRULE:FREQ=WEEKLY;INTERVAL=1;BYDAY=MO"
+    pack_schedule_enabled: true
+    _validate_certs: "{{ aap_validate_certs | default(true) | bool }}"
+
+  tasks:
+
+    # ── Config and token: operator machine or AAP job template ───────────
+
+    - name: Load optional local config (operator machine only)
+      ansible.builtin.include_vars: "{{ item }}"
+      with_first_found:
+        - files: ["{{ playbook_dir }}/../vars/site_config.yml"]
+          skip: true
+
+    - name: Load optional local secrets (operator machine only)
+      ansible.builtin.include_vars: "{{ item }}"
+      with_first_found:
+        - files: ["{{ playbook_dir }}/../vars/vault_secrets.yml"]
+          skip: true
+
+    - name: Resolve controller URL, token and object names
+      ansible.builtin.set_fact:
+        # Inside AAP the job environment is the source; aap_url is only
+        # consulted outside AAP. The pin below re-reads the environment at
+        # assert time, so overriding this fact with -e changes nothing.
+        _aap_url: >-
+          {{ (lookup('env', 'CONTROLLER_HOST') | default(lookup('env', 'AWX_HOST'), true)
+              if (lookup('env', 'JOB_ID') | length > 0)
+              else aap_url | default('')) | regex_replace('/+$', '') }}
+        aap_api_token: "{{ aap_token | default(vault_aap_local_mcp_token | default('', true), true) }}"
+        _inventory_name:  "{{ aap_inventory_name | default('Compliance Infrastructure') }}"
+        _ee_name:         "{{ aap_ee_name | default('AAC Compliance EE') }}"
+        _vault_cred_name: "{{ aap_vault_credential_name | default('Ansible Vault') }}"
+
+    - name: Require a controller URL the token may be sent to, and a token
+      ansible.builtin.assert:
+        that:
+          - _aap_url | length > 0
+          - _aap_url is match('^https://[A-Za-z0-9.-]+(:[0-9]+)?$')
+            or _aap_url is match('^http://[a-z0-9.-]+\\.svc(\\.cluster\\.local)?(:[0-9]+)?$')
+          - aap_api_token | length > 0
+        fail_msg: >-
+          A controller URL and an API token are required, and the bearer token
+          is only sent to an https controller or to an in-cluster http *.svc
+          service — got "{{ _aap_url }}". From AAP: attach the
+          "AAP Token (extra_vars)" credential (the URL comes from the job
+          environment). From an operator machine: set aap_url in site_config.yml.
+        quiet: true
+
+    - name: Set the API base
+      ansible.builtin.set_fact:
+        aap_api: "{{ _aap_url }}/api/controller/v2"
+
+    - name: Pin the API base to this controller when running as an AAP job
+      ansible.builtin.assert:
+        that:
+          # Not an AAP job (no JOB_ID): the operator machine path, gated above.
+          - lookup('env', 'JOB_ID') | length == 0
+            or (
+              (lookup('env', 'CONTROLLER_HOST') | default(lookup('env', 'AWX_HOST'), true) | length > 0)
+              and aap_api == ((lookup('env', 'CONTROLLER_HOST') | default(lookup('env', 'AWX_HOST'), true))
+                              | regex_replace('/+$', '')) ~ '/api/controller/v2'
+            )
+        fail_msg: >-
+          Running as AAP job {{ lookup('env', 'JOB_ID') }}: the API base must be
+          this controller's own URL from the job environment
+          (CONTROLLER_HOST/AWX_HOST = "{{ lookup('env', 'CONTROLLER_HOST')
+          | default(lookup('env', 'AWX_HOST'), true) }}"), got "{{ aap_api }}".
+          No fallback: the bearer token is not sent anywhere else.
+        quiet: true
+
+    - name: Set request headers
+      ansible.builtin.set_fact:
+        aap_headers:
+          Authorization: "Bearer {{ aap_api_token }}"
+          Content-Type:  "application/json"
+      no_log: true
+
+    # ── Resolve AAP object IDs (exactly one match each) ──────────────────
+
+    - name: Look up the five prerequisite objects by name
+      ansible.builtin.uri:
+        use_proxy: false
+        url:     "{{ aap_api }}/{{ item.endpoint }}/?name={{ item.name | urlencode }}"
+        headers: "{{ aap_headers }}"
+        validate_certs: "{{ _validate_certs }}"
+      loop:
+        - { key: project,    endpoint: projects,               name: "{{ pack_project_name }}" }
+        - { key: inventory,  endpoint: inventories,            name: "{{ _inventory_name }}" }
+        - { key: ee,         endpoint: execution_environments, name: "{{ _ee_name }}" }
+        - { key: vault_cred, endpoint: credentials,            name: "{{ _vault_cred_name }}" }
+        - { key: pat_cred,   endpoint: credentials,            name: "{{ pack_pat_credential_name }}" }
+      loop_control:
+        label: "{{ item.endpoint }} '{{ item.name }}'"
+      register: lookups
+      failed_when: lookups.json.count != 1
+      # 0 = missing, 2+ = ambiguous: a same-named object in another
+      # organization would otherwise be bound to the publishing template.
+
+    - name: Index the resolved objects
+      ansible.builtin.set_fact:
+        obj: "{{ dict(lookups.results | map(attribute='item.key')
+                 | zip(lookups.results | map(attribute='json.results.0'))) }}"
+
+    - name: Require the project to track the main branch explicitly
+      ansible.builtin.assert:
+        that:
+          - obj.project.scm_branch == pack_project_branch
+          - not (obj.project.allow_override | bool)
+        fail_msg: >-
+          Project "{{ pack_project_name }}" (id {{ obj.project.id }}) reports
+          scm_branch "{{ obj.project.scm_branch }}" with allow_override
+          {{ obj.project.allow_override }}; publication requires scm_branch
+          "{{ pack_project_branch }}" and no branch override, so a demo
+          branch can never be published.
+        quiet: true
+
+    - name: Require the PAT credential to be the extra_vars type
+      ansible.builtin.assert:
+        that:
+          - obj.pat_cred.summary_fields.credential_type.name == pack_pat_credential_type
+        fail_msg: >-
+          "{{ pack_pat_credential_name }}" is of type
+          "{{ obj.pat_cred.summary_fields.credential_type.name }}", not
+          "{{ pack_pat_credential_type }}"; a different credential type would
+          not inject vault_github_pat.
+        quiet: true
+
+    # ── Create or update job template ────────────────────────────────────
+
+    - name: Check if template already exists
+      ansible.builtin.uri:
+        use_proxy: false
+        url:     "{{ aap_api }}/job_templates/?name={{ template_name | urlencode }}"
+        headers: "{{ aap_headers }}"
+        validate_certs: "{{ _validate_certs }}"
+      register: template_check
+      failed_when: template_check.json.count > 1
+
+    - name: Create or update job template
+      ansible.builtin.uri:
+        use_proxy: false
+        url: >-
+          {{ aap_api }}/job_templates/{{
+            template_check.json.results[0].id ~ '/'
+            if template_check.json.count == 1 else '' }}
+        method: "{{ 'PATCH' if template_check.json.count == 1 else 'POST' }}"
+        headers: "{{ aap_headers }}"
+        validate_certs: "{{ _validate_certs }}"
+        body_format: json
+        body:
+          name:                    "{{ template_name }}"
+          description: >-
+            Publishes the AAC pack (scripts/export_sales_demos_pack.py) to the
+            public repository ynotbhatc/aac-pack: push main, tag vYYYY.MM.DD.
+            No diff means no commit and no tag. Weekly on the schedule; launch
+            by hand before a demo build. The survey's sync_dry_run=true exports
+            and diffs without pushing; no other variable can be set at launch.
+          job_type:                "run"
+          inventory:               "{{ obj.inventory.id | int }}"
+          project:                 "{{ obj.project.id | int }}"
+          playbook:                "ansible/playbooks/sync_sales_demos_pack.yml"
+          execution_environment:   "{{ obj.ee.id | int }}"
+          # No free-form extra_vars at launch: pack_repo / pack_branch must not
+          # be overridable by whoever presses Launch. The only launch-time
+          # choice is the survey's sync_dry_run.
+          ask_variables_on_launch: false
+          extra_vars:              "{}"
+          survey_enabled:          true
+        status_code: [200, 201]
+      register: template_result
+
+    - name: Set template ID
+      ansible.builtin.set_fact:
+        template_id: "{{ template_result.json.id }}"
+
+    # ── Credentials: attach only what is missing, require success ────────
+
+    - name: Read the template's attached credentials
+      ansible.builtin.uri:
+        use_proxy: false
+        url:     "{{ aap_api }}/job_templates/{{ template_id }}/credentials/?page_size=200"
+        headers: "{{ aap_headers }}"
+        validate_certs: "{{ _validate_certs }}"
+      register: attached
+
+    - name: Attach the missing credentials
+      ansible.builtin.uri:
+        use_proxy: false
+        url:     "{{ aap_api }}/job_templates/{{ template_id }}/credentials/"
+        method:  POST
+        headers: "{{ aap_headers }}"
+        validate_certs: "{{ _validate_certs }}"
+        body_format: json
+        body:
+          id: "{{ item | int }}"
+        status_code: [204]
+      loop: "{{ [obj.vault_cred.id, obj.pat_cred.id] | difference(attached.json.results | map(attribute='id') | list) }}"
+      loop_control:
+        label: "credential {{ item }}"
+
+    # ── Survey: the one launch-time choice ───────────────────────────────
+
+    - name: Set the survey (sync_dry_run only)
+      ansible.builtin.uri:
+        use_proxy: false
+        url:     "{{ aap_api }}/job_templates/{{ template_id }}/survey_spec/"
+        method:  POST
+        headers: "{{ aap_headers }}"
+        validate_certs: "{{ _validate_certs }}"
+        body_format: json
+        body:
+          name: "AAC Pack sync"
+          description: "Dry run exports and diffs without pushing or tagging."
+          spec:
+            - type: multiplechoice
+              variable: sync_dry_run
+              question_name: "Dry run? (export + diff only, no push, no tag)"
+              question_description: "false publishes to ynotbhatc/aac-pack main and tags the day."
+              required: true
+              default: "false"
+              choices: "false\ntrue"
+        status_code: [200]
+
+    # ── Schedule: create, or converge the existing one ───────────────────
+
+    - name: Check if schedule already exists
+      ansible.builtin.uri:
+        use_proxy: false
+        url:     "{{ aap_api }}/job_templates/{{ template_id }}/schedules/?name={{ schedule_name | urlencode }}"
+        headers: "{{ aap_headers }}"
+        validate_certs: "{{ _validate_certs }}"
+      register: schedule_check
+      failed_when: schedule_check.json.count > 1
+
+    - name: Create or update the weekly schedule
+      ansible.builtin.uri:
+        use_proxy: false
+        url: >-
+          {{ aap_api ~ '/schedules/' ~ schedule_check.json.results[0].id ~ '/'
+             if schedule_check.json.count == 1
+             else aap_api ~ '/job_templates/' ~ template_id ~ '/schedules/' }}
+        method: "{{ 'PATCH' if schedule_check.json.count == 1 else 'POST' }}"
+        headers: "{{ aap_headers }}"
+        validate_certs: "{{ _validate_certs }}"
+        body_format: json
+        body:
+          name:        "{{ schedule_name }}"
+          description: "Weekly AAC pack publication to ynotbhatc/aac-pack — {{ pack_rrule }}"
+          enabled:     "{{ pack_schedule_enabled | bool }}"
+          rrule:       "{{ pack_rrule }}"
+          extra_data:  {}
+        status_code: [200, 201]
+      register: schedule_result
+
+    # ── Summary ───────────────────────────────────────────────────────────
+
+    - name: "=== AAC Pack Sync Ready ==="
+      ansible.builtin.debug:
+        msg:
+          - "AAC pack publication is configured:"
+          - ""
+          - "  Template:    {{ template_name }} (ID {{ template_id }})"
+          - "  Project:     {{ pack_project_name }} (scm_branch {{ obj.project.scm_branch }})"
+          - "  Credentials: {{ _vault_cred_name }}, {{ pack_pat_credential_name }}"
+          - "  Schedule:    {{ schedule_name }} (ID {{ schedule_result.json.id }}), enabled={{ pack_schedule_enabled | bool }}"
+          - "               {{ pack_rrule }}"
+          - "               next run: {{ schedule_result.json.next_run | default('n/a') }}"
+          - "  Destination: ynotbhatc/aac-pack (main + tag vYYYY.MM.DD)"
+          - "  Launch-time input: survey sync_dry_run only (no free-form extra_vars)"
+          - ""
+          - "  Run it now (dry run first):"
+          - "    AAP → Templates → {{ template_name }} → Launch → Dry run? true"

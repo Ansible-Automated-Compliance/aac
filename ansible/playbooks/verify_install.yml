@@ -1,0 +1,247 @@
+---
+# verify_install.yml — standard AAC POST-install verification gate.
+#
+# Profile-driven (ansible/vars/profiles/<env>.yml). Topology-agnostic: every
+# endpoint comes from the profile, so the SAME playbook verifies lab, mac-aap,
+# RHPDS, and customer installs. Consolidates the checks previously scattered
+# across verify_installation.yml / fresh_install_06_validate.yml /
+# verify_rhpds_install.yml / scripts/verify_installation.sh.
+#
+# Checks: OPA x3 health + policy counts, PostgreSQL AS THE `compliance` role
+# (catches missing GRANTs) + canonical tables + row minimums, Grafana health,
+# MCP reachable, AAP object presence (templates/workflows). GO / NO-GO; fails
+# on any hard failure. The deep Grafana panel-data coverage lives in the
+# companion grafana_dashboard_coverage.yml (run it for full dashboard proof).
+#
+# Run:  ansible-playbook ansible/playbooks/verify_install.yml -e env_profile=lab
+#       (OpenShift profiles resolve in-cluster service DNS — run from the EE / AAP.)
+
+- name: AAC Install Verify — post-install gate
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    # Minimum policy counts per OPA bucket (single source of truth — replaces the
+    # divergent 10/5/3 vs 10/10/5 thresholds across the old verify variants).
+    min_policies:
+      security: 10
+      compliance: 5
+      ot: 3
+    # Canonical schema-contract tables — the base set the aac_compliance_db role
+    # (and its own healthcheck) guarantees. Kept in sync with the literal IN list
+    # in the "Count visible + canonical tables" query below.
+    required_tables:
+      - compliance_results
+      - compliance_facts
+      - host_facts
+      - sidecar_datasets
+
+  tasks:
+    # set_fact, NOT a vars-block self-reference — `x: "{{ x | mandatory }}"`
+    # Jinja-recurses on ansible-core 2.16+ before mandatory can even fire
+    # (the trap verify_installation.yml documents). Assert instead: same
+    # fail-fast contract, with a message that says what to do.
+    - name: Default absent secrets (eager, non-recursive)
+      ansible.builtin.set_fact:
+        compliance_db_password: "{{ compliance_db_password | default('') }}"
+        # extra_vars outrank set_fact: resolve internal copies so a null survey value is normalised
+        _aap_token: "{{ aap_token | default('', true) }}"
+        _aap_admin_password: "{{ aap_admin_password | default(vault_aap_admin_password | default('', true), true) }}"
+
+    - name: Require the compliance DB password
+      ansible.builtin.assert:
+        that: compliance_db_password | length > 0
+        fail_msg: >-
+          compliance_db_password is not set. Supply it via the profile's
+          secret_source — an AAP credential injecting extra_vars, or
+          -e @ansible/vars/vault_secrets.yml for a CLI run.
+
+    - name: Load layered install config (site_config -> profile -> install_config)
+      ansible.builtin.include_tasks: ../tasks/load_install_profile.yml
+
+    # ── OPA x3: health + policy count ───────────────────────────────────────
+    - name: Probe OPA health + policy list
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "{{ item.url }}/v1/policies"
+        method: GET
+        status_code: [200]
+        timeout: 8
+        validate_certs: false
+      register: _opa
+      loop:
+        - { bucket: security,   url: "{{ opa_security_url }}" }
+        - { bucket: compliance, url: "{{ opa_compliance_url }}" }
+        - { bucket: ot,         url: "{{ opa_ot_url }}" }
+      loop_control:
+        label: "{{ item.bucket }}"
+      ignore_errors: true
+
+    - name: Tally OPA policy counts per bucket
+      ansible.builtin.set_fact:
+        _opa_counts: >-
+          {{ dict(_opa.results | map(attribute='item.bucket') | list
+             | zip(_opa.results | map(attribute='json.result', default=[]) | map('default', []) | map('length') | list)) }}
+
+    # ── PostgreSQL AS the compliance datasource role (catches GRANT gaps) ────
+    - name: Count visible + canonical tables as the compliance role
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port | default(5432) }}"
+        login_user: "compliance"
+        login_password: "{{ compliance_db_password }}"
+        login_db: "{{ pg_db | default('compliance') }}"
+        query: >-
+          SELECT
+            (SELECT count(*) FROM pg_tables WHERE schemaname='public') AS total,
+            (SELECT count(*) FROM pg_tables WHERE schemaname='public'
+               AND tablename IN ('compliance_results','compliance_facts','host_facts','sidecar_datasets')) AS canonical
+      register: _pg_tables
+      ignore_errors: true
+
+    - name: Count compliance_results rows (as compliance role)
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port | default(5432) }}"
+        login_user: "compliance"
+        login_password: "{{ compliance_db_password }}"
+        login_db: "{{ pg_db | default('compliance') }}"
+        query: "SELECT count(*) AS n FROM compliance_results"
+      register: _pg_rows
+      ignore_errors: true
+
+    - name: Check the evidence append-only guard (as compliance role)
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port | default(5432) }}"
+        login_user: "compliance"
+        login_password: "{{ compliance_db_password }}"
+        login_db: "{{ pg_db | default('compliance') }}"
+        query: "SELECT guard_present, broken_rows FROM evidence_chain_verify()"
+      register: _pg_guard
+      ignore_errors: true
+
+    - name: Derive PostgreSQL facts
+      ansible.builtin.set_fact:
+        _pg_total: "{{ (_pg_tables.query_result[0].total | default(0)) if (_pg_tables.query_result | default([]) | length > 0) else 0 }}"
+        _pg_canonical: "{{ (_pg_tables.query_result[0].canonical | default(0)) if (_pg_tables.query_result | default([]) | length > 0) else 0 }}"
+        _results_rows: "{{ (_pg_rows.query_result[0].n | default(0)) if (_pg_rows.query_result | default([]) | length > 0) else 0 }}"
+        _evidence_guard: >-
+          {{ (_pg_guard.query_result[0].guard_present | default(false) | bool)
+             if (_pg_guard.query_result | default([]) | length > 0) else false }}
+        _evidence_broken: >-
+          {{ (_pg_guard.query_result[0].broken_rows | default(-1))
+             if (_pg_guard.query_result | default([]) | length > 0) else -1 }}
+
+    # ── Grafana + MCP reachability ──────────────────────────────────────────
+    - name: Probe Grafana health
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "{{ grafana_url }}/api/health"
+        method: GET
+        status_code: [200]
+        timeout: 8
+        validate_certs: false
+      register: _grafana
+      ignore_errors: true
+
+    - name: Probe MCP reachability
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "{{ mcp_url }}/"
+        method: GET
+        status_code: [200, 401, 404]
+        timeout: 8
+        validate_certs: false
+      register: _mcp
+      ignore_errors: true
+
+    # ── AAP object presence ─────────────────────────────────────────────────
+    - name: Count AAC job templates in AAP
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "{{ aap_url }}/api/controller/v2/job_templates/?name__istartswith=AAC&page_size=1"
+        method: GET
+        headers: "{{ {'Authorization': 'Bearer ' ~ _aap_token} if (_aap_token | length > 0) else {} }}"
+        url_username: "{{ aap_admin_user | default('admin') if (_aap_token | length == 0) else omit }}"
+        url_password: "{{ _aap_admin_password if (_aap_token | length == 0) else omit }}"
+        force_basic_auth: "{{ (_aap_token | length == 0) and (_aap_admin_password | length > 0) }}"
+        status_code: [200]
+        timeout: 8
+        validate_certs: false
+      register: _aap_jt
+      ignore_errors: true
+
+    # ── Build the checks table ──────────────────────────────────────────────
+    - name: Assemble verify checks
+      ansible.builtin.set_fact:
+        checks:
+          - name: "OPA security policies >= {{ min_policies.security }}"
+            ok: "{{ ((_opa_counts.security | default(0)) >= min_policies.security) | bool }}"
+            detail: "{{ _opa_counts.security | default('unreachable') }} loaded"
+            hard: true
+          - name: "OPA compliance policies >= {{ min_policies.compliance }}"
+            ok: "{{ ((_opa_counts.compliance | default(0)) >= min_policies.compliance) | bool }}"
+            detail: "{{ _opa_counts.compliance | default('unreachable') }} loaded"
+            hard: true
+          - name: "OPA OT policies >= {{ min_policies.ot }}"
+            ok: "{{ ((_opa_counts.ot | default(0)) >= min_policies.ot) | bool }}"
+            detail: "{{ _opa_counts.ot | default('unreachable') }} loaded"
+            hard: true
+          - name: "PostgreSQL readable as compliance role"
+            ok: "{{ ((_pg_total | int) > 0) | bool }}"
+            detail: "{{ (_pg_total | int) ~ ' tables visible' if ((_pg_total | int) > 0) else 'connect/GRANT failure' }}"
+            hard: true
+          - name: "Canonical tables present"
+            ok: "{{ ((_pg_canonical | int) == (required_tables | length)) | bool }}"
+            detail: "{{ (_pg_canonical | int) ~ '/' ~ (required_tables | length) ~ ' present' }}"
+            hard: true
+          - name: "Evidence store append-only guard present, chain intact"
+            ok: "{{ (_evidence_guard | bool) and ((_evidence_broken | int) == 0) }}"
+            detail: "{{ 'guard ' ~ ('present' if (_evidence_guard | bool) else 'MISSING') ~ ', broken links: ' ~ _evidence_broken }}"
+            hard: true
+          - name: "compliance_results has data"
+            ok: "{{ ((_results_rows | int) > 0) | bool }}"
+            detail: "{{ _results_rows }} rows"
+            hard: false
+          - name: "Grafana reachable"
+            ok: "{{ (_grafana.status | default(0) == 200) | bool }}"
+            detail: "{{ grafana_url }} -> HTTP {{ _grafana.status | default('unreachable') }}"
+            hard: true
+          - name: "MCP reachable"
+            ok: "{{ (_mcp.status | default(0) in [200, 401, 404]) | bool }}"
+            detail: "{{ mcp_url }} -> HTTP {{ _mcp.status | default('unreachable') }}"
+            hard: false
+          - name: "AAP AAC job templates present"
+            ok: "{{ ((_aap_jt.json.count | default(0)) > 0) | bool }}"
+            detail: "{{ _aap_jt.json.count | default('n/a') }} AAC_* templates"
+            hard: true
+
+    - name: Count failures
+      ansible.builtin.set_fact:
+        hard_failures: "{{ checks | rejectattr('ok') | selectattr('hard', 'equalto', true) | list }}"
+        soft_failures: "{{ checks | rejectattr('ok') | rejectattr('hard', 'equalto', true) | list }}"
+
+    - name: Verify — per-check result
+      ansible.builtin.debug:
+        msg: "{{ (item.ok | ternary('✅', '❌')) }} {{ item.name }} :: {{ item.detail }}{{ '  [warn]' if (not item.ok and not (item.hard | bool)) else '' }}"
+      loop: "{{ checks }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Verify verdict
+      ansible.builtin.debug:
+        msg: >-
+          AAC INSTALL VERIFY — {{ env_profile_name | default(env_profile) }}
+          ({{ topology | default('?') }}):
+          {{ (hard_failures | length == 0) | ternary('🟢 GO — install healthy',
+             '🔴 NO-GO — ' ~ (hard_failures | length) ~ ' hard failure(s)') }}
+          {{ '| warnings: ' ~ (soft_failures | map(attribute='name') | join(', ')) if (soft_failures | length > 0) else '' }}
+          | For full dashboard-data proof run grafana_dashboard_coverage.yml.
+
+    - name: Fail if any hard check is unmet
+      ansible.builtin.fail:
+        msg: >-
+          Verify NO-GO — {{ hard_failures | map(attribute='name') | join('; ') }}.
+      when: hard_failures | length > 0

@@ -1,0 +1,57 @@
+---
+# pqc_attestations.yml — the site's declarations for the PQC Readiness policy
+# (frameworks/federal/pqc, input.pqc.*). The collector supplies the
+# crypto_inventory from the hosts; everything in this file is a program fact
+# only a person can state.
+#
+# Copy to ansible/vars/pqc_attestations.yml (gitignored) or pass as extra_vars.
+# Every boolean is FALSE until a named person has verified it; a false or
+# absent key is reported as a violation, which is the correct result until the
+# work is done. Record who attested and when in pqc_attested_by.
+#
+# Sources the policy cites: EO 14412 (2026-06-22) and OMB M-26-15 (federal
+# timeline), NIST IR 8547 (deprecation of 112-bit public-key algorithms after
+# 2030, disallowed after 2035), FIPS 203/204/205, NSA CNSA 2.0 (national
+# security systems).
+
+pqc_attested_by: ""                     # e.g. "J. Smith, Crypto program lead, 2026-10-21"
+
+# Which obligations apply. general = inventory, algorithm and agility checks
+# only; federal = + EO 14412 / OMB M-26-15 timeline; nss = + CNSA 2.0.
+# Leave the key out entirely if undecided (the policy then evaluates "general");
+# a misspelt value is itself a violation.
+pqc_attestations:
+  profile: general
+
+  inventory:                            # OMB M-26-15 / NIST IR 8547 — the program's cryptographic inventory
+    complete: false                     # automated inventory covers systems, protocols, libraries, certificates
+    refreshed_within_year: false
+    hndl_data_identified: false         # long-confidentiality-lifetime data flagged for harvest-now-decrypt-later
+    migration_plan_exists: false        # prioritised, milestoned migration plan
+
+  agility:                              # architecture review
+    algorithms_replaceable: false       # crypto can be swapped without application redesign
+    library_inventory_maintained: false # crypto libraries and their PQC support status
+    vendor_roadmaps_tracked: false      # vendor PQC roadmaps and FIPS 140-3 PQC validation status
+
+  federal:                              # profile federal / nss only
+    key_establishment_migration_on_track: false   # ML-KEM on high-value systems by 2030-12-31
+    signature_migration_on_track: false           # ML-DSA / SLH-DSA by 2031-12-31
+    tls_endpoints_support_pqc_kem: false          # hybrid ML-KEM groups acceptable
+    contractor_fips_pqc_required: false           # FIPS PQC flowed down to covered contractors
+
+  nss:                                  # profile nss only
+    sw_fw_signing_cnsa: false           # ML-DSA-87 / LMS / XMSS signing
+    acquisitions_require_cnsa: false    # CNSA 2.0 in new procurements (from 2027-01-01)
+    network_equipment_on_track: false   # VPN / router exclusive-use by 2030
+    symmetric_cnsa_compliant: false     # AES-256 and SHA-384/512 only
+
+# Migration plan per asset. The policy flags a quantum-vulnerable algorithm
+# with no migration planned; list the collected asset names (as the evidence
+# shows them: "<host>:<path>", "<host>:sshd", "<host>:tls:<port>") that are
+# covered by the plan, or set the default to true once the plan covers the
+# whole estate.
+pqc_migration_planned_default: false
+pqc_migration_planned_assets: []
+#  - "web-01.example.net:/etc/pki/tls/certs/server.pem"
+#  - "web-01.example.net:sshd"

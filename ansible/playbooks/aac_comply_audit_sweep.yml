@@ -1,0 +1,233 @@
+---
+# Sentinel — Audit Sweep: Scan All Example Playbooks for Policy Violations
+#
+# Simulates continuous compliance monitoring — finds policy violations in existing
+# code even if the git gate was bypassed. This is the capability HashiCorp Sentinel
+# DOES NOT have (Sentinel only gates at check-in and runtime, not retrospectively).
+#
+# ADR-001 Integration: Nightly gather_facts stores all system state in PostgreSQL.
+# This audit sweep leverages host_facts_latest to compute blast radius — showing
+# which systems a non-compliant playbook could affect — WITHOUT any SSH connections
+# to managed hosts. This makes the audit significantly faster than Sentinel-style
+# tools that require live endpoint queries for system context.
+#
+# Scans: examples/sentinel_*.yml files against OPA Sentinel Ansible policy
+# Reports: Compliance table — which playbooks PASS and which FAIL
+#          Blast radius — which stored host_facts systems each failing playbook targets
+# Stores:  Results to PostgreSQL compliance_results table
+#
+# AAP Job Template: "Sentinel - Audit: Scan All Playbooks"
+
+- name: Sentinel — Audit Sweep of Repository Playbooks
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - [ "../vars/vault_secrets.yml", "../vars/empty_fallback.yml" ]
+    - ../vars/site_config.yml
+
+  vars:
+    opa_url:              "{{ opa_compliance_url }}"
+    opa_endpoint:         "{{ opa_url }}/v1/data/sentinel/ansible/result"
+    project_dir:          "{{ playbook_dir }}/../../"
+    sentinel_environment: "production"
+
+  tasks:
+    # -------------------------------------------------------------------------
+    # 1. Find all sentinel example playbooks
+    # -------------------------------------------------------------------------
+    - name: Find sentinel example playbooks
+      find:
+        paths: "{{ project_dir }}/examples"
+        patterns: "sentinel_ansible_*.yml"
+        recurse: false
+      register: playbook_files
+
+    - name: Show playbooks to audit
+      debug:
+        msg: "Found {{ playbook_files.files | length }} playbook(s) to audit: {{ playbook_files.files | map(attribute='path') | map('basename') | list }}"
+
+    # -------------------------------------------------------------------------
+    # 2. Validate each playbook against OPA
+    # -------------------------------------------------------------------------
+    - name: Evaluate each playbook against OPA Sentinel policy
+      uri:
+        use_proxy: false
+        url: "{{ opa_endpoint }}"
+        method: POST
+        body_format: json
+        body:
+          input:
+            plays:                "{{ lookup('file', item.path) | from_yaml }}"
+            sentinel_environment: "{{ sentinel_environment }}"
+        status_code: 200
+        validate_certs: false
+      loop: "{{ playbook_files.files }}"
+      loop_control:
+        label: "{{ item.path | basename }}"
+      register: audit_results
+      ignore_errors: true
+
+    # -------------------------------------------------------------------------
+    # 3. Build compliance summary
+    # -------------------------------------------------------------------------
+    - name: Build audit summary
+      set_fact:
+        audit_summary: >-
+          {{
+            audit_results.results | map('combine', {'filename': (audit_results.results | map(attribute='item') | list)[audit_results.results.index(item)] | default({'path': 'unknown'}) }) | list
+          }}
+      vars:
+        item: "{{ audit_results.results[0] }}"
+      when: false  # helper only, summary built inline below
+
+    - name: Compute per-file results
+      set_fact:
+        per_file_results: >-
+          {%- set results = [] -%}
+          {%- for r in audit_results.results -%}
+            {%- set fname = r.item.path | basename -%}
+            {%- if r.failed is defined and r.failed -%}
+              {%- set _ = results.append({'file': fname, 'status': 'ERROR', 'violations': 0, 'decision': 'ERROR', 'violation_list': []}) -%}
+            {%- else -%}
+              {%- set res = r.json.result -%}
+              {%- set _ = results.append({'file': fname, 'status': 'EVALUATED', 'decision': ('ALLOW' if res.allow else 'DENY'), 'violations': res.violation_count, 'violation_list': res.violations}) -%}
+            {%- endif -%}
+          {%- endfor -%}
+          {{ results }}
+
+    - name: Count totals
+      set_fact:
+        total_files:    "{{ per_file_results | length }}"
+        total_passing:  "{{ per_file_results | selectattr('decision', 'equalto', 'ALLOW') | list | length }}"
+        total_failing:  "{{ per_file_results | selectattr('decision', 'equalto', 'DENY')  | list | length }}"
+        total_errors:   "{{ per_file_results | selectattr('decision', 'equalto', 'ERROR') | list | length }}"
+
+    # -------------------------------------------------------------------------
+    # 4. Print compliance table
+    # -------------------------------------------------------------------------
+    - name: Print Sentinel Audit Report
+      debug:
+        msg:
+          - ""
+          - "=============================================================="
+          - "  SENTINEL AUDIT SWEEP — Ansible Playbook Compliance Report"
+          - "  Environment: {{ sentinel_environment }}   Date: {{ ansible_date_time.date | default('today') }}"
+          - "=============================================================="
+          - ""
+          - "  Playbook File                          Decision   Violations"
+          - "  ---------------------------------------- --------- ----------"
+          - "{% for r in per_file_results %}  {{ '%-40s' | format(r.file) }} {{ '%-9s' | format(r.decision) }} {{ r.violations }}{% endfor %}"
+          - ""
+          - "  SUMMARY:"
+          - "  Total scanned:  {{ total_files }}"
+          - "  PASS (ALLOW):   {{ total_passing }}"
+          - "  FAIL (DENY):    {{ total_failing }}"
+          - "  Errors:         {{ total_errors }}"
+          - ""
+          - "{% if total_failing | int > 0 %}  ⛔ ACTION REQUIRED: {{ total_failing }} playbook(s) have policy violations{% else %}  ✅ All playbooks are policy-compliant{% endif %}"
+          - "=============================================================="
+
+    # -------------------------------------------------------------------------
+    # 5. Print violation details for failing playbooks
+    # -------------------------------------------------------------------------
+    - name: Print violation details
+      debug:
+        msg:
+          - ""
+          - "VIOLATIONS in {{ item.file }}:"
+          - "{% for v in item.violation_list %}  • {{ v }}{% endfor %}"
+      loop: "{{ per_file_results | selectattr('decision', 'equalto', 'DENY') | list }}"
+      loop_control:
+        label: "{{ item.file }}"
+
+    # -------------------------------------------------------------------------
+    # 6. Store audit results to PostgreSQL
+    # -------------------------------------------------------------------------
+    - name: Store audit results to PostgreSQL
+      include_role:
+        name: aac_store_results
+      vars:
+        aac_result_policy_name:    "sentinel-ansible/{{ item.file }}"
+        aac_result_framework:      "sentinel_ansible"
+        aac_result_policy_version: "1.0"
+        aac_result_total_controls: 1
+        aac_result_failed_controls: "{{ 0 if item.decision == 'ALLOW' else 1 }}"
+        aac_result_passed_controls: "{{ 1 if item.decision == 'ALLOW' else 0 }}"
+        aac_result_compliance_pct:  "{{ 100 if item.decision == 'ALLOW' else 0 }}"
+        aac_result_violations: "{{ item.violation_list }}"
+        aac_result_metadata: "{{ {'file': item.file, 'decision': item.decision, 'environment': sentinel_environment} }}"
+        aac_result_pg_db: "compliance"
+      loop: "{{ per_file_results }}"
+      loop_control:
+        label: "{{ item.file }}"
+      ignore_errors: true
+
+    # -------------------------------------------------------------------------
+    # 7. Blast radius — query host_facts to show affected systems (ADR-001)
+    #    No SSH required: all system data is already in PostgreSQL from nightly
+    #    gather_facts. This is what makes the audit sweep faster than Sentinel.
+    # -------------------------------------------------------------------------
+    - name: Query host_facts for blast radius (ADR-001 — no SSH needed)
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port | default(5433) }}"
+        login_user: "postgres"
+        login_password: "{{ compliance_db_password }}"
+        login_db: "compliance"
+        query: >
+          SELECT hostname, os_family, cloud_provider,
+                 collected_at::date AS last_seen,
+                 facts->>'distribution' AS distribution,
+                 facts->>'distribution_major_version' AS major_version
+          FROM host_facts_latest
+          ORDER BY hostname
+      register: host_facts_result
+      ignore_errors: true
+      when: total_failing | int > 0
+
+    - name: Print blast radius report
+      debug:
+        msg:
+          - ""
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "  BLAST RADIUS ANALYSIS (from PostgreSQL host_facts)"
+          - "  Queried WITHOUT SSH — data from nightly gather_facts (ADR-001)"
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "  {{ host_facts_result.rowcount | default(0) }} managed systems in inventory:"
+          - ""
+          - "  Hostname                  OS Family   Cloud    Last Seen"
+          - "  ------------------------- ----------- -------- ----------"
+          - >-
+            {%- for row in (host_facts_result.query_result | default([])) -%}
+              {{ '  %-25s %-11s %-8s %s' | format(row.hostname, row.os_family | default('unknown'), row.cloud_provider | default('on-prem'), row.last_seen | string) }}
+            {%- endfor -%}
+          - ""
+          - "  Non-compliant playbook(s) could run against ALL {{ host_facts_result.rowcount | default(0) }} systems."
+          - "  Remediate before next scheduled run to prevent unauthorized changes."
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+      when:
+        - total_failing | int > 0
+        - host_facts_result is not failed
+
+    - name: Note — host_facts not available yet
+      debug:
+        msg:
+          - "ℹ  Blast radius analysis skipped: no data in host_facts_latest."
+          - "   Run 'AAC - Gather Facts (All Systems)' to populate system inventory."
+          - "   Once populated, this audit will show affected systems without any SSH."
+      when:
+        - total_failing | int > 0
+        - host_facts_result is failed or (host_facts_result.rowcount | default(0)) == 0
+
+    # -------------------------------------------------------------------------
+    # 8. Fail job if any violations found (makes AAP job show red = visible alert)
+    # -------------------------------------------------------------------------
+    - name: ALERT — Policy violations found in repository
+      fail:
+        msg: |
+          SENTINEL AUDIT: {{ total_failing }} of {{ total_files }} playbook(s) have policy violations.
+          Run 'Sentinel — Validate Ansible Playbook' on each failing playbook for remediation guidance.
+          Failing: {{ per_file_results | selectattr('decision', 'equalto', 'DENY') | map(attribute='file') | list | join(', ') }}
+      when: total_failing | int > 0

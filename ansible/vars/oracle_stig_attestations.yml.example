@@ -1,0 +1,80 @@
+---
+# oracle_stig_attestations.yml — the DISA STIG Oracle Database 19c (V1R6)
+# rules that need a human review: 45 whose whole check is a documentation or
+# procedure review, two hybrid rules (query + review) and four "not a finding
+# if the AO documented that..." exceptions — 51 booleans.
+#
+# Copy to ansible/vars/oracle_stig_attestations.yml (gitignored) or pass as
+# extra_vars. Every key is FALSE until a named person has done the review the
+# STIG describes; a false key reports that rule Open, which is the honest
+# result. Record who attested and when in oracle_stig_attested_by.
+#
+# The key names are the Rego library's (benchmarks/stig/oracle_database_19c/
+# core.rego, input.oracle.attest.*). The rule each one answers is on its line.
+oracle_stig_attested_by: ""            # e.g. "J. Smith, DBA, 2026-10-20"
+oracle_stig_attestations:
+  security_labeling_implemented_or_not_required: false   # O19C-00-000500
+  org_level_auth_integrated: false                        # O19C-00-000800
+  authorizations_enforced: false                          # O19C-00-001000
+  shared_account_users_individually_identified: false     # O19C-00-001700
+  audit_event_selection_by_designated_personnel: false    # O19C-00-001900
+  dod_auditable_events_configured: false                  # O19C-00-002000 (with auditing on)
+  additional_audit_information_configured: false          # O19C-00-005600
+  audit_storage_capacity_allocated: false                 # O19C-00-005700
+  audit_offloaded_continuously: false                     # O19C-00-005800
+  audit_storage_warning_at_75_percent: false              # O19C-00-005900
+  audit_failure_realtime_alert: false                     # O19C-00-006000
+  audit_data_access_restricted: false                     # O19C-00-006600
+  audit_tools_access_restricted: false                    # O19C-00-006900
+  vendor_supported_version: false                         # O19C-00-007400
+  software_change_monitoring_in_place: false              # O19C-00-007700
+  software_library_access_restricted: false               # O19C-00-007900
+  install_account_restricted: false                       # O19C-00-008000
+  software_directories_dedicated: false                   # O19C-00-008100
+  configured_per_dod_guidance: false                      # O19C-00-008400
+  developers_excluded_from_dba_group: false               # O19C-00-010600
+  install_account_use_logged: false                       # O19C-00-010700
+  data_log_audit_files_in_dedicated_directories: false    # O19C-00-010800
+  dba_os_accounts_least_privilege: false                  # O19C-00-011800 (with root not in dba)
+  temporary_accounts_identified: false                    # O19C-00-012000
+  temporary_accounts_expire_within_72h: false             # O19C-00-012100
+  developers_no_elevated_privileges_on_shared_hosts: false # O19C-00-012200
+  extproc_os_accounts_least_privilege: false              # O19C-00-013200
+  external_executables_authorized: false                  # O19C-00-013300
+  ppsm_functions_ports_protocols_approved: false          # O19C-00-013500
+  shared_accounts_require_individual_authentication: false # O19C-00-013700
+  organizational_users_uniquely_identified: false         # O19C-00-013800
+  temporary_password_procedures_documented: false         # O19C-00-014600
+  pki_private_key_access_restricted: false                # O19C-00-015200
+  pki_identity_mapped_to_accounts: false                  # O19C-00-015300
+  cli_plaintext_password_tools_mitigated_and_approved: false # O19C-00-015400
+  nonorganizational_users_uniquely_identified: false      # O19C-00-015600
+  admin_functionality_separated_from_users: false         # O19C-00-016100
+  security_functions_isolated: false                      # O19C-00-017100
+  production_data_transfer_controlled: false              # O19C-00-017400
+  input_validation_implemented: false                     # O19C-00-017900
+  dynamic_code_execution_justified: false                 # O19C-00-018000
+  dynamic_code_injection_protected: false                 # O19C-00-018100
+  error_messages_minimal: false                           # O19C-00-018300
+  error_messages_restricted_to_authorized_personnel: false # O19C-00-018400
+  compromised_password_list_checked: false                # O19C-00-019800
+  password_change_required_on_account_recovery: false     # O19C-00-019900
+  trust_store_contains_only_approved_anchors: false       # O19C-00-020400
+  # "Not a finding if the AO documented that ..." clauses — true ONLY with that documentation on file
+  extproc_use_authorized: false                           # O19C-00-013400 — extproc authorized AND restricted
+  encryption_not_required: false                          # O19C-00-016000 — encryption not required for this database
+  data_at_rest_encryption_not_required: false             # O19C-00-016800 — AO determined data-at-rest encryption not required
+  information_at_rest_integrity_protection_not_required: false # O19C-00-016900 — no information at rest needs integrity protection
+
+# Site allowlists the query-driven rules subtract (documented and approved per
+# the STIG's "if ... not documented and authorized, this is a finding"). Empty
+# lists mean every row the STIG query returns is a finding.
+oracle_authorized_object_owners: []            # O19C-00-008200 — schema owners
+oracle_authorized_admin_grantees: []           # O19C-00-008300 — accounts allowed direct admin privileges
+oracle_authorized_db_links: []                 # O19C-00-008700 — "OWNER: DB_LINK"
+oracle_authorized_admin_option_grantees: []    # O19C-00-009500 / 009700 — grantees allowed WITH ADMIN OPTION
+oracle_authorized_public_object_privileges: [] # O19C-00-009800 — "OWNER.TABLE:PRIVILEGE"
+oracle_authorized_default_admin_roles: []      # O19C-00-010100 — "GRANTEE:ROLE"
+oracle_authorized_components: []               # O19C-00-013000 — DBA_REGISTRY comp_id values in use
+oracle_authorized_options: []                  # O19C-00-013100 — V$OPTION names in use
+oracle_expected_patch_id: ""                   # O19C-00-018600 — the current quarterly CPU/RU patch_id from the CPU notice

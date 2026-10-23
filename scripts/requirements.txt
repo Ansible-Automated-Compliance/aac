@@ -1,0 +1,73 @@
+# Python dependencies for compliance dashboard and reporting
+# AAP 2.6 + OPA + Database Integration
+
+
+# Database connectivity
+psycopg2-binary==2.9.13
+
+# Data manipulation and analysis
+pandas==3.0.6
+numpy==2.5.4
+
+# Visualization
+plotly==7.1.0
+matplotlib==3.11.2
+seaborn==0.13.2
+
+# Template engine
+Jinja2==3.1.6
+
+# HTTP requests
+requests==2.34.2
+
+# Configuration and environment
+python-dotenv==1.2.4
+
+# Date and time utilities
+python-dateutil==2.9.0.post0
+
+# JSON handling
+jsonschema==4.26.0
+
+# Logging
+colorlog==6.12.0
+
+# CLI argument parsing (built-in argparse is sufficient, but click is more feature-rich)
+click==8.5.0
+
+# Excel export support (optional)
+openpyxl==3.1.5
+xlsxwriter==3.2.9
+
+# Email reporting (optional)
+smtplib-ssl==1.0.0
+
+# Progress bars
+tqdm==4.70.1
+
+# YAML configuration support
+PyYAML==6.0.3
+
+# Rich formatting for console output
+rich==15.0.0
+
+# API development (if building REST API)
+fastapi==0.143.2
+uvicorn==0.54.0
+
+# Authentication and security
+# SECURITY: bumped 48.0.1 -> 50.0.0 to fix PKCS#7 EnvelopedData Bleichenbacher oracle
+# (affected >=44.0.0,<50.0.0; Dependabot #2).
+cryptography==50.0.2
+
+# Caching
+redis==8.1.0
+
+# Task scheduling
+celery==5.6.3
+
+# Monitoring and metrics
+prometheus-client==0.26.0
+
+# Testing — `pytest scripts/` runs derive_customer_frameworks tests
+pytest>=9.1.1

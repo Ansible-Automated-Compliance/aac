@@ -1,0 +1,40 @@
+# Example customer profile — Acme Energy (hypothetical utility)
+#
+# Mid-size electric utility. Mixed estate: corporate IT (RHEL +
+# Windows + AWS) plus an OT footprint (SCADA + smart meters). Both
+# NERC-CIP (mandatory regulatory) and CIS / NIST 800-53 (corporate
+# IT baseline) apply.
+#
+# This profile produces a moderately broad framework set — typical
+# for an enterprise customer. Compare bundle size against the full
+# library: most OT frameworks load, most cloud-native ones drop.
+
+name: acme-energy
+description: |
+  Acme Energy is a mid-size US electric utility. Corporate IT on
+  RHEL 9 + Windows 2022 + AWS; OT footprint includes SCADA and
+  smart-meter (AMI) infrastructure across multiple substations.
+  Subject to NERC-CIP and uses CIS + NIST 800-53 internally.
+
+tech_stack:
+  - rhel_9
+  - windows_2022
+  - aws
+  - kubernetes
+  - ansible
+  - terraform
+  - scada
+  - smart_meter
+  - bes_asset
+
+compliance_goals:
+  - cis
+  - stig
+  - nist_800_53
+  - nist_csf
+  - nerc_cip
+  - iso27001
+
+overrides:
+  add: []
+  remove: []

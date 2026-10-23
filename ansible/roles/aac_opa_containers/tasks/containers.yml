@@ -1,0 +1,77 @@
+---
+# Pull the OPA image, expand replica counts into a concrete container list,
+# clean up any stale containers from previous deployments, then start fresh.
+
+# ── Build expanded container list ────────────────────────────────────────────
+# replicas=1 → single entry at canonical port (no HAProxy)
+# replicas>1 → N entries at backend_base_port+N-1 (HAProxy on canonical port)
+
+- name: Build expanded OPA container list
+  set_fact:
+    _aac_opa_expanded: >-
+      {%- set result = [] -%}
+      {%- for c in aac_opa_containers -%}
+        {%- set r = c.replicas | default(1) | int -%}
+        {%- if r <= 1 -%}
+          {%- set _ = result.append({
+            'name':          c.name,
+            'port':          c.port,
+            'policy_subdir': c.policy_subdir,
+            'description':   c.description,
+            'replicas':      1,
+            'parent_name':   c.name
+          }) -%}
+        {%- else -%}
+          {%- set base = c.backend_base_port | default(c.port + 10) | int -%}
+          {%- for i in range(1, r + 1) -%}
+            {%- set _ = result.append({
+              'name':          c.name ~ '-' ~ i,
+              'port':          base + i - 1,
+              'policy_subdir': c.policy_subdir,
+              'description':   c.description ~ ' (replica ' ~ i ~ '/' ~ r ~ ')',
+              'replicas':      r,
+              'parent_name':   c.name
+            }) -%}
+          {%- endfor -%}
+        {%- endif -%}
+      {%- endfor -%}
+      {{ result }}
+
+# ── Pull image ────────────────────────────────────────────────────────────────
+
+- name: Pull OPA image
+  command: "podman pull {{ aac_opa_image }}"
+  delegate_to: "{{ aac_host }}"
+  changed_when: false
+
+# ── Cleanup: remove all existing instances including stale replicas ───────────
+# Matches both "opa-security" and "opa-security-1", "opa-security-2", etc.
+
+- name: Stop and remove existing OPA containers (including stale replicas)
+  shell: |
+    for c in $(podman ps -a --format '{% raw %}{{.Names}}{% endraw %}' \
+               | grep -E '^{{ item.name }}(-[0-9]+)?$'); do
+      podman stop "$c" 2>/dev/null || true
+      podman rm   "$c" 2>/dev/null || true
+    done
+  loop: "{{ aac_opa_containers }}"
+  loop_control:
+    label: "{{ item.name }}"
+  delegate_to: "{{ aac_host }}"
+  changed_when: false
+
+# ── Start containers from expanded list ───────────────────────────────────────
+
+- name: Start OPA containers
+  command: >
+    podman run -d
+    --name {{ item.name }}
+    -p {{ item.port }}:8181
+    --restart=always
+    -v {{ aac_opa_policy_base_dir }}/{{ item.policy_subdir }}:/policies:ro,z
+    {{ aac_opa_image }}
+    run --server --addr :8181 /policies
+  loop: "{{ _aac_opa_expanded }}"
+  loop_control:
+    label: "{{ item.name }} (port {{ item.port }})"
+  delegate_to: "{{ aac_host }}"

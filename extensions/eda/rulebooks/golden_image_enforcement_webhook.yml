@@ -1,0 +1,32 @@
+---
+# EDA Rulebook: Golden Image Enforcement — Webhook Source
+#
+# Webhook-based variant for environments where EDA cannot use file_watch
+# (e.g. RHPDS OCP — EDA runs in OCP pods, demo files live on EC2).
+#
+# Listens on port 5004. Within OCP the service is reachable at:
+#   http://golden-image-enforcement.aap.svc.cluster.local:5004/endpoint
+#
+# demo_introduce_drift.yml POSTs to that URL when eda_webhook_url extra_var is set.
+#
+# Expected payload fields: drift_trigger, changed_file, target_host, severity
+
+- name: Golden Image Enforcement — webhook
+  hosts: all
+  sources:
+    - ansible.eda.webhook:
+        port: 5004
+
+  rules:
+    - name: Drift event received — trigger golden image enforcement
+      condition: event.payload.drift_trigger is defined
+      action:
+        run_job_template:
+          name: "AAC_GoldenImage_Enforcement"
+          organization: "Ansible Product Demos (APD)"
+          job_args:
+            extra_vars:
+              drift_trigger: "{{ event.payload.drift_trigger }}"
+              changed_file:  "{{ event.payload.changed_file }}"
+              target_host:   "{{ event.payload.target_host | default('demo-rhel9') }}"
+              auto_rollback: "true"

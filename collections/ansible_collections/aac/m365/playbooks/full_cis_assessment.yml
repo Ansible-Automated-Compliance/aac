@@ -1,0 +1,228 @@
+---
+# ⚠️ DEPRECATED — targets the pre-v7 cis_m365 packages.
+#
+# The control ids that bundle emits do not correspond to any CIS
+# benchmark: of 46 citations, 20 name ids that do not exist and 22 name
+# real ids whose requirement is unrelated to the message. See the
+# deprecation notice on policies/benchmarks/cis/saas/m365/README.md.
+#
+# Use playbooks/cis_m365_v7_assessment.yml instead, which runs the
+# aac.m365.m365_assessment role against CIS M365 Foundations v7.0.0.
+#
+# Retained only because the old bundle is still present; do not use it
+# for a new assessment.
+# Full M365 CIS Foundations Benchmark assessment.
+#
+# Runs every fact module in the aac.m365 collection, POSTs each
+# section's facts to OPA, collects the per-section
+# compliance_report, and prints the roll-up.
+#
+# Configuration: copy playbooks/vars/m365_config.example.yml to
+# m365_config.yml, fill it in, and run with `-e @m365_config.yml` (or set the
+# same keys via an AAP job template survey / extra_vars). Secrets
+# (m365_client_secret, compliance_db_password) belong in Ansible Vault.
+#
+# Operator vars (see the example file for the full list + descriptions):
+#   m365_tenant_id, m365_client_id, m365_client_secret
+#   opa_url     — default http://opa-compliance:8182 (override per topology;
+#                 or http://localhost:18181 for the throwaway OPA used by
+#                 scripts/validate_demo_bundle.py)
+#   aac_host, compliance_db_password, tenant_hostname, persist_to_db
+
+- name: Full M365 CIS Foundations Benchmark assessment
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  collections:
+    - aac.m365
+
+  vars:
+    opa_url: "{{ opa_url | default('http://opa-compliance:8182') }}"
+    sections:
+      - { key: identity,   path: "cis_m365/identity",   module: m365_identity_facts }
+      - { key: defender,   path: "cis_m365/defender",   module: m365_defender_facts }
+      - { key: purview,    path: "cis_m365/purview",    module: m365_purview_facts }
+      - { key: exchange,   path: "cis_m365/exchange",   module: m365_exchange_facts }
+      - { key: fabric,     path: "cis_m365/fabric",     module: m365_fabric_facts }
+      - { key: sharepoint, path: "cis_m365/sharepoint", module: m365_sharepoint_facts }
+      - { key: teams,      path: "cis_m365/teams",      module: m365_teams_facts }
+
+  tasks:
+
+    # Each fact module gets its own task. Module name is set per
+    # iteration via `ansible.builtin.include_role` / dynamic
+    # dispatch isn't quite right for modules; we just enumerate.
+
+    - name: Identity facts
+      aac.m365.m365_identity_facts:
+        tenant_id: "{{ m365_tenant_id }}"
+        client_id: "{{ m365_client_id }}"
+        client_secret: >-
+          {{ m365_client_secret }}
+      register: identity_facts
+
+    - name: Defender facts
+      aac.m365.m365_defender_facts:
+        tenant_id: "{{ m365_tenant_id }}"
+        client_id: "{{ m365_client_id }}"
+        client_secret: >-
+          {{ m365_client_secret }}
+      register: defender_facts
+
+    - name: Purview facts
+      aac.m365.m365_purview_facts:
+        tenant_id: "{{ m365_tenant_id }}"
+        client_id: "{{ m365_client_id }}"
+        client_secret: >-
+          {{ m365_client_secret }}
+      register: purview_facts
+
+    - name: Exchange facts
+      aac.m365.m365_exchange_facts:
+        tenant_id: "{{ m365_tenant_id }}"
+        client_id: "{{ m365_client_id }}"
+        client_secret: >-
+          {{ m365_client_secret }}
+      register: exchange_facts
+
+    - name: Fabric facts
+      aac.m365.m365_fabric_facts:
+        tenant_id: "{{ m365_tenant_id }}"
+        client_id: "{{ m365_client_id }}"
+        client_secret: >-
+          {{ m365_client_secret }}
+      register: fabric_facts
+
+    - name: SharePoint facts
+      aac.m365.m365_sharepoint_facts:
+        tenant_id: "{{ m365_tenant_id }}"
+        client_id: "{{ m365_client_id }}"
+        client_secret: >-
+          {{ m365_client_secret }}
+      register: sharepoint_facts
+
+    - name: Teams facts
+      aac.m365.m365_teams_facts:
+        tenant_id: "{{ m365_tenant_id }}"
+        client_id: "{{ m365_client_id }}"
+        client_secret: >-
+          {{ m365_client_secret }}
+      register: teams_facts
+
+    - name: Set facts map for OPA submission
+      ansible.builtin.set_fact:
+        section_inputs:
+          identity:   "{{ identity_facts.facts }}"
+          defender:   "{{ defender_facts.facts }}"
+          purview:    "{{ purview_facts.facts }}"
+          exchange:   "{{ exchange_facts.facts }}"
+          fabric:     "{{ fabric_facts.facts }}"
+          sharepoint: "{{ sharepoint_facts.facts }}"
+          teams:      "{{ teams_facts.facts }}"
+
+    - name: Evaluate each section in OPA
+      ansible.builtin.uri:
+        url: "{{ opa_url }}/v1/data/{{ item.path }}/compliance_report"
+        method: POST
+        body_format: json
+        body:
+          input: "{{ section_inputs[item.key] }}"
+        status_code: 200
+      register: opa_responses
+      loop: "{{ sections }}"
+      loop_control:
+        label: "{{ item.key }}"
+
+    - name: Build roll-up
+      ansible.builtin.set_fact:
+        rollup:
+          sections: "{{ opa_responses.results | map(attribute='json.result') | list }}"
+          total_sections: "{{ opa_responses.results | length }}"
+          compliant_sections: "{{ opa_responses.results | map(attribute='json.result.compliant') | select | list | length }}"
+          total_violations: "{{ opa_responses.results | map(attribute='json.result.violation_count') | sum }}"
+        # org_settings is collected by m365_exchange_facts, not
+        # m365_identity_facts. Earlier this read from identity_facts
+        # and silently fell back to 'm365-tenant' for every assessment,
+        # causing tenant collisions in compliance_results. Fall through
+        # in order: exchange.org_settings.display_name → tenant_id
+        # (from the survey input) → 'm365-tenant' last-resort.
+        tenant_hostname: >-
+          {{ ('m365-' + (exchange_facts.facts.org_settings.display_name | lower | regex_replace('[^a-z0-9-]', '-')))
+             if (exchange_facts is defined
+                 and exchange_facts.facts is defined
+                 and exchange_facts.facts.org_settings is defined
+                 and exchange_facts.facts.org_settings.display_name is defined
+                 and exchange_facts.facts.org_settings.display_name != '')
+             else ('m365-' + (m365_tenant_id | regex_replace('[^a-zA-Z0-9-]', '-') | lower))
+             if (m365_tenant_id is defined and m365_tenant_id != '')
+             else 'm365-tenant' }}
+
+    # ── Persist to compliance_results so the Grafana dashboard can read ──
+    #
+    # One row per section. framework='cis_m365' across all 7 so a single
+    # WHERE filter pulls the whole assessment; metadata.section
+    # distinguishes panels. policy_name carries the section name for
+    # human-readable display.
+
+    - name: Persist each section to compliance_results
+      community.postgresql.postgresql_query:
+        login_host: "{{ aac_host | default('localhost') }}"
+        login_user: "postgres"
+        login_password: "{{ compliance_db_password }}"
+        login_db: compliance
+        query: |
+          INSERT INTO compliance_results
+              (hostname, framework, policy_name, policy_version,
+               total_controls, passed_controls, failed_controls,
+               compliance_percentage, compliant,
+               violations, metadata, evaluation_timestamp)
+          VALUES
+              (%(hostname)s, %(framework)s, %(policy_name)s,
+               %(policy_version)s,
+               %(total_controls)s, %(passed_controls)s,
+               %(failed_controls)s, %(compliance_percentage)s,
+               %(compliant)s,
+               %(violations)s::jsonb, %(metadata)s::jsonb, now())
+        named_args:
+          hostname: "{{ tenant_hostname }}"
+          framework: "cis_m365"
+          policy_name: "CIS M365 Foundations Benchmark — Section {{ item.section }} ({{ item.name }})"
+          policy_version: "v3.1.0"
+          total_controls: "{{ item.controls_evaluated }}"
+          passed_controls: "{{ item.controls_evaluated | int - item.violation_count | int }}"
+          failed_controls: "{{ item.violation_count | int }}"
+          compliance_percentage: >-
+            {{ (((item.controls_evaluated | int - item.violation_count | int) * 100) / (item.controls_evaluated | int))
+               if (item.controls_evaluated | int) > 0 else 0 }}
+          compliant: "{{ item.compliant }}"
+          violations: "{{ {'violations': item.violations} | to_json }}"
+          metadata: >-
+            {{ {'section': item.section, 'section_name': item.name,
+                'soft_findings': item.soft_findings | default([]),
+                'coverage_note': item.coverage_note | default('')}
+               | to_json }}
+      loop: "{{ rollup.sections }}"
+      loop_control:
+        label: "section {{ item.section }} ({{ item.name }})"
+      when: persist_to_db | default(true) | bool
+
+    - name: Show roll-up
+      ansible.builtin.debug:
+        msg:
+          - "CIS M365 Foundations Benchmark — full assessment"
+          - "Compliant sections: {{ rollup.compliant_sections }} / {{ rollup.total_sections }}"
+          - "Total violations across all sections: {{ rollup.total_violations }}"
+          - "Per-section detail:"
+
+    - name: Per-section detail
+      ansible.builtin.debug:
+        msg:
+          - "Section {{ item.section }} — {{ item.name }}"
+          - "  Compliant: {{ item.compliant }}"
+          - "  Controls evaluated: {{ item.controls_evaluated }}"
+          - "  Violations: {{ item.violation_count }}"
+          - "  Detail: {{ item.violations }}"
+      loop: "{{ rollup.sections }}"
+      loop_control:
+        label: "section {{ item.section }}"

@@ -1,0 +1,151 @@
+---
+# IEC 62443-3-3 Assessment Input Data
+# Sample data for AAC - IEC 62443 Assessment (Template 115)
+#
+# Represents a typical AMI head-end / substation automation system
+# Zone/Conduit model for a medium-complexity utility OT environment.
+# Target Security Level: SL 2 (protection against intentional violation with simple means)
+
+ics_systems:
+  - id: ami-headend-01
+    name: AMI Head-End Server
+    type: head_end_server
+    os: RHEL 9
+    function: Meter data management and command/control for AMI field devices
+    security_level_achieved: 2
+    critical: true
+    patch_status: current
+    antimalware_enabled: true
+    application_whitelisting: false
+
+  - id: scada-hmi-01
+    name: SCADA HMI Workstation
+    type: hmi
+    os: Windows Server 2022
+    function: Human-machine interface for substation monitoring
+    security_level_achieved: 2
+    critical: true
+    patch_status: current
+    antimalware_enabled: true
+    application_whitelisting: true
+
+  - id: rtu-substation-01
+    name: Substation RTU
+    type: rtu
+    os: embedded_linux
+    function: Remote terminal unit for substation equipment control
+    security_level_achieved: 1
+    critical: true
+    patch_status: current
+    antimalware_enabled: false
+    application_whitelisting: false
+
+zones:
+  - id: zone-enterprise
+    name: Enterprise Zone
+    security_level: 1
+    description: Corporate IT network — no direct OT access
+
+  - id: zone-dmz
+    name: OT/IT DMZ
+    security_level: 2
+    description: Demilitarized zone between enterprise and OT networks
+
+  - id: zone-control
+    name: Control Zone
+    security_level: 3
+    description: Primary OT control network — AMI head-end and SCADA
+
+  - id: zone-field
+    name: Field Device Zone
+    security_level: 2
+    description: AMI communication network — smart meters and concentrators
+
+conduits:
+  - id: conduit-ent-dmz
+    name: Enterprise to DMZ
+    from_zone: zone-enterprise
+    to_zone: zone-dmz
+    encrypted: true
+    firewall_protected: true
+    protocols:
+      - HTTPS
+      - SSH
+    bidirectional: false
+    allowed_direction: enterprise_to_dmz
+
+  - id: conduit-dmz-control
+    name: DMZ to Control Zone
+    from_zone: zone-dmz
+    to_zone: zone-control
+    encrypted: true
+    firewall_protected: true
+    protocols:
+      - HTTPS
+      - SFTP
+    bidirectional: false
+    allowed_direction: dmz_to_control
+
+  - id: conduit-control-field
+    name: Control to Field Devices
+    from_zone: zone-control
+    to_zone: zone-field
+    encrypted: true
+    firewall_protected: true
+    protocols:
+      - DNP3-SA
+      - DLMS/COSEM
+    bidirectional: true
+
+authentication:
+  multi_factor_enabled: true
+  mfa_methods:
+    - PKI certificate
+    - Hardware token
+  password_policy:
+    min_length: 14
+    complexity_required: true
+    max_age_days: 90
+    history_count: 12
+  account_lockout:
+    enabled: true
+    threshold: 5
+    duration_minutes: 30
+  privileged_accounts_reviewed: true
+  service_accounts_inventoried: true
+  shared_accounts_prohibited: true
+
+network:
+  network_segmentation: true
+  zone_conduit_model_documented: true
+  firewall_rules_documented: true
+  default_deny_policy: true
+  wireless_controls:
+    enabled: true
+    encrypted: true
+    authenticated: true
+  remote_access:
+    encrypted: true
+    mfa_required: true
+    session_timeout_minutes: 15
+    jump_server_required: true
+
+monitoring:
+  security_monitoring_enabled: true
+  log_aggregation: true
+  siem_integrated: true
+  intrusion_detection: true
+  file_integrity_monitoring: true
+  log_retention_days: 365
+  alert_on_anomaly: true
+  incident_response_plan: true
+
+patch_management:
+  process_documented: true
+  vulnerability_scanning_frequency: monthly
+  critical_patch_sla_days: 30
+  high_patch_sla_days: 60
+  patch_testing_environment: true
+  rollback_procedure: true
+  vendor_advisories_monitored: true
+  supply_chain_risk_assessed: true

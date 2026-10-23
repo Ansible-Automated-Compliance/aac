@@ -1,0 +1,436 @@
+---
+# aac_platform_readiness_check.yml — AAC Platform Readiness Check (GO / NO-GO)
+#
+# Proves that the components the platform's claims rest on are actually in
+# place, by name, before anything is demonstrated, delivered or relied on.
+# The daily health check (aac_daily_health_check.yml) asks "is it up?";
+# this asks "is it THERE and is it the right thing?". Fail-closed: every
+# check is an assertion with a reason, the job fails on any NO-GO, and the
+# per-check verdicts are published as job artifacts (set_stats) so a
+# workflow or an auditor can read them without parsing stdout.
+#
+# Why it exists (2026-10-14): the lab compliance database was found with
+# none of the evidence-immutability machinery — no hash chain, no append-only
+# guard, no verifier, no writer role — four days after the product shipped
+# it, because the one template that applies it had never been run there and
+# nothing checked. The evidence store looked fine from the outside.
+#
+# Checks (each can be skipped by setting its readiness_check_* flag false):
+#   evidence   compliance_results has chain_seq/prev_hash/row_hash/supersedes,
+#              both append-only triggers present AND enabled, the verifier
+#              function exists, evidence_chain_verify() reports no unhashed
+#              and no broken rows, the maintenance log table exists, the
+#              fail-closed gate (compliance_results_nonempty) is present,
+#              and — when aac_evidence_writer_user is configured — the writer
+#              role exists, is not a superuser and cannot UPDATE/DELETE
+#   opa        each OPA engine answers and holds at least
+#              readiness_min_policies_* policies (default 1: a baseline install
+#              loads a small selection, so fixed large floors would read a
+#              correct install as NO-GO; raise them per environment when the
+#              expected selection is known)
+#   routing    opa-routing answers and every package in
+#              readiness_required_routing_packages is loaded
+#   aap        every job template in readiness_required_templates and every
+#              credential in readiness_required_credentials resolves to
+#              exactly one object by name; the execution environment exists;
+#              every project in readiness_required_projects last updated
+#              successfully
+#   ao         (optional) Automation Orchestrator answers and every workflow
+#              in readiness_required_ao_workflows exists, is enabled and has
+#              a published version
+#
+# Inputs: site_config.yml when present (gitignored; AAP checkouts do not
+# carry it) else extra_vars: pg_host/pg_port/pg_db/pg_user, pg_password or
+# compliance_db_password, opa_security_url/opa_compliance_url/opa_ot_url,
+# opa_routing_url, aap_token (AAP Token (extra_vars) credential; controller
+# URL from the job environment), ao_url/ao_username/ao_password (optional).
+#
+# AAP Job Template: "AAC - Platform Readiness Check"
+# Credentials: Ansible Vault, AAC Compliance DB Password, AAP Token (extra_vars)
+
+- name: AAC Platform Readiness Check
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    readiness_check_evidence: true
+    readiness_check_opa: true
+    readiness_check_routing: true
+    readiness_check_aap: true
+    readiness_check_ao: false
+    readiness_min_policies_security: 1
+    readiness_min_policies_compliance: 1
+    readiness_min_policies_ot: 1
+    readiness_required_routing_packages:
+      - aac/golden/routing
+      - aac/mythos/routing_v2
+      - aac/mythos/scoring
+      - aac/tanium/drift_routing
+      - aac/ami/routing
+    readiness_required_templates:
+      - "AAC - Load OPA Policies"
+      - "AAC - CIP-010 Baseline Capture"
+      - "AAC - Record AI Decision"
+      - "AAC - Verify Evidence Chain"
+      - "AAC - Daily Health Check"
+    readiness_required_credentials:
+      - "Ansible Vault"
+      - "AAC Compliance DB Password"
+      - "AAP Token (extra_vars)"
+    readiness_required_projects:
+      - "Compliance Automation"
+    readiness_required_ao_workflows: []
+    # Optional: scheduled workflows whose newest run must have succeeded recently (section 7).
+    # Defaults to none; without this default the play failed with "'readiness_required_recent_workflows' is undefined"
+    # on any controller that did not pass it as an extra var (seen on the Mac sandbox 2026-10-18).
+    readiness_required_recent_workflows: []
+    readiness_ee_name: "AAC Compliance EE"
+    # shadow defaults (a vars entry must not reference its own name)
+    _pg_port_default: 5432
+    _pg_db_default: "compliance"
+    _pg_user_default: "postgres"
+    ao_url: ""
+    ao_username: "admin"
+    ao_password: ""
+    verdicts: {}
+
+  tasks:
+    # ── Configuration (optional site_config, else extra_vars / job env) ───
+    - name: Load site config if present
+      ansible.builtin.include_vars: "{{ item }}"
+      loop: "{{ query('first_found', ['../vars/site_config.yml'], errors='ignore') }}"
+
+    - name: Load vault secrets if present
+      ansible.builtin.include_vars: "{{ item }}"
+      loop: "{{ query('first_found', ['../vars/vault_secrets.yml'], errors='ignore') }}"
+      no_log: true
+
+    - name: Resolve connection facts
+      ansible.builtin.set_fact:
+        _pg_host: "{{ pg_host | default('', true) }}"
+        _pg_port: "{{ pg_port | default(_pg_port_default, true) }}"
+        _pg_db: "{{ pg_db | default(_pg_db_default, true) }}"
+        _pg_user: "{{ pg_user | default(_pg_user_default, true) }}"
+        _pg_password: "{{ pg_password | default(compliance_db_password | default('', true), true) }}"
+        _writer: "{{ aac_evidence_writer_user | default('', true) }}"
+        _aap_url: >-
+          {{ ((lookup('env', 'CONTROLLER_HOST') | default(lookup('env', 'AWX_HOST'), true))
+              if (lookup('env', 'JOB_ID') | length > 0) else (aap_url | default('')))
+             | regex_replace('/+$', '') }}
+      no_log: true
+
+    # ═══════════════════════════════════════════════════════════════════
+    # 1. Evidence store machinery
+    # ═══════════════════════════════════════════════════════════════════
+    - name: Evidence store machinery
+      when: readiness_check_evidence | bool
+      block:
+        - name: Require a database host
+          ansible.builtin.assert:
+            that: _pg_host | length > 0
+            fail_msg: "pg_host is not set (site_config.yml or extra_vars)"
+
+        - name: Inspect the evidence tables
+          community.postgresql.postgresql_query:
+            login_host: "{{ _pg_host }}"
+            login_port: "{{ _pg_port }}"
+            login_user: "{{ _pg_user }}"
+            login_password: "{{ _pg_password | default(omit, true) }}"
+            login_db: "{{ _pg_db }}"
+            query: |
+              SELECT
+                (SELECT count(*) FROM information_schema.columns
+                  WHERE table_name = 'compliance_results'
+                    AND column_name IN ('chain_seq','prev_hash','row_hash','supersedes'))          AS chain_columns,
+                (SELECT count(*) FROM pg_trigger
+                  WHERE tgrelid = 'compliance_results'::regclass AND NOT tgisinternal
+                    AND tgname IN ('trg_compliance_results_append_only','trg_compliance_results_chain')
+                    AND tgenabled <> 'D')                                                           AS guard_triggers_enabled,
+                (SELECT count(*) FROM pg_trigger
+                  WHERE tgrelid = 'compliance_certifications'::regclass AND NOT tgisinternal
+                    AND tgenabled <> 'D')                                                           AS cert_triggers_enabled,
+                (SELECT count(*) FROM pg_proc WHERE proname = 'evidence_chain_verify')             AS verifier_present,
+                (SELECT count(*) FROM information_schema.tables
+                  WHERE table_name = 'evidence_maintenance_log')                                    AS maintenance_log_present,
+                (SELECT count(*) FROM pg_constraint WHERE conname = 'compliance_results_nonempty')  AS nonempty_gate_present,
+                (SELECT count(*) FROM compliance_results)                                           AS total_rows,
+                (SELECT count(*) FROM compliance_results WHERE row_hash IS NULL)                    AS unhashed_rows,
+                (SELECT count(*) FROM pg_roles WHERE rolname = %(writer)s)                          AS writer_role_present,
+                (SELECT coalesce(bool_or(rolsuper), false) FROM pg_roles WHERE rolname = %(writer)s) AS writer_is_superuser,
+                (SELECT coalesce(bool_or(has_table_privilege(rolname, 'compliance_results', 'UPDATE')
+                                      OR has_table_privilege(rolname, 'compliance_results', 'DELETE')), false)
+                   FROM pg_roles WHERE rolname = %(writer)s)                                        AS writer_can_rewrite
+            named_args:
+              writer: "{{ _writer if _writer | length > 0 else '-' }}"
+          register: _ev
+          delegate_to: localhost
+
+        - name: Walk the chain when the verifier exists
+          when: _ev.query_result[0].verifier_present | int > 0
+          community.postgresql.postgresql_query:
+            login_host: "{{ _pg_host }}"
+            login_port: "{{ _pg_port }}"
+            login_user: "{{ _pg_user }}"
+            login_password: "{{ _pg_password | default(omit, true) }}"
+            login_db: "{{ _pg_db }}"
+            query: "SELECT * FROM evidence_chain_verify()"
+          register: _chain
+          delegate_to: localhost
+
+        - name: Evidence verdicts
+          ansible.builtin.set_fact:
+            verdicts: >-
+              {{ verdicts | combine({
+                'evidence.chain_columns':         {'go': (_ev.query_result[0].chain_columns | int) == 4,
+                                                   'detail': 'compliance_results has ' ~ _ev.query_result[0].chain_columns ~ '/4 chain columns'},
+                'evidence.append_only_guard':     {'go': (_ev.query_result[0].guard_triggers_enabled | int) == 2,
+                                                   'detail': _ev.query_result[0].guard_triggers_enabled ~ '/2 guard triggers present and enabled on compliance_results'},
+                'evidence.certifications_guard':  {'go': (_ev.query_result[0].cert_triggers_enabled | int) >= 1,
+                                                   'detail': _ev.query_result[0].cert_triggers_enabled ~ ' enabled trigger(s) on compliance_certifications'},
+                'evidence.verifier_function':     {'go': (_ev.query_result[0].verifier_present | int) == 1,
+                                                   'detail': 'evidence_chain_verify() ' ~ ('present' if (_ev.query_result[0].verifier_present | int) == 1 else 'MISSING')},
+                'evidence.maintenance_log':       {'go': (_ev.query_result[0].maintenance_log_present | int) == 1,
+                                                   'detail': 'evidence_maintenance_log ' ~ ('present' if (_ev.query_result[0].maintenance_log_present | int) == 1 else 'MISSING')},
+                'evidence.nonempty_gate':         {'go': (_ev.query_result[0].nonempty_gate_present | int) == 1,
+                                                   'detail': 'fail-closed gate compliance_results_nonempty ' ~ ('present' if (_ev.query_result[0].nonempty_gate_present | int) == 1 else 'MISSING')},
+                'evidence.chain_complete':        {'go': (_ev.query_result[0].unhashed_rows | int) == 0 and (_ev.query_result[0].total_rows | int) > 0,
+                                                   'detail': _ev.query_result[0].unhashed_rows ~ ' unhashed of ' ~ _ev.query_result[0].total_rows ~ ' rows'},
+                'evidence.chain_intact':          {'go': (_chain.query_result[0].broken_rows | int == 0) if (_chain is defined and _chain.query_result is defined) else false,
+                                                   'detail': ('broken rows: ' ~ _chain.query_result[0].broken_rows ~ ', head id ' ~ _chain.query_result[0].head_id) if (_chain is defined and _chain.query_result is defined) else 'verifier not available'},
+                'evidence.writer_role':           {'go': (_writer | length == 0) or ((_ev.query_result[0].writer_role_present | int) == 1 and not (_ev.query_result[0].writer_is_superuser | bool) and not (_ev.query_result[0].writer_can_rewrite | bool)),
+                                                   'detail': ('writer role not configured (aac_evidence_writer_user unset) — evidence is written as ' ~ _pg_user) if _writer | length == 0
+                                                             else (_writer ~ ': present=' ~ _ev.query_result[0].writer_role_present ~ ' superuser=' ~ _ev.query_result[0].writer_is_superuser ~ ' can_rewrite=' ~ _ev.query_result[0].writer_can_rewrite)},
+              }) }}
+      rescue:
+        - name: Evidence check could not run
+          ansible.builtin.set_fact:
+            verdicts: "{{ verdicts | combine({'evidence.reachable': {'go': false, 'detail': ansible_failed_result.msg | default('evidence store query failed') | truncate(200)}}) }}"
+
+    # ═══════════════════════════════════════════════════════════════════
+    # 2. OPA ×3 (policy engines)
+    # ═══════════════════════════════════════════════════════════════════
+    - name: OPA engines
+      when: readiness_check_opa | bool
+      block:
+        - name: Probe each OPA and count its policies
+          ansible.builtin.uri:
+            url: "{{ item.url }}/v1/policies"
+            return_content: true
+            status_code: 200
+            timeout: 10
+          loop:
+            - {name: security, url: "{{ opa_security_url | default('') }}", min: "{{ readiness_min_policies_security }}"}
+            - {name: compliance, url: "{{ opa_compliance_url | default('') }}", min: "{{ readiness_min_policies_compliance }}"}
+            - {name: ot, url: "{{ opa_ot_url | default('') }}", min: "{{ readiness_min_policies_ot }}"}
+          loop_control:
+            label: "{{ item.name }}"
+          register: _opa
+          failed_when: false
+
+        - name: OPA verdicts
+          ansible.builtin.set_fact:
+            verdicts: >-
+              {{ verdicts | combine({('opa.' ~ item.item.name): {
+                   'go': (item.status | default(0)) == 200 and ((item.json.result | default([])) | length) >= (item.item.min | int),
+                   'detail': (item.status | default(0) | string) ~ ' — ' ~ ((item.json.result | default([])) | length | string) ~ ' policies (min ' ~ item.item.min ~ ')'}}) }}
+          loop: "{{ _opa.results }}"
+          loop_control:
+            label: "{{ item.item.name }}"
+
+    # ═══════════════════════════════════════════════════════════════════
+    # 3. opa-routing (the AO decision policies)
+    # ═══════════════════════════════════════════════════════════════════
+    - name: Routing policy engine
+      when: readiness_check_routing | bool
+      block:
+        - name: Read the loaded routing policies
+          ansible.builtin.uri:
+            url: "{{ opa_routing_url | default('') }}/v1/policies"
+            return_content: true
+            status_code: 200
+            timeout: 10
+          register: _rt
+
+        - name: Collect the package names
+          ansible.builtin.set_fact:
+            _rt_packages: >-
+              {{ _rt.json.result | map(attribute='ast.package.path') | map('map', attribute='value') | map('join', '/') | map('regex_replace', '^data/', '') | list }}
+
+        - name: Routing verdicts
+          ansible.builtin.set_fact:
+            verdicts: >-
+              {{ verdicts | combine({'routing.reachable': {'go': true, 'detail': (_rt_packages | length | string) ~ ' packages loaded'}})
+                 | combine({('routing.' ~ item): {'go': item in _rt_packages, 'detail': item ~ (' loaded' if item in _rt_packages else ' MISSING')}}) }}
+          loop: "{{ readiness_required_routing_packages }}"
+
+      rescue:
+        - name: Routing not reachable or packages unreadable
+          ansible.builtin.set_fact:
+            verdicts: "{{ verdicts | combine({'routing.reachable': {'go': false, 'detail': ansible_failed_result.msg | default('opa-routing query failed') | truncate(200)}}) }}"
+
+    # ═══════════════════════════════════════════════════════════════════
+    # 4. AAP objects by name
+    # ═══════════════════════════════════════════════════════════════════
+    - name: AAP objects
+      when: readiness_check_aap | bool
+      block:
+        - name: Require a controller URL and token
+          ansible.builtin.assert:
+            that:
+              - _aap_url | length > 0
+              - aap_token | default('', true) | length > 0
+            fail_msg: "controller URL (job environment or aap_url) and aap_token are required"
+
+        - name: Resolve the required objects by name
+          ansible.builtin.uri:
+            url: "{{ _aap_url }}/api/controller/v2/{{ item.endpoint }}/?name={{ item.name | urlencode }}"
+            headers:
+              Authorization: "Bearer {{ aap_token }}"
+            validate_certs: false
+            return_content: true
+            status_code: 200
+            timeout: 15
+          loop: >-
+            {{ (readiness_required_templates | map('community.general.dict_kv', 'name') | map('combine', {'endpoint': 'job_templates', 'kind': 'template'}) | list)
+               + (readiness_required_credentials | map('community.general.dict_kv', 'name') | map('combine', {'endpoint': 'credentials', 'kind': 'credential'}) | list)
+               + (readiness_required_projects | map('community.general.dict_kv', 'name') | map('combine', {'endpoint': 'projects', 'kind': 'project'}) | list)
+               + [{'name': readiness_ee_name, 'endpoint': 'execution_environments', 'kind': 'ee'}] }}
+          loop_control:
+            label: "{{ item.kind }}: {{ item.name }}"
+          register: _aap
+          failed_when: false
+
+        - name: AAP verdicts
+          ansible.builtin.set_fact:
+            verdicts: >-
+              {{ verdicts | combine({('aap.' ~ item.item.kind ~ ':' ~ item.item.name): {
+                   'go': (item.status | default(0)) == 200
+                         and ((item.json.count | default(0)) | int) == 1
+                         and (item.item.kind != 'project' or (item.json.results[0].status | default('')) == 'successful'),
+                   'detail': ((item.json.count | default(0)) | string) ~ ' match(es)'
+                             ~ ((' — last update ' ~ (item.json.results[0].status | default('?'))) if (item.item.kind == 'project' and ((item.json.count | default(0)) | int) == 1) else '')}}) }}
+          loop: "{{ _aap.results }}"
+          loop_control:
+            label: "{{ item.item.kind }}: {{ item.item.name }}"
+
+      rescue:
+        - name: AAP lookups failed
+          ansible.builtin.set_fact:
+            verdicts: "{{ verdicts | combine({'aap.reachable': {'go': false, 'detail': ansible_failed_result.msg | default('controller lookup failed') | truncate(200)}}) }}"
+
+    # ═══════════════════════════════════════════════════════════════════
+    # 5. Automation Orchestrator (optional)
+    # ═══════════════════════════════════════════════════════════════════
+    - name: Automation Orchestrator
+      when: readiness_check_ao | bool and ao_url | length > 0
+      block:
+        - name: Log in
+          ansible.builtin.uri:
+            url: "{{ ao_url }}/api/v1/auth/login"
+            method: POST
+            body_format: json
+            body: {username: "{{ ao_username }}", password: "{{ ao_password }}"}
+            validate_certs: false
+            status_code: 200
+          register: _ao_login
+          no_log: true
+
+        - name: List workflows
+          ansible.builtin.uri:
+            url: "{{ ao_url }}/api/v1/workflows?limit=100"
+            headers: {Authorization: "Bearer {{ _ao_login.json.access_token }}"}
+            validate_certs: false
+            status_code: 200
+          register: _ao_wf
+
+        - name: Index AO workflows by name
+          ansible.builtin.set_fact:
+            _ao_by_name: "{{ dict(_ao_wf.json.resources | map(attribute='name') | zip(_ao_wf.json.resources)) }}"
+
+        - name: AO verdicts
+          ansible.builtin.set_fact:
+            verdicts: >-
+              {{ verdicts | combine({'ao.reachable': {'go': true, 'detail': (_ao_wf.json.resources | length | string) ~ ' workflows'}})
+                 | combine({('ao.workflow:' ~ item): {
+                      'go': (item in _ao_by_name) and (_ao_by_name[item].is_enabled | default(false) | bool) and ((_ao_by_name[item].published_version_number | default(none)) is not none),
+                      'detail': ('enabled=' ~ _ao_by_name[item].is_enabled ~ ' published=' ~ _ao_by_name[item].published_version_number) if item in _ao_by_name else 'MISSING'}}) }}
+          loop: "{{ readiness_required_ao_workflows }}"
+
+      rescue:
+        - name: AO not reachable
+          ansible.builtin.set_fact:
+            verdicts: "{{ verdicts | combine({'ao.reachable': {'go': false, 'detail': ansible_failed_result.msg | default('AO login or listing failed') | truncate(200)}}) }}"
+
+    # ═══════════════════════════════════════════════════════════════════
+    # 7. Scheduled workflows — the last run succeeded recently (optional)
+    # ═══════════════════════════════════════════════════════════════════
+    - name: Scheduled workflows
+      when: readiness_required_recent_workflows | length > 0
+      block:
+        - name: Read each workflow's newest run
+          ansible.builtin.uri:
+            url: "{{ _aap_url }}/api/controller/v2/workflow_jobs/?name={{ item | urlencode }}&order_by=-finished&page_size=1"
+            headers:
+              Authorization: "Bearer {{ aap_token }}"
+            validate_certs: false
+            status_code: 200
+            timeout: 15
+          loop: "{{ readiness_required_recent_workflows }}"
+          register: _wfruns
+
+        - name: Workflow verdicts
+          ansible.builtin.set_fact:
+            verdicts: >-
+              {{ verdicts | combine({('workflow:' ~ item.item): {
+                   'go': (item.json.results | length > 0)
+                         and item.json.results[0].status == 'successful'
+                         and ((item.json.results[0].finished | default('', true) | regex_replace('\\..*$', '')) >= _wf_cutoff),
+                   'detail': ('never run' if item.json.results | length == 0 else
+                              ('last run ' ~ item.json.results[0].id ~ ' ' ~ item.json.results[0].status ~ ' at ' ~ (item.json.results[0].finished | default('-', true))[:16]))}}) }}
+          loop: "{{ _wfruns.results }}"
+          loop_control:
+            label: "{{ item.item }}"
+          vars:
+            _wf_cutoff: "{{ lookup('pipe', \"date -u -d '-\" ~ (readiness_recent_workflow_hours | int) ~ \" hours' +%Y-%m-%dT%H:%M:%S\") }}"
+      rescue:
+        - name: Workflow check could not run
+          ansible.builtin.set_fact:
+            verdicts: "{{ verdicts | combine({'workflow.reachable': {'go': false, 'detail': ansible_failed_result.msg | default('workflow lookup failed') | truncate(200)}}) }}"
+
+    # ═══════════════════════════════════════════════════════════════════
+    # Verdict
+    # ═══════════════════════════════════════════════════════════════════
+    - name: Summarise
+      ansible.builtin.set_fact:
+        _nogo: "{{ verdicts | dict2items | rejectattr('value.go') | map(attribute='key') | list }}"
+        _go: "{{ verdicts | dict2items | selectattr('value.go') | map(attribute='key') | list }}"
+
+    - name: Render one line per check
+      ansible.builtin.set_fact:
+        _lines: "{{ (_lines | default([])) + [('  GO     ' if item.value.go else '  NO-GO  ') ~ item.key ~ '  —  ' ~ item.value.detail] }}"
+      loop: "{{ verdicts | dict2items | sort(attribute='key') }}"
+      loop_control:
+        label: "{{ item.key }}"
+
+    - name: Readiness report
+      ansible.builtin.debug:
+        msg: >-
+          {{ ['AAC PLATFORM READINESS — ' ~ ('GO' if _nogo | length == 0 else 'NO-GO (' ~ (_nogo | length) ~ ')'),
+              'checks: ' ~ (verdicts | length) ~ '  go: ' ~ (_go | length) ~ '  no-go: ' ~ (_nogo | length)]
+             + (_lines | default([])) }}
+
+    - name: Publish the verdicts as job artifacts
+      ansible.builtin.set_stats:
+        data:
+          readiness_go: "{{ _nogo | length == 0 }}"
+          readiness_nogo_checks: "{{ _nogo }}"
+          readiness_checked_at: "{{ lookup('pipe', 'date -u +%Y-%m-%dT%H:%M:%SZ') }}"
+          readiness_verdicts: "{{ verdicts }}"
+        per_host: false
+
+    - name: Fail closed on any NO-GO
+      ansible.builtin.assert:
+        that: _nogo | length == 0
+        fail_msg: "NO-GO: {{ _nogo | join(', ') }}"
+        success_msg: "GO: every required component is in place"

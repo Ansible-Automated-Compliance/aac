@@ -1,0 +1,65 @@
+---
+# AWS Windows Hosts Inventory for CIS Compliance Assessment
+# Uses WinRM for Windows host connectivity
+#
+# Prerequisites:
+#   1. Windows instance must have WinRM enabled (via EC2 userdata or manually)
+#   2. Security group must allow port 5986 (HTTPS WinRM) from AAP server
+#   3. Administrator password must be set and stored in Ansible Vault
+#
+# Usage:
+#   ansible-playbook -i inventory/aws_windows.yml playbooks/cis_windows_server_2022_assessment.yml \
+#     --ask-vault-pass
+
+all:
+  children:
+    windows:
+      hosts:
+        compliance-lab-windows2022:
+          # AWS instance - IP is dynamic, update after instance start
+          # Or use EC2 dynamic inventory for automatic discovery
+          ansible_host: "{{ aws_windows_ip | default('') }}"
+          ansible_user: Administrator
+          ansible_password: "{{ vault_windows_admin_password }}"
+
+          # Host-specific metadata
+          aws_instance_name: compliance-lab-windows2022
+          target_platform: windows_server_2022
+          compliance_framework: cis
+
+      vars:
+        # WinRM connection settings (inherited from group_vars/windows.yml)
+        ansible_connection: winrm
+        ansible_winrm_transport: ntlm
+        ansible_port: 5986
+        ansible_winrm_server_cert_validation: ignore
+        ansible_shell_type: powershell
+
+        # OPA server — resolved from site_config.yml via vars_files in playbooks
+        opa_server_url: "{{ opa_security_url }}"
+
+        # Report settings
+        generate_report: true
+        report_format: json
+        assessment_output_dir: "/tmp/compliance_assessments"
+
+# AWS EC2 Dynamic Inventory Alternative
+# Uncomment to use dynamic inventory instead of static IPs
+#
+# plugin: amazon.aws.aws_ec2
+# regions:
+#   - us-east-1
+# filters:
+#   tag:Name: compliance-lab-windows*
+#   instance-state-name: running
+# keyed_groups:
+#   - key: tags.OS
+#     prefix: os
+# hostnames:
+#   - ip-address
+# compose:
+#   ansible_host: public_ip_address
+#   ansible_connection: "'winrm'"
+#   ansible_winrm_transport: "'ntlm'"
+#   ansible_port: 5986
+#   ansible_winrm_server_cert_validation: "'ignore'"

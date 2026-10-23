@@ -1,0 +1,176 @@
+{
+  "_comment": "NCSC CAF 4.0 \u2014 Non-Compliant Input (drift scenario for demo step 2)",
+  "_description": "Simulates C1.a monitoring failure, B4.d vuln management drift, B5.c backup staleness. Used in demo step 2 (drift introduction).",
+  "_opa_endpoint": "POST http://localhost:8182/v1/data/ncsc_caf/main/compliance_report",
+  "asset_management": {
+    "cmdb_exists": true,
+    "coverage_pct": 98,
+    "last_audit_days": 14,
+    "automated_discovery": true,
+    "critical_assets_classified": true
+  },
+  "identity_access": {
+    "mfa_enforcement": {
+      "enabled": true,
+      "coverage": "all_users",
+      "privileged_mfa": true
+    },
+    "account_review": {
+      "last_review_days": 30
+    },
+    "auth_protocols": {
+      "ntlm_disabled": true
+    },
+    "min_access_enforced": true,
+    "privileged_accounts": {
+      "dedicated_accounts": true,
+      "time_bound_access": true,
+      "activity_logged": true,
+      "leavers_automated": true
+    },
+    "access_logs": {
+      "collected": true,
+      "monitored": true,
+      "unauth_access_alerts": true
+    },
+    "access_revocation": {
+      "automated": true
+    }
+  },
+  "device_management": {
+    "mdm_deployed": true,
+    "mdm_enrollment_coverage_pct": 97,
+    "certificate_auth": true,
+    "paw_enforced": true,
+    "unknown_device_scanning": true
+  },
+  "data_in_transit": {
+    "all_links_encrypted": true,
+    "tls_min_version": "1.2",
+    "unencrypted_protocols_in_use": [],
+    "cert_validity_days_remaining": 180
+  },
+  "stored_data": {
+    "encryption_at_rest": true,
+    "backup_exists": true,
+    "backup_age_days": 0,
+    "backup_segregated": true,
+    "restore_test_days": 21
+  },
+  "mobile_data": {
+    "mdm_enrolled": true,
+    "device_encryption": true,
+    "remote_wipe_configured": true,
+    "data_minimised": true
+  },
+  "system_security": {
+    "network_segmentation": {
+      "ot_it_separated": true,
+      "dmz_configured": true,
+      "internet_routing_blocked_from_critical": true,
+      "input_validation_enforced": true
+    },
+    "secure_configuration": {
+      "baseline_compliance_pct": 96,
+      "default_accounts_disabled": true,
+      "software_allowlisting": true,
+      "config_drift_monitoring": true
+    },
+    "secure_management": {
+      "admin_from_paw_only": true,
+      "malware_protection": true,
+      "malware_signatures_days": 1,
+      "unauthorised_software_count": 0
+    },
+    "vulnerability_management": {
+      "critical_patch_age_days": 45,
+      "vuln_scan_age_days": 3,
+      "eol_software_count": 3,
+      "pentest_age_days": 180
+    }
+  },
+  "resilience": {
+    "bc_dr_plan": {
+      "exists": true,
+      "last_review_days": 90,
+      "covers_essential_functions": true,
+      "tested_days": 180,
+      "rto_rpo_defined": true
+    },
+    "network_segregation": {
+      "essential_function_isolated": true,
+      "business_system_separated": true,
+      "redundant_paths": true,
+      "no_internet_from_critical": true,
+      "geographic_redundancy": true
+    },
+    "backups": {
+      "comprehensive_coverage": true,
+      "automated": true,
+      "backup_age_hours": 200,
+      "offline_backup_exists": true,
+      "ransomware_resilient": true,
+      "restore_test_age_days": 400
+    }
+  },
+  "security_monitoring": {
+    "log_sources": {
+      "all_assets_covered": false,
+      "coverage_pct": 60,
+      "host_based_monitoring": true,
+      "network_monitoring": true
+    },
+    "ntp": {
+      "synchronized": false,
+      "sources_consistent": true
+    },
+    "log_integrity": {
+      "access_restricted": true,
+      "worm_or_append_only": true,
+      "retention_days": 730,
+      "audit_trail_enabled": true
+    },
+    "alerting": {
+      "ids_deployed": true,
+      "signature_age_hours": 12,
+      "ioc_feeds_integrated": true,
+      "ioc_feed_age_hours": 12,
+      "continuous_monitoring": true
+    },
+    "alert_triage": {
+      "process_documented": true,
+      "mean_triage_hours": 2,
+      "ticketing_integrated": true,
+      "triage_sla_defined": true
+    },
+    "threat_intel": {
+      "feeds_configured": true,
+      "feed_count": 4,
+      "last_update_hours": 6,
+      "analyst_reviewed": true,
+      "integrated_with_siem": true
+    }
+  },
+  "incident_response": {
+    "plan": {
+      "exists": true,
+      "last_review_days": 180,
+      "covers_nis_incidents": true,
+      "communications_documented": true,
+      "roles_defined": true
+    },
+    "capability": {
+      "soc_available": true,
+      "soc_hours": "24x7",
+      "ir_retainer_exists": true,
+      "response_time_sla_hours": 2,
+      "escalation_paths_defined": true
+    },
+    "exercises": {
+      "last_exercise_days": 180,
+      "tabletop_conducted": true,
+      "functional_exercise_days": 270,
+      "post_exercise_actions_tracked": true
+    }
+  }
+}

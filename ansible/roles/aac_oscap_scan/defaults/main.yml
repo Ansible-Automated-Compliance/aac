@@ -1,0 +1,29 @@
+---
+# aac_oscap_scan/defaults/main.yml
+# Runs `oscap xccdf eval` ON THE TARGET HOST and fetches the XCCDF result XML
+# back to the execution environment for aac_oscap_ingest. Extracted from the
+# proven ansible/playbooks/openscap_assess.yml pipeline (#536) — same variable
+# names, same behavior; the playbook now composes these roles.
+#
+# Per role-config discipline: every var documented with criticality + how to
+# supply it. See README.md.
+
+# ── Required (CRITICAL — survey or extra_vars; deliberately NOT defaulted) ────
+# profile_id — XCCDF profile to evaluate, e.g.
+#   xccdf_org.ssgproject.content_profile_stig
+#   xccdf_org.ssgproject.content_profile_cis
+# A compliance scan must never run against a profile the operator didn't choose.
+
+# ── Content (HIGH) ────────────────────────────────────────────────────────────
+# Datastream on the TARGET. Empty → auto-detected SSG path for the host's
+# distro/major version. Override for a DISA-published or tailored datastream.
+datastream_path: ""
+# Optional XCCDF tailoring file on the target.
+tailoring_path: ""
+
+# ── Artifact handling (LOW) ───────────────────────────────────────────────────
+# The result XML is written to a timestamped path on the target, fetched to the
+# EE, then REMOVED from the target (no unbounded /tmp growth on scanned hosts).
+# The EE-local path is exposed as `oscap_results_file` for aac_oscap_ingest.
+oscap_target_tmpdir: /tmp
+oscap_fetch_dir: /tmp

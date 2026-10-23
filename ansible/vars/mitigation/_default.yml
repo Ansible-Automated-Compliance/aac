@@ -1,0 +1,8 @@
+---
+# F2 mitigation catalog — generic fallback for any framework without its own.
+# Produces a non-empty, honest "apply the recommended configuration" pointer
+# so no finding is left without a next step; replace with a framework-specific
+# catalog for real guidance.
+framework: _default
+mitigations:
+  _default: {where: "the relevant admin console", action: "apply the benchmark-recommended configuration for this control", method: manual}

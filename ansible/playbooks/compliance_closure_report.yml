@@ -1,0 +1,152 @@
+---
+# AAC - Compliance Closure Report (F3)
+#
+# The decisioning layer's evidence-of-closure function: shows the loop in the
+# output — found -> resolved (proven by rescan) / waived / still open — so a
+# reader can see whether each control is closed and how. This is what makes a
+# report a solution and not a scan.
+#
+# Reads the FINDINGS layer (compliance_findings), which is a state machine
+# (rows transition, never delete), so it reads findings of ALL statuses, not
+# just open. Read-only; writes nothing and evaluates no policy. Runs wherever
+# the evidence store is; data never leaves that environment.
+#
+# ── Variables ────────────────────────────────────────────────────────
+#   closure_framework   framework key (default: cis_m365_v7)
+#   closure_lookback    days of history to include (default: 180). Bounds how
+#                       far back resolved/waived findings are reported.
+#   closure_output_dir  EE-local output directory (default: /tmp)
+#   report_publish_host / report_publish_user / report_publish_dir
+#                       optional scp publication of the outputs
+#
+# ── AAP Job Template ─────────────────────────────────────────────────
+#   "AAC - Compliance Closure Report" — EE: AAC Compliance EE, hosts:
+#   localhost (reads PostgreSQL only).
+
+- name: Evidence-of-closure report for compliance findings (F3)
+  hosts: localhost
+  connection: local
+  gather_facts: true
+  become: false
+
+  vars:
+    closure_framework: "cis_m365_v7"
+    closure_lookback: 180
+    closure_output_dir: "/tmp"
+    closure_tag: "{{ closure_framework }}-{{ ansible_date_time.date }}"
+    closure_json: "{{ closure_output_dir }}/closure_report-{{ closure_tag }}.json"
+    closure_csv: "{{ closure_output_dir }}/closure_report-{{ closure_tag }}.csv"
+
+  tasks:
+    - name: Load site configuration when present
+      ansible.builtin.include_vars: "{{ item }}"
+      with_first_found:
+        - files: ["../vars/site_config.yml"]
+          skip: true
+
+    - name: Load vault secrets when present
+      ansible.builtin.include_vars: "{{ item }}"
+      with_first_found:
+        - files: ["../vars/vault_secrets.yml"]
+          skip: true
+
+    - name: Validate inputs
+      ansible.builtin.assert:
+        that:
+          - closure_framework is match('^[A-Za-z0-9][A-Za-z0-9_-]*$')
+          - closure_output_dir is match('^/[A-Za-z0-9/_.-]+$')
+          - "'..' not in closure_output_dir"
+        fail_msg: "closure_framework must be a safe key and closure_output_dir an absolute path without '..'."
+
+    - name: Query findings of all statuses within the window
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host | mandatory }}"
+        login_port: "{{ pg_port | default(5432) }}"
+        login_user: "{{ pg_user | default('postgres') }}"
+        login_password: "{{ compliance_db_password }}"
+        login_db: "{{ pg_database | default('compliance') }}"
+        ssl_mode: "{{ pg_ssl_mode | default('prefer') }}"
+        query: |
+          SELECT control_id, subject, title, status,
+                 first_seen, last_seen, resolved_at, times_seen
+          FROM compliance_findings
+          WHERE framework = %(fw)s
+            AND last_seen >= NOW() - (%(days)s || ' days')::interval
+        named_args:
+          fw: "{{ closure_framework }}"
+          days: "{{ closure_lookback | int | string }}"
+      register: findings_query
+
+    - name: Refuse to run on an empty set
+      ansible.builtin.assert:
+        that: findings_query.query_result | length > 0
+        fail_msg: >-
+          No {{ closure_framework }} findings in compliance_findings within the
+          last {{ closure_lookback }} days.
+
+    - name: Build the closure narrative (JSON)
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/../../scripts/closure.py"
+          - --format
+          - json
+        stdin: "{{ {'findings': findings_query.query_result} | to_json }}"
+      register: closure_json_out
+      changed_when: true
+
+    - name: Build the closure narrative (CSV)
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/../../scripts/closure.py"
+          - --format
+          - csv
+        stdin: "{{ {'findings': findings_query.query_result} | to_json }}"
+      register: closure_csv_out
+      changed_when: true
+
+    - name: Write the closure report (JSON)
+      ansible.builtin.copy:
+        dest: "{{ closure_json }}"
+        content: "{{ closure_json_out.stdout }}"
+        mode: "0644"
+
+    - name: Write the closure report (CSV)
+      ansible.builtin.copy:
+        dest: "{{ closure_csv }}"
+        content: "{{ closure_csv_out.stdout }}"
+        mode: "0644"
+
+    - name: Publish outputs to persistent storage
+      when: report_publish_host | default('') | length > 0
+      ansible.builtin.command:
+        argv:
+          - scp
+          - -o
+          - StrictHostKeyChecking=accept-new
+          - -o
+          - BatchMode=yes
+          - "{{ closure_json }}"
+          - "{{ closure_csv }}"
+          - "{{ report_publish_user | default('aapuser1') }}@{{ report_publish_host }}:{{ report_publish_dir | default('/var/tmp') }}/"
+      changed_when: true
+
+    - name: Warn when no persistent publication is configured
+      when: report_publish_host | default('') | length == 0
+      ansible.builtin.debug:
+        msg: >-
+          WARNING: outputs written only to the execution environment
+          ({{ closure_output_dir }}) and will vanish when this job ends. Set
+          report_publish_host to copy them to persistent storage.
+
+    - name: Closure summary
+      vars:
+        result: "{{ closure_json_out.stdout | from_json }}"
+      ansible.builtin.debug:
+        msg:
+          - "Closure report — framework {{ closure_framework }}"
+          - "  {{ result.summary.verdict }}"
+          - "  By state: {{ result.summary.by_state }} | closure rate: {{ result.summary.closure_rate_pct }}%"
+          - "  JSON: {{ closure_json }}"
+          - "  CSV:  {{ closure_csv }}"

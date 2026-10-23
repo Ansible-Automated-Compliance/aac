@@ -1,0 +1,138 @@
+---
+# IEC 62443 — Industrial Automation and Control Systems Security Assessment
+#
+# Evaluates ICS/OT systems against IEC 62443-3-3 Security Requirements (SR)
+# at the target Security Level (SL 1–4). Covers all 7 Foundational Requirements:
+#   FR 1 — Identification & Authentication Control (IAC)
+#   FR 2 — Use Control (UC)
+#   FR 3 — System Integrity (SI)
+#   FR 4 — Data Confidentiality (DC)
+#   FR 5 — Restricted Data Flow (RDF)
+#   FR 6 — Timely Response to Events (TRE)
+#   FR 7 — Resource Availability (RA)
+#
+# OPA Container: opa-ot (:8183)
+# OPA Endpoint:  POST /v1/data/iec_62443
+# AAP Template:  "AAC - IEC 62443 Assessment" (seeded by this playbook's companion seed)
+#
+# Variables (survey or extra_vars):
+#   target_sl         - Target Security Level 1-4 (default: 2)
+#   system_name       - Name of the ICS/OT system being assessed
+#   compliance_trigger - What initiated this assessment (default: manual)
+
+- name: IEC 62443 IACS Security Assessment
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    opa_url: "{{ opa_ot_url }}"
+    db_host: "{{ compliance_db_host | default('localhost') }}"
+    db_name: "{{ compliance_db_name | default('compliance') }}"
+    db_user: "{{ compliance_db_user | default('postgres') }}"
+    target_sl: "{{ target_security_level | default(2) | int }}"
+    system_name: "{{ ics_system_name | default('ICS System') }}"
+    # compliance_trigger: <set via extra_vars / survey / inventory>   # default 'manual'
+    assessment_timestamp: "{{ lookup('pipe', 'date -u +%Y-%m-%dT%H:%M:%SZ') }}"
+    report_file: "/tmp/iec_62443_report_{{ lookup('pipe', 'date +%Y%m%d_%H%M%S') }}.json"
+
+  vars_files:
+    - [ "../vars/vault_secrets.yml", "../vars/empty_fallback.yml" ]
+
+  tasks:
+
+    - name: Load IEC 62443 assessment data
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/../../examples/iec_62443_assessment_data.yml"
+        name: iec_data
+      ignore_errors: true
+
+    - name: Build IEC 62443 input for OPA
+      ansible.builtin.set_fact:
+        iec_input:
+          input:
+            target_sl: "{{ target_sl }}"
+            system_name: "{{ system_name }}"
+            assessment_date: "{{ assessment_timestamp }}"
+            ics_systems: "{{ iec_data.ics_systems | default([]) }}"
+            zones: "{{ iec_data.zones | default([]) }}"
+            conduits: "{{ iec_data.conduits | default([]) }}"
+            authentication: "{{ iec_data.authentication | default({}) }}"
+            network: "{{ iec_data.network | default({}) }}"
+            monitoring: "{{ iec_data.monitoring | default({}) }}"
+            patch_management: "{{ iec_data.patch_management | default({}) }}"
+
+    - name: Evaluate IEC 62443 compliance against OPA
+      ansible.builtin.uri:
+        use_proxy: false
+        url: "{{ opa_url }}/v1/data/iec_62443"
+        method: POST
+        body_format: json
+        body: "{{ iec_input }}"
+        return_content: true
+        validate_certs: false
+        timeout: 30
+      register: iec_result
+
+    - name: Extract compliance data
+      ansible.builtin.set_fact:
+        iec_data_result: "{{ iec_result.json.result }}"
+        overall_compliant: "{{ iec_result.json.result.compliant | default(false) }}"
+        total_violations: "{{ iec_result.json.result.violations | default([]) | length }}"
+        compliance_score: "{{ iec_result.json.result.compliance_score | default(0) }}"
+
+    - name: Save report to file
+      ansible.builtin.copy:
+        content: "{{ iec_result.json | to_nice_json }}"
+        dest: "{{ report_file }}"
+        mode: '0640'
+
+    - name: Print IEC 62443 compliance summary
+      ansible.builtin.debug:
+        msg: |
+          ╔══════════════════════════════════════════════════════╗
+          ║         IEC 62443 COMPLIANCE ASSESSMENT REPORT       ║
+          ╚══════════════════════════════════════════════════════╝
+
+          System       : {{ system_name }}
+          Target SL    : {{ target_sl }}
+          Generated    : {{ assessment_timestamp }}
+
+          ┌──────────────────────────────────────────────────────┐
+          │ OVERALL STATUS: {% if overall_compliant %}COMPLIANT ✅{% else %}NON-COMPLIANT ❌{% endif %}
+
+          └──────────────────────────────────────────────────────┘
+
+          Compliance Score : {{ compliance_score }}%
+          Violations       : {{ total_violations }}
+
+    - name: Print violations
+      ansible.builtin.debug:
+        msg: "VIOLATION: {{ item }}"
+      loop: "{{ iec_data_result.violations | default([]) }}"
+      when: total_violations | int > 0
+
+    - name: Store IEC 62443 results to PostgreSQL
+      ansible.builtin.include_role:
+        name: aac_store_results
+      vars:
+        aac_result_policy_name: "IEC 62443-3-3"
+        aac_result_framework:   "iec_62443"
+        aac_result_policy_version: "IEC 62443-3-3 SL{{ target_sl }}"
+        aac_result_total_controls: "{{ iec_data_result.total_requirements | default(0) | int }}"
+        aac_result_violations: "{{ iec_data_result.violations | default([]) }}"
+        aac_result_metadata:
+          system_name: "{{ system_name }}"
+          target_sl: "{{ target_sl }}"
+          compliant: "{{ overall_compliant }}"
+          compliance_score: "{{ compliance_score }}"
+          trigger: "{{ (compliance_trigger | default('manual', true)) }}"
+          assessment_timestamp: "{{ assessment_timestamp }}"
+
+    - name: Results stored
+      ansible.builtin.debug:
+        msg: "Results stored to PostgreSQL compliance database."
+
+    - name: View results in Grafana
+      ansible.builtin.debug:
+        msg: "Dashboard: {{ grafana_url }}/d/ami-001"

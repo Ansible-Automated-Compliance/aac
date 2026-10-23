@@ -1,0 +1,28 @@
+---
+# PostgreSQL Database Server Inventory
+# Ansible Automated Compliance (AAC) - Database Infrastructure
+
+all:
+  children:
+    database_servers:
+      hosts:
+        ansible-controller.local:
+          ansible_host: YOUR_AAP_HOST_IP
+          ansible_user: YOUR_SSH_USER
+          ansible_connection: ssh
+
+          # Database configuration
+          postgres_listen_addresses: "'localhost'"
+          postgres_max_connections: 200
+
+          # Compliance database metadata
+          environment: production
+          service_type: compliance_database
+          business_criticality: high
+          backup_required: yes
+
+          # Tags for organization
+          tags:
+            role: database
+            application: compliance_automation
+            managed_by: aap

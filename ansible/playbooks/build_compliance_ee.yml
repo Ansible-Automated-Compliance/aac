@@ -1,0 +1,173 @@
+---
+# build_compliance_ee.yml — Build AAC Compliance Execution Environment
+#
+# Builds EE v1.3.0 with Terraform 1.10.5, Windows collections, pywinrm,
+# and Cosign v2.6.3 for Certifiable Audit Artifact (CAA) signing.
+# Runs ansible-builder inside the EE to generate the Containerfile,
+# then delegates all podman commands to the host where podman is installed.
+#
+# AAP Job Template: "AAC - Build Compliance EE" (ID 45)
+# Credentials: Ansible Vault, Machine (for delegate_to become)
+
+- name: Build AAC Compliance Execution Environment on AAP Controller
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - [ "../vars/vault_secrets.yml", "../vars/empty_fallback.yml" ]
+    - ../vars/site_config.yml
+
+  vars:
+    aap_host:         "{{ aac_host }}"
+    aap_user:         "{{ aap_ssh_user }}"
+    ee_version:       "v1.3.0"
+    ee_image:         "quay.io/rh-ee-tcoulter/aac-compliance-ee"
+    ee_build_dir:     "/tmp/aac-ee-build"
+    ee_source_dir:    "{{ playbook_dir }}/../execution-environments/aac-compliance-ee"
+    terraform_version: "1.10.5"
+
+  tasks:
+
+    # ── Step 1: Generate Containerfile in EE (has ansible-builder) ────────────
+    - name: Create EE build directory
+      ansible.builtin.file:
+        path: "{{ ee_build_dir }}"
+        state: directory
+        mode: '0755'
+
+    - name: Copy EE definition files from project to build dir
+      ansible.builtin.copy:
+        src: "{{ ee_source_dir }}/{{ item }}"
+        dest: "{{ ee_build_dir }}/{{ item }}"
+        remote_src: true
+      loop:
+        - execution-environment.yml
+        - requirements.yml
+        - requirements.txt
+        - bindep.txt
+        - ansible.cfg
+
+    - name: Install ansible-builder in EE if not present
+      ansible.builtin.command: pip3 install ansible-builder
+      args:
+        creates: /usr/local/bin/ansible-builder
+
+    - name: Generate Containerfile using ansible-builder
+      ansible.builtin.command: ansible-builder create
+      args:
+        chdir: "{{ ee_build_dir }}"
+      environment:
+        HOME: /root
+
+    # ── Step 2: Copy context to host, build and push with host podman ─────────
+    # Add host to inventory with explicit SSH credentials so delegate_to uses
+    # direct SSH (not AAP receptor) to reach aapuser1 on the physical host
+    - name: Add physical host to inventory for direct SSH (bypasses AAP receptor)
+      ansible.builtin.add_host:
+        name: aap_physical_host
+        ansible_host: "{{ aap_host }}"
+        ansible_user: "{{ aap_user }}"
+        ansible_connection: ssh
+        ansible_ssh_common_args: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+
+    - name: Ensure build context directory exists on host
+      ansible.builtin.file:
+        path: "{{ ee_build_dir }}/context"
+        state: directory
+        mode: '0755'
+      delegate_to: aap_physical_host
+
+    - name: Copy build context to host
+      ansible.builtin.copy:
+        src: "{{ ee_build_dir }}/context/"
+        dest: "{{ ee_build_dir }}/context/"
+        mode: preserve
+      delegate_to: aap_physical_host
+
+    - name: Build EE image with podman on host
+      ansible.builtin.shell: >
+        /usr/bin/podman build
+        -f {{ ee_build_dir }}/context/Dockerfile
+        -t {{ ee_image }}:{{ ee_version }}
+        {{ ee_build_dir }}/context
+      delegate_to: aap_physical_host
+
+    - name: Verify Terraform is in the image
+      ansible.builtin.shell: >
+        /usr/bin/podman run --rm {{ ee_image }}:{{ ee_version }} terraform version
+      register: tf_verify
+      delegate_to: aap_physical_host
+
+    - name: Verify Cosign is in the image
+      ansible.builtin.shell: >
+        /usr/bin/podman run --rm {{ ee_image }}:{{ ee_version }} cosign version 2>&1 | grep -E "^GitVersion"
+      register: cosign_verify
+      delegate_to: aap_physical_host
+
+    - name: Show Terraform and Cosign versions in image
+      ansible.builtin.debug:
+        msg:
+          - "{{ tf_verify.stdout_lines[0] }}"
+          - "Cosign: {{ cosign_verify.stdout_lines[0] }}"
+
+    - name: Tag image as latest
+      ansible.builtin.shell: >
+        /usr/bin/podman tag {{ ee_image }}:{{ ee_version }} {{ ee_image }}:latest
+      delegate_to: aap_physical_host
+
+    - name: Login to quay.io on host
+      ansible.builtin.shell: >
+        /usr/bin/podman login quay.io
+        -u {{ vault_quay_username }}
+        -p {{ vault_quay_password }}
+      delegate_to: aap_physical_host
+      no_log: true
+
+    - name: Push versioned image to quay.io
+      ansible.builtin.shell: >
+        /usr/bin/podman push {{ ee_image }}:{{ ee_version }}
+      delegate_to: aap_physical_host
+      register: push_versioned
+
+    - name: Push latest tag to quay.io
+      ansible.builtin.shell: >
+        /usr/bin/podman push {{ ee_image }}:latest
+      delegate_to: aap_physical_host
+
+    # ── Step 4: Load image into receptor's separate podman store ─────────────
+    # AAP's receptor container uses /home/aapuser1/aap/containers/storage
+    # (configured via /home/aapuser1/aap/containers/storage.conf), which is
+    # separate from the standard user podman store (~/.local/share/containers).
+    # Without this step AAP jobs keep using the old cached EE image.
+    - name: Load new EE image into receptor podman store
+      ansible.builtin.shell: >
+        CONTAINERS_STORAGE_CONF=/home/aapuser1/aap/containers/storage.conf
+        /usr/bin/podman load -i <(/usr/bin/podman save {{ ee_image }}:{{ ee_version }})
+      args:
+        executable: /bin/bash
+      delegate_to: aap_physical_host
+      register: receptor_load
+
+    - name: Load latest tag into receptor podman store
+      ansible.builtin.shell: >
+        CONTAINERS_STORAGE_CONF=/home/aapuser1/aap/containers/storage.conf
+        /usr/bin/podman load -i <(/usr/bin/podman save {{ ee_image }}:latest)
+      args:
+        executable: /bin/bash
+      delegate_to: aap_physical_host
+
+    - name: Clean up build directory on host
+      ansible.builtin.file:
+        path: "{{ ee_build_dir }}"
+        state: absent
+      delegate_to: aap_physical_host
+
+    - name: Build complete
+      ansible.builtin.debug:
+        msg:
+          - "✅ {{ ee_image }}:{{ ee_version }} built and pushed to quay.io"
+          - "✅ {{ ee_image }}:latest tagged and pushed"
+          - "✅ Image loaded into receptor podman store (AAP job store)"
+          - "   Terraform: {{ tf_verify.stdout_lines[0] }}"
+          - "   Receptor load: {{ receptor_load.stdout_lines[-1] | default('done') }}"

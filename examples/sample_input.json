@@ -1,0 +1,112 @@
+{
+  "os_family": "RedHat",
+  "distribution": "CentOS",
+  "distribution_version": "9.0",
+  "selinux_status": "enforcing",
+  "firewall_enabled": true,
+  "ssh_port": 22,
+  "loaded_modules": ["ext4", "xfs", "btrfs"],
+  "mounts": {
+    "/tmp": {
+      "device": "/dev/sda2",
+      "fstype": "ext4",
+      "options": ["rw", "nodev", "nosuid", "noexec"]
+    },
+    "/var": {
+      "device": "/dev/sda3", 
+      "fstype": "ext4",
+      "options": ["rw", "nodev"]
+    }
+  },
+  "wireless_interfaces": [],
+  "ipv6_disabled": true,
+  "net_ipv4_conf_all_send_redirects": 0,
+  "net_ipv4_conf_default_send_redirects": 0,
+  "net_ipv4_ip_forward": 0,
+  "net_ipv4_conf_all_accept_source_route": 0,
+  "net_ipv4_conf_default_accept_source_route": 0,
+  "net_ipv4_conf_all_accept_redirects": 0,
+  "net_ipv4_conf_default_accept_redirects": 0,
+  "net_ipv4_conf_all_secure_redirects": 0,
+  "net_ipv4_conf_default_secure_redirects": 0,
+  "net_ipv4_conf_all_log_martians": 1,
+  "net_ipv4_conf_default_log_martians": 1,
+  "net_ipv4_icmp_echo_ignore_broadcasts": 1,
+  "net_ipv4_icmp_ignore_bogus_error_responses": 1,
+  "net_ipv4_conf_all_rp_filter": 1,
+  "net_ipv4_conf_default_rp_filter": 1,
+  "net_ipv4_tcp_syncookies": 1,
+  "net_ipv6_conf_all_accept_source_route": 0,
+  "net_ipv6_conf_default_accept_source_route": 0,
+  "net_ipv6_conf_all_accept_redirects": 0,
+  "net_ipv6_conf_default_accept_redirects": 0,
+  "net_ipv6_conf_all_accept_ra": 0,
+  "net_ipv6_conf_default_accept_ra": 0,
+  "services": {
+    "cron": {
+      "enabled": true,
+      "running": true
+    }
+  },
+  "file_permissions": {
+    "/etc/crontab": {
+      "mode": "0600",
+      "owner": "root",
+      "group": "root"
+    },
+    "/etc/cron.hourly": {
+      "mode": "0700",
+      "owner": "root", 
+      "group": "root"
+    },
+    "/etc/cron.daily": {
+      "mode": "0700",
+      "owner": "root",
+      "group": "root"
+    },
+    "/etc/cron.weekly": {
+      "mode": "0700",
+      "owner": "root",
+      "group": "root"
+    },
+    "/etc/cron.monthly": {
+      "mode": "0700",
+      "owner": "root",
+      "group": "root"
+    },
+    "/etc/ssh/sshd_config": {
+      "mode": "0600",
+      "owner": "root",
+      "group": "root"
+    }
+  },
+  "ssh_config": [
+    "Protocol 2",
+    "LogLevel INFO",
+    "X11Forwarding no",
+    "MaxAuthTries 4",
+    "IgnoreRhosts yes",
+    "HostbasedAuthentication no",
+    "PermitRootLogin no",
+    "PermitEmptyPasswords no",
+    "PermitUserEnvironment no",
+    "ClientAliveInterval 300",
+    "ClientAliveCountMax 0",
+    "LoginGraceTime 60",
+    "Banner /etc/issue.net",
+    "UsePAM yes",
+    "AllowTcpForwarding no",
+    "MaxStartups 10:30:60",
+    "MaxSessions 4"
+  ],
+  "ssh_private_keys": [
+    "/etc/ssh/ssh_host_rsa_key",
+    "/etc/ssh/ssh_host_ecdsa_key",
+    "/etc/ssh/ssh_host_ed25519_key"
+  ],
+  "ssh_public_keys": [
+    "/etc/ssh/ssh_host_rsa_key.pub",
+    "/etc/ssh/ssh_host_ecdsa_key.pub", 
+    "/etc/ssh/ssh_host_ed25519_key.pub"
+  ]
+}

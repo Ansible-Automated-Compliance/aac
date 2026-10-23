@@ -1,0 +1,20 @@
+---
+# Default variables for gather_grub_security role
+
+# Expected GRUB configuration file locations
+grub_config_file: "/boot/grub2/grub.cfg"
+grub_user_config: "/boot/grub2/user.cfg"
+grub_defaults_file: "/etc/default/grub"
+
+# Expected GRUB configuration file permissions
+expected_grub_owner: "root"
+expected_grub_group: "root"
+expected_grub_mode: "0600"
+expected_grub_defaults_mode: "0644"
+
+# Single-user mode authentication
+rescue_service: "rescue.service"
+emergency_service: "emergency.service"
+
+# UEFI vs BIOS detection
+uefi_grub_config: "/boot/efi/EFI/redhat/grub.cfg"
