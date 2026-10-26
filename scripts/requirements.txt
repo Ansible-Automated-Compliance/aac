@@ -6,7 +6,7 @@
 psycopg2-binary==2.9.13
 
 # Data manipulation and analysis
-pandas==3.0.6
+pandas==3.1.0
 numpy==2.5.4
 
 # Visualization
@@ -37,7 +37,7 @@ click==8.5.0
 
 # Excel export support (optional)
 openpyxl==3.1.5
-xlsxwriter==3.2.9
+xlsxwriter==3.3.0
 
 # Email reporting (optional)
 smtplib-ssl==1.0.0
@@ -52,7 +52,7 @@ PyYAML==6.0.3
 rich==15.0.0
 
 # API development (if building REST API)
-fastapi==0.143.2
+fastapi==0.161.1
 uvicorn==0.54.0
 
 # Authentication and security
