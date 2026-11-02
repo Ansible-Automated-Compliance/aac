@@ -70,4 +70,4 @@ celery==5.6.3
 prometheus-client==0.26.0
 
 # Testing — `pytest scripts/` runs derive_customer_frameworks tests
-pytest>=9.1.1
+pytest>=9.2.0
