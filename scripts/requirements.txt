@@ -24,7 +24,7 @@ requests==2.34.2
 python-dotenv==1.2.4
 
 # Date and time utilities
-python-dateutil==2.9.0.post0
+python-dateutil==3.0.0
 
 # JSON handling
 jsonschema==4.26.0
