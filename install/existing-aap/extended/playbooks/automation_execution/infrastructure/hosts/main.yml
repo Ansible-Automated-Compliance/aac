@@ -1,0 +1,6 @@
+---
+
+- name: Create Hosts
+  ansible.builtin.include_tasks: "{{ item }}"
+  loop:
+    - localhost.yml

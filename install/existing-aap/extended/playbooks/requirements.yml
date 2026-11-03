@@ -1,0 +1,14 @@
+---
+collections:
+  - name: infra.aap_configuration
+    version: ">=4.2.0"
+  - name: awx.awx
+    version: ">=24.0.0"
+  - name: ansible.eda
+    version: ">=2.0.0"
+  - name: amazon.aws
+    version: ">=8.0.0"
+  - name: community.postgresql
+    version: ">=3.0.0"
+  - name: ansible.hub
+    version: ">=2.0.0"

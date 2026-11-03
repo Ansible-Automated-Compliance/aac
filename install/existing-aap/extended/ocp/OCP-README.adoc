@@ -1,0 +1,715 @@
+= Installation Instructions for Extended AAP on OCP-CRC
+
+This guide installs on a single RHEL host: 
+
+. OpenShift Local (CRC), a single-node OpenShift cluster 
+. Ansible Automation Platform 2.7 as a Red Hat operator inside that cluster 
+. Automation Orchestrator as a Red Hat operator inside the same cluster
+. Ansible Automated Compliance (AAC) 
+
+== Prerequisites
+
+Minimum Machine Sizing:
+
+- 12 Cores
+- 32 GB RAM
+- 150 GB Disk
+
+Software Requirements:
+
+- RHEL 9.5 or newer (registered to Red Hat)
+- OpenShift Local (CRC)
+- OpenShift Pull Secret
+- Ansible Automation Platform 2.7 subscription manifest or service account for activation
+- registry.redhat.io credentials
+- Outbound internet access
+
+== Prepare the host
+
+. Install the latest RHEL 9.5 or newer (registered to Red Hat)
+. Create your administrative user and set the password
+. Set a hostname for the machine (e.g. aap27ocp.home.lab)
+. Do minimal install
+. Upgrade the system to the latest patches
+. Reboot the machine
+
+== Install OpenShift Local (CRC)
+
+=== Download the pull secret and CRC binary
+
+. Go to console.redhat.com and login with your Red Hat credentials
+. Go to OpenShift → Resources → Downloads
+. Locate the "OpenShift Local" entry at the Openshift Installation section
+. Select "Linux" as OS type and "x86_64" as architecture
+. Click on the "Download" button
+. Scroll to the bottom of the page under the "Token" section and download the pull secret
+. Place the downloaded files at the installation server
+
+=== Run the installation
+
+Run the installation script:
+
+[source,bash]
+----
+tar -xf crc-linux-amd64.tar.xz 
+sudo install -m 0755 crc-linux-*-amd64/crc /usr/local/bin/crc 
+----
+
+Verify and configure the CRC instance:
+
+[source,bash]
+----
+crc version 
+crc config set preset openshift 
+crc config set cpus 15 
+crc config set memory 61440
+crc config set disk-size 300 
+crc config set consent-telemetry yes
+----
+
+Start the CRC instance:
+
+[source,bash]
+----
+crc setup 
+----
+
+Save the pull secret you downloaded as ~/.crc/pull-secret.txt (mode 0600)
+
+[source,bash]
+----
+sudo cp pull-secret.txt ~/.crc/pull-secret.txt 
+----
+
+Start the CRC instance:
+
+[source,bash]
+----
+crc start --pull-secret-file ~/.crc/pull-secret.txt 
+----
+
+The first start downloads the bundle and takes 10 to 20 minutes, verify with:
+
+[source,bash]
+----
+crc status
+----
+
+Expect to see "Running" in the output.
+
+=== Configure the host
+
+WARNING: *Port conflicts*: CRC binds `80`, `443`, `2222` and `6443` on the host. A container port-forwarding to any of those ports stops CRC from starting
+
+To access the OpenShift console information and login credentials, use the following commands:
+
+[source,bash]
+----
+eval "$(crc oc-env)" 
+export KUBECONFIG=$HOME/.crc/machines/crc/kubeconfig 
+export TERM=xterm-256color # optional, but recommended
+oc whoami
+crc console --credentials
+----
+
+TIP: Add the `eval` and `export` commands to your `.bashrc` file to automatically set the environment variables when you log in.
+
+Open the firewall port 80 and 443 for the CRC instance.
+
+[source,bash]
+----
+sudo firewall-cmd --permanent --add-port=80/tcp
+sudo firewall-cmd --permanent --add-port=443/tcp
+sudo firewall-cmd --reload
+sudo firewall-cmd --list-ports
+----
+
+Register the CRC hostnames in the `/etc/hosts` file:
+
+[source,bash]
+----
+192.168.122.171 aap27ocp.home.lab console-openshift-console.apps-crc.testing oauth-openshift.apps-crc.testing
+----
+
+== Install Ansible Automation Platform 2.7 as a Red Hat operator
+
+Along this guide you will find two manifests to install the Ansible Automation Platform 2.7 as a Red Hat operator. 
+
+The first manifest installs the operator
+
+[source,bash]
+----
+oc apply -f 1-aap-operator.yml
+----
+
+Wait for the ClusterServiceVersion to reach Succeeded before applying the second manifest:
+
+[source,bash]
+----
+oc -n aap-operator get csv -w
+----
+
+The second manifest creates the platform, enables the controller, EDA and Private Automation Hub, sets edge TLS on the routes, and optionally leaves Lightspeed off.
+
+[source,bash]
+----
+oc apply -f 2-aap.yml
+----
+
+Wait for the pods to reach Running (15 to 25 minutes):
+
+[source,bash]
+----
+oc -n aap-operator get pods -w
+----
+
+[IMPORTANT]
+====
+*Fix persistent volume permissions (CRC only)*
+
+CRC’s HostPath provisioner creates volumes with mode `0755`.
+
+The platform’s PostgreSQL and the Hub’s file storage need to write to them. 
+
+After the first rollout, if `aap-postgres-15-0` or the `aap-hub-*` pods sit in *Init* or *CrashLoopBackOff*
+
+[source,bash]
+----
+oc debug node/crc --quiet -- chroot /host bash -c 'for d in /var/lib/csi-hostpath-data/pvc-*; do chmod 777 "$d"; done' 
+oc -n aap-operator delete pod aap-postgres-15-0 --force --grace-period=0 
+oc -n aap-operator get pods --no-headers | awk '/aap-hub-/ && /Init|Crash/ {print $1}' | xargs -r oc -n aap-operator delete pod --force --grace-period=0 
+----
+
+Wait a further five minutes for every pod to show Running. The same fix applies to the Orchestrator’s PostgreSQL volume in section 7 if that pod fails to start. 
+====
+
+=== Get the AAP credentials
+
+The AAP operator generates the `admin` password into a Secret, get it with: 
+
+[source,bash]
+----
+oc -n aap-operator get secret aap-admin-password -o jsonpath='{.data.password}' | base64 -d > aap.cred
+----
+
+The UI is https://aap-aap-operator.apps-crc.testing, user `admin`. Change the password in the UI (Access Management → Users) if you want your own.
+
+IMPORTANT: Add this URL to the `/etc/hosts` file of your host server too.
+
+AAP 2.7 issues API tokens at the gateway, get it with:
+
+[source,bash]
+----
+AAP_HOST=aap-aap-operator.apps-crc.testing
+curl -sk -u "admin:$(cat aap.cred)" \
+    -X POST -H 'Content-Type: application/json' \
+    -d '{"description":"automation-orchestrator","scope":"write"}' \
+    "https://${AAP_HOST}/api/gateway/v1/tokens/" \
+    | python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])' > aap.token
+----
+
+=== Register the platform 
+
+Upload the manifest in the UI (Settings → Subscription), verify the license with:
+
+[source,shell]
+----
+curl -sk -H "Authorization: Bearer $(cat aap.token)" "https://${AAP_HOST}/api/controller/v2/config/" \
+    | python3 -c 'import json,sys; print(json.load(sys.stdin).get("license_info", {}).get("license_type", "none"))' 
+----
+
+== Install Automation Orchestrator 
+
+The Orchestrator operator brings no database: it requires a provided PostgreSQL. Three manifests: the database, the operator, the Orchestrator. 
+
+=== PostgreSQL for the Orchestrator 
+
+Generate a random password for the PostgreSQL database (alternatively, you can use your own):
+
+[source,bash]
+----
+openssl rand -base64 24 | tr -d '/+=' | cut -c1-24 > db.cred
+----
+
+Place it in the `4-ao-postgres.yml` file, marks `<ao-db password>`.
+
+[source,bash]
+----
+grep -i password 4-ao-postgres.yml 
+# BEFORE APPLYING: replace <ao-db-password> in the Secret with a generated
+  POSTGRESQL_PASSWORD: <ao-db-password>
+  password: <ao-db-password>
+  password: <ao-db-password>
+----
+
+Replace the values:
+
+[source,bash]
+----
+sed -i "s#<ao-db-password>#$(cat db.cred)#g" 4-ao-postgres.yml 
+----
+
+Apply the manifest:
+
+[source,bash]
+----
+oc apply -f 4-ao-postgres.yml 
+----
+
+Wait for the pod to reach Running:
+
+[source,bash]
+----
+oc -n automation-orchestrator get pods -w
+----
+
+The operator creates `ao_backend`, let's create the `ao_temporal` database beside it:
+
+- `ao_backend` is the main database for the Orchestrator
+- `ao_temporal` is the database for the Temporal workflow engine
+- `temporal_visibility` is the database for the Temporal visibility engine
+
+[source,bash]
+----
+oc -n automation-orchestrator exec deploy/ao-postgres -- psql -U postgres -c "CREATE DATABASE ao_temporal OWNER ao;" 
+oc -n automation-orchestrator exec deploy/ao-postgres -- psql -U postgres -c "CREATE DATABASE temporal_visibility OWNER ao;"
+----
+
+Verify the databases:
+
+[source,bash]
+----
+oc -n automation-orchestrator exec deploy/ao-postgres -- psql -U postgres -c "\l" 
+----
+
+WARNING: If the pod stays in CrashLoopBackOff on first start, apply the volume permission fix from previous section and delete the pod. 
+
+=== Pull secret and operator 
+
+The Orchestrator images come from *registry.redhat.io*. The manifest references a pull secret named `redhat-registry-pull-secret` in the Orchestrator’s namespace; create it from the same pull-secret file you gave CRC, which carries those credentials: 
+
+[source,bash]
+----
+oc -n automation-orchestrator \
+    create secret generic redhat-registry-pull-secret \
+    --from-file=.dockerconfigjson="$HOME/.crc/pull-secret.txt" \
+    --type=kubernetes.io/dockerconfigjson
+----
+
+Then the operator. It is cluster-scoped and subscribes in openshift-operators:
+
+[source,bash]
+----
+oc apply -f 3-ao-operator.yml
+----
+
+Wait for the ClusterServiceVersion to reach Succeeded:
+
+[source,bash]
+----
+oc -n openshift-operators get csv -w 
+----
+
+=== The Orchestrator
+
+Set the Route host, the database connection, the pull secret, one Redis replica, a small worker autoscaler, and the outbound allow list workflowHttpRequestAllowedHosts.
+
+A workflow HTTP node may only call a host on that list. The platform’s route and in-cluster Service name are listed; when the AAC workflows arrive they call the policy engine and an MCP server too, and those hosts go on the list then. 
+
+[source,bash]
+----
+oc apply -f 5-ao.yml
+----
+
+Wait for the pods to reach Running:
+
+[source,bash]
+----
+oc -n automation-orchestrator get pods -w
+----
+
+Get the route:
+
+[source,bash]
+----
+oc -n automation-orchestrator get route ao 
+----
+
+Edit the CR with:
+
+[source,bash]
+----
+oc edit automationorchestrator ao - n automation-orchestrator
+----
+
+=== First sign-in
+
+The operator generates the initial administrator password into a Secret named after the resource: 
+
+[source,bash]
+----
+oc -n automation-orchestrator get secret ao-initial-admin-password -o jsonpath='{.data.password}' | base64 -d > ao.cred
+----
+
+Add the `ao-automation-orchestrator.apps-crc.testing` hostname to the `/etc/hosts` file of your host server.
+
+Sign in at `https://ao-automation-orchestrator.apps-crc.testing` as admin and change the password. Create a project for your work; integrations and credentials below are created inside it or globally.
+
+=== Connect the Orchestrator to the platform 
+
+In the Orchestrator UI: 
+
+. Credentials → Create: an Ansible Automation Platform token credential holding the gateway token. 
+
+. Integration
++
+Integration type: Ansible Automation Platform
+Server Name: `https://aap-aap-operator.apps-crc.testing`
+Description: `AAP`
+API URL: `https://aap-aap-operator.apps-crc.testing/api`
+Security Certificate: The route certificate is self-signed on CRC, so either paste the cluster router CA into the integration’s CA certificate field, or enable “skip TLS verification” for the evaluation only.
++
+[source,bash]
+----
+oc -n openshift-ingress-operator get secret router-ca -o jsonpath='{.data.tls\.crt}' | base64 -d > router-ca.crt
+----
+
+. Validate: the integration lists the platform’s organizations, inventories, job templates and workflow job templates. A workflow node of type “AAP job template” can now launch any of them.
+
+. Optional: the Orchestrator can register itself as an OAuth2 application on the platform so users sign in to the Orchestrator with their platform account (OIDC). That is a setting under the Orchestrator’s authentication configuration; it needs the platform admin credentials once, at setup. 
+
+=== Verify 
+
+[source,bash]
+----
+HOST=aap-aap-operator.apps-crc.testing 
+res() { curl -sk -H "Authorization: Bearer $(cat aap.token)" -o /dev/null -w "$1 %{http_code}\n" "https://$HOST$2"; } 
+----
+
+Verify the integration:
+
+[source,bash]
+----
+res "gateway " /api/gateway/v1/ping/ 
+res "controller " /api/controller/v2/ping/ 
+res "eda " /api/eda/v1/status/ 
+----
+
+Verify the Orchestrator:
+
+[source,bash]
+----
+curl -sk -o /dev/null -w "orchestrator %{http_code}\n" https://ao-automation-orchestrator.apps crc.testing/ 
+----
+
+Verify the platform:
+
+[source,bash]
+----
+oc -n aap-operator get pods --no-headers | grep -vc Running 
+oc -n automation-orchestrator get pods --no-headers | grep -vc Running
+----
+
+Expected: 200 on the four endpoints and two zeros (no pod outside Running). Then, in the Orchestrator, create a one-node workflow that launches the platform’s “Demo Job Template”, publish it, execute it, and confirm the job appears in the controller’s Jobs view. That is the whole loop: the Orchestrator decides, the platform acts. 
+
+== Install Ansible Automated Compliance
+
+This section translates the existing host-based AAC install into an OpenShift-native shape.
+
+The key rule is: preserve the *AAC service contracts* even if you change the packaging.
+
+- Keep the dedicated `aac` namespace
+- Keep the in-cluster service names from `ansible/vars/profiles/lab.yml`
+- Keep raw OPA HTTP APIs for policy load and evaluation
+- Use OpenShift Routes where external access is needed
+
+That means:
+
+- *PostgreSQL* can later move to an operator, but the service should still be `compliance-db.aac.svc.cluster.local`
+- *Grafana* can later move to the Grafana Operator, but the service should still be `grafana.aac.svc.cluster.local`
+- *OPA* should stay three plain HTTP services (`opa-security`, `opa-compliance`, `opa-ot`). Gatekeeper is useful later for Kubernetes admission control, but it does not replace AAC’s assessment-time OPA APIs
+
+=== Namespace and shared secrets
+
+Apply the AAC namespace and Secrets:
+
+Before applying the rest, edit `6-aac-namespace.yml` and replace:
+
+- `<compliance-db-password>`
+- `<compliance-reader-password>`
+- `<grafana-admin-password>`
+
+[source,bash]
+----
+oc apply -f 6-aac-namespace.yml
+----
+
+Create the Red Hat registry pull secret in the `aac` namespace using the locally-held pull-secret file (never commit this file) so PostgreSQL and Grafana can pull their images:
+
+[source,bash]
+----
+oc -n aac create secret generic redhat-registry-pull-secret \
+    --from-file=.dockerconfigjson="$HOME/.crc/pull-secret.txt" \
+    --type=kubernetes.io/dockerconfigjson
+----
+
+[NOTE]
+====
+*Why manual?* The pull secret contains private credentials and must not be committed to the repository. Create it on the installation host from the locally-downloaded pull-secret file (CRC provides this) and link it into the `aac` namespace as shown above.
+====
+
+=== PostgreSQL in the cluster
+
+Deploy the starter PostgreSQL manifest:
+
+[source,bash]
+----
+oc apply -f 7-aac-postgresql.yml
+oc -n aac get pods -w
+----
+
+This creates a single PostgreSQL instance exposed as `compliance-db.aac.svc.cluster.local:5432`.
+
+IMPORTANT: Register this hostname in the `/etc/hosts` file of your host server.
+
+On CRC, the HostPath provisioner may again create a PVC with permissions too tight for the image. If `compliance-db-0` stays in `Init` or `CrashLoopBackOff`, apply the same volume-permission fix you used earlier and then delete the pod:
+
+[source,bash]
+----
+oc debug node/crc --quiet -- chroot /host bash -c 'for d in /var/lib/csi-hostpath-data/pvc-*; do chmod 777 "$d"; done'
+oc -n aac delete pod -l app=compliance-db --force --grace-period=0
+----
+
+=== OPA in the cluster
+
+Deploy the three AAC OPA services:
+
+[source,bash]
+----
+oc apply -f 8-aac-opa.yml
+oc -n aac get pods -w
+----
+
+These are the service names the existing AAC profiles and playbooks already expect:
+
+- `opa-security.aac.svc.cluster.local:8181`
+- `opa-compliance.aac.svc.cluster.local:8182`
+- `opa-ot.aac.svc.cluster.local:8183`
+
+The three Routes are created without a fixed host so OpenShift can generate the correct cluster-domain-specific hostnames. On CRC the defaults are typically:
+
+- `opa-security-aac.apps-crc.testing` (port 8181)
+- `opa-compliance-aac.apps-crc.testing` (port 8182)
+- `opa-ot-aac.apps-crc.testing` (port 8183)
+
+Verify:
+
+[source,bash]
+----
+oc -n aac get route
+for i in security compliance ot
+do
+  echo "${i}: $(curl -s http://opa-${i}-aac.apps-crc.testing/health)"
+done
+----
+
+Empty policy lists are normal at this stage; the services start first and the policies are loaded later.
+
+=== Grafana in the cluster
+
+Deploy Grafana:
+
+[source,bash]
+----
+oc apply -f 9-aac-grafana.yml
+oc -n aac get pods -w
+----
+
+This creates:
+
+- in-cluster service `grafana.aac.svc.cluster.local:3000`
+- external Route `grafana-aac.apps-crc.testing` on CRC
+
+Verify:
+
+[source,bash]
+----
+oc -n aac get route grafana
+curl -sk https://grafana-aac.apps-crc.testing/api/health
+----
+
+=== Initialize the AAC database schema
+
+The manifest above only brings up PostgreSQL. AAC’s tables, views, reader role, evidence guards, framework catalog tables, and related schema still come from the AAC playbooks.
+
+Ensure you have the `aac` repository cloned and `ansible` installed on the host.
+
+[source,bash]
+----
+# Enable the Ansible Automation Platform repository
+sudo subscription-manager repos --list
+sudo dnf config-manager --enable ansible-automation-platform-2.6-for-rhel-10-x86_64-rpms
+sudo dnf install -y ansible-core git vim tree jq curl pip bash-completion ncurses-term
+git clone https://github.com/Ansible-Automated-Compliance/aac.git
+cd aac
+git submodule update --init --recursive
+pip3 install --user psycopg2-binary
+ansible-galaxy collection install community.postgresql
+ansible-galaxy collection install amazon.aws
+----
+
+Create a branch for your local changes.
+
+[source,bash]
+----
+git checkout -b installation
+----
+
+Make a copy of the example secrets file and edit the PLACEHOLDERs. *Never commit real secrets*.
+
+[source,bash]
+----
+cp ansible/vars/vault_secrets.yml.example ansible/vars/vault_secrets.yml
+----
+
+Fill in the required secrets:
+
+[source,bash]
+----
+vim ansible/vars/vault_secrets.yml
+----
+
+For the first schema bootstrap on OCP, port-forward the database service and run the initializer from this repository on the host:
+
+[source,bash]
+----
+oc -n aac port-forward svc/compliance-db 5432:5432
+----
+
+In a second terminal on the same host:
+
+[source,bash]
+----
+ansible-playbook -J ansible/playbooks/postgres_database_init.yml \
+  -e "pg_host=127.0.0.1" \
+  -e "pg_user=compliance" \
+  -e "pg_db=compliance" \
+  -e "aac_db_skip_container_deploy=true"
+  -e "aac_db_password=<compliance-db-password>" 
+----
+
+[IMPORTANT]
+====
+If you get the error "user 'compliance' has neither SUPERUSER nor CREATEROLE" run the following command replacing <POSTGRES_PASSWORD> with the password you used for the database:
+
+[source,bash]
+----
+oc -n aac exec compliance-db-0 -- env PGPASSWORD='<POSTGRES_PASSWORD>' psql -U postgres -d compliance -c "ALTER ROLE compliance CREATEROLE;"
+----
+====
+
+This preserves the existing AAC schema logic instead of rewriting it by hand into ad-hoc SQL.
+
+Verify the database:
+
+[source,bash]
+----
+oc -n aac exec compliance-db-0 -- psql -U compliance -d compliance -c "\dt"
+----
+
+=== Load the OPA policies
+
+Load the policy library into the three running OPA services from the cloned repository:
+
+[source,bash]
+----
+ansible-playbook -J ansible/playbooks/load_opa_policies.yml \
+  -e "source=all" \
+  -e "opa_security_url=http://opa-security-aac.apps-crc.testing" \
+  -e "opa_compliance_url=http://opa-compliance-aac.apps-crc.testing" \
+  -e "opa_ot_url=http://opa-ot-aac.apps-crc.testing" \
+  -e "source=extra_vars" -e "frameworks_to_load=["cis_rhel9"]"
+  // -e "source=all"
+----
+
+NOTE: A complete list of frameworks can be found in `ansible/vars/framework_catalog.yml`.
+
+This uses the same loader and routing logic the rest of AAC already depends on.
+
+Verify the policies:
+
+[source,bash]
+----
+total_policies=0
+for svc in security compliance ot
+do
+  policies=$(curl -s http://opa-${svc}-aac.apps-crc.testing/v1/policies | jq '.result | length')
+  total_policies=$((total_policies + policies))
+  echo "Policies in OPA ${svc}: ${policies}"
+done
+echo "Total policies: ${total_policies}"
+----
+
+=== Configure Grafana with the AAC dashboards
+
+After Grafana is healthy and PostgreSQL has the AAC schema, configure the datasource and import the dashboards:
+
+First, since we are using CRC and by default the router is self-signed, we need to add the cluster router CA to the host's datasource certificate.
+
+[source,bash]
+----
+oc -n openshift-ingress-operator get secret router-ca -o jsonpath='{.data.tls\.crt}' | base64 -d > router-ca.crt
+----
+
+Then copy the certificate to the trust store of the host.
+
+[source,bash]
+----
+sudo cp router-ca.crt /etc/pki/ca-trust/source/anchors/router-ca.crt
+sudo update-ca-trust extract
+----
+
+Run the following command to deploy the Grafana dashboards:
+
+[source,bash]
+----
+ansible-playbook -J ansible/playbooks/deploy_grafana_dashboard.yml \
+  -e "grafana_url=https://grafana-aac.apps-crc.testing" \
+  -e "pg_host=compliance-db.aac.svc.cluster.local"
+----
+
+Verify the dashboards:
+
+[source,bash]
+----
+curl -s https://grafana-aac.apps-crc.testing/api/health
+----
+
+=== Bootstrap AAP and EDA objects
+
+Use config-as-code to create the AAP-side objects:
+
+Prerequisites:
+
+[source,bash]
+----
+ansible-galaxy collection install -r playbooks/requirements.yml
+----
+
+Populate the following files replacing the `PLACEHOLDER` values with the appropriate values.
+
+[source,bash]
+----
+vim playbooks/vars/main.yml
+vim playbooks/vars/defaults.yml
+vim playbooks/vars/secrets.yml
+ansible-vault encrypt playbooks/vars/secrets.yml
+----
+
+Run the bootstrap playbooks:
+
+[source,bash]
+----
+ansible-playbook -J playbooks/bootstrap_controller.yml
+ansible-playbook -J playbooks/bootstrap_eda.yml
+----

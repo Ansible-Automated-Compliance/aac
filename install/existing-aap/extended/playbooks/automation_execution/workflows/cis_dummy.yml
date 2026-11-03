@@ -1,0 +1,77 @@
+---
+
+- name: CIS Complete Workflow (Dummy)
+  ansible.controller.workflow_job_template:
+    name: "{{ dummy_name }}"
+    description: "{{ dummy_description }}"
+    organization: "{{ aac_organization }}"
+    state: present
+    extra_vars:
+      aac_caa_enabled: false
+      opa_security_url: http://{{ aac_host }}:8181
+
+- name: Report01
+  ansible.controller.workflow_job_template_node:
+    identifier: "M365v7 Findings Report"
+    workflow: "{{ dummy_name }}"
+    unified_job_template: AAC_CIS_M365v7_Findings_Report
+    organization: "{{ aac_organization }}"
+    all_parents_must_converge: true
+
+- name: Report02
+  ansible.controller.workflow_job_template_node:
+    identifier: "M365v7 Violations Report"
+    workflow: "{{ dummy_name }}"
+    unified_job_template: AAC_CIS_M365v7_Violations_Report
+    organization: "{{ aac_organization }}"
+    all_parents_must_converge: true
+
+- name: Report03
+  ansible.controller.workflow_job_template_node:
+    identifier: "Compliance Report"
+    workflow: "{{ dummy_name }}"
+    unified_job_template: AAC_Compliance_Report
+    organization: "{{ aac_organization }}"
+    all_parents_must_converge: true
+
+- name: Approval01
+  ansible.controller.workflow_job_template_node:
+    identifier: "Assessments Completed"
+    workflow_job_template: "{{ dummy_name }}"
+    organization: "{{ aac_organization }}"
+    job_type: run
+    all_parents_must_converge: false
+    approval_node:
+      description: "Continue?"
+      name: "Assessments Completed"
+      timeout: 3600
+
+- name: Job01
+  ansible.controller.workflow_job_template_node:
+    identifier: "RHEL 9 Assessment"
+    workflow: "{{ dummy_name }}"
+    unified_job_template: AAC_CIS_RHEL9_Assessment
+    organization: "{{ aac_organization }}"
+    all_parents_must_converge: false
+    success_nodes:
+      - "Assessments Completed"
+    
+- name: Job02
+  ansible.controller.workflow_job_template_node:
+    identifier: "Windows Server 2022 Assessment"
+    workflow: "{{ dummy_name }}"
+    unified_job_template: AAC_CIS_Windows_Server_2022_Assessment
+    organization: "{{ aac_organization }}"
+    all_parents_must_converge: false
+    success_nodes:
+      - "Assessments Completed"
+
+- name: Job03
+  ansible.controller.workflow_job_template_node:
+    identifier: "Microsoft 365 v7 Assessment"
+    workflow: "{{ dummy_name }}"
+    unified_job_template: AAC_CIS_M365v7_Assessment
+    organization: "{{ aac_organization }}"
+    all_parents_must_converge: false
+    success_nodes:
+      - "Assessments Completed"
