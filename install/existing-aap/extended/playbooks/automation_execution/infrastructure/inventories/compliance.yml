@@ -1,0 +1,8 @@
+---
+
+- name: Compliance Inventory
+  ansible.controller.inventory:
+    name: Compliance Infrastructure
+    description: "Hosts for AAC compliance assessments and demo workloads"
+    organization: "{{ aac_organization }}"
+    state: present

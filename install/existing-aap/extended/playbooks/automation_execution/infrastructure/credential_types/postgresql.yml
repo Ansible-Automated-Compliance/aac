@@ -1,0 +1,41 @@
+---
+
+- name: Create Postgresql Credentials
+  ansible.controller.credential_type:
+    name: Postgresql 
+    description: Postgresql Credentials
+    kind: cloud
+    state: present
+    inputs:
+      fields:
+        - id: pg_password
+          type: string
+          label: Postgresql password
+          secret: true
+        - id: pg_user
+          type: string
+          label: Postgresql user
+        - id: pg_host
+          type: string
+          label: Postgresql host
+        - id: pg_port
+          type: string
+          label: Postgresql port
+        - id: pg_db
+          type: string
+          label: Postgresql db
+      required:
+        - pg_password
+        - pg_user
+        - pg_host
+        - pg_port
+        - pg_db
+    injectors:
+      extra_vars:
+        pg_password: "{{ '{{' }} pg_password {{ '}}' }}"
+        pg_user: "{{ '{{' }} pg_user {{ '}}' }}"
+        pg_host: "{{ '{{' }} pg_host {{ '}}' }}"
+        pg_port: "{{ '{{' }} pg_port {{ '}}' }}"
+        pg_db: "{{ '{{' }} pg_db {{ '}}' }}"
+        compliance_db_password: "{{ '{{' }} pg_password {{ '}}' }}"
+        compliance_reader_password: "{{ '{{' }} pg_password {{ '}}' }}"

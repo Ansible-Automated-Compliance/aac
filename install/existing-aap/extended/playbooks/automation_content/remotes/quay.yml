@@ -1,0 +1,9 @@
+---
+
+- name: quay.io
+  ansible.hub.collection_remote:
+    name: Quay.io
+    url: https://quay.io
+    state: present
+    policy: immediate
+    requirements: []

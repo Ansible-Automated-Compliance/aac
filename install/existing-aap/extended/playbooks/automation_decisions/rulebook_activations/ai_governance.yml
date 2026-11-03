@@ -1,0 +1,13 @@
+---
+
+- name: Create AI Governance Rulebook Activation
+  ansible.eda.rulebook_activation:
+    name: "AI Governance Enforcement"
+    description: "AI governance enforcement :5002 → AI governance enforcement (Optional)"
+    organization: "{{ aac_organization }}"
+    project: "{{ eda_project_name }}"
+    rulebook: "ai_governance.yml"
+    decision_environment: "{{ eda_de_name | default('Default Decision Environment') }}"
+    credentials:
+      - Controller Token
+    restart_policy: always

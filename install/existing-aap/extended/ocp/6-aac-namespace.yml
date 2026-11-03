@@ -1,0 +1,35 @@
+# Replace the <placeholder> values before applying.
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: aac
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: compliance-db
+  namespace: aac
+type: Opaque
+stringData:
+  POSTGRESQL_USER: compliance
+  POSTGRESQL_PASSWORD: <compliance-db-password>
+  POSTGRESQL_DATABASE: compliance
+  username: compliance
+  password: <compliance-db-password>
+  database: compliance
+  reader_username: compliance_reader
+  reader_password: <compliance-reader-password>
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: grafana-admin
+  namespace: aac
+type: Opaque
+stringData:
+  admin-user: admin
+  admin-password: <grafana-admin-password>

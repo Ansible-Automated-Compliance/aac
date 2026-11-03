@@ -1,0 +1,12 @@
+---
+
+- name: Create Compliance Project
+  ansible.eda.project:
+    name: "{{ eda_project_name }}"
+    description: "{{ eda_project_description }}"
+    organization_name: "{{ aac_organization }}"
+    sync: true
+    url: "{{ git_repo_url }}"
+    scm_branch: "{{ git_repo_branch }}"
+    credential: "GitHub PAT (Source Control)"
+    state: present

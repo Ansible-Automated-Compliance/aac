@@ -1,0 +1,6 @@
+---
+
+- name: Create EDA Projects
+  ansible.builtin.include_tasks: "{{ item }}"
+  with_items:
+    - compliance.yml

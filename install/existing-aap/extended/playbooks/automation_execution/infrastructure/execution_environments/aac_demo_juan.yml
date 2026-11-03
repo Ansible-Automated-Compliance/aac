@@ -1,0 +1,10 @@
+---
+
+- name: AAC Demo EE (Juan)
+  ansible.controller.execution_environment:
+    name: AAC Demo EE (Juan)
+    description: AAC Demo EE (Juan)
+    image: quay.io/jumedina/aac-compliance-ee:latest
+    pull: missing
+    organization: "{{ aac_organization }}"
+    state: present

@@ -1,0 +1,6 @@
+---
+
+- name: Create Schedules
+  ansible.builtin.include_tasks: "{{ item }}"
+  with_items:
+    - cis_complete.yml

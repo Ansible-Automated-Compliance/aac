@@ -1,0 +1,24 @@
+---
+
+- name: Create Quay Credentials
+  ansible.controller.credential_type:
+    name: Quay
+    description: Quay Credentials
+    kind: cloud
+    state: present
+    inputs:
+      fields:
+        - id: quay_username
+          type: string
+          label: Quay username
+        - id: quay_password
+          type: string
+          label: Quay password
+          secret: true
+      required:
+        - quay_username
+        - quay_password
+    injectors:
+      extra_vars:
+        quay_username: "{{ '{{' }} quay_username {{ '}}' }}"
+        quay_password: "{{ '{{' }} quay_password {{ '}}' }}"

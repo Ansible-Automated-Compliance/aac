@@ -1,0 +1,6 @@
+---
+
+- name: Create Inventories
+  ansible.builtin.include_tasks: "{{ item }}"
+  loop:
+    - compliance.yml
