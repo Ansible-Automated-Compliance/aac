@@ -24,7 +24,7 @@ requests==2.34.2
 python-dotenv==1.2.4
 
 # Date and time utilities
-python-dateutil==2.9.0.post0
+python-dateutil==3.0.0
 
 # JSON handling
 jsonschema==4.26.0
@@ -37,7 +37,7 @@ click==8.5.0
 
 # Excel export support (optional)
 openpyxl==3.1.5
-xlsxwriter==3.3.0
+xlsxwriter==3.3.1
 
 # Email reporting (optional)
 smtplib-ssl==1.0.0
@@ -52,7 +52,7 @@ PyYAML==6.0.3
 rich==15.0.0
 
 # API development (if building REST API)
-fastapi==0.161.1
+fastapi==0.162.0
 uvicorn==0.54.0
 
 # Authentication and security
@@ -70,4 +70,4 @@ celery==5.6.3
 prometheus-client==0.26.0
 
 # Testing — `pytest scripts/` runs derive_customer_frameworks tests
-pytest>=9.1.1
+pytest>=9.2.0
