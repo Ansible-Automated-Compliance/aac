@@ -6,7 +6,7 @@
 psycopg2-binary==2.9.13
 
 # Data manipulation and analysis
-pandas==3.1.0
+pandas==3.1.1
 numpy==2.5.4
 
 # Visualization
@@ -64,7 +64,7 @@ cryptography==50.0.2
 redis==8.1.0
 
 # Task scheduling
-celery==5.6.3
+celery==5.7.0
 
 # Monitoring and metrics
 prometheus-client==0.26.0
