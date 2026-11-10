@@ -30,4 +30,4 @@ options:
 additional_build_steps:
   append_final:
     - RUN microdnf install -y unzip && microdnf clean all
-    - ADD _build/configs/cosign.tar.gz /usr/local/bin/cosign 
+    - COPY --from=registry.redhat.io/rhtas/cosign-rhel9:latest /usr/bin/cosign /usr/local/bin/cosign

@@ -69,29 +69,16 @@ Ensure your SSH key is the default to be used by git
 git config --global core.sshCommand "ssh -i ~/.ssh/id_aac_compliance"
 ----
 
-From github fork the original repository https://github.com/ynotbhatc/compliance.git
+From github fork the original repository https://github.com/Ansible-Automated-Compliance/aac.git
 
 [source,bash]
 ----
 cd ~/repos/
-git clone git@github.com:R0tt3nT0m4t0/compliance.git
-cd compliance
+git clone https://github.com/Ansible-Automated-Compliance/aac.git
+cd aac
 git submodule update --init --recursive
 tree -L 2 policies/benchmarks/
 ----
-
-[NOTE]
-====
-You might have to generate and register SSH key with GitHub.
-
-[source,bash]
-----
-ssh-keygen -t ed25519 -C "compliance@aac.home.lab" -N '' -f ~/.ssh/id_aac_compliance
-cat ~/.ssh/id_aac_compliance.pub
-----
-
-Register the SSH key with GitHub https://github.com/settings/keys
-====
 
 The `policies/` directory is a git submodule. After the first clone, `git submodule update --init --recursive` needs the same GitHub access (SSH key on this host, or HTTPS with credentials).
 
@@ -196,7 +183,7 @@ Now run the installation playbook
 [source,bash]
 ----
 ansible-playbook -J ansible/playbooks/deploy_opa_containers.yml \
-  -e "aac_host=aac.home.lab" -e "become_user=root" \
+  -e "aac_host=<your-aac-host>" -e "become_user=root" \
   -e "become=true" -e "become_method=sudo"
 ----
 
@@ -205,9 +192,9 @@ Verify:
 [source,bash]
 ----
 podman ps
-curl -s http://aac.home.lab:8181/health
-curl -s http://aac.home.lab:8182/health
-curl -s http://aac.home.lab:8183/health
+curl -s http://<your-aac-host>:8181/health
+curl -s http://<your-aac-host>:8182/health
+curl -s http://<your-aac-host>:8183/health
 ----
 
 Empty `{"result":[]}` after deploy is normal until policies are loaded.
@@ -239,7 +226,7 @@ ansible-galaxy collection install community.postgresql
 [source,bash]
 ----
 ansible-playbook -J ansible/playbooks/postgres_database_init.yml \
-  -e "pg_host=aac.home.lab" \
+  -e "pg_host=<your-aac-host>" \
   -e "pg_user=compliance" \
   -e "pg_db=compliance" \
   -e "aac_db_password=<compliance-db-password>" \
@@ -289,9 +276,9 @@ ansible-galaxy collection install amazon.aws
 [source,bash]
 ----
 ansible-playbook -J ansible/playbooks/load_opa_policies.yml \
-  -e "opa_security_url=http://aac.home.lab:8181" \
-  -e "opa_compliance_url=http://aac.home.lab:8182" \
-  -e "opa_ot_url=http://aac.home.lab:8183" \
+  -e "opa_security_url=http://<your-aac-host>:8181" \
+  -e "opa_compliance_url=http://<your-aac-host>:8182" \
+  -e "opa_ot_url=http://<your-aac-host>:8183" \
   -e "source=all"
   -e "source=extra_vars" -e "frameworks_to_load=["cis_rhel9"]"
 ----
@@ -348,7 +335,7 @@ Verify:
 total_policies=0
 for svc in 8181 8182 8183
 do
-  policies=$(curl -s http://aac.home.lab:${svc}/v1/policies | jq '.result | length')
+  policies=$(curl -s http://<your-aac-host>:${svc}/v1/policies | jq '.result | length')
   total_policies=$((total_policies + policies))
   echo "Policies in OPA ${svc}: ${policies}"
 done
@@ -370,7 +357,7 @@ podman run -d --name aac-grafana \
   --secret grafana_admin_password,type=env,target=GF_SECURITY_ADMIN_PASSWORD \
   -e GF_SERVER_HTTP_ADDR=0.0.0.0 \
   -e GF_SERVER_PORT=3000 \
-  -e GF_SERVER_ROOT_URL=http://aac.home.lab:3000 \
+  -e GF_SERVER_ROOT_URL=http://<your-aac-host>:3000 \
   -e GF_INSTALL_PLUGINS=grafana-postgresql-datasource \
   registry.redhat.io/rhel9/grafana:latest
 ----
@@ -381,7 +368,7 @@ Verify:
 
 [source,bash]
 ----
-curl -s http://aac.home.lab:3000/api/health
+curl -s http://<your-aac-host>:3000/api/health
 ----
 
 NOTE: `ansible/playbooks/deploy_grafana_dashboard.yml` does *not* start Grafana. It only configures the datasource + imports dashboards against an *existing* Grafana on `:3000`.
@@ -389,8 +376,8 @@ NOTE: `ansible/playbooks/deploy_grafana_dashboard.yml` does *not* start Grafana.
 [source,bash]
 ----
 ansible-playbook -J ansible/playbooks/deploy_grafana_dashboard.yml \
-  -e "grafana_url=http://aac.home.lab:3000" \
-  -e "pg_host=aac.home.lab"
+  -e "grafana_url=http://<your-aac-host>:3000" \
+  -e "pg_host=<your-aac-host>"
 ----
 
 ==== Troubleshooting Grafana
@@ -429,8 +416,8 @@ podman volume list
 podman volume rm compliance_grafanadata
 podman volume create compliance_grafanadata
 ansible-playbook -J ansible/playbooks/deploy_grafana_dashboard.yml \
-  -e "grafana_url=http://aac.home.lab:3000" \
-  -e "pg_host=aac.home.lab"
+  -e "grafana_url=http://<your-aac-host>:3000" \
+  -e "pg_host=<your-aac-host>"
 ----
 
 === Firewall configuration
@@ -526,6 +513,8 @@ loginctl show-user compliance -p Linger
 systemctl --user --failed
 ----
 
+NOTE: Do not `systemctl --user enable` these units — Quadlet-generated units refuse it ('transient or generated'); The `[Install] WantedBy=default.target` + `loginctl enable-linger` handles boot.
+
 == AAP Integration
 
 Prerequisites:
@@ -598,7 +587,7 @@ This will:
 
 === Launch CIS RHEL 9 Assessment Job Template
 
-Open the grafana dashboard `http://aac.home.lab:3000` and go to the `AAC Infrastructure Compliance` dashboard with the `cis` tag.
+Open the grafana dashboard `http://<your-aac-host>:3000` and go to the `AAC Infrastructure Compliance` dashboard with the `cis` tag.
 
 Click the refresh button on the top right of the dashboard to see the results.
 
@@ -615,8 +604,8 @@ podman exec -it aac-postgresql psql -U compliance -d compliance \
 
    hostname    | compliance_percentage 
 ---------------+-----------------------
- vuln.home.lab |                100.00
- vuln.home.lab |                100.00
+ <your-aac-host> |                100.00
+ <your-aac-host> |                100.00
 ----
 
 Verify the data source is as follows:
@@ -625,7 +614,7 @@ Verify the data source is as follows:
 ----
 Name: aac-compliance-db
 Type: PostgreSQL
-Url: aac.home.lab:5432
+Url: <your-aac-host>:5432
 User: compliance
 Password: <from vault>
 TLS Mode: Disable
@@ -642,7 +631,7 @@ All activations use the following:
 
 === Firewall configuration for EDA webhooks
 
-On the AAP host (`aap26.home.lab`), not the AAC host — EDA listens there:
+On the AAP host (`<your-aap-host>`), not the AAC host — EDA listens there:
 
 [source,bash]
 ----
@@ -669,7 +658,7 @@ Send a manual compliance check event from any host that can reach the AAP EDA se
 
 [source,bash]
 ----
-curl -X POST http://aap26.home.lab:5000/endpoint \
+curl -X POST http://<your-aap-host>:5000/endpoint \
   -H 'Content-Type: application/json' \
   -d '{
     "event_type": "manual_check",
@@ -685,7 +674,7 @@ Expect: HTTP 200 response. Within a few seconds, a *CIS RHEL 9 Assessment* job s
 
 [source,bash]
 ----
-curl -X POST http://aap26.home.lab:5004/endpoint \
+curl -X POST http://<your-aap-host>:5004/endpoint \
   -H 'Content-Type: application/json' \
   -d '{
     "drift_trigger": "webhook",
@@ -703,13 +692,13 @@ Simulate a GitHub push event:
 
 [source,bash]
 ----
-curl -X POST http://aap26.home.lab:5003/endpoint \
+curl -X POST http://<your-aap-host>:5003/endpoint \
   -H 'Content-Type: application/json' \
   -d '{
     "ref": "refs/heads/main",
     "after": "abc123def456",
     "repository": {
-      "full_name": "R0tt3nT0m4t0/compliance"
+      "full_name": "Ansible-Automated-Compliance/aac"
     },
     "commits": [{
       "modified": ["ansible/playbooks/test_playbook.yml"],
@@ -763,7 +752,7 @@ Expect: A second workflow approval
 
 === Configuration
 
-This section wires the OPA you already run on the AAC host (`aac.home.lab`) into *Ansible Automation Platform*'s built-in Policy as Code feature. That is separate from AAC assessment
+This section wires the OPA you already run on the AAC host (`<your-aac-host>`) into *Ansible Automation Platform*'s built-in Policy as Code feature. That is separate from AAC assessment
 playbooks: PAC blocks/allows *job launches* in the AAP console *before* the playbook runs.
 
 Reference: Red Hat docs —
@@ -778,7 +767,7 @@ In the AAP UI go to *Settings* → *Job* / *Policy settings*, Set:
 [cols="2,3",options="header"]
 |===
 | Setting | Value for this install
-| OPA Server hostname (`OPA_HOST`) | `aac.home.lab`
+| OPA Server hostname (`OPA_HOST`) | `<your-aac-host>`
 | OPA server port (`OPA_PORT`) | `8181`
 | OPA SSL (`OPA_SSL`) | `False` (HTTP lab)
 | OPA authentication type | `None` (lab)
@@ -792,7 +781,7 @@ Verify from the AAP host:
 
 [source,bash]
 ----
-curl -s -o /dev/null -w '%{http_code}\n' http://aac.home.lab:8181/health
+curl -s -o /dev/null -w '%{http_code}\n' http://<your-aac-host>:8181/health
 # Expect 200
 ----
 
@@ -850,15 +839,15 @@ Load it into the security OPA (package path → API path):
 [source,bash]
 ----
 curl -X PUT --data-binary @hello_aap_pac.rego \
-  http://aac.home.lab:8181/v1/policies/hello_aap_pac
+  http://<your-aac-host>:8181/v1/policies/hello_aap_pac
 
 # Smoke-test with empty extra_vars → deny
-curl -s http://aac.home.lab:8181/v1/data/hello/aap/pac/result \
+curl -s http://<your-aac-host>:8181/v1/data/hello/aap/pac/result \
   -H 'Content-Type: application/json' \
   -d '{"input":{"extra_vars":{}}}' | jq .
 
 # Smoke-test with valid extra_vars → allow
-curl -s http://aac.home.lab:8181/v1/data/hello/aap/pac/result \
+curl -s http://<your-aac-host>:8181/v1/data/hello/aap/pac/result \
   -H 'Content-Type: application/json' \
   -d '{"input":{"extra_vars":{"environment_cli":"development"}}}' | jq .
 ----
@@ -876,9 +865,9 @@ Create a new project in AAP:
 Project Name: hello-aap
 Organization: default
 Source Control Type: git
-Source Control URL: https://github.com/R0tt3nT0m4t0/hello-aap.git
+Source Control URL: https://github.com/Ansible-Automated-Compliance/aac.git
 Source Control Branch: main
-Source Control Credential: GitHub PAT (Source Control)
+Source Control Credential: <your-github-personal-access-token>
 ----
 
 Sync the project until status is successful.
@@ -1005,9 +994,9 @@ Matching rules:
 [source,bash]
 ----
 ansible-playbook -J ansible/playbooks/load_opa_policies.yml \
-  -e "opa_security_url=http://aac.home.lab:8181" \
-  -e "opa_compliance_url=http://aac.home.lab:8182" \
-  -e "opa_ot_url=http://aac.home.lab:8183"
+  -e "opa_security_url=http://<your-aac-host>:8181" \
+  -e "opa_compliance_url=http://<your-aac-host>:8182" \
+  -e "opa_ot_url=http://<your-aac-host>:8183"
 ----
 
 You can skip the file and pass entries for one run:
@@ -1015,9 +1004,9 @@ You can skip the file and pass entries for one run:
 [source,bash]
 ----
 ansible-playbook -J ansible/playbooks/load_opa_policies.yml \
-  -e "opa_security_url=http://aac.home.lab:8181" \
-  -e "opa_compliance_url=http://aac.home.lab:8182" \
-  -e "opa_ot_url=http://aac.home.lab:8183" \
+  -e "opa_security_url=http://<your-aac-host>:8181" \
+  -e "opa_compliance_url=http://<your-aac-host>:8182" \
+  -e "opa_ot_url=http://<your-aac-host>:8183" \
   -e '{"waiver_entries":[{"host":"*","framework":"cis_rhel9","control_id":"1.1.6","reason":"Deferred to image CR-2201","approver":"platform-lead@example.com","expires":"2026-11-30"}]}'
 ----
 
@@ -1027,14 +1016,14 @@ Confirm the data landed (repeat for `:8182` and `:8183` if you assess against th
 
 [source,bash]
 ----
-curl -s http://aac.home.lab:8181/v1/data/waivers | jq .
+curl -s http://<your-aac-host>:8181/v1/data/waivers | jq .
 ----
 
 Smoke-test the decision. A hit returns the finding under `waived` and omits it from `active_violations`. A miss (wrong host, expired date, control id not in the text) leaves it active.
 
 [source,bash]
 ----
-curl -s http://aac.home.lab:8181/v1/data/exceptions/decision \
+curl -s http://<your-aac-host>:8181/v1/data/exceptions/decision \
   -H 'Content-Type: application/json' \
   -d '{
     "input": {
@@ -1110,7 +1099,7 @@ If the upstream is not already set, add it
 
 [source,shell]
 ----
-git remote add upstream https://github.com/ynotbhatc/compliance.git
+git remote add upstream https://github.com/Ansible-Automated-Compliance/aac.git
 ----
 
 Fetch the latest modifications and merge them to your main branch

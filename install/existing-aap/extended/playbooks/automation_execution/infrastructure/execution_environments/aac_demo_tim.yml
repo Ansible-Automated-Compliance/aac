@@ -8,3 +8,11 @@
     pull: missing
     organization: "{{ aac_organization }}"
     state: present
+    readme: |
+      # AAC Demo EE (Tim)
+      ## Info
+      - Created by: Tim Coulter
+      - Email: tcoulter@redhat.com
+      - Date: 2026-11-10
+      ## Description
+      This is a demo execution environment for AAC Demo EE (Tim).

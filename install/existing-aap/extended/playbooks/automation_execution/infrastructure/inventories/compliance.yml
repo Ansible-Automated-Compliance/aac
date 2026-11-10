@@ -2,7 +2,7 @@
 
 - name: Compliance Inventory
   ansible.controller.inventory:
-    name: Compliance Infrastructure
-    description: "Hosts for AAC compliance assessments and demo workloads"
+    name: {{ aac_inventory_name }}
+    description: {{ aac_inventory_description }}
     organization: "{{ aac_organization }}"
     state: present

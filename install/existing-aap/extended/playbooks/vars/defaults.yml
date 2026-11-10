@@ -1,7 +1,9 @@
 # The following variables have been created to help you customize the 
 # installation of the AAC Compliance Automation Platform (AAP) artifacts
 # in AAP trying to avoid hardcoding the values in the playbooks specially 
-# the values that are used multiple times. 
+# the values that are used multiple times.
+
+# *** ONLY EDIT THE PLACEHOLDER VALUES ***
 
 # AAC Global Variables
 aac_organization: PLACEHOLDER
@@ -20,7 +22,7 @@ eda_project_description: AAC Vulnerability Reactor
 # AAP Project
 aap_project_name: AAC Compliance Automation
 aap_project_description: AAC Compliance Automation
-aap_project_default_ee: AAC Demo EE (Juan)
+aap_project_default_ee: Default Execution Environment
 
 # Workflow Jobs
 m365v7_name: AAC_CIS_M365v7_Complete_Workflow

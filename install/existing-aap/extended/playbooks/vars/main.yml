@@ -16,7 +16,7 @@ aap_gateway_url:    "https://{{ controller_hostname }}"
 
 # Git configurations
 github_username: PLACEHOLDER
-git_repo_url: 'https://github.com/ynotbhatc/compliance.git'
+git_repo_url: 'https://github.com/Ansible-Automated-Compliance/aac.git'
 git_repo_branch: 'main'
 
 # Postgres configurations

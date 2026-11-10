@@ -28,7 +28,7 @@ Software Requirements:
 
 . Install the latest RHEL 9.5 or newer (registered to Red Hat)
 . Create your administrative user and set the password
-. Set a hostname for the machine (e.g. aap27ocp.home.lab)
+. Set a hostname for the machine 
 . Do minimal install
 . Upgrade the system to the latest patches
 . Reboot the machine
@@ -128,7 +128,7 @@ Register the CRC hostnames in the `/etc/hosts` file:
 
 [source,bash]
 ----
-192.168.122.171 aap27ocp.home.lab console-openshift-console.apps-crc.testing oauth-openshift.apps-crc.testing
+192.168.122.171 <your-aap-host> console-openshift-console.apps-crc.testing oauth-openshift.apps-crc.testing
 ----
 
 == Install Ansible Automation Platform 2.7 as a Red Hat operator

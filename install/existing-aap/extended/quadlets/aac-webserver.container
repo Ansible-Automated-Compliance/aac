@@ -6,7 +6,7 @@ After=network-online.target aac-postgresql.service
 Image=aac-reports-viewer:latest
 ContainerName=aac-webserver
 PublishPort=8080:8080
-Volume=${HOME}/reports:/srv/reports:ro:z
+Volume=%h/reports:/srv/reports:ro:z
 
 [Service]
 Restart=always
