@@ -1,0 +1,32 @@
+---
+
+- name: Load OPA survey variable definitions
+  ansible.builtin.include_vars:
+    file: "{{ playbook_dir }}/../../vars/load_opa_survey.yml"
+
+- name: Load OPA policies job template
+  ansible.controller.job_template:
+    name: "{{ aac_template_load_opa_name }}"
+    description: "{{ aac_template_load_opa_description }}"
+    organization: "{{ aac_organization }}"
+    state: present
+    inventory: "{{ aac_inventory_name }}"
+    limit: localhost
+    project: "{{ aap_project_name }}"
+    playbook: ansible/playbooks/load_opa_policies.yml
+    job_type: run
+    execution_environment: "{{ aap_project_default_ee }}"
+    credentials:
+      - "{{ aac_cred_vault }}"
+      - "{{ aac_cred_postgresql }}"
+    ask_variables_on_launch: true
+    survey_enabled: true
+    survey_spec: "{{ aac_load_opa_survey_spec }}"
+    extra_vars:
+      opa_security_url: "http://{{ aac_host }}:8181"
+      opa_compliance_url: "http://{{ aac_host }}:8182"
+      opa_ot_url: "http://{{ aac_host }}:8183"
+      source: database
+      frameworks_to_load: ""
+      reconcile: true
+      allow_partial_load: false

@@ -4,6 +4,9 @@
 
 # *** ONLY EDIT THE PLACEHOLDER VALUES ***
 
+# Dedicated AAC stack (OPA, PostgreSQL, Grafana); not necessarily the controller FQDN.
+aac_host: PLACEHOLDER
+
 # Connectivity
 controller_hostname: PLACEHOLDER
 controller_username: PLACEHOLDER
@@ -14,10 +17,10 @@ ah_validate_certs: "{{ controller_verify_ssl }}"
 aap_controller_url: "https://{{ controller_hostname }}"
 aap_gateway_url:    "https://{{ controller_hostname }}"
 
-# Git configurations
+# Git configurations to reach your fork of the AAC repository
 github_username: PLACEHOLDER
-git_repo_url: 'https://github.com/Ansible-Automated-Compliance/aac.git'
-git_repo_branch: 'main'
+git_repo_url: 'PLACEHOLDER'
+git_repo_branch: 'PLACEHOLDER'
 
 # Postgres configurations
 pg_user: PLACEHOLDER
@@ -25,7 +28,7 @@ pg_host: "{{ aac_host }}"
 pg_port: "5432"
 pg_db: PLACEHOLDER
 
-# Other Credential usernames
+# Non-secret credential inputs (pair with vars/secrets.yml)
 redhat_username: PLACEHOLDER
 quay_username: PLACEHOLDER
 grafana_admin_user: PLACEHOLDER

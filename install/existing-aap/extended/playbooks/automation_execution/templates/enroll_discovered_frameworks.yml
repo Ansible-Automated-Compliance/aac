@@ -1,0 +1,28 @@
+---
+
+- name: Load enroll-discovered survey variable definitions
+  ansible.builtin.include_vars:
+    file: "{{ playbook_dir }}/../../vars/enroll_discovered_survey.yml"
+
+- name: Enroll discovered frameworks job template
+  ansible.controller.job_template:
+    name: "{{ aac_template_enroll_discovered_name }}"
+    description: "{{ aac_template_enroll_discovered_description }}"
+    organization: "{{ aac_organization }}"
+    state: present
+    inventory: "{{ aac_inventory_name }}"
+    limit: localhost
+    project: "{{ aap_project_name }}"
+    playbook: ansible/playbooks/enroll_discovered_frameworks.yml
+    job_type: run
+    execution_environment: "{{ aap_project_default_ee }}"
+    credentials:
+      - "{{ aac_cred_vault }}"
+      - "{{ aac_cred_postgresql }}"
+    ask_variables_on_launch: true
+    survey_enabled: true
+    survey_spec: "{{ aac_enroll_discovered_survey_spec }}"
+    extra_vars:
+      pg_host: "{{ aac_host }}"
+      aac_result_pg_host: "{{ aac_host }}"
+      enroll_tenant_id: default

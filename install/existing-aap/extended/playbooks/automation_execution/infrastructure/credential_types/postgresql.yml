@@ -39,3 +39,7 @@
         pg_db: "{{ '{{' }} pg_db {{ '}}' }}"
         compliance_db_password: "{{ '{{' }} pg_password {{ '}}' }}"
         compliance_reader_password: "{{ '{{' }} pg_password {{ '}}' }}"
+        # The quadlet sets POSTGRESQL_ADMIN_PASSWORD from the same secret, so the
+        # postgres superuser shares pg_password. aac_compliance_db uses it once to
+        # grant CREATEROLE to pg_user (users.yml self-heal).
+        postgres_password: "{{ '{{' }} pg_password {{ '}}' }}"

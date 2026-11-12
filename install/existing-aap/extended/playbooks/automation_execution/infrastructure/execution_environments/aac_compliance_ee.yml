@@ -1,0 +1,23 @@
+---
+
+- name: AAC Compliance EE
+  ansible.controller.execution_environment:
+    name: AAC Compliance EE
+    description: AAC Compliance EE
+    image: PLACEHOLDER
+    pull: missing
+    organization: "{{ aac_organization }}"
+    state: present
+    readme: |
+      # AAC Compliance EE
+
+      ## Info
+
+      - Created by: PLACEHOLDER
+      - Email: PLACEHOLDER
+      - Date: PLACEHOLDER
+
+      ## Description
+
+      This is a compliance execution environment for AAC Compliance.
+      It contains the necessary tools and dependencies to run the AAC Compliance Automation Platform.

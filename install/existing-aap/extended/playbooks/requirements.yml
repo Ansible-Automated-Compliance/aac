@@ -1,4 +1,5 @@
 ---
+# Get the dependency tarballs from console.redhat.com or configure your ansible.cfg to use your PAH
 collections:
   - name: infra.aap_configuration
     version: ">=4.2.0"

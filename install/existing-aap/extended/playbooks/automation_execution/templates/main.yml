@@ -11,3 +11,9 @@
     - compliance_report.yml
     - collect.yml
     - evaluate.yml
+    - deploy_opa_containers.yml
+    - postgres_database_init.yml
+    - seed_framework_catalog.yml
+    - enroll_discovered_frameworks.yml
+    - load_opa_policies.yml
+    - deploy_grafana_dashboard.yml

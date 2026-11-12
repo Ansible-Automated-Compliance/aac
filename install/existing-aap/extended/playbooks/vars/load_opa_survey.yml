@@ -1,0 +1,32 @@
+---
+# Survey for AAC_Load_OPA_Policies (ansible.controller job_template survey_spec).
+
+aac_load_opa_survey_spec:
+  name: Load OPA policies
+  description: >-
+    Overrides template extra_vars at launch. See job template description for source mode details.
+  spec:
+    - question_name: Policy load source
+      question_description: >-
+        database — enabled frameworks from customer_frameworks (requires DB seeded).
+        baseline — catalog enabled_by_default only. file — policy_selection.yml on project checkout.
+        extra_vars — comma-separated frameworks_to_load below. all — every bundle (lab/demo only).
+      variable: source
+      type: multiplechoice
+      required: true
+      default: database
+      choices:
+        - all
+        - database
+        - baseline
+        - file
+        - extra_vars
+
+    - question_name: Frameworks to load (loader_key, extra_vars source only)
+      question_description: >-
+        Comma-separated loader keys, e.g. cis_rhel9, iso27001. Leave empty for other source modes.
+        Catalog keys are in ansible/vars/framework_catalog.yml.
+      variable: frameworks_to_load
+      type: text
+      required: false
+      default: ""

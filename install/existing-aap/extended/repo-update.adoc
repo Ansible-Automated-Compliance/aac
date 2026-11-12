@@ -1,0 +1,107 @@
+== Procedure to update a branch from another branch retaining modifications
+
+=== Procedure to update the main branch if forked from another repo
+
+Set the credential helper to cache the credentials for 1 hour (default is 15 minutes):
+
+[source,shell]
+----
+git config --global credential.helper 'cache --timeout=3600'
+----
+
+Unset the credential helper:
+
+[source,shell]
+----
+git config --global --unset credential.helper
+----
+
+Verify your upstream is pointing to the fork
+
+[source,shell]
+----
+git remote -v
+----
+
+If the upstream is not already set, add it
+
+[source,shell]
+----
+git remote add upstream https://github.com/Ansible-Automated-Compliance/aac.git
+----
+
+Fetch the latest modifications and merge them to your main branch
+
+[source,shell]
+----
+git fetch upstream
+git checkout main
+git pull origin main
+git merge upstream/main
+git submodule update --init
+git push origin main
+----
+
+NOTE: When creating GitHub PAT ensure you select the `repo` scope and `workflow` scope.
+
+[WARNING]
+====
+This deletes every local commit in main branch and overwrites with the upstream main branch. Use only if you are sure you want to discard all local changes.
+
+[source,shell]
+----
+git reset --hard upstream/main
+git push origin main --force
+----
+====
+
+=== Procedure to update a secondary branch from the main branch retaining modifications
+
+. Commit first
+
+[source,shell]
+----
+git add .
+git commit -m "local edits"
+git branch backup-before-sync
+git fetch origin
+----
+
+Checkout to the branch where you want to perform the merge
+
+[source,shell]
+----
+git fetch origin
+git checkout <branch-name>
+git merge origin/main
+git submodule update --init
+----
+
+// . Backup your recent changes in the branch
+// +
+// [source,shell]
+// ----
+// git diff --name-only main | grep -vE "docs|scripts|integrations|py|^\.|md"
+
+// for file in $(git diff --name-only main)
+// do
+//    cp "${file}" "${file}.bkp"
+// done
+// ----
+
+Save your version and the patch of what you changed since this branch diverged from main. Keep both under your home directory so a later git add . cannot commit them:
+
+[source,shell]
+----
+mkdir -p "$HOME/tmp/branch-backup"
+git show HEAD:path/to/file > "$HOME/tmp/branch-backup/file"
+git diff "$(git merge-base HEAD origin/main)" HEAD -- path/to/file \
+  > "$HOME/tmp/branch-backup/file.patch"
+----
+
+Push the changes to the remote branch
+
+[source,shell]
+----
+git push origin active-branch
+----

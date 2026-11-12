@@ -1,0 +1,12 @@
+---
+
+- name: AAC infrastructure host
+  ansible.controller.host:
+    name: "{{ aac_host }}"
+    description: "{{ aac_host_description }}"
+    inventory: "{{ aac_inventory_name }}"
+    enabled: true
+    state: present
+    variables:
+      ansible_host: "{{ aac_host }}"
+      ansible_user: "{{ aac_host_ssh_user }}"

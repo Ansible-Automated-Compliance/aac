@@ -1,0 +1,24 @@
+---
+
+- name: Seed framework catalog job template
+  ansible.controller.job_template:
+    name: "{{ aac_template_seed_framework_catalog_name }}"
+    description: "{{ aac_template_seed_framework_catalog_description }}"
+    organization: "{{ aac_organization }}"
+    state: present
+    inventory: "{{ aac_inventory_name }}"
+    limit: localhost
+    project: "{{ aap_project_name }}"
+    playbook: ansible/playbooks/seed_framework_catalog.yml
+    job_type: run
+    execution_environment: "{{ aap_project_default_ee }}"
+    credentials:
+      - "{{ aac_cred_vault }}"
+      - "{{ aac_cred_postgresql }}"
+    ask_variables_on_launch: false
+    extra_vars:
+      pg_host: "{{ aac_host }}"
+      pg_port: "{{ pg_port }}"
+      pg_user: "{{ pg_user }}"
+      pg_db: "{{ pg_db }}"
+      tenant_id: default

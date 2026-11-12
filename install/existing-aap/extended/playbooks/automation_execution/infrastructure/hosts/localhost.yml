@@ -4,7 +4,7 @@
   ansible.controller.host:
     name: localhost
     description: "Localhost host"
-    inventory: Compliance Infrastructure
+    inventory: "{{ aac_inventory_name }}"
     state: present
     variables:
       ansible_connection: local

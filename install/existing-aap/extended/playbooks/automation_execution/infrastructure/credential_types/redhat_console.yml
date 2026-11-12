@@ -22,3 +22,5 @@
       extra_vars:
         redhat_username: "{{ '{{' }} redhat_username {{ '}}' }}"
         redhat_offline_token: "{{ '{{' }} redhat_offline_token {{ '}}' }}"
+        vault_redhat_username: "{{ '{{' }} redhat_username {{ '}}' }}"
+        vault_redhat_offline_token: "{{ '{{' }} redhat_offline_token {{ '}}' }}"

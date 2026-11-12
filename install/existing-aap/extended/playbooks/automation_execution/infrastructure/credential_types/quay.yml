@@ -22,3 +22,5 @@
       extra_vars:
         quay_username: "{{ '{{' }} quay_username {{ '}}' }}"
         quay_password: "{{ '{{' }} quay_password {{ '}}' }}"
+        vault_quay_username: "{{ '{{' }} quay_username {{ '}}' }}"
+        vault_quay_password: "{{ '{{' }} quay_password {{ '}}' }}"

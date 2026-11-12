@@ -2,6 +2,48 @@
 
 ## Unreleased
 
+### Changed — extended install: customer-owned compliance EE in CaC and guide
+
+- Controller bootstrap seeds *AAC Compliance EE* from
+  `aac_compliance_ee.yml` (operator completes `image` and readme metadata); maintainer
+  personal Quay demo images are optional via `aac_demo_ee.yml` only.
+- `install/existing-aap/extended/README.adoc` documents building `ee/`, pushing to the
+  customer registry, wiring `aap_project_default_ee`, and dropping the demo EE for production.
+
+### Added — extended install CaC: AAC host, SSH credential, Deploy OPA template
+
+- Bootstrap registers `aac_host` on *Compliance Infrastructure*, Machine credential
+  *AAC Host (SSH)* (`aac_host_ssh_private_key` in `playbooks/vars/secrets.yml`), and job
+  templates *AAC_Deploy_OPA_Containers*, *AAC_Init_PostgreSQL_Database*, *AAC_Seed_Framework_Catalog*,
+  *AAC_Enroll_Discovered_Frameworks*, *AAC_Load_OPA_Policies* (launch survey for policy `source` mode),
+  and *AAC_Deploy_Grafana_Dashboards*.
+
+### Added — AAC quadlets setup script (existing AAP extended install)
+
+- `install/existing-aap/extended/scripts/aac-quadlets-setup.sh` configures Quadlets for
+  the compliance user (root cleanup, copy units, dry-run, start services).
+
+### Added — AAC host prerequisite script (existing AAP extended install)
+
+- `install/existing-aap/extended/scripts/aac-host-prereq.sh` automates the extended
+  install guide's host preparation on a dedicated AAC host (root): `compliance` service
+  account, packages (including `git`), firewall ports, podman volumes, and optional
+  `dnf upgrade`/reboot.
+- `aac-host-ssh-key.sh` (default `~/.ssh/aac_host_ed25519{,.pub}`) and
+  `aac-host-prereq.sh --authorized-key-file` wire up AAP SSH to the AAC host
+  (`aac_host_ssh_private_key` / *AAC Host (SSH)*); README documents the flow.
+
+### Changed — extended install: quadlet-first order, DB init and policy-load defaults
+
+- The extended install guide now runs every AAC container from user-level quadlets before
+  the AAP jobs, drops the hand-run `podman run` steps, and warns against running
+  *AAC_Deploy_OPA_Containers* on a quadlet-managed host (it would collide on the OPA ports).
+- The PostgreSQL quadlet sets `POSTGRESQL_ADMIN_PASSWORD`, and the *Postgresql* credential
+  type injects it as `postgres_password`, so *AAC_Init_PostgreSQL_Database* can grant
+  `CREATEROLE` and create `compliance_reader` instead of failing.
+- *AAC_Load_OPA_Policies* defaults to `source=database` (template and survey); `all` is
+  for lab and demo builds only.
+
 ### Changed — public-cut tree sweep (2026-10-23)
 
 - Lab addresses leave the tree: the install-config hygiene gate, the security scan and
