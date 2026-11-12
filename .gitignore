@@ -130,3 +130,6 @@ ansible/vars/pqc_attestations.yml
 # Business documents (revenue/budget figures, customer or partner names, positioning,
 # SOWs, plans) live here, never in the public tree. Decision 2026-10-16.
 internal/
+
+# Added by ggshield
+.cache_ggshield

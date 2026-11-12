@@ -1,0 +1,19 @@
+---
+
+- name: Create Vault Credentials
+  ansible.controller.credential_type:
+    name: Vault-Password
+    description: Vault Password
+    kind: cloud
+    state: present
+    inputs:
+      fields:
+        - id: vault_password
+          type: string
+          label: Vault password
+          secret: true
+      required:
+        - vault_password
+    injectors:
+      extra_vars:
+        vault_password: "{{ '{{' }} vault_password {{ '}}' }}"

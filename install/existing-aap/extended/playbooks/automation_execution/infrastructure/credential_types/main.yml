@@ -1,0 +1,9 @@
+---
+
+- name: Create Credential Types
+  ansible.builtin.include_tasks: "{{ item }}"
+  loop:
+    - redhat_console.yml
+    - postgresql.yml
+    - quay.yml
+    - grafana.yml

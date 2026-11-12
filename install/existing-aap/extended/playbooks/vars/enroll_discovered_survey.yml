@@ -1,0 +1,16 @@
+---
+# Survey for AAC_Enroll_Discovered_Frameworks.
+
+aac_enroll_discovered_survey_spec:
+  name: Enroll discovered frameworks
+  description: >-
+    Auto-enable framework bundles in customer_frameworks from host_facts_latest and
+    inventory_catalog. Run after fact collection; then load with AAC_Load_OPA_Policies source=database.
+  spec:
+    - question_name: Tenant id
+      question_description: >-
+        customer_frameworks.tenant_id key (default default).
+      variable: enroll_tenant_id
+      type: text
+      required: true
+      default: default

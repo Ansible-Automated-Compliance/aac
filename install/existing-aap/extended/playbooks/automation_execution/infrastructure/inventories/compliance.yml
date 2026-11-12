@@ -1,0 +1,8 @@
+---
+
+- name: Compliance Inventory
+  ansible.controller.inventory:
+    name: {{ aac_inventory_name }}
+    description: {{ aac_inventory_description }}
+    organization: "{{ aac_organization }}"
+    state: present

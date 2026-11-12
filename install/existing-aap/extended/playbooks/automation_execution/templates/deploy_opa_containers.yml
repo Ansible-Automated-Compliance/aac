@@ -1,0 +1,21 @@
+---
+
+- name: Deploy OPA containers on AAC host
+  ansible.controller.job_template:
+    name: "{{ aac_template_deploy_opa_name }}"
+    description: "{{ aac_template_deploy_opa_description }}"
+    organization: "{{ aac_organization }}"
+    state: present
+    inventory: "{{ aac_inventory_name }}"
+    limit: localhost
+    project: "{{ aap_project_name }}"
+    playbook: ansible/playbooks/deploy_opa_containers.yml
+    job_type: run
+    execution_environment: "{{ aap_project_default_ee }}"
+    credentials:
+      - "{{ aac_cred_vault }}"
+      - "{{ aac_cred_aac_host_ssh }}"
+    become_enabled: true
+    ask_variables_on_launch: false
+    extra_vars:
+      aac_host: "{{ aac_host }}"

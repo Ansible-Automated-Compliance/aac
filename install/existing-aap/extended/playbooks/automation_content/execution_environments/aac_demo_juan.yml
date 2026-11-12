@@ -1,0 +1,19 @@
+---
+
+- name: AAC Demo EE (Juan)
+  ansible.hub.ah_ee_repository:
+    name: AAC Demo EE (Juan)
+    upstream_name: quay.io/jumedina/aac-compliance-ee:latest
+    state: present
+    description: AAC Demo EE (Juan)
+    registry: quay.io
+    include_tags: latest
+    readme: |
+      # AAC Compliance EE.
+      ## Info
+      - Created by: Juan Medina
+      - Email: jumedina@redhat.com
+      - Date: 2026-10-19
+      ## Description
+      This is a demo execution environment for AAC Compliance EE.
+  no_log: true

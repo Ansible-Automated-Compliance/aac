@@ -1,0 +1,35 @@
+== Deploy MCP server
+
+Run **"AAC - Deploy MCP Server"** or:
+
+```bash
+ansible-playbook ansible/playbooks/deploy_mcp_server.yml \
+  -e "aac_host=<host>" \
+  --vault-password-file ~/.vault_pass
+```
+
+Verify:
+```bash
+curl -s --max-time 5 -H "Authorization: Bearer <token>" \
+  http://<host>:8004/sse | head -c 200
+# Expected: event: endpoint\ndata: /messages/?session_id=...
+```
+
+If `firewalld` is active on the target host, open these permanently:
+
+```bash
+for port in 3000 5000 5001 5002 5003 5004 5432 8004 8085 8086 8087 8181 8182 8183; do
+  sudo firewall-cmd --permanent --add-port=${port}/tcp
+done
+sudo firewall-cmd --reload
+```
+
+## Step 2 — Configure credentials
+
+Ensure these credentials exist in AAP (Settings → Credentials):
+
+| Name | Type | Variables |
+|------|------|-----------|
+| Compliance SSH Credential | Machine | SSH key for target hosts |
+| Ansible Vault | Vault | Vault password |
+| AWS Compliance Lab | AWS | Access key + secret (if using AWS inventory) |

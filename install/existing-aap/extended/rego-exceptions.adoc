@@ -1,0 +1,142 @@
+
+== Rego exceptions (security waivers)
+
+A Rego exception is a *waiver*: a documented, time-boxed acceptance of a finding. It is not a change to the benchmark policy, and it is not an AAP Policy as Code allow rule.
+
+The module is `policies/governance/exceptions/waivers.rego` (`package exceptions`). The entries are site data in `ansible/vars/waivers.yml`. When an assessment stores a result, `aac_store_results` asks OPA which violations an active waiver covers.
+
+Those findings leave the active `violations` list and are stored under `metadata.waivers_applied`, with the reason, approver, and expiry attached. The score counts them as passed. An assessor still sees the exception; it is not deleted.
+
+If OPA is unreachable or the module was never loaded, *nothing is waived*. The failure direction is always "report more".
+
+=== Create an exception
+
+Copy a sample from `examples/waivers_example.yml` into `ansible/vars/waivers.yml` (that file ships as `waiver_entries: []`).
+
+Every entry needs all six fields:
+
+[cols="1,3",options="header"]
+|===
+| Field | Meaning
+
+| `host`
+| Hostname as stored on the result, or `*` for every host
+
+| `framework`
+| `opa_framework_map` key (`cis_rhel9`, `cis_m365_v7`, …), or `*`
+
+| `control_id`
+| Substring matched against the violation text (`5.2.1`, `CVE-2026-12345`).
+  Empty never matches.
+
+| `reason`
+| Why this is accepted, and what compensating control exists
+
+| `approver`
+| A person, not a team alias
+
+| `expires`
+| `YYYY-MM-DD`, before year 2262. No date, or a date that does not parse,
+  means the entry *never waives*.
+|===
+
+[source,yaml]
+----
+# ansible/vars/waivers.yml
+waiver_entries:
+  - host: "web01.example.com"
+    framework: "cis_rhel9"
+    control_id: "5.2.1"
+    reason: "Root SSH required by the legacy backup agent; jump-host firewall FW-118 is the compensating control"
+    approver: "ciso@example.com"
+    expires: "2027-03-31"
+----
+
+Matching rules:
+
+* `host` and `framework` are exact, unless the entry uses `*`.
+* `control_id` is a substring of the violation. String violations are matched as written (`CIS 5.2.1: …`). Object violations are matched against their JSON, so an id anywhere in the object is enough.
+* A waiver applies only while `time.now` is *before* `expires`. After that date the same finding is an active violation again, with no edit required. The decision lists those under `expired_matches`. They are stored as `metadata.waiver_expired_matches` only when that same run also applies at least one still-active waiver.
+
+=== Load the exceptions into OPA
+
+`AAC - Load OPA Policies` (`ansible/playbooks/load_opa_policies.yml`) puts the module on every OPA container as policy id `exceptions_waivers`, then PUTs `waiver_entries` to `/v1/data/waivers`. Re-run the same load you used earlier in this guide after every edit of `waivers.yml`:
+
+[source,bash]
+----
+ansible-playbook -J ansible/playbooks/load_opa_policies.yml \
+  -e "opa_security_url=http://<your-aac-host>:8181" \
+  -e "opa_compliance_url=http://<your-aac-host>:8182" \
+  -e "opa_ot_url=http://<your-aac-host>:8183"
+----
+
+You can skip the file and pass entries for one run:
+
+[source,bash]
+----
+ansible-playbook -J ansible/playbooks/load_opa_policies.yml \
+  -e "opa_security_url=http://<your-aac-host>:8181" \
+  -e "opa_compliance_url=http://<your-aac-host>:8182" \
+  -e "opa_ot_url=http://<your-aac-host>:8183" \
+  -e '{"waiver_entries":[{"host":"*","framework":"cis_rhel9","control_id":"1.1.6","reason":"Deferred to image CR-2201","approver":"platform-lead@example.com","expires":"2026-11-30"}]}'
+----
+
+When `waiver_entries` is already set (extra var or survey), the playbook does *not* read `ansible/vars/waivers.yml`.
+
+Confirm the data landed (repeat for `:8182` and `:8183` if you assess against those containers):
+
+[source,bash]
+----
+curl -s http://<your-aac-host>:8181/v1/data/waivers | jq .
+----
+
+Smoke-test the decision. A hit returns the finding under `waived` and omits it from `active_violations`. A miss (wrong host, expired date, control id not in the text) leaves it active.
+
+[source,bash]
+----
+curl -s http://<your-aac-host>:8181/v1/data/exceptions/decision \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "input": {
+      "host": "web01.example.com",
+      "framework": "cis_rhel9",
+      "violations": ["CIS 5.2.1: Ensure sudo is required — root login permitted"]
+    }
+  }' | jq .
+----
+
+Expect `waived_count: 1` and `waiver_entries_loaded` greater than 0. `waiver_entries_loaded: 0` means the data document was not loaded.
+
+=== Use them
+
+Loading the file does not rewrite rows already in `compliance_results`. Run the assessment again (the job template or playbook that calls `aac_store_results`). Before the INSERT, the role POSTs the hostname, framework, and violation list to:
+
+[source,text]
+----
+{{ opa_security_url }}/v1/data/exceptions/decision
+----
+
+On a match it:
+
+* stores the remaining findings in `violations`
+* stores each waived finding plus its waiver entry in `metadata.waivers_applied`
+* reduces `failed_controls` and raises `passed_controls` by the waived count
+
+Waivers are on by default (`aac_waivers_enabled: true` on `aac_store_results`). Set `aac_waivers_enabled: false` on a job only when you want that run to ignore exceptions.
+
+Read what was applied:
+
+[source,sql]
+----
+SELECT hostname,
+       framework,
+       failed_controls,
+       metadata->'waivers_applied'       AS waivers_applied,
+       metadata->'waiver_expired_matches' AS expired
+FROM compliance_results
+WHERE metadata ? 'waivers_applied'
+ORDER BY evaluation_timestamp DESC
+LIMIT 10;
+----
+
+Reports that render `metadata.waivers_applied` list those lines in their own block (the M365 CIS violations report does). They are labeled as waived, not omitted. A waiver whose `expires` date has passed does not appear there; the finding is an active violation again.

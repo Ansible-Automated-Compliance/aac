@@ -1,0 +1,22 @@
+---
+
+- name: Deploy Grafana dashboards and PostgreSQL datasource
+  ansible.controller.job_template:
+    name: "{{ aac_template_deploy_grafana_name }}"
+    description: "{{ aac_template_deploy_grafana_description }}"
+    organization: "{{ aac_organization }}"
+    state: present
+    inventory: "{{ aac_inventory_name }}"
+    limit: localhost
+    project: "{{ aap_project_name }}"
+    playbook: ansible/playbooks/deploy_grafana_dashboard.yml
+    job_type: run
+    execution_environment: "{{ aap_project_default_ee }}"
+    credentials:
+      - "{{ aac_cred_vault }}"
+      - "{{ aac_cred_grafana }}"
+      - "{{ aac_cred_postgresql }}"
+    ask_variables_on_launch: false
+    extra_vars:
+      grafana_url: "http://{{ aac_host }}:3000"
+      pg_host: "{{ aac_host }}"

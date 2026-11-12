@@ -1,0 +1,18 @@
+---
+
+- name: AAC Demo EE
+  ansible.controller.execution_environment:
+    name: AAC Demo EE
+    description: AAC Demo EE
+    image: quay.io/jumedina/aac-compliance-ee:latest
+    pull: missing
+    organization: "{{ aac_organization }}"
+    state: present
+    readme: |
+      # AAC Demo EE
+      ## Info
+      - Created by: Juan Medina
+      - Email: jumedina@redhat.com
+      - Date: 2026-10-19
+      ## Description
+      This is a demo execution environment for AAC Demo EE.

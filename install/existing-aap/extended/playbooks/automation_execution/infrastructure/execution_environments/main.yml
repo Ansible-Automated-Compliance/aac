@@ -1,0 +1,7 @@
+---
+
+- name: Create Execution Environments
+  ansible.builtin.include_tasks: "{{ item }}"
+  loop:
+    - aac_compliance_ee.yml
+    - aac_demo_ee.yml
