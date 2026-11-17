@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Fixed — `winrm_eventlog` event source: quiet polls, hung calls and restarts no longer break the Windows drift watcher
+
+- A poll that found no matching events was logged as a failed WinRM call: PowerShell exits 1 when the suppressed `Get-WinEvent` error is the last statement. The script now always exits 0 and prints PowerShell errors as `<<<PS_ERROR>>>` lines, which the plugin logs (except the routine "No events were found").
+- The WinRM session has `operation_timeout_sec=15` / `read_timeout_sec=30`; without them one hung call stalled the poll loop silently for minutes and nothing fired until the activation was restarted.
+- The first poll of each log only primes the RecordId bookmark. Every activation (re)start used to replay up to `max_events` historical events per log and launch the enforcement workflow once per replayed event. Both copies (`collections/ansible_collections/lab/eda` 1.0.1 and `extensions/eda`) carry the change; the Windows Event Log decision environment picks it up on its next build.
+
+### Fixed — facts-collection seeder attaches the Compliance DB credential to "AAC - Store Sidecar Dataset"
+
+- `seed_facts_collection_template.yml` created the Sidecar template with the Vault credential only, so on installs that keep secrets in credentials the nightly sidecar job failed with `'compliance_db_password' is undefined`. The seeder now looks up "AAC Compliance DB Password" (`aap_db_credential_name`) and attaches it on every run, so templates seeded earlier are fixed by re-running it.
+
 ### Changed — public-cut tree sweep (2026-10-23)
 
 - Lab addresses leave the tree: the install-config hygiene gate, the security scan and
