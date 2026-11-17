@@ -103,6 +103,22 @@
       set_fact:
         win_cred_id: "{{ win_cred_lookup.json.results[0].id if win_cred_lookup.json.count > 0 else '' }}"
 
+    # The DB-writing playbooks take compliance_db_password from the extra_vars
+    # injector credential, not from the vault (the vault is a stub on installs
+    # that keep secrets in credentials). Absent on the Sidecar template, the
+    # nightly failed with "'compliance_db_password' is undefined".
+    - name: Get Compliance DB credential ID
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/credentials/?name={{ aap_db_credential_name | default('AAC Compliance DB Password') | urlencode }}"
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+      register: db_cred_lookup
+
+    - name: Set Compliance DB credential ID
+      set_fact:
+        db_cred_id: "{{ db_cred_lookup.json.results[0].id if db_cred_lookup.json.count > 0 else '' }}"
+
     # ── Template: AAC - Init Facts Schema ─────────────────────────────────────
     - name: Check if 'AAC - Init Facts Schema' exists
       uri:
@@ -448,6 +464,25 @@
       when:
         - sidecar_existing.json.count == 0
         - sidecar_jt_id != ''
+
+    # Not gated on "just created": existing templates seeded before this
+    # credential was attached get it on the next seeder run. Re-attaching an
+    # already-attached credential answers 400, which is accepted; anything else
+    # (403, 404, connection errors) fails the seeder so the gap is not hidden.
+    - name: Attach Compliance DB credential to Sidecar template
+      uri:
+        use_proxy: false
+        url: "{{ aap_api }}/job_templates/{{ sidecar_jt_id }}/credentials/"
+        method: POST
+        headers: "{{ aap_headers }}"
+        validate_certs: false
+        body_format: json
+        body:
+          id: "{{ db_cred_id | int }}"
+        status_code: [200, 201, 204, 400]
+      when:
+        - sidecar_jt_id != ''
+        - db_cred_id != ''
 
     # ── Sidecar nightly schedule (time-aligned with gather_facts) ──────────────
     # ADR-001: Sidecars run on the same nightly window as core gather_facts so

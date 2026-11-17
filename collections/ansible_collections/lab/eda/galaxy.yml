@@ -1,6 +1,6 @@
 namespace: lab
 name: eda
-version: 1.0.0
+version: 1.0.1
 readme: README.md
 authors:
   - Tim Coulter <tim@example.com>

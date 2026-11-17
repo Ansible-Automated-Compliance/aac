@@ -129,7 +129,7 @@ def _build_powershell(log_name: str, xpath: str, max_events: int,
     return (
         "$ErrorActionPreference='SilentlyContinue';"
         f"$evs = Get-WinEvent -LogName '{log_name}' -FilterXPath \"{combined_xpath}\" "
-        f"-MaxEvents {max_events} 2>$null;"
+        f"-MaxEvents {max_events} -ErrorAction SilentlyContinue -ErrorVariable ge;"
         "if ($evs) {"
         " $evs | Sort-Object RecordId |"
         " ForEach-Object {"
@@ -145,6 +145,12 @@ def _build_powershell(log_name: str, xpath: str, max_events: int,
         "   ($o | ConvertTo-Json -Compress -Depth 4) + '<<<END_OF_EVENT>>>'"
         " }"
         "}"
+        # Surface PowerShell errors on stdout and always exit 0. A poll that
+        # finds no matching events is the normal case, not a failure: when the
+        # suppressed Get-WinEvent error is the last statement PowerShell exits 1
+        # and every quiet poll was being logged as a failed WinRM call.
+        ";if ($ge) { foreach ($e in $ge) { Write-Output ('<<<PS_ERROR>>>' + $e.Exception.Message) } }"
+        ";exit 0"
     )
 
 
@@ -170,6 +176,10 @@ async def _winrm_run(host: str, port: int, scheme: str, username: str,
             auth=(username, password),
             transport=transport,
             server_cert_validation="ignore",
+            # A hung WinRM call must raise so the poll loop keeps going; without
+            # these the source has been seen to stall silently for minutes.
+            operation_timeout_sec=15,
+            read_timeout_sec=30,
         )
         result = session.run_ps(ps)
         if result.status_code != 0:
@@ -207,7 +217,12 @@ async def main(queue: asyncio.Queue, args: Dict[str, Any]) -> None:
     xpath = _xpath_filter([int(e) for e in event_ids])
 
     # Track the last seen RecordId per log so we only emit new events.
+    # The first poll of each log only PRIMES the bookmark: it records the newest
+    # RecordId and emits nothing. Without this every activation (re)start replayed
+    # up to max_events historical events per log and fired the enforcement
+    # workflow once per replayed event. Only events written after the start are emitted.
     last_seen: Dict[str, int] = {log: 0 for log in log_names}
+    primed: Dict[str, bool] = {log: False for log in log_names}
 
     LOGGER.info("winrm_eventlog source starting: host=%s logs=%s ids=%s "
                 "interval=%ss", host, log_names, event_ids, interval)
@@ -230,20 +245,43 @@ async def main(queue: asyncio.Queue, args: Dict[str, Any]) -> None:
                 LOGGER.exception("WinRM poll failed for log=%s", log_name)
                 continue
 
+            # "No events were found" is the normal empty poll. Any other PowerShell
+            # error is logged. Events that did come back are still emitted and still
+            # move the bookmark, so an error that accompanies real data cannot blind
+            # the source; but an errored poll that returned nothing is skipped without
+            # touching the bookmark, so a failed first poll cannot prime at zero and
+            # replay history once the query recovers.
+            ps_errors = [
+                ln[len("<<<PS_ERROR>>>"):].strip()
+                for ln in stdout.splitlines() if ln.startswith("<<<PS_ERROR>>>")
+            ]
+            real_errors = [m for m in ps_errors if "No events were found" not in m]
+            for msg in real_errors:
+                LOGGER.warning("PowerShell error on log=%s: %s", log_name, msg[:300])
+
+            events = []
             for chunk in stdout.split("<<<END_OF_EVENT>>>"):
                 chunk = chunk.strip()
                 if not chunk or not chunk.startswith("{"):
                     continue
                 try:
-                    evt = _parse_event_json(chunk, host=host, log_name=log_name)
+                    events.append(_parse_event_json(chunk, host=host, log_name=log_name))
                 except (ValueError, KeyError):
                     LOGGER.warning("Could not parse Windows event JSON: %s",
                                    chunk[:200])
-                    continue
+            if real_errors and not events:
+                continue
+
+            for evt in events:
                 rec = evt.get("record_id", 0)
                 if rec > last_seen[log_name]:
                     last_seen[log_name] = rec
-                await queue.put(evt)
+                if primed[log_name]:
+                    await queue.put(evt)
+            if not primed[log_name]:
+                primed[log_name] = True
+                LOGGER.info("winrm_eventlog primed log=%s at record_id=%s (history not replayed)",
+                            log_name, last_seen[log_name])
 
         await asyncio.sleep(interval)
 
