@@ -197,13 +197,13 @@ QUERIES = {
         LIST,
     ),
     "owa_mailbox_policies": (
-        # PersonalAccountsEnabled is the Set-OwaMailboxPolicy property for
-        # "users can add personal accounts in Outlook" (6.3.2). Collected so
-        # the policy can read it; the shipped rule still reads
-        # AdditionalStorageProvidersAvailable for 6.3.2.
+        # 6.3.2 reads PersonalAccountsEnabled and
+        # PersonalAccountCalendarsEnabled of the IsDefault policy
+        # (Set-OwaMailboxPolicy); 6.5.3 reads
+        # AdditionalStorageProvidersAvailable.
         "@(Get-OwaMailboxPolicy | Select-Object Name, IsDefault, "
         "AdditionalStorageProvidersAvailable, PersonalAccountsEnabled, "
-        "AllowedFileTypes)",
+        "PersonalAccountCalendarsEnabled, AllowedFileTypes)",
         ["6.3.2", "6.5.3"],
         LIST,
     ),

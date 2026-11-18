@@ -63,7 +63,8 @@ EXPECTED_SHAPES = {
         "safe_attachment_policies": pwsh.LIST, "atp_policy_for_o365": pwsh.OBJECT,
         "outbound_spam_policies": pwsh.LIST, "anti_phish_policies": pwsh.LIST,
         "connection_filter_policies": pwsh.LIST, "content_filter_policies": pwsh.LIST,
-        "eop_protection_rules": pwsh.LIST, "teams_protection_policy": pwsh.OBJECT,
+        "eop_protection_rules": pwsh.LIST, "atp_protection_rules": pwsh.LIST,
+        "dkim_signing_configs": pwsh.LIST, "teams_protection_policy": pwsh.OBJECT,
     },
     teams: {
         "client_configuration": pwsh.OBJECT, "federation_configuration": pwsh.OBJECT,

@@ -17,6 +17,8 @@ not establish a CIS recommendation.
   Get-HostedConnectionFilterPolicy  2.1.12, 2.1.13
   Get-HostedContentFilterPolicy     2.1.14
   Get-EOPProtectionPolicyRule       2.4.2
+  Get-ATPProtectionPolicyRule       2.4.2
+  Get-DkimSigningConfig             2.1.9 (signing enabled per domain)
   Get-TeamsProtectionPolicy         2.4.4
 
 SPF, DKIM and DMARC (2.1.8, 2.1.9, 2.1.10) are NOT here -- those are
@@ -169,8 +171,25 @@ QUERIES = {
     ),
     "eop_protection_rules": (
         "@(Get-EOPProtectionPolicyRule | Select-Object Name, State, Priority, "
-        "SentTo, SentToMemberOf)",
+        "SentTo, SentToMemberOf, RecipientDomainIs)",
         ["2.4.2"],
+        LIST,
+    ),
+    # 2.4.2 -- the strict preset has two rules, one per protection stack
+    # (EOP above, Defender for Office 365 here); the policy needs both enabled
+    # and scoped to recipients.
+    "atp_protection_rules": (
+        "@(Get-ATPProtectionPolicyRule | Select-Object Name, State, Priority, "
+        "SentTo, SentToMemberOf, RecipientDomainIs)",
+        ["2.4.2"],
+        LIST,
+    ),
+    # 2.1.9 -- published selector CNAMEs (read from DNS by m365_exchange_facts)
+    # do not show that Exchange Online signs: the signing configuration has to
+    # be enabled per domain.
+    "dkim_signing_configs": (
+        "@(Get-DkimSigningConfig | Select-Object Domain, Name, Enabled, Status)",
+        ["2.1.9"],
         LIST,
     ),
     "teams_protection_policy": (

@@ -75,7 +75,7 @@ VALUE_ALLOWLIST = frozenset([
     "MailTipsExternalRecipientsTipsEnabled", "RejectDirectSend", "CustomerLockBoxEnabled",
     "BookingsEnabled", "BookingsAuthEnabled", "BookingsSocialSharingRestricted",
     "SmtpClientAuthenticationDisabled", "AdditionalStorageProvidersAvailable",
-    "PersonalAccountsEnabled",
+    "PersonalAccountsEnabled", "PersonalAccountCalendarsEnabled",
     # Numeric outbound-spam limits (2.1.15).
     "RecipientLimitExternalPerHour", "RecipientLimitInternalPerHour", "RecipientLimitPerDay",
     # Purview DLP / label enums (3.2.x): Mode and the Workload flags enum.
