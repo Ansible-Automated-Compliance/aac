@@ -230,6 +230,7 @@ test_nist_sp800_53_session_lock_compliant_pass if {
     nist_ac.session_lock with input as {
         "ac_controls": {
             "session_lock": {
+                "odp": {"inactivity_timeout": 900},
                 "inactivity_timeout": 900,
                 "pattern_hiding": true,
                 "authentication_required": true
@@ -242,6 +243,7 @@ test_nist_sp800_53_session_lock_compliant_fail_timeout if {
     not nist_ac.session_lock with input as {
         "ac_controls": {
             "session_lock": {
+                "odp": {"inactivity_timeout": 900},
                 "inactivity_timeout": 1800,  # Too long
                 "pattern_hiding": true,
                 "authentication_required": true
@@ -255,6 +257,7 @@ test_nist_sp800_53_unsuccessful_logon_attempts_pass if {
     nist_ac.unsuccessful_logon_attempts with input as {
         "ac_controls": {
             "logon_attempts": {
+                "odp": {"max_attempts": 3},
                 "lockout_configured": true,
                 "maximum_attempts": 3,
                 "lockout_duration": 15
@@ -267,6 +270,7 @@ test_nist_sp800_53_unsuccessful_logon_attempts_fail if {
     not nist_ac.unsuccessful_logon_attempts with input as {
         "ac_controls": {
             "logon_attempts": {
+                "odp": {"max_attempts": 3},
                 "lockout_configured": true,
                 "maximum_attempts": 10,  # Too many attempts
                 "lockout_duration": 15
@@ -391,6 +395,7 @@ test_cross_framework_evaluation if {
         },
         "ac_controls": {
             "session_lock": {
+                "odp": {"inactivity_timeout": 900},
                 "inactivity_timeout": 900,
                 "pattern_hiding": true,
                 "authentication_required": true
@@ -429,6 +434,7 @@ test_boundary_conditions if {
     nist_ac.session_lock with input as {
         "ac_controls": {
             "session_lock": {
+                "odp": {"inactivity_timeout": 900},
                 "inactivity_timeout": 900,  # Exactly at limit
                 "pattern_hiding": true,
                 "authentication_required": true
@@ -440,6 +446,7 @@ test_boundary_conditions if {
     not nist_ac.session_lock with input as {
         "ac_controls": {
             "session_lock": {
+                "odp": {"inactivity_timeout": 900},
                 "inactivity_timeout": 901,  # One second over
                 "pattern_hiding": true,
                 "authentication_required": true

@@ -158,9 +158,9 @@
           - { dir: "benchmarks/cis/ubuntu_24_04",                prefix: "ubuntu_24_04_",                key: cis_ubuntu_2404 }
           - { dir: "benchmarks/cis/vmware",                      prefix: "vmware_",                      key: cis_vmware }
           - { dir: "benchmarks/cis/web_servers",                 prefix: "web_servers_",                 key: cis_web_servers }
-          - { dir: "benchmarks/cis/windows_10",                  prefix: "windows_10_",                  key: cis_windows_10 }
-          - { dir: "benchmarks/cis/windows_11",                  prefix: "windows_11_",                  key: cis_windows_11 }
-          - { dir: "benchmarks/cis/windows_server_2016",         prefix: "windows_server_2016_",         key: cis_windows_server_2016 }
+          - { dir: "benchmarks/cis/windows_10_modular",                  prefix: "windows_10_",                  key: cis_windows_10 }
+          - { dir: "benchmarks/cis/windows_11_modular",                  prefix: "windows_11_",                  key: cis_windows_11 }
+          - { dir: "benchmarks/cis/windows_server_2016_modular",         prefix: "windows_server_2016_",         key: cis_windows_server_2016 }
           - { dir: "benchmarks/cis/windows_server_2019_modular", prefix: "windows_server_2019_modular_", key: cis_windows_2019 }
           - { dir: "benchmarks/cis/windows_server_2022",         prefix: "windows_server_2022_",         key: cis_windows_server_2022 }
           - { dir: "benchmarks/cis/windows_server_2022_modular", prefix: "windows_server_2022_modular_", key: cis_windows_2022 }

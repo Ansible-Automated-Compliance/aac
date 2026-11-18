@@ -151,7 +151,7 @@ framework_catalog_entries:
     domain: security
     description: "CIS Windows Server 2016 benchmark (CIS)."
     opa_container: security
-    policy_dir: benchmarks/cis/windows_server_2016
+    policy_dir: benchmarks/cis/windows_server_2016_modular
     tags: [cis, windows]
     enabled_by_default: false
     opa_keys: [cis_windows_server_2016]
@@ -161,7 +161,7 @@ framework_catalog_entries:
     domain: security
     description: "CIS Windows 10 benchmark (CIS)."
     opa_container: security
-    policy_dir: benchmarks/cis/windows_10
+    policy_dir: benchmarks/cis/windows_10_modular
     tags: [cis, windows]
     enabled_by_default: false
     opa_keys: [cis_windows_10]
@@ -171,7 +171,7 @@ framework_catalog_entries:
     domain: security
     description: "CIS Windows 11 benchmark (CIS)."
     opa_container: security
-    policy_dir: benchmarks/cis/windows_11
+    policy_dir: benchmarks/cis/windows_11_modular
     tags: [cis, windows]
     enabled_by_default: false
     opa_keys: [cis_windows_11]
