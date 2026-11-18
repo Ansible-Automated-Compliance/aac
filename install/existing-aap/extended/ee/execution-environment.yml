@@ -12,10 +12,6 @@ images:
   base_image:
     name: registry.redhat.io/ansible-automation-platform-26/ee-supported-rhel9:latest
 
-additional_build_files:
-    - src: cosign.tar.gz
-      dest: configs
-
 dependencies:
   galaxy: requirements.yml
   python: requirements.txt
