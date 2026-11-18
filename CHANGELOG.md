@@ -2,47 +2,15 @@
 
 ## Unreleased
 
-### Changed — extended install: customer-owned compliance EE in CaC and guide
+### Fixed — `winrm_eventlog` event source: quiet polls, hung calls and restarts no longer break the Windows drift watcher
 
-- Controller bootstrap seeds *AAC Compliance EE* from
-  `aac_compliance_ee.yml` (operator completes `image` and readme metadata); maintainer
-  personal Quay demo images are optional via `aac_demo_ee.yml` only.
-- `install/existing-aap/extended/README.adoc` documents building `ee/`, pushing to the
-  customer registry, wiring `aap_project_default_ee`, and dropping the demo EE for production.
+- A poll that found no matching events was logged as a failed WinRM call: PowerShell exits 1 when the suppressed `Get-WinEvent` error is the last statement. The script now always exits 0 and prints PowerShell errors as `<<<PS_ERROR>>>` lines, which the plugin logs (except the routine "No events were found").
+- The WinRM session has `operation_timeout_sec=15` / `read_timeout_sec=30`; without them one hung call stalled the poll loop silently for minutes and nothing fired until the activation was restarted.
+- The first poll of each log only primes the RecordId bookmark. Every activation (re)start used to replay up to `max_events` historical events per log and launch the enforcement workflow once per replayed event. Both copies (`collections/ansible_collections/lab/eda` 1.0.1 and `extensions/eda`) carry the change; the Windows Event Log decision environment picks it up on its next build.
 
-### Added — extended install CaC: AAC host, SSH credential, Deploy OPA template
+### Fixed — facts-collection seeder attaches the Compliance DB credential to "AAC - Store Sidecar Dataset"
 
-- Bootstrap registers `aac_host` on *Compliance Infrastructure*, Machine credential
-  *AAC Host (SSH)* (`aac_host_ssh_private_key` in `playbooks/vars/secrets.yml`), and job
-  templates *AAC_Deploy_OPA_Containers*, *AAC_Init_PostgreSQL_Database*, *AAC_Seed_Framework_Catalog*,
-  *AAC_Enroll_Discovered_Frameworks*, *AAC_Load_OPA_Policies* (launch survey for policy `source` mode),
-  and *AAC_Deploy_Grafana_Dashboards*.
-
-### Added — AAC quadlets setup script (existing AAP extended install)
-
-- `install/existing-aap/extended/scripts/aac-quadlets-setup.sh` configures Quadlets for
-  the compliance user (root cleanup, copy units, dry-run, start services).
-
-### Added — AAC host prerequisite script (existing AAP extended install)
-
-- `install/existing-aap/extended/scripts/aac-host-prereq.sh` automates the extended
-  install guide's host preparation on a dedicated AAC host (root): `compliance` service
-  account, packages (including `git`), firewall ports, podman volumes, and optional
-  `dnf upgrade`/reboot.
-- `aac-host-ssh-key.sh` (default `~/.ssh/aac_host_ed25519{,.pub}`) and
-  `aac-host-prereq.sh --authorized-key-file` wire up AAP SSH to the AAC host
-  (`aac_host_ssh_private_key` / *AAC Host (SSH)*); README documents the flow.
-
-### Changed — extended install: quadlet-first order, DB init and policy-load defaults
-
-- The extended install guide now runs every AAC container from user-level quadlets before
-  the AAP jobs, drops the hand-run `podman run` steps, and warns against running
-  *AAC_Deploy_OPA_Containers* on a quadlet-managed host (it would collide on the OPA ports).
-- The PostgreSQL quadlet sets `POSTGRESQL_ADMIN_PASSWORD`, and the *Postgresql* credential
-  type injects it as `postgres_password`, so *AAC_Init_PostgreSQL_Database* can grant
-  `CREATEROLE` and create `compliance_reader` instead of failing.
-- *AAC_Load_OPA_Policies* defaults to `source=database` (template and survey); `all` is
-  for lab and demo builds only.
+- `seed_facts_collection_template.yml` created the Sidecar template with the Vault credential only, so on installs that keep secrets in credentials the nightly sidecar job failed with `'compliance_db_password' is undefined`. The seeder now looks up "AAC Compliance DB Password" (`aap_db_credential_name`) and attaches it on every run, so templates seeded earlier are fixed by re-running it.
 
 ### Changed — public-cut tree sweep (2026-10-23)
 
