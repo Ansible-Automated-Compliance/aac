@@ -1,0 +1,90 @@
+---
+# cis_rhel9_profile_attest.yml -- validate the operator's CIS RHEL 9 profile and
+# attestations and build the input fields the policy reads for them.
+#
+# Shared by cis_rhel9_assessment.yml and evaluate_stored_facts.yml; the result
+# goes to the mapper (../tasks/cis_linux_build_opa_input.yml) as cis_selection.
+#
+# Input (survey / extra_vars; naming follows cis_windows_level /
+# cis_windows_attestations of the Windows playbook):
+#   cis_rhel9_profile        level1_server (default), level2_server,
+#                            level1_workstation or level2_workstation
+#   cis_rhel9_attestations   mapping of attestation name to true / false, or to
+#                            {attested: true, attested_by, attested_on,
+#                            evidence_ref}. A survey text field holding YAML or
+#                            JSON is parsed. Default: none (every Manual
+#                            recommendation then fails as not attested).
+#   cis_rhel9_policy_dir     the rhel_9 policy directory to read the vocabulary
+#                            from (default: this project's policies submodule)
+# Output:  cis_rhel9_selection  {profile, attest: {name: bool},
+#                                attestation_records: [...]}
+#
+# The allowed profiles (profiles := {...}) and attestation names (every
+# input.attest.<name>) are read from the policy files themselves, so a library
+# bump cannot leave a stale list here. An unknown profile, an unknown
+# attestation name or a value that is not a boolean fails the play: the policy
+# would otherwise fall back to level1_server, or read the string "true" as not
+# attested, without saying so.
+
+- name: Read the CIS RHEL 9 profile and attestation names from the policy
+  vars:
+    _cis_rhel9_dir: "{{ cis_rhel9_policy_dir | default(playbook_dir ~ '/../../policies/benchmarks/cis/rhel_9', true) }}"
+  ansible.builtin.set_fact:
+    _cis_rhel9_vocab: >-
+      {%- set txt = [] -%}
+      {%- for f in query('ansible.builtin.fileglob', _cis_rhel9_dir ~ '/*.rego') -%}{%- set _ = txt.append(lookup('ansible.builtin.file', f)) -%}{%- endfor -%}
+      {%- set all = txt | join('\n') -%}
+      {%- set pdef = all | regex_findall('(?m)^profiles := [{].*$') | first | default('') -%}
+      {{ {'dir': _cis_rhel9_dir, 'files': (txt | length),
+          'profiles': (pdef | regex_findall('"(level[0-9]_[a-z]+)"[ ]*:') | unique | sort),
+          'attest': (all | regex_findall('input[.]attest[.]([a-z0-9_]+)') | unique | sort)} }}
+
+- name: Validate the CIS RHEL 9 profile and attestations
+  vars:
+    _profile: "{{ cis_rhel9_profile | default('level1_server', true) | string | trim }}"
+    _att_in: "{{ cis_rhel9_attestations | default({}, true) }}"
+    _att: "{{ ((_att_in | from_yaml) if (_att_in is string) else _att_in) | default({}, true) }}"
+  ansible.builtin.set_fact:
+    _cis_rhel9_selection_errors: >-
+      {%- set e = [] -%}
+      {%- set needed = (_profile != 'level1_server') or (_att | length) > 0 -%}
+      {%- if needed and ((_cis_rhel9_vocab.profiles | length) == 0 or (_cis_rhel9_vocab.attest | length) == 0) -%}
+        {%- set _ = e.append('could not read the CIS RHEL 9 profiles and attestation names from ' ~ _cis_rhel9_vocab.dir ~ ' (' ~ _cis_rhel9_vocab.files ~ ' policy files): is the policies submodule checked out? Set cis_rhel9_policy_dir otherwise.') -%}
+      {%- elif _profile not in _cis_rhel9_vocab.profiles and _profile != 'level1_server' -%}
+        {%- set _ = e.append('unknown cis_rhel9_profile ' ~ (_profile | to_json) ~ '; allowed: ' ~ (_cis_rhel9_vocab.profiles | join(', '))) -%}
+      {%- endif -%}
+      {%- if _att is not mapping -%}
+        {%- set _ = e.append('cis_rhel9_attestations must be a mapping of attestation name to true/false, got ' ~ (_att | to_json | truncate(200))) -%}
+      {%- else -%}
+        {%- for k, v in _att.items() -%}
+          {%- if (_cis_rhel9_vocab.attest | length) > 0 and (k | string) not in _cis_rhel9_vocab.attest -%}
+            {%- set _ = e.append('unknown attestation ' ~ (k | to_json) ~ ': the policy reads ' ~ (_cis_rhel9_vocab.attest | join(', '))) -%}
+          {%- endif -%}
+          {%- set val = v.get('attested') if (v is mapping) else v -%}
+          {%- if val is not boolean -%}
+            {%- set _ = e.append('attestation ' ~ (k | to_json) ~ ' must be true or false (a boolean, not ' ~ (val | to_json) ~ ')') -%}
+          {%- endif -%}
+        {%- endfor -%}
+      {%- endif -%}
+      {{ e }}
+    cis_rhel9_selection: >-
+      {%- set a = {} -%}{%- set r = [] -%}
+      {%- if _att is mapping -%}
+        {%- for k, v in _att.items() -%}
+          {%- set val = v.get('attested') if (v is mapping) else v -%}
+          {%- if val is boolean -%}
+            {%- set _ = a.update({(k | string): val}) -%}
+            {%- set rec = {'name': (k | string), 'attested': val} -%}
+            {%- if v is mapping -%}
+              {%- for f in ['attested_by', 'attested_on', 'evidence_ref'] if (v.get(f) is not none) -%}{%- set _ = rec.update({f: (v.get(f) | string)}) -%}{%- endfor -%}
+            {%- endif -%}
+            {%- set _ = r.append(rec) -%}
+          {%- endif -%}
+        {%- endfor -%}
+      {%- endif -%}
+      {{ {'profile': _profile, 'attest': a, 'attestation_records': r} }}
+
+- name: Refuse an unknown CIS RHEL 9 profile or attestation
+  ansible.builtin.fail:
+    msg: "{{ _cis_rhel9_selection_errors | join(' | ') }}"
+  when: _cis_rhel9_selection_errors | length > 0

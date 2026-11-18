@@ -12,11 +12,23 @@ Then runs the two safety checks the mapper's header promises:
   2. Parser differential — a commented "# Defaults logfile=" / "#
      timestamp_timeout=" in sudoers must NOT read as configured.
 
+Further checks (each would have caught a defect found in the 2026-11 gap
+analysis): the running and the on-disk audit rules land in their own fields
+and "No rules" is an empty running list; a large world-writable result is a
+failure with a count, not missing evidence; the CIS RHEL 9 profile and
+attestations are validated and pass through
+(ansible/tasks/cis_rhel9_profile_attest.yml).
+
 Usage: render_mapper.py <task_file> <fixture.json> <out.json>
+Env:   CIS_RHEL9_POLICY_DIR  a rhel_9 policy directory to derive the real
+       profile / attestation vocabulary from (default: the policies submodule)
 """
 import copy
+import glob
 import json
+import os
 import sys
+import tempfile
 
 import yaml
 from ansible.parsing.dataloader import DataLoader
@@ -29,8 +41,9 @@ EVAL_MARK = '94011'  # 31337*3: appears only if the payload was evaluated
 V3_BLOCKS = ('kmod_raw', 'sysctl_raw', 'pkg_state_raw', 'config_raw', 'perms_raw', 'accounts_raw', 'fs_sweep_raw')
 
 
-def render(build, facts):
+def render(build, facts, extra=None):
     ctx = {'facts_data': wrap_var(facts), 'opa_hostname': 'fixture-host', 'inventory_hostname': 'fixture-host'}
+    ctx.update(extra or {})
     for key, expr in build['vars'].items():
         ctx[key] = Templar(loader=DataLoader(), variables=ctx).template(expr)
     return Templar(loader=DataLoader(), variables=ctx).template(build['set_fact']['opa_input'])
@@ -167,14 +180,7 @@ def main():
     bob = ak_files['/home/bob/.ssh/authorized_keys']
     assert bob.get('truncated') and any(k['comment'] == '' for k in bob['keys']) and any(k.get('bits') == 1024 for k in bob['keys']), \
         'truncated key list not a failing per-file entry, or the keys read so far were lost'
-    # legacy sweeps: the list is capped at 100 but the count is the true total
-    big = copy.deepcopy(facts)
-    big['custom_facts'].update(world_writable_files=['/tmp/w%d' % i for i in range(100)], world_writable_count='250', world_writable_truncated=True)
-    ww = render(build, big)['world_writable']
-    assert ww['count'] == 250 and ww['truncated'] is True and ww['compliant'] is False, 'capped world-writable list read as complete'
-    to = copy.deepcopy(facts)
-    to['custom_facts'].update(world_writable_files=[], world_writable_count='', world_writable_truncated=True)
-    assert render(build, to)['world_writable']['compliant'] is False, 'timed-out world-writable sweep read as clean'
+    check_world_writable(build, facts)
     miss_ak = copy.deepcopy(facts)
     miss_ak['custom_facts']['authorized_keys_raw'] = 'missing_cmd|ssh-keygen\nend:ok\n'
     assert 'authorized_keys' not in render(build, miss_ak), 'authorized_keys emitted without ssh-keygen'
@@ -293,9 +299,180 @@ def main():
         assert 'crond_enabled' in opa_input['cron'], 'cron supplement replaced daemon state'
     if 'tmout' in opa_input.get('pam', {}) and facts['custom_facts'].get('pam_config_raw'):
         assert 'system_auth' in opa_input['pam'], 'pam supplement replaced system_auth'
-    if 'log_permissions' in opa_input.get('auditd', {}) and facts['custom_facts'].get('auditd_rules_raw'):
-        assert 'active_rules' in opa_input['auditd'], 'auditd supplement replaced active_rules'
+    if 'log_permissions' in opa_input.get('auditd', {}) and facts['custom_facts'].get('auditd_active_rules_raw'):
+        assert 'active_rules' in opa_input['auditd'] and 'rules' in opa_input['auditd'], 'auditd supplement replaced the rules'
     print('merge check: supplement fields extend the base sections')
+
+    check_audit_rules(build, facts, opa_input)
+    check_profile_attest(os.path.join(os.path.dirname(os.path.abspath(task_file)), 'cis_rhel9_profile_attest.yml'), build, facts)
+
+
+def check_world_writable(build, facts):
+    """CIS 7.1.11: the policy treats world_writable.truncated as evidence
+    missing, so a capped list must arrive as a failure with its count."""
+    def sweep(cf, edit):
+        cf['fs_sweep_raw'] = edit(cf['fs_sweep_raw'])
+    # (a) complete sweep, 250 files, 100 listed: a fail with the true count
+    big = copy.deepcopy(facts)
+    sweep(big['custom_facts'], lambda t: t.replace('count|wwfile|0', 'count|wwfile|250').replace(
+        'end:ok', ''.join('wwfile|/srv/w%d\n' % i for i in range(100)) + 'truncated|wwfile\nend:ok'))
+    ww = render(build, big)['world_writable']
+    assert ww['count'] == 250 and len(ww['files']) == 100 and 'truncated' not in ww, 'capped world-writable list turned into missing evidence'
+    assert ww['compliant'] is False and ww['sample_capped'] is True and ww['count_complete'] is True, 'capped world-writable list read as complete'
+    # (b) the sweep timed out after finding files: not collected (truncated),
+    #     the paths found kept as evidence, count a lower bound
+    to = copy.deepcopy(facts)
+    sweep(to['custom_facts'], lambda t: t.replace('count|wwfile|0', 'count|wwfile|3').replace(
+        'end:ok', 'wwfile|/srv/a\nwwfile|/srv/b\nwwfile|/srv/c\nsweep_rc|1|124\ntruncated|unowned\ntruncated|ungrouped\n'
+                  'truncated|nosticky\ntruncated|priv\ntruncated|wwfile\nend:ok'))
+    ww = render(build, to)['world_writable']
+    assert ww['truncated'] is True and ww['count'] == 3 and ww['files'] == ['/srv/a', '/srv/b', '/srv/c'] and ww['count_complete'] is False \
+        and ww['compliant'] is False, 'timed-out sweep not reported as not collected, or its findings dropped'
+    # (c) the sweep timed out having found nothing: not collected
+    tz = copy.deepcopy(facts)
+    sweep(tz['custom_facts'], lambda t: t.replace('end:ok', 'sweep_rc|1|124\ntruncated|wwfile\nend:ok'))
+    ww = render(build, tz)['world_writable']
+    assert ww['truncated'] is True and ww['compliant'] is False and ww['count'] == 0, 'timed-out world-writable sweep read as clean'
+    # (c2) an invalid sweep block (watchdog, no end:ok) on a new row: no section,
+    #      never the root-only legacy fields
+    wd = copy.deepcopy(facts)
+    sweep(wd['custom_facts'], lambda t: t.replace('end:ok', ''))
+    assert 'world_writable' not in render(build, wd), 'invalid sweep fell back to the root-only legacy sweep'
+    # (d) a stored row from before the wwfile list: the legacy fields, same rules
+    def legacy(**kw):
+        f = copy.deepcopy(facts)
+        f['custom_facts']['fs_sweep_raw'] = '\n'.join(l for l in f['custom_facts']['fs_sweep_raw'].split('\n') if 'wwfile' not in l)
+        for k in ('world_writable_files', 'world_writable_count', 'world_writable_truncated'):
+            f['custom_facts'].pop(k, None)
+        f['custom_facts'].update(kw)
+        return render(build, f)
+    ww = legacy(world_writable_files=['/tmp/w%d' % i for i in range(100)], world_writable_count='250', world_writable_truncated=True)['world_writable']
+    assert ww['count'] == 250 and 'truncated' not in ww and ww['compliant'] is False and ww['source'] == 'legacy_root_filesystem_sweep', \
+        'legacy capped list turned into missing evidence'
+    for c in (None, ''):
+        ww = legacy(world_writable_files=[], world_writable_count=c, world_writable_truncated=True)['world_writable']
+        assert ww['truncated'] is True and ww['compliant'] is False, 'legacy timed-out sweep read as clean'
+    ww = legacy(world_writable_files=['/tmp/x'], world_writable_count=None, world_writable_truncated=True)['world_writable']
+    assert ww['truncated'] is True and ww['files'] == ['/tmp/x'] and ww['count_complete'] is False, 'legacy partial finding dropped'
+    assert legacy(world_writable_files=[], world_writable_count=0, world_writable_truncated=False)['world_writable']['compliant'] is True
+    assert 'world_writable' not in legacy(), 'a row without any world-writable fact must render, without the section'
+    print('world-writable check: a capped list fails with its count, a timeout is not collected (findings kept)')
+
+
+def check_audit_rules(build, facts, opa_input):
+    """CIS 6.2.3.x: running rules (auditctl -l) and on-disk rules (rules.d)
+    are two facts; each lands in its own field, or in none."""
+    a = opa_input['auditd']
+    assert a['rules'] != a['active_rules'], 'fixture: the two audit sources must differ'
+    assert '-w /etc/group -p wa -k identity' in a['rules'] and '-w /etc/group -p wa -k identity' not in a['active_rules'], 'on-disk rule leaked into the running rules'
+    assert '-w /etc/shadow -p wa -k identity' in a['active_rules'] and '-w /etc/shadow -p wa -k identity' not in a['rules'], 'running rule leaked into the on-disk rules'
+    assert '-e 2' in a['rules'] and not any(r.startswith(('-e', '-c')) for r in a['active_rules']), 'control lines belong to the on-disk rules only'
+    assert a['rules_files'] == ['10-base.rules', '50-identity.rules', '50-privileged.rules', '99-finalize.rules'] and '' not in a['rules']
+    assert a['running_status'] == {'enabled': 2, 'failure': 1}, 'auditctl -s status'
+
+    def with_cf(**kw):
+        f = copy.deepcopy(facts)
+        for k, v in kw.items():
+            if v is None:
+                f['custom_facts'].pop(k, None)
+            else:
+                f['custom_facts'][k] = v
+        o = render(build, f)
+        return o.get('auditd', {}), o.get('collection_integrity', {})
+    # "No rules" is a collected, EMPTY running list; the on-disk rules are untouched
+    au, _ = with_cf(auditd_active_rules_raw='norules\nstatus|enabled|1\nstatus|failure|1\nend:ok')
+    assert au['active_rules'] == [] and au['rules'] == a['rules'] and au['running_status']['enabled'] == 1, '"No rules" is not an empty running list'
+    # auditctl failing / missing / odd output: running rules NOT COLLECTED
+    for raw, why in (('unreadable|auditctl -l|rc=1\nend:ok', 'failing auditctl'), ('missing_cmd|auditctl\nend:ok', 'missing auditctl'),
+                     ('r|-w /etc/passwd -p wa\nWarning - something\nend:ok', 'unexpected line'), ('norules\nr|-w /x -p wa\nend:ok', 'No rules beside rules'),
+                     ('r|-w /etc/passwd -p wa', 'no end:ok'), ('r|-w /x -p wa\nend:ok\nr|-w /y -p wa\nend:ok', 'forged end:ok'), ('', 'not run')):
+        au, integ = with_cf(auditd_active_rules_raw=raw)
+        assert 'active_rules' not in au and 'rules' in au, '%s: running rules emitted' % why
+    au, integ = with_cf(auditd_active_rules_raw='unreadable|auditctl -l|rc=1\nend:ok')
+    assert integ['audit_rules_running']['unreadable'] == ['auditctl -l|rc=1'], 'rejection not recorded'
+    # no rules.d is a collected, empty on-disk list; an unreadable file is not collected
+    au, _ = with_cf(auditd_ondisk_rules_raw='nodir|/etc/audit/rules.d\nend:ok')
+    assert au['rules'] == [] and 'active_rules' in au, 'absent rules.d is not an empty on-disk list'
+    au, integ = with_cf(auditd_ondisk_rules_raw='file|a.rules\nl|-w /etc/passwd -p wa\nunreadable|/etc/audit/rules.d/b.rules\nend:ok')
+    assert 'rules' not in au and 'audit_rules_on_disk' in integ, 'partly unreadable rules.d read as complete'
+    au, _ = with_cf(auditd_ondisk_rules_raw='file|a.rules\nl|# only a comment\nend:ok')
+    assert au['rules'] == ['# only a comment'], 'comment-only rules.d must stay evaluable (a fail), not empty'
+    au, _ = with_cf(auditd_ondisk_rules_raw='file|a.rules\nl|' + EVIL + '\nl|end:ok\nend:ok')
+    assert au['rules'] == [EVIL, 'end:ok'] and EVAL_MARK not in json.dumps(au, default=str), 'rule text evaluated or dropped'
+    # a stored row with only the legacy one-text auditd_rules_raw: neither field
+    au, _ = with_cf(auditd_active_rules_raw=None, auditd_ondisk_rules_raw=None)
+    assert 'rules' not in au and 'active_rules' not in au and 'config' in au, 'legacy single-source text mapped to a source it may not be'
+    print('audit-rules check: running and on-disk rules apart, "No rules" empty, failures not collected')
+
+
+def check_profile_attest(task_file, build, facts):
+    """cis_rhel9_profile_attest.yml: render its own expressions against a stub
+    policy and (when available) the real one; then the mapper pass-through."""
+    try:   # lookups (fileglob, file) need the plugin loader outside a playbook run
+        from ansible.plugins.loader import init_plugin_loader
+        init_plugin_loader()
+    except ImportError:
+        pass
+    tasks = yaml.safe_load(open(task_file))
+    vocab_t, valid_t = tasks[0], tasks[1]
+    assert tasks[2]['when'] == '_cis_rhel9_selection_errors | length > 0', 'fail task condition changed'
+
+    def run(policy_dir, **kv):
+        ctx = {'cis_rhel9_policy_dir': policy_dir, 'playbook_dir': '/nonexistent'}
+        ctx.update(kv)
+        t = lambda e: Templar(loader=DataLoader(), variables=ctx).template(e)
+        for k, e in vocab_t['vars'].items():
+            ctx[k] = t(e)
+        ctx['_cis_rhel9_vocab'] = t(vocab_t['ansible.builtin.set_fact']['_cis_rhel9_vocab'])
+        for k, e in valid_t['vars'].items():
+            ctx[k] = t(e)
+        sf = valid_t['ansible.builtin.set_fact']
+        return t(sf['_cis_rhel9_selection_errors']), t(sf['cis_rhel9_selection']), ctx['_cis_rhel9_vocab']
+
+    stub = tempfile.mkdtemp()
+    open(os.path.join(stub, 'a.rego'), 'w').write(
+        'package x\nprofiles := {"level1_server": {"platform": "server", "level": 1}, "level2_server": {"platform": "server", "level": 2}, '
+        '"level1_workstation": {"platform": "workstation", "level": 1}, "level2_workstation": {"platform": "workstation", "level": 2}}\n')
+    open(os.path.join(stub, 'b.rego'), 'w').write('package y\nr if input.attest.gpg_keys_reviewed == true\nq if input.attest.suid_sgid_files_reviewed == true\n')
+    empty = tempfile.mkdtemp()
+
+    err, sel, voc = run(stub)
+    assert err == [] and sel == {'profile': 'level1_server', 'attest': {}, 'attestation_records': []}, (err, sel)
+    assert voc['profiles'] == ['level1_server', 'level1_workstation', 'level2_server', 'level2_workstation'] and voc['attest'] == ['gpg_keys_reviewed', 'suid_sgid_files_reviewed']
+    err, sel, _ = run(stub, cis_rhel9_profile='level2_server', cis_rhel9_attestations={
+        'gpg_keys_reviewed': True, 'suid_sgid_files_reviewed': {'attested': True, 'attested_by': 'auditor', 'evidence_ref': 'CHG-1'}})
+    assert err == [] and sel['profile'] == 'level2_server' and sel['attest'] == {'gpg_keys_reviewed': True, 'suid_sgid_files_reviewed': True}, (err, sel)
+    assert {'name': 'suid_sgid_files_reviewed', 'attested': True, 'attested_by': 'auditor', 'evidence_ref': 'CHG-1'} in sel['attestation_records']
+    err, sel, _ = run(stub, cis_rhel9_attestations='gpg_keys_reviewed: true\nsuid_sgid_files_reviewed: false\n')   # a survey text field
+    assert err == [] and sel['attest'] == {'gpg_keys_reviewed': True, 'suid_sgid_files_reviewed': False}, (err, sel)
+    for kv, why in (({'cis_rhel9_profile': 'level3_server'}, 'unknown profile'), ({'cis_rhel9_profile': 'level1'}, 'alias outside the vocabulary'),
+                    ({'cis_rhel9_attestations': {'not_a_policy_name': True}}, 'unknown attestation'),
+                    ({'cis_rhel9_attestations': {'gpg_keys_reviewed': 'true'}}, 'string "true"'),
+                    ({'cis_rhel9_attestations': {'gpg_keys_reviewed': {'attested_by': 'x'}}}, 'record without attested'),
+                    ({'cis_rhel9_attestations': ['gpg_keys_reviewed']}, 'a list')):
+        err, sel, _ = run(stub, **kv)
+        assert err, '%s accepted' % why
+        assert all(v is True or v is False for v in sel['attest'].values()), 'non-boolean attestation passed through'
+    err, _, _ = run(empty, cis_rhel9_profile='level2_server')
+    assert err and 'could not read' in err[0], 'unreadable vocabulary not reported'
+    assert run(empty)[0] == [], 'default profile without attestations needs no vocabulary'
+
+    # the real library: four profiles and the attestation names it reads
+    real = os.environ.get('CIS_RHEL9_POLICY_DIR') or os.path.join(os.path.dirname(task_file), '../../policies/benchmarks/cis/rhel_9')
+    if glob.glob(os.path.join(real, '*.rego')):
+        err, sel, voc = run(real, cis_rhel9_profile='level2_workstation', cis_rhel9_attestations={'gpg_keys_reviewed': True})
+        assert err == [] and voc['profiles'] == ['level1_server', 'level1_workstation', 'level2_server', 'level2_workstation'], (err, voc['profiles'])
+        print('profile/attest vocabulary from %s: %d profiles, %d attestation names' % (real, len(voc['profiles']), len(voc['attest'])))
+    else:
+        print('profile/attest vocabulary: SKIPPED the real library (no rego under %s; set CIS_RHEL9_POLICY_DIR)' % real)
+
+    # mapper pass-through: booleans reach the input; nothing without cis_selection
+    _, sel, _ = run(stub, cis_rhel9_profile='level2_server', cis_rhel9_attestations={'gpg_keys_reviewed': True})
+    o = render(build, facts, {'cis_selection': sel})
+    assert o['profile'] == 'level2_server' and o['attest'] == {'gpg_keys_reviewed': True} and o['attest']['gpg_keys_reviewed'] is True
+    assert json.loads(json.dumps(o, default=str))['attest']['gpg_keys_reviewed'] is True, 'attestation not a JSON true'
+    assert 'profile' not in render(build, facts) and 'attest' not in render(build, facts, {'cis_selection': {}}), 'selection added without cis_selection'
+    print('profile/attest check: vocabulary from the policy, unknown values fail, booleans pass through')
 
 
 if __name__ == '__main__':

@@ -14,26 +14,32 @@ opa eval -f pretty -d policies/benchmarks/cis/rhel_9/ -i /tmp/opa_input.json \
     'object.filter(data.cis_rhel9.main.compliance_report, {"assessment_coverage_percentage","sections_not_assessed","total_controls","passed_controls","failed_controls"})'
 ```
 
-Expected with the shipped fixture (2026-10-22, policies at rego `dd688ae3`, CIS
-RHEL 9 v3.0.0), per `profile`:
+Expected with the shipped fixture (2026-11-18, CIS RHEL 9 v3.0.0), per
+`profile` (the harness input carries no `profile`; set it on the rendered
+JSON, as the playbooks now do from `cis_rhel9_profile`):
 
-| profile | total | passed | failed | evidence missing |
-|---|---|---|---|---|
-| level1_server | 263 | 232 | 31 | 1 |
-| level2_server | 352 | 271 | 81 | 1 |
-| level1_workstation | 252 | 221 | 31 | 1 |
-| level2_workstation | 341 | 260 | 81 | 1 |
+| profile | total | passed | failed | evidence missing | not attested |
+|---|---|---|---|---|---|
+| level1_server | 263 | 234 | 29 | 0 | 18 |
+| level2_server | 352 | 273 | 79 | 0 | 23 |
+| level1_workstation | 252 | 223 | 29 | 0 | 18 |
+| level2_workstation | 341 | 262 | 79 | 0 | 23 |
 
-The one evidence-missing id is 2.4.1.7: the fixture host has no
-`/etc/cron.yearly`, and the library reads only its mode (an absent directory
-is not handled there yet). A stock RHEL 9.8 cronie install has none either
-(lab run 2026-10-22); the mapper reports `cron.cron_yearly_exists: false`.
-6.2.3.36 fails on the fixture because `augenrules --check` prints the path it
-was invoked by (`/sbin/augenrules: No change` on RHEL 9.8) and the library
-matches only `/usr/sbin`. The failures are genuine for
-the synthetic host (attestations not given, `overlay` loaded, ptrace_scope not
-persisted, audit rules and PAM settings below the benchmark, ...); they are
-kept on purpose so the fixture is not tailored to pass.
+Measured against Rego library main `50c69589`. At the product pin `58b649bd`
+the Level 1 rows have one more failure (6.1.3.1; 233 / 30 and 222 / 30) and
+the Level 2 rows are the same. With all 23 attestations the policy reads set to
+`true` (`attest`), level1_server is 252 / 11 and level2_server 296 / 56 at main.
+The failures are genuine for the synthetic host (`overlay` loaded,
+ptrace_scope not persisted, audit rules and PAM settings below the benchmark,
+...); they are kept on purpose so the fixture is not tailored to pass.
+
+The fixture's audit rules come from the two sources the collector now reads
+apart (`auditd_active_rules_raw`: `auditctl -l`, `auditd_ondisk_rules_raw`:
+`/etc/audit/rules.d/*.rules`) and differ on purpose: `/etc/shadow` is watched
+at runtime only, `/etc/group` on disk only, and `-e 2` is on disk only
+(`auditctl -l` never prints `-e` or `-c`). The legacy one-text
+`auditd_rules_raw` is a plain `auditctl -l` capture; the CIS mapper no longer
+reads it (the STIG mapper and drift detection still do).
 
 The fixture lives under `fixtures/` with a `.fixture.json` suffix because the
 repository ignores `*_facts.json`. It is synthetic (RFC 5737 address,
@@ -45,6 +51,18 @@ blocks (user names, certificate subjects, key comments) are not evaluated, that
 a supplement section is not emitted without its collector block's `end:ok`
 marker, and that supplement fields extend (recursive combine) rather than
 replace the base pam / auditd / cron sections.
+It asserts that the running and the on-disk audit rules land in their own
+fields (`auditd.active_rules`, `auditd.rules`), that "No rules" is an empty
+running list, that a failing or missing `auditctl`, an unreadable rules file
+or a legacy single-text row yields no field rather than an empty one, that a
+complete world-writable sweep with more than 100 files is a failure with its
+count (never `truncated`, which the policy reads as evidence missing) while a
+sweep that timed out is not collected (`truncated`, findings kept), and that the
+profile / attestation task (`ansible/tasks/cis_rhel9_profile_attest.yml`)
+rejects an unknown profile, an unknown attestation name and a non-boolean
+value. The task reads its vocabulary from the policy files; the harness runs
+it against a stub policy and, when `CIS_RHEL9_POLICY_DIR` (or the
+`policies/` submodule) has the rhel_9 module, against the real one.
 It also asserts evidence integrity: a block whose `end:ok` is duplicated or not
 its last line (a forged line), or a fixed-path stat or sysctl key reported twice,
 is not collected, so the policy reports NOT ASSESSED / evidence missing rather
@@ -74,6 +92,13 @@ hostile host states and asserts that none of them yields a pass:
 - a missing `/etc/shadow` (`truncated|shadow`: the block is rejected, never an
   empty passing list)
 - a host without `find` (the certificate block names it and never prints `end:ok`)
+- the audit blocks: no `auditctl` (`missing_cmd`), `auditctl -l` printing
+  "No rules" (`norules`, no rule line), `auditctl -l` failing (`unreadable`
+  with its exit code), no `rules.d` (`nodir`), rules files named `9-`, `10-`,
+  `99-` (read in augenrules order, a version sort; a `.conf` file ignored) and
+  a rules file the collector cannot read (`unreadable`)
+- a sweep that runs (a stand-in `findmnt` lists `/srv`): 130 world-writable
+  files give 100 `wwfile` lines, `truncated|wwfile` and `count|wwfile|130`
 
 ```bash
 tests/cis_mapper/collector_shell_test.sh "$PY"
@@ -102,5 +127,10 @@ shell test and the mapper harness above do not exercise (found on the first
 real-host run, 2026-10-19).
 
 ```bash
-$PY tests/cis_mapper/check_task_args.py ansible/tasks/collect_linux_compliance_facts.yml
+$PY tests/cis_mapper/check_task_args.py ansible/tasks/collect_linux_compliance_facts.yml \
+    ansible/tasks/cis_linux_build_opa_input.yml ansible/tasks/cis_rhel9_profile_attest.yml
 ```
+
+None of these tests runs in CI today (no workflow calls `tests/cis_mapper`);
+run them before a PR that touches the collector, the mapper or the profile /
+attestation task.
