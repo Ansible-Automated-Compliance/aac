@@ -9,6 +9,9 @@
 # Input:   facts_data     — {ansible_facts: {...}, custom_facts: {...}} as produced
 #                           by ../tasks/collect_linux_compliance_facts.yml
 #          opa_hostname   — hostname to report (optional)
+#          cis_selection  — {profile, attest, attestation_records} from
+#                           ../tasks/cis_rhel9_profile_attest.yml (optional;
+#                           only for a policy that reads profile / attest)
 #          m              — when called in a loop from evaluate_stored_facts.yml,
 #                           the matrix row; the built input is appended to
 #                           eval_inputs as {'m': m, 'input': opa_input}
@@ -37,8 +40,9 @@
 #
 # Sections emitted today and the facts behind them:
 #   ansible_facts, ssh, pam (+ login.defs aging, password_auth, root_gid,
-#   default_umask, tmout, inactive_days), auditd (+ log / log dir / config
-#   file permissions), services (ansible service_facts), packages (audit,
+#   default_umask, tmout, inactive_days), auditd (config; active_rules from
+#   auditctl -l and rules from /etc/audit/rules.d, each from its own block;
+#   + log / log dir / config file permissions), services (ansible service_facts), packages (audit,
 #   pwquality), sudo, selinux, bootloader, rsyslog, journald, chronyd,
 #   time_synchronization, autofs, cron (daemon state + file modes/owners and
 #   allow/deny presence), initial_setup (banner presence, banner modes/owners,
@@ -120,11 +124,66 @@
                    'system_auth': _cf.pam_config_raw | default('')} | combine(_aging))}
          if ((_cf.pam_config_raw | default('') | length > 0) or (_cf.pwquality_conf_raw | default('') | length > 0)) else {} }}
 
-    # ── auditd (CIS 4.1.x) ─────────────────────────────────────────────────
-    _auditd_rules: "{{ (_cf.auditd_rules_raw | default('')) | split('\n') | select | list }}"
+    # ── auditd (CIS 6.2.2.x, 6.2.3.x) ──────────────────────────────────────
+    # Two sources, two fields, each only from its own valid block (end:ok
+    # unique and last, no missing_cmd / unreadable / unexpected line):
+    #   active_rules <- auditctl -l          (auditd_active_rules_raw, r|<rule>)
+    #   rules        <- /etc/audit/rules.d   (auditd_ondisk_rules_raw, l|<line>)
+    # "No rules" (norules) and an absent rules.d (nodir) are collected, EMPTY
+    # lists; a block that failed is no field at all (evidence missing). A
+    # stored row with only the legacy one-text auditd_rules_raw yields neither
+    # field: which source that text came from cannot be known.
+    _arun_kv: >-
+      {%- set d = {'_dup': [], '_missing': [], '_unreadable': [], '_unexpected': [], 'r': [], 'norules': 0, 'status': {}} -%}
+      {%- set lines = (_cf.auditd_active_rules_raw | default('')) | trim | split('\n') -%}
+      {%- set marked = ((lines | select('equalto', 'end:ok') | list | length) == 1) and ((lines | last) == 'end:ok') -%}
+      {%- for line in lines if marked and line != 'end:ok' -%}
+        {%- set p = line.split('|') -%}
+        {%- if p[0] == 'r' and (p | length) >= 2 -%}{%- set _ = d.r.append(p[1:] | join('|')) -%}
+        {%- elif line == 'norules' -%}{%- set _ = d.update({'norules': d.norules + 1}) -%}
+        {%- elif p[0] == 'status' and (p | length) == 3 and (p[2] is match('^[0-9]+$')) -%}
+          {%- if p[1] in d.status -%}{%- set _ = d._dup.append('status|' ~ p[1]) -%}{%- endif -%}
+          {%- set _ = d.status.update({p[1]: (p[2] | int)}) -%}
+        {%- elif p[0] == 'missing_cmd' -%}{%- set _ = d._missing.append(p[1:] | join('|')) -%}
+        {%- elif p[0] == 'unreadable' -%}{%- set _ = d._unreadable.append(p[1:] | join('|')) -%}
+        {%- else -%}{%- set _ = d._unexpected.append(line) -%}
+        {%- endif -%}
+      {%- endfor -%}
+      {#- "No rules" beside rules, or twice, is not an auditctl -l listing -#}
+      {%- if d.norules > 1 or (d.norules == 1 and (d.r | length) > 0) -%}{%- set _ = d._unexpected.append('norules') -%}{%- endif -%}
+      {{ d | combine({'_marked': marked}) }}
+    _adisk_kv: >-
+      {%- set d = {'_dup': [], '_missing': [], '_unreadable': [], '_unexpected': [], 'l': [], 'file': [], 'nodir': 0} -%}
+      {%- set lines = (_cf.auditd_ondisk_rules_raw | default('')) | trim | split('\n') -%}
+      {%- set marked = ((lines | select('equalto', 'end:ok') | list | length) == 1) and ((lines | last) == 'end:ok') -%}
+      {%- for line in lines if marked and line != 'end:ok' -%}
+        {%- set p = line.split('|') -%}
+        {%- if p[0] == 'l' and (p | length) >= 2 -%}{%- set _ = d.l.append(p[1:] | join('|')) -%}
+        {%- elif p[0] == 'file' and (p | length) >= 2 -%}
+          {%- if (p[1:] | join('|')) in d.file -%}{%- set _ = d._dup.append('file|' ~ (p[1:] | join('|'))) -%}{%- endif -%}
+          {%- set _ = d.file.append(p[1:] | join('|')) -%}
+        {%- elif p[0] == 'nodir' -%}{%- set _ = d.update({'nodir': d.nodir + 1}) -%}
+        {%- elif p[0] == 'unreadable' -%}{%- set _ = d._unreadable.append(p[1:] | join('|')) -%}
+        {%- else -%}{%- set _ = d._unexpected.append(line) -%}
+        {%- endif -%}
+      {%- endfor -%}
+      {%- if d.nodir > 1 or (d.nodir == 1 and ((d.file | length) > 0 or (d.l | length) > 0)) -%}{%- set _ = d._unexpected.append('nodir') -%}{%- endif -%}
+      {%- if (d.l | length) > 0 and (d.file | length) == 0 -%}{%- set _ = d._unexpected.append('rule lines outside a file') -%}{%- endif -%}
+      {{ d | combine({'_marked': marked}) }}
+    _ok_arun: "{{ (_arun_kv._marked | bool) and (_arun_kv._dup + _arun_kv._missing + _arun_kv._unreadable + _arun_kv._unexpected) | length == 0 }}"
+    _ok_adisk: "{{ (_adisk_kv._marked | bool) and (_adisk_kv._dup + _adisk_kv._missing + _adisk_kv._unreadable + _adisk_kv._unexpected) | length == 0 }}"
     _auditd: >-
-      {{ {'auditd': {'config': _cf.auditd_conf_raw | default(''), 'active_rules': _auditd_rules, 'rules': _auditd_rules}}
-         if ((_cf.auditd_rules_raw | default('') | length > 0) or (_cf.auditd_conf_raw | default('') | length > 0)) else {} }}
+      {%- set a = {} -%}
+      {%- if (_cf.auditd_conf_raw | default('') | length) > 0 -%}{%- set _ = a.update({'config': _cf.auditd_conf_raw}) -%}{%- endif -%}
+      {%- if (_ok_adisk | bool) -%}
+        {#- blank lines carry nothing (augenrules drops them); comments stay, the policy skips them -#}
+        {%- set _ = a.update({'rules': (_adisk_kv.l | reject('match', '^\\s*$') | list), 'rules_files': _adisk_kv.file}) -%}
+      {%- endif -%}
+      {%- if (_ok_arun | bool) -%}
+        {%- set _ = a.update({'active_rules': _arun_kv.r}) -%}
+        {%- if (_arun_kv.status | length) > 0 -%}{%- set _ = a.update({'running_status': _arun_kv.status}) -%}{%- endif -%}
+      {%- endif -%}
+      {{ {'auditd': a} if (a | length) > 0 else {} }}
 
     # ── packages the modules ask about and the collector can answer ────────
     _packages:
@@ -242,17 +301,8 @@
                                         'has_noexec': ('noexec' in ((_shm_mount.options | default('')) | split(',')))}}}
          if (_af.mounts is defined) else {} }}
 
-    # ── world-writable files (CIS 6.1.x) ───────────────────────────────────
-    # The collector lists at most 100 paths; count is the TRUE total when it
-    # was collected, and truncated: true marks a partial list (or an unknown
-    # total, e.g. the sweep timed out), which is never compliant.
-    _ww: >-
-      {%- set ww = _cf.world_writable_files | reject('match', '^__count__[|]') | list -%}
-      {%- set tr = (_cf.world_writable_truncated | default(false)) | bool -%}
-      {%- set n = (_cf.world_writable_count | int) if ((_cf.world_writable_count | default('', true) | string) is match('^[0-9]+$')) else (ww | length) -%}
-      {{ {'world_writable': ({'files': ww, 'count': (n | int), 'compliant': ((n | int) == 0 and not tr)}
-                             | combine({'truncated': true} if tr else {}))}
-         if (_cf.world_writable_files is defined) else {} }}
+    # ── world-writable files (CIS 7.1.11) ──────────────────────────────────
+    # Built below (_ww, after the filesystem-sweep parse it reads).
 
     # ══ CIS supplement (collector blocks ending in "end:ok") ══════════════
     # A block without its end:ok marker (not run, or a stored row older than
@@ -655,6 +705,12 @@
         {%- if (kv._dup + kv._unsafe + kv._trunc + kv._missing + kv._symlink) | length > 0 -%}
           {%- set _ = o.update({name: {'duplicate_singletons': kv._dup, 'unsafe_names': kv._unsafe, 'truncated': kv._trunc,
                                        'missing_commands': kv._missing, 'symlinks': kv._symlink}}) -%}
+        {%- endif -%}
+      {%- endfor -%}
+      {%- for name, kv in [('audit_rules_running', _arun_kv), ('audit_rules_on_disk', _adisk_kv)] -%}
+        {%- if (kv._dup + kv._missing + kv._unreadable + kv._unexpected) | length > 0 -%}
+          {%- set _ = o.update({name: {'duplicate_singletons': kv._dup, 'missing_commands': kv._missing,
+                                       'unreadable': kv._unreadable, 'unexpected_lines': kv._unexpected}}) -%}
         {%- endif -%}
       {%- endfor -%}
       {{ {'collection_integrity': o} if (o | length) > 0 else {} }}
@@ -1296,6 +1352,52 @@
       {%- endif -%}
       {{ o }}
 
+    # ── world-writable files (CIS 7.1.11) ──────────────────────────────────
+    # The policy reads world_writable.files and .count and treats
+    # world_writable.truncated: true as EVIDENCE MISSING. So:
+    #  - a complete sweep with more files than the 100 listed is a FAIL with the
+    #    true count and a bounded sample (sample_capped: true), never truncated;
+    #  - an incomplete sweep (find failed or timed out, nothing swept) is NOT
+    #    COLLECTED: truncated: true, count_complete: false, and the paths found
+    #    so far kept as evidence (count is then a lower bound).
+    # Source: the wwfile list of the filesystem sweep (every local filesystem).
+    # A stored row from before that list existed (no wwfile line at all) falls
+    # back to the legacy root-filesystem fields, read with the same rules: a
+    # numeric count is the finished total, a null count (timed out) is
+    # incomplete. A new-collector row whose sweep block is invalid gets no
+    # section (the fallback would be root-only next to a missing sticky_bit).
+    _ww: >-
+      {%- set sw = {} -%}
+      {%- for c in _sweep_kv.get('count', []) if (c | length) == 2 and c[0] == 'wwfile' and ((c[1] | trim) is match('^\d+$')) -%}{%- set _ = sw.update({'n': (c[1] | trim | int)}) -%}{%- endfor -%}
+      {%- set n = {} -%}
+      {%- set cs = {} -%}
+      {%- for c in _sweep_kv.get('container_storage', []) if (c | length) == 2 and c[0] == 'wwfile' and ((c[1] | trim) is match('^\d+$')) -%}{%- set _ = cs.update({'n': (c[1] | trim | int)}) -%}{%- endfor -%}
+      {%- set o = {} -%}
+      {%- if (_ok_sweep | bool) and ('n' in sw) -%}
+        {%- set _ = n.update(sw) -%}
+        {%- set files = _sweep_kv.get('wwfile', []) | map('join', '|') | list -%}
+        {%- set tr = 'wwfile' in _sweep_kv._trunc -%}
+        {%- set incomplete = ((_sweep_kv.get('sweep_rc', []) | length) > 0) or (tr and n.n <= (files | length)) -%}
+        {%- set src = {'source': 'filesystem_sweep', 'container_storage_count': cs.get('n', 0)} -%}
+      {%- elif ('wwfile|' not in _sweep_raw) and (_cf.world_writable_files is defined) -%}
+        {%- set files = _cf.world_writable_files | default([], true) | reject('match', '^__count__[|]') | list -%}
+        {#- not default(x, true): a count of 0 is falsy and must stay 0 -#}
+        {%- set c = _cf.world_writable_count | default(none) -%}
+        {%- set c = '' if (c is none) else (c | string | trim) -%}
+        {%- if c is match('^[0-9]+$') -%}{%- set _ = n.update({'n': (c | int)}) -%}{%- set incomplete = false -%}
+        {%- elif 'world_writable_count' in _cf -%}{%- set _ = n.update({'n': (files | length)}) -%}{%- set incomplete = true -%}
+        {%- else -%}{%- set _ = n.update({'n': (files | length)}) -%}{%- set incomplete = false -%}
+        {%- endif -%}
+        {%- set src = {'source': 'legacy_root_filesystem_sweep'} -%}
+      {%- endif -%}
+      {%- if 'n' in n -%}
+        {%- set k = [n.n, (files | length)] | max -%}
+        {%- set _ = o.update({'world_writable': {'files': files, 'count': k, 'compliant': (k == 0 and not incomplete),
+                                                 'sample_capped': (k > (files | length)), 'count_complete': (not incomplete)}
+                                                | combine(src, {'truncated': true} if incomplete else {})}) -%}
+      {%- endif -%}
+      {{ o }}
+
     # ── filesystem sweep (CIS 6.2.3.10, 7.1.11, 7.1.12) ────────────────────
     # A capped or incomplete list (truncated) keeps its count as a LOWER
     # bound: a known non-zero count is enough to fail, so it is emitted
@@ -1320,6 +1422,12 @@
         {%- set _ = o.update({'auditd': {'privileged_commands': pc}}) -%}
       {%- endif -%}
       {{ o }}
+    # ── profile and attestations (CIS RHEL 9 only) ─────────────────────────
+    # cis_selection is {profile, attest, attestation_records} as validated by
+    # ../tasks/cis_rhel9_profile_attest.yml; a caller passes it only for a
+    # policy that reads it (the stored-facts path maps every Linux framework
+    # through this file). Absent: nothing is added (the policy default).
+    _selection: "{{ cis_selection | default({}, true) }}"
   set_fact:
     # recursive: the supplement sections extend pam / auditd / cron /
     # initial_setup rather than replacing them.
@@ -1328,7 +1436,8 @@
                          _services, _initial, _fsmods, _mounts, _ww,
                          _boot_security, _network, _user_group, _pam_extra, _auditd_extra, _svc_section,
                          _initial_extra, _cron_extra, _storage, _certificates, _authorized_keys,
-                         _v3_kmod, _v3_sysctl, _v3_pkg, _v3_cfg, _v3_perms, _v3_acc, _v3_sweep, _integrity, recursive=True) }}
+                         _v3_kmod, _v3_sysctl, _v3_pkg, _v3_cfg, _v3_perms, _v3_acc, _v3_sweep, _integrity,
+                         _selection, recursive=True) }}
 
 - name: Append built input to the evaluation list (loop mode)
   set_fact:

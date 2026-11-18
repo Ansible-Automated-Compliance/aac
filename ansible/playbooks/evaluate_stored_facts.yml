@@ -18,6 +18,9 @@
 #   target_hostname  — specific hostname or "all" (default: all)
 #   target_policy    — policy name or "all" (default: all)
 #   facts_snapshot   — "latest" or ISO date YYYY-MM-DD (default: latest)
+#   cis_rhel9_profile, cis_rhel9_attestations — the CIS RHEL 9 profile and
+#                      attestations, as in cis_rhel9_assessment.yml; applied to
+#                      the registry entries marked cis_rhel9_selection: true
 
 - name: Evaluate stored facts against compliance policies
   hosts: localhost
@@ -47,6 +50,8 @@
         total_controls: 352
         os_distributions: ["RedHat", "Rocky", "AlmaLinux"]
         os_version_prefix: "9"
+        # the input carries cis_rhel9_profile / cis_rhel9_attestations
+        cis_rhel9_selection: true
       "CIS RHEL 9 (Fedora)":
         opa_url: "{{ opa_security_url }}/v1/data/cis_rhel9/main/compliance_report"
         policy_version: "CIS Red Hat Enterprise Linux 9 Benchmark v3.0.0"
@@ -55,6 +60,7 @@
         total_controls: 352
         os_distributions: ["Fedora"]
         os_version_prefix: ""
+        cis_rhel9_selection: true
       "CIS Ubuntu 22.04":
         opa_url: "{{ opa_security_url }}/v1/data/cis_ubuntu_22_04/main/compliance_report"
         policy_version: "CIS Ubuntu Linux 22.04 LTS Benchmark v2.0.0"
@@ -170,6 +176,11 @@
       set_fact:
         eval_inputs: []
 
+    # Once per run, before any input is built: an unknown profile or
+    # attestation name fails here, not after half the matrix was evaluated.
+    - name: Validate the CIS RHEL 9 profile and attestations
+      include_tasks: ../tasks/cis_rhel9_profile_attest.yml
+
     - name: Build OPA input for each host+policy combination (shared mapper)
       include_tasks: ../tasks/cis_linux_build_opa_input.yml
       loop: "{{ eval_matrix }}"
@@ -179,6 +190,7 @@
       vars:
         facts_data: "{{ m.facts_data }}"
         opa_hostname: "{{ m.hostname }}"
+        cis_selection: "{{ cis_rhel9_selection if (m.policy_cfg.cis_rhel9_selection | default(false) | bool) else {} }}"
 
     # ── Evaluate at the gated /main/compliance_report endpoint ───────────────
     # The report carries total / passed / failed / percentage computed by the
@@ -244,7 +256,7 @@
           - "{{ item.json.result.failed_controls | default(item.json.result.violations | default([]) | length) | int }}"
           - "{{ item.json.result.compliance_percentage | default(0) | float }}"
           - "{{ item.json.result.violations | default([]) | to_json }}"
-          - "{{ {'hostname': item.item.m.hostname, 'os_distribution': item.item.m.os_distribution, 'os_version': item.item.m.os_version, 'facts_id': item.item.m.facts_id, 'evaluation_source': 'stored_facts', 'evaluation_endpoint': 'main/compliance_report', 'opa_url': item.item.m.policy_cfg.opa_url, 'controls_basis': item.json.result.controls_basis | default(''), 'assessment_coverage_percentage': item.json.result.assessment_coverage_percentage | default(0), 'sections_not_assessed': item.json.result.sections_not_assessed | default([])} | to_json }}"
+          - "{{ {'hostname': item.item.m.hostname, 'os_distribution': item.item.m.os_distribution, 'os_version': item.item.m.os_version, 'facts_id': item.item.m.facts_id, 'evaluation_source': 'stored_facts', 'evaluation_endpoint': 'main/compliance_report', 'opa_url': item.item.m.policy_cfg.opa_url, 'controls_basis': item.json.result.controls_basis | default(''), 'profile': item.json.result.profile | default(''), 'attested': ((item.item.input.attest | default({})) | dict2items | selectattr('value') | map(attribute='key') | list), 'assessment_coverage_percentage': item.json.result.assessment_coverage_percentage | default(0), 'sections_not_assessed': item.json.result.sections_not_assessed | default([])} | to_json }}"
       loop: "{{ opa_responses.results }}"
       loop_control:
         label: "{{ item.item.m.hostname }} × {{ item.item.m.policy_name }}"

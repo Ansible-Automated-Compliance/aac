@@ -155,6 +155,20 @@
                 type: text
                 default: "latest"
                 required: false
+              # validated by ansible/tasks/cis_rhel9_profile_attest.yml (unknown values fail the job)
+              - question_name: CIS RHEL 9 Profile
+                question_description: "CIS RHEL 9 profile for the CIS RHEL 9 rows"
+                variable: cis_rhel9_profile
+                type: multiplechoice
+                choices: "level1_server\nlevel2_server\nlevel1_workstation\nlevel2_workstation"
+                default: "level1_server"
+                required: false
+              - question_name: CIS RHEL 9 Attestations
+                question_description: "YAML or JSON mapping of attestation name to true, e.g. gpg_keys_reviewed: true (names: input.attest.* of the policy)"
+                variable: cis_rhel9_attestations
+                type: textarea
+                default: ""
+                required: false
 
           - name: "AAC - Deploy Infrastructure"
             description: >

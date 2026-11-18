@@ -80,6 +80,34 @@ echo '##### sweep'; bash /s/fs_sweep_raw.sh
 # (16) shadow evidence carries no hash material
 cp /etc/shadow /tmp/shadow.bak; sed -i 's|^root:[^:]*:[^:]*:|root:$6$saltsalt$abcdefghijklmnop:20000:|' /etc/shadow
 echo '##### accounts'; bash /s/accounts_raw.sh; cp /tmp/shadow.bak /etc/shadow
+# (23) a sweep that does run (a stand-in findmnt lists /srv as a local
+#      filesystem): 130 world-writable files under /srv/ww from (7)
+mkdir -p /usr/local/bin; printf '#!/bin/bash\necho "/srv rw,relatime"\n' > /usr/local/bin/findmnt; chmod 755 /usr/local/bin/findmnt
+echo '##### sweep_srv'; bash /s/fs_sweep_raw.sh; rm -f /usr/local/bin/findmnt
+# ── audit rules, two sources (2026-11) ──
+# (17) no auditctl: missing_cmd (not collected), never an empty rule list
+echo '##### arun_nocmd'; bash /s/auditd_active_rules_raw.sh
+# (18) a kernel with no rules: auditctl -l prints "No rules", which is no rule
+mkdir -p /usr/local/sbin
+printf '#!/bin/bash\ncase "$1" in -l) echo "No rules" ;; -s) printf "enabled 1\\nfailure 1\\npid 0\\n" ;; esac\n' > /usr/local/sbin/auditctl
+chmod 755 /usr/local/sbin/auditctl
+echo '##### arun_norules'; bash /s/auditd_active_rules_raw.sh
+# (19) auditctl -l failing (no CAP_AUDIT_CONTROL): unreadable, no rule lines
+printf '#!/bin/bash\necho "Cannot open netlink audit socket" >&2; exit 1\n' > /usr/local/sbin/auditctl
+echo '##### arun_fail'; bash /s/auditd_active_rules_raw.sh
+rm -f /usr/local/sbin/auditctl
+# (20) no rules.d: a collected, empty on-disk list
+echo '##### adisk_nodir'; bash /s/auditd_ondisk_rules_raw.sh
+# (21) augenrules order is a version sort (9 before 10 before 99); only *.rules
+mkdir -p /etc/audit/rules.d
+echo '-w /etc/passwd -p wa -k identity' > /etc/audit/rules.d/10-b.rules
+echo '-D' > /etc/audit/rules.d/9-a.rules
+printf -- '-e 2' > /etc/audit/rules.d/99-z.rules
+echo '-w /etc/shadow -p wa -k identity' > /etc/audit/rules.d/x.conf
+echo '##### adisk_order'; bash /s/auditd_ondisk_rules_raw.sh
+# (22) a rules file the collector cannot read: unreadable, never skipped
+chmod 600 /etc/audit/rules.d/10-b.rules; chmod 755 /etc/audit /etc/audit/rules.d
+echo '##### adisk_unreadable'; su alice -s /bin/bash -c 'bash /s/auditd_ondisk_rules_raw.sh'
 echo '##### end'
 EOF
 
@@ -129,4 +157,20 @@ check "v3 sweep: no local filesystem swept -> truncated for every list" \
   '[ "$(section sweep | grep -cE "^truncated\|(unowned|ungrouped|nosticky|priv)$")" -eq 4 ]'
 check "v3 accounts: root has a hash -> state P, no hash text anywhere" \
   'section accounts | grep -q "^sh|root|P|20000|" && ! section accounts | grep -q "saltsalt"'
+check "v3 sweep: no local filesystem swept -> world-writable file list truncated too" \
+  'section sweep | grep -q "^truncated|wwfile$" && section sweep | grep -q "^count|wwfile|0$"'
+check "v3 sweep: 130 world-writable files -> 100 listed, truncated|wwfile, true count 130" \
+  '[ "$(section sweep_srv | grep -c "^wwfile|/srv/ww/")" -eq 100 ] && section sweep_srv | grep -q "^truncated|wwfile$" && section sweep_srv | grep -q "^count|wwfile|130$" && ! section sweep_srv | grep -q "^sweep_rc|"'
+check "audit running: no auditctl -> missing_cmd, end:ok, no rule line" \
+  'section arun_nocmd | grep -q "^missing_cmd|auditctl$" && [ "$(section arun_nocmd | tail -1)" = "end:ok" ] && ! section arun_nocmd | grep -q "^r|"'
+check "audit running: No rules -> norules, no rule line, status enabled 1" \
+  'section arun_norules | grep -q "^norules$" && ! section arun_norules | grep -q "^r|" && section arun_norules | grep -q "^status|enabled|1$" && ! section arun_norules | grep -q "^status|pid"'
+check "audit running: failing auditctl -l -> unreadable with its rc" \
+  'section arun_fail | grep -q "^unreadable|auditctl -l|rc=1$" && ! section arun_fail | grep -qE "^(r|norules)"'
+check "audit on disk: no rules.d -> nodir, end:ok" \
+  'section adisk_nodir | grep -q "^nodir|/etc/audit/rules.d$" && [ "$(section adisk_nodir | tail -1)" = "end:ok" ]'
+check "audit on disk: augenrules order 9, 10, 99; .conf ignored; last line without newline kept" \
+  '[ "$(section adisk_order | sed -n "s/^file|//p" | tr "\n" " ")" = "9-a.rules 10-b.rules 99-z.rules " ] && section adisk_order | grep -q "^l|-e 2$" && ! section adisk_order | grep -q "shadow"'
+check "audit on disk: unreadable rules file -> unreadable, its lines absent" \
+  'section adisk_unreadable | grep -q "^unreadable|/etc/audit/rules.d/10-b.rules$" && ! section adisk_unreadable | grep -q "^l|-w /etc/passwd"'
 exit $fail
