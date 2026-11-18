@@ -300,15 +300,24 @@ jobs:
       - name: Repository hygiene policy
         if: steps.detect.outputs.changed == 'true'
         shell: bash +e {0}
+        env:
+          # The policy ships no addresses: the denylist for AAC-ANS-003 is the
+          # caller's. Without it the rule reports "evidence missing" for every
+          # playbook (it does not pass), so this step fails closed.
+          LAB_ADDRESSES: ${{ secrets.LAB_ADDRESSES }}
         run: |
           POLICY=policies/enforcement/ansible/repo_hygiene.rego
+          # GitHub masks only the whole secret, not its comma-split parts — mask each.
+          IFS=',' read -ra _la <<< "${LAB_ADDRESSES:-}"
+          for _a in "${_la[@]}"; do [ -n "$_a" ] && echo "::add-mask::$_a"; done
           if [ ! -f "$POLICY" ]; then
             echo "FAIL: $POLICY not found — was the submodule checked out?"
             exit 1
           fi
 
           python - <<'PY' > /tmp/hygiene.jsonl
-          import yaml, json, pathlib
+          import yaml, json, os, pathlib
+          lab_addresses = [a.strip() for a in os.environ.get("LAB_ADDRESSES", "").split(",") if a.strip()]
           for f in sorted(pathlib.Path('ansible/playbooks').glob('*.yml')):
               try:
                   d = yaml.safe_load(f.read_text(encoding='utf-8'))
@@ -318,7 +327,7 @@ jobs:
                   continue
               if not any(isinstance(p, dict) and ('hosts' in p or any(str(k).endswith('import_playbook') for k in p)) for p in d):
                   continue          # task file, not a playbook
-              print(json.dumps({"path": str(f), "plays": d}))
+              print(json.dumps({"path": str(f), "plays": d, "lab_addresses": lab_addresses}))
           PY
 
           evaluated=$(wc -l < /tmp/hygiene.jsonl | tr -d ' ')

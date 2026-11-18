@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Changed — CI: the playbook hygiene gate takes its address denylist from the `LAB_ADDRESSES` secret
+
+- "Validate Ansible content" passes the addresses to `repo_hygiene.rego` as `input.lab_addresses` (each one masked in the log), as the install-config hygiene gate already does. The current library carries no addresses of its own and reports AAC-ANS-003 as "evidence missing" for every playbook when none is supplied; the policy at today's pin ignores the extra input, so this lands ahead of the pin bump. A pull request from a fork cannot read the secret and fails this step.
+
 ### Fixed — CIS RHEL 9: audit rules from their two sources, profile and attestations, large world-writable sweeps
 
 - **Audit rules (CIS 6.2.3.x).** The collector read `auditctl -l || cat /etc/audit/rules.d/*.rules` as one text and the mapper put it into both `auditd.rules` (on disk) and `auditd.active_rules` (running), so the policy's "in both" test compared one source with itself: a rule loaded by hand and lost at reboot passed, and 6.2.3.34 / 6.2.3.35 (`-c`, `-e 2`) failed on correctly configured hosts because `auditctl -l` never prints those lines. `ansible/tasks/collect_linux_compliance_facts.yml` now collects the running rules (`auditctl -l`, plus `auditctl -s` enabled / failure) and the on-disk rules (`/etc/audit/rules.d/*.rules` in augenrules order) as two tagged blocks; the mapper fills each field only from its own block. "No rules" is an empty running list; a missing or failing `auditctl` or an unreadable rules file is not collected (evidence missing), never an empty list. `/etc/audit/audit.rules` is not read (augenrules builds it from rules.d; 6.2.3.36 compares the two). Stored rows collected before this change carry only the one-text `auditd_rules_raw` and now report 6.2.3.1-6.2.3.35 as evidence missing until the host is collected again; `auditd_rules_raw` itself is still collected for the STIG mapper and drift detection.
