@@ -1,0 +1,22 @@
+---
+
+- name: Disable Rulebook Activations
+  ansible.eda.rulebook_activation:
+    name: "{{ item }}"
+    state: disabled
+  loop:
+    - "Compliance Webhook Events"
+    - "AMI Event Webhook"
+    - "AI Governance Enforcement"
+    - "Sentinel GitHub Webhook"
+    - "Golden Image Enforcement"
+  ignore_errors: true
+
+- name: Create EDA Rulebook Activations
+  ansible.builtin.include_tasks: "{{ item }}"
+  loop:
+    - webhook_events.yml
+    # - ami_events.yml
+    # - ai_governance.yml
+    # - sentinel.yml
+    # - golden_image.yml

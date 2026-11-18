@@ -1,0 +1,20 @@
+---
+
+- name: Compliance Report
+  ansible.controller.job_template:
+    name: AAC_Compliance_Report
+    description: "Compliance Report"
+    organization: "{{ aac_organization }}"
+    state: present
+    inventory: Compliance Infrastructure
+    project: "{{ aap_project_name }}"
+    playbook: ansible/playbooks/generate_compliance_report_from_db.yml
+    job_type: run
+    execution_environment: "{{ aap_project_default_ee }}"
+    credentials:
+      - "{{ aac_cred_postgresql }}"
+      - "{{ aac_cred_vault }}"
+    become_enabled: true
+    extra_vars:
+      aac_caa_enabled: false
+      opa_security_url: "http://{{ aac_host }}:8181"

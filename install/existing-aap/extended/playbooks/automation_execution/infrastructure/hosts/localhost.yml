@@ -1,0 +1,11 @@
+---
+
+- name: Localhost Host
+  ansible.controller.host:
+    name: localhost
+    description: "Localhost host"
+    inventory: "{{ aac_inventory_name }}"
+    state: present
+    variables:
+      ansible_connection: local
+      ansible_python_interpreter: /usr/bin/python3

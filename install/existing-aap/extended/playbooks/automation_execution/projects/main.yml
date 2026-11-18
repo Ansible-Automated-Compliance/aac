@@ -1,0 +1,6 @@
+---
+
+- name: Create Projects
+  ansible.builtin.include_tasks: "{{ item }}"
+  loop:
+    - aac.yml

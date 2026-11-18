@@ -1,0 +1,19 @@
+---
+
+- name: Create Templates
+  ansible.builtin.include_tasks: "{{ item }}"
+  loop:
+    - cis_rhel9_assessment.yml
+    - cis_windows_server_2022_assessment.yml
+    - cis_m365v7_assessment.yml
+    - cis_m365v7_findings_report.yml
+    - cis_m365v7_violations_report.yml
+    - compliance_report.yml
+    - collect.yml
+    - evaluate.yml
+    - deploy_opa_containers.yml
+    - postgres_database_init.yml
+    - seed_framework_catalog.yml
+    - enroll_discovered_frameworks.yml
+    - load_opa_policies.yml
+    - deploy_grafana_dashboard.yml

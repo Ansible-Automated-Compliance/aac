@@ -1,0 +1,13 @@
+---
+
+- name: Create Sentinel Rulebook Activation
+  ansible.eda.rulebook_activation:
+    name: "Sentinel GitHub Webhook"
+    description: "Sentinel GitHub webhook :5003 → Sentinel Ansible/Terraform validation"
+    organization: "{{ aac_organization }}"
+    project: "{{ eda_project_name }}"
+    rulebook: "sentinel.yml"
+    decision_environment: "{{ eda_de_name | default('Default Decision Environment') }}"
+    credentials:
+      - Controller Token
+    restart_policy: always

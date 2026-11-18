@@ -1,0 +1,180 @@
+
+== Native AAP Policy as Code
+
+=== Configuration
+
+This section wires the OPA you already run on the AAC host (`<your-aac-host>`) into *Ansible Automation Platform*'s built-in Policy as Code feature. That is separate from AAC assessment
+playbooks: PAC blocks/allows *job launches* in the AAP console *before* the playbook runs.
+
+Reference: Red Hat docs —
+https://docs.redhat.com/en/documentation/red_hat_ansible_automation_platform/2.6/integrate-assembly_controller_pac
+
+IMPORTANT: PAC evaluates *job context* (extra_vars, template, inventory, credentials, launching user). It does *not* parse playbook YAML.
+
+==== Step 1 — Point AAP at your OPA server
+
+In the AAP UI go to *Settings* → *Job* / *Policy settings*, Set:
+
+[cols="2,3",options="header"]
+|===
+| Setting | Value for this install
+| OPA Server hostname (`OPA_HOST`) | `<your-aac-host>`
+| OPA server port (`OPA_PORT`) | `8181`
+| OPA SSL (`OPA_SSL`) | `False` (HTTP lab)
+| OPA authentication type | `None` (lab)
+| OPA request timeout | `5` (seconds; default 1.5 is tight on lab links)
+| OPA request retry count | `2`
+|===
+
+Save.
+
+Verify from the AAP host:
+
+[source,bash]
+----
+curl -s -o /dev/null -w '%{http_code}\n' http://<your-aac-host>:8181/health
+# Expect 200
+----
+
+==== Step 2 - Create a centralized PAC policy repository
+
+At the AAC host, create a directory for PAC policies:
+
+[source,bash]
+----
+sudo mkdir -p /opt/opa/compliance/policies/pac
+sudo chown -R compliance:compliance /opt/opa/compliance/policies/pac
+----
+
+==== Step 3 — Create a simple PAC Rego policy
+
+Create a file `hello_aap_pac.rego` in the PAC policy repository:
+
+[source,bash]
+----
+touch /opt/opa/compliance/policies/pac/hello_aap_pac.rego
+----
+
+[source,rego]
+----
+package hello.aap.pac
+
+import rego.v1
+
+# AAP Policy as Code contract: rule must evaluate to
+# { "allowed": bool, "violations": [string] }
+default result := {
+	"allowed": false,
+	"violations": ["hello.aap.pac: evaluation produced no decision"],
+}
+
+allowed_envs := {"development", "production"}
+
+violations contains msg if {
+	env := object.get(object.get(input, "extra_vars", {}), "environment_cli", "")
+	not env in allowed_envs
+	msg := sprintf(
+		"PAC deny: extra_vars.environment_cli must be one of %v (got %v)",
+		[allowed_envs, env],
+	)
+}
+
+result := {
+	"allowed": count(violations) == 0,
+	"violations": [v | some v in violations],
+}
+----
+
+Load it into the security OPA (package path → API path):
+
+[source,bash]
+----
+curl -X PUT --data-binary @hello_aap_pac.rego \
+  http://<your-aac-host>:8181/v1/policies/hello_aap_pac
+
+# Smoke-test with empty extra_vars → deny
+curl -s http://<your-aac-host>:8181/v1/data/hello/aap/pac/result \
+  -H 'Content-Type: application/json' \
+  -d '{"input":{"extra_vars":{}}}' | jq .
+
+# Smoke-test with valid extra_vars → allow
+curl -s http://<your-aac-host>:8181/v1/data/hello/aap/pac/result \
+  -H 'Content-Type: application/json' \
+  -d '{"input":{"extra_vars":{"environment_cli":"development"}}}' | jq .
+----
+
+Expect `allowed: false` then `allowed: true`.
+
+The OPA policy name you will type in AAP is `hello.aap.pac/result`
+
+==== Step 4 — Create the hello-aap project in AAP
+
+Create a new project in AAP:
+
+[source,yaml]
+----
+Project Name: hello-aap
+Organization: default
+Source Control Type: git
+Source Control URL: https://github.com/Ansible-Automated-Compliance/aac.git
+Source Control Branch: main
+Source Control Credential: <your-github-personal-access-token>
+----
+
+Sync the project until status is successful.
+
+==== Step 5 — Job template (no PAC yet)
+
+Use an inventory that can reach a test host (or limit scope later).
+For a *policy-only* proof you only need the launch to reach OPA;
+the playbook can still fail later on SSH — the PAC deny happens first.
+
+[source,yaml]
+----
+Job Template Name: Hello AAP — PAC demo
+Organization: default
+Job Type: Run
+Inventory: <your inventory>
+Project: hello-aap
+Playbook: playbook.yml
+Execution Environment: Default Execution Environment  # or compliance-ee
+Credentials: <Machine credential for the inventory>
+Privilege Escalation: as required by the playbook
+Extra Variables: (leave empty for the deny test)
+OPA policy:   << leave empty for now >>
+----
+
+Save. Optionally enable *Prompt on launch* for Extra Variables.
+
+==== Step 6 — Attach the policy (enforcement point)
+
+Edit the job template (or the Organization / Inventory — JT is clearest for a lab):
+. Open *Hello AAP — PAC demo*
+. Find *OPA policy*
+. Enter: `hello.aap.pac/result`
+. Save
+
+Enforcement levels (any one is enough for the demo):
+
+* *Job template* — only this template
+* *Inventory* — every job using that inventory
+* *Organization* — every template in the org (broad; avoid for first test)
+If no resource has an OPA policy set, AAP will not call OPA.
+
+==== Step 7 — Prove deny, then allow
+
+*Deny (missing / invalid environment_cli):*
+. Launch *Hello AAP — PAC demo* with no extra vars
+  (or `-e environment_cli=staging`).
+. Expect the job to be *blocked before playbook start*, with a
+  violation message from Rego (similar to
+  `PAC deny: extra_vars.environment_cli must be one of ...`).
+
+*Allow:*
+. Launch again with Extra Variables:
+[source,yaml]
+----
+environment_cli: development
+----
+. Expect PAC to allow; the job proceeds to normal Ansible execution
+  (SSH / firewalld / httpd as in hello-aap).

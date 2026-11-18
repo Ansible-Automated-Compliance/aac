@@ -1,0 +1,25 @@
+---
+
+- name: Initialize PostgreSQL compliance schema
+  ansible.controller.job_template:
+    name: "{{ aac_template_init_postgres_name }}"
+    description: "{{ aac_template_init_postgres_description }}"
+    organization: "{{ aac_organization }}"
+    state: present
+    inventory: "{{ aac_inventory_name }}"
+    limit: localhost
+    project: "{{ aap_project_name }}"
+    playbook: ansible/playbooks/postgres_database_init.yml
+    job_type: run
+    execution_environment: "{{ aap_project_default_ee }}"
+    credentials:
+      - "{{ aac_cred_vault }}"
+      - "{{ aac_cred_postgresql }}"
+    ask_variables_on_launch: false
+    extra_vars:
+      aac_host: "{{ aac_host }}"
+      pg_host: "{{ aac_host }}"
+      pg_user: "{{ pg_user }}"
+      pg_db: "{{ pg_db }}"
+      aac_db_container_name: "{{ aac_postgres_container_name }}"
+      aac_db_skip_container_deploy: true

@@ -1,0 +1,24 @@
+---
+
+- name: Create Grafana Credentials
+  ansible.controller.credential_type:
+    name: Grafana
+    description: Grafana
+    kind: cloud
+    state: present
+    inputs: 
+      fields:
+        - id: grafana_admin_password
+          type: string
+          label: Grafana admin password
+          secret: true
+        - id: grafana_admin_user
+          type: string
+          label: Grafana admin user
+      required:
+        - grafana_admin_password
+        - grafana_admin_user
+    injectors: 
+      extra_vars:
+        grafana_admin_password: "{{ '{{' }} grafana_admin_password {{ '}}' }}"
+        grafana_admin_user: "{{ '{{' }} grafana_admin_user {{ '}}' }}"
