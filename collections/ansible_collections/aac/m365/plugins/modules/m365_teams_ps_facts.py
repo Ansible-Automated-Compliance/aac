@@ -85,6 +85,8 @@ facts:
 
 from ansible.module_utils.basic import AnsibleModule
 from ansible_collections.aac.m365.plugins.module_utils.pwsh import (
+    LIST,
+    OBJECT,
     PwshRunner,
     PwshError,
 )
@@ -95,6 +97,7 @@ QUERIES = {
         "Identity, AllowDropBox, AllowBox, AllowGoogleDrive, AllowShareFile, "
         "AllowEgnyte, AllowEmailIntoChannel",
         ["8.1.1", "8.1.2"],
+        OBJECT,
     ),
     "federation_configuration": (
         "Get-CsTenantFederationConfiguration | Select-Object "
@@ -103,6 +106,7 @@ QUERIES = {
         "AllowedDomains, BlockedDomains, "
         "ExternalAccessWithTrialTenants",
         ["8.2.1", "8.2.2", "8.2.3", "8.2.4"],
+        OBJECT,
     ),
     "meeting_policies": (
         "@(Get-CsTeamsMeetingPolicy | Select-Object "
@@ -110,33 +114,33 @@ QUERIES = {
         "AllowAnonymousUsersToStartMeeting, AutoAdmittedUsers, "
         "AllowPSTNUsersToBypassLobby, MeetingChatEnabledType, "
         "DesignatedPresenterRoleMode, AllowExternalParticipantGiveRequestControl, "
-        "AllowRecordingAndTranscription, AllowCloudRecording)",
+        # AllowExternalNonTrustedMeetingChat (Boolean, Set-CsTeamsMeetingPolicy)
+        # is the 8.5.8 setting. It was missing from this list, so the
+        # property was absent and `== true` could never fire.
+        "AllowRecordingAndTranscription, AllowCloudRecording, "
+        "AllowExternalNonTrustedMeetingChat)",
         ["8.5.1", "8.5.2", "8.5.3", "8.5.4", "8.5.5", "8.5.6", "8.5.7", "8.5.8", "8.5.9"],
+        LIST,
     ),
     "messaging_policies": (
         "@(Get-CsTeamsMessagingPolicy | Select-Object "
         "Identity, AllowSecurityEndUserReporting)",
         ["8.6.1"],
+        LIST,
     ),
 }
-
-
-def _as_list(value):
-    if value is None:
-        return []
-    return value if isinstance(value, list) else [value]
 
 
 def collect_facts(runner):
     facts, unavailable = {}, {}
 
-    for key, (snippet, _controls) in QUERIES.items():
-        value, err = runner.try_run(snippet)
+    for key, (snippet, controls, shape) in QUERIES.items():
+        value, err = runner.try_run(snippet, shape=shape)
         if err:
-            unavailable[key] = err
+            unavailable[key] = "%s (blocks %s)" % (err, ", ".join(controls))
             continue
         if key.endswith("_policies"):
-            rows = _as_list(value)
+            rows = value
             facts[key] = rows
             # The Global policy is the tenant default and is what the
             # benchmark audits; surface it directly so the evaluation does

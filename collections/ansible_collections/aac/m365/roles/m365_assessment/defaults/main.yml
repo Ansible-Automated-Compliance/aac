@@ -78,6 +78,27 @@ m365_db_password: "{{ compliance_db_password | default('') }}"
 # expiry. OPA unreachable or module not loaded ⇒ nothing is waived.
 m365_waivers_enabled: true
 
+# ── Attestations ──────────────────────────────────────────────────────
+# Operator attestations for the controls the policy cannot measure (its
+# no_collector_path ledger: requires_attestation, unresolved and
+# not_implemented -- 16 controls at v7.0.0). Same contract as the Windows
+# collector's cis_windows_attestations; passed to the policy as
+# input.attestations. Every field is required:
+#
+#   m365_attestations:
+#     - control_id: "5.2.4.1"
+#       observed: true                 # the recommended state was observed
+#       attested_by: "Jane Operator, Identity team"
+#       attested_on: "2026-11-18"      # YYYY-MM-DD
+#       evidence_ref: "CHG0012345 / screenshot in the evidence store"
+#
+# A control_id that is not in the policy's ledger fails the play (a
+# measured control cannot be attested away), and so does observed: false
+# -- the policy does not read `observed`, so such an entry would clear the
+# control rather than record it as failed. Leave a control out to have it
+# reported as not attested.
+m365_attestations: []
+
 # ── Behaviour ─────────────────────────────────────────────────────────
 # The PowerShell-backed sections need an execution environment carrying
 # pwsh (aac-m365-ee). When it is absent the collectors report every fact

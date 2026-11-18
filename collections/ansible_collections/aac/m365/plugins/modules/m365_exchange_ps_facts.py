@@ -112,11 +112,22 @@ facts:
 
 from ansible.module_utils.basic import AnsibleModule
 from ansible_collections.aac.m365.plugins.module_utils.pwsh import (
+    LIST,
+    OBJECT,
     PwshRunner,
     PwshError,
 )
 
-# Each entry: fact key -> (PowerShell snippet, controls it answers).
+# Each entry: fact key -> (PowerShell snippet, controls it answers, shape).
+#
+# Shape follows how the policy reads the fact, cross-checked against what
+# the cmdlet returns: OBJECT for an organisation-level singleton whose
+# fields the policy dereferences (Get-OrganizationConfig,
+# Get-TransportConfig); LIST for everything the policy iterates or
+# counts -- including Get-ExternalInOutlook, which returns one
+# organisation object but which the policy iterates (`some e in ...`).
+# A one-row LIST result used to arrive as a bare object, and iterating an
+# object walks its field values, so every rule over it passed.
 # Select-Object keeps the payload small and the JSON shape stable; without
 # it these cmdlets return very large objects whose shape varies by tenant.
 QUERIES = {
@@ -130,10 +141,12 @@ QUERIES = {
         "CustomerLockBoxEnabled, BookingsEnabled, "
         "BookingsSocialSharingRestricted, BookingsAuthEnabled",
         ["6.1.1", "6.5.1", "6.5.2", "6.5.5", "1.3.6", "1.3.9"],
+        OBJECT,
     ),
     "transport_config": (
         "Get-TransportConfig | Select-Object SmtpClientAuthenticationDisabled",
         ["6.5.4"],
+        OBJECT,
     ),
     # SECTION 1 control, collected here for the same reason as 1.3.6/1.3.9:
     # it is an Exchange setting and this session is already open.
@@ -147,6 +160,7 @@ QUERIES = {
     "sharing_policies": (
         "@(Get-SharingPolicy | Select-Object Name, Enabled, Default, Domains)",
         ["1.3.3"],
+        LIST,
     ),
     # SECTION 1 control. Half of it: CIS's procedure is Get-EXOMailbox for
     # the shared mailboxes, then Get-MgUser for each one's AccountEnabled.
@@ -157,36 +171,48 @@ QUERIES = {
         "@(Get-EXOMailbox -RecipientTypeDetails SharedMailbox -ResultSize Unlimited | "
         "Select-Object UserPrincipalName, ExternalDirectoryObjectId, DisplayName)",
         ["1.2.2"],
+        LIST,
     ),
     "transport_rules": (
         "@(Get-TransportRule | Select-Object Name, State, "
         "SetSCL, SenderDomainIs, FromAddressContainsWords, RedirectMessageTo, "
         "BlindCopyTo, CopyTo)",
         ["6.2.1", "6.2.2"],
+        LIST,
     ),
     "outbound_spam_policies": (
         "@(Get-HostedOutboundSpamFilterPolicy | Select-Object "
         "Name, AutoForwardingMode, IsDefault)",
         ["6.2.1"],
+        LIST,
     ),
     "external_in_outlook": (
         "@(Get-ExternalInOutlook | Select-Object Identity, Enabled)",
         ["6.2.3"],
+        LIST,
     ),
     "role_assignment_policies": (
         "@(Get-RoleAssignmentPolicy | Select-Object Name, IsDefault, AssignedRoles)",
         ["6.3.1"],
+        LIST,
     ),
     "owa_mailbox_policies": (
+        # PersonalAccountsEnabled is the Set-OwaMailboxPolicy property for
+        # "users can add personal accounts in Outlook" (6.3.2). Collected so
+        # the policy can read it; the shipped rule still reads
+        # AdditionalStorageProvidersAvailable for 6.3.2.
         "@(Get-OwaMailboxPolicy | Select-Object Name, IsDefault, "
-        "AdditionalStorageProvidersAvailable, AllowedFileTypes)",
+        "AdditionalStorageProvidersAvailable, PersonalAccountsEnabled, "
+        "AllowedFileTypes)",
         ["6.3.2", "6.5.3"],
+        LIST,
     ),
     "audit_bypass_associations": (
         "@(Get-MailboxAuditBypassAssociation -ResultSize Unlimited | "
         "Where-Object { $_.AuditBypassEnabled -eq $true } | "
         "Select-Object Identity, AuditBypassEnabled)",
         ["6.1.3"],
+        LIST,
     ),
 }
 
@@ -194,10 +220,12 @@ QUERIES = {
 def collect_facts(runner, mailbox_sample=100):
     facts, unavailable = {}, {}
 
-    for key, (snippet, _controls) in QUERIES.items():
-        value, err = runner.try_run(snippet)
+    for key, (snippet, controls, shape) in QUERIES.items():
+        value, err = runner.try_run(snippet, shape=shape)
         if err:
-            unavailable[key] = err
+            # Name every control the gap blocks: the policy's message names
+            # only one, and the stored counts read the rest from here.
+            unavailable[key] = "%s (blocks %s)" % (err, ", ".join(controls))
         else:
             facts[key] = value
 
@@ -209,12 +237,13 @@ def collect_facts(runner, mailbox_sample=100):
         f"@(Get-EXOMailbox -ResultSize {int(mailbox_sample)} -Properties "
         "AuditEnabled, AuditAdmin, AuditDelegate, AuditOwner | "
         "Select-Object UserPrincipalName, AuditEnabled, AuditAdmin, "
-        "AuditDelegate, AuditOwner)"
+        "AuditDelegate, AuditOwner)",
+        shape=LIST,
     )
     if err:
-        unavailable["mailbox_audit"] = err
+        unavailable["mailbox_audit"] = "%s (blocks 6.1.2)" % err
     else:
-        rows = value if isinstance(value, list) else [value]
+        rows = value
         facts["mailbox_audit"] = {
             "sampled": len(rows),
             "sample_limit": int(mailbox_sample),

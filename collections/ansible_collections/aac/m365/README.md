@@ -62,6 +62,40 @@ The PowerShell-backed sections need `pwsh` plus
 `Microsoft.Online.SharePoint.PowerShell` is Windows-only and cannot be
 used on Linux, so SharePoint is collected with PnP.
 
+Published DNS. SPF, DKIM and DMARC (2.1.8-2.1.10) are read from the
+records actually published for each verified customer domain (TXT at the
+domain, TXT at `_dmarc.<domain>`, CNAME at `selector1|2._domainkey.<domain>`)
+with the EE's resolver. This needs the `dnspython` Python library; without
+it every customer domain is reported "evidence missing: DNS lookup not
+available", never compliant.
+
+## Attestations
+
+Controls the policy cannot measure (its `no_collector_path` ledger) are
+attested through `m365_attestations`, the same contract as the Windows
+collector's `cis_windows_attestations`:
+
+```yaml
+m365_attestations:
+  - control_id: "5.2.4.1"
+    observed: true
+    attested_by: "Jane Operator, Identity team"
+    attested_on: "2026-11-18"
+    evidence_ref: "CHG0012345"
+```
+
+The ids are checked against the ledger the policy reports, so a measured
+control cannot be attested away; `observed: false` is refused (leave the
+control out instead, and it is reported as not attested).
+
+## Stored counts
+
+`passed_controls` counts only controls the policy evaluated and found
+compliant. A control that was not evaluated is stored in
+`metadata.not_evaluated_count` / `not_evaluated_control_ids`, never as
+passed; `metadata.count_basis` says whether the counts came from the
+policy's per-control `control_results` or from its messages.
+
 ## Modules
 
 | Module | Section | Source |

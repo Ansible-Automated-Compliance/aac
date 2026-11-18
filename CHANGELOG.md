@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Fixed — CIS M365 v7 collector: single-row results, stored counts, field names, published DNS, attestations
+
+- **Single-row PowerShell results no longer pass.** `ConvertTo-Json` turned a cmdlet that returned one row into a bare object, and the policy, iterating it, passed: with only the Default policy present (the usual tenant) 2.1.1-2.1.4, 2.1.6, 2.1.7, 2.1.11-2.1.15, 1.3.3, 6.2.1-6.2.3, 6.3.1, 6.3.2 and 6.5.3 could not fail. Every query in `aac.m365` now declares its shape (`pwsh.py`): collections are always lists (zero rows `[]`, so a tenant with no audit-bypass mailbox now passes 6.1.3 instead of reporting it unavailable), organisation-level settings are always one object, and anything else is recorded unavailable. Output is written with `-EnumsAsStrings`, and JSON that would be truncated at the depth limit is "evidence missing" instead of evidence.
+- **Stored counts.** `passed_controls` used to be controls_evaluated minus the ids named in violations, so every control blocked by a missing fact was stored as passed (129 "passed" for a tenant where nothing was collected). Counts now come from the new `aac.m365.m365_result_counts` filter: the policy's per-control `control_results` when the report carries it, otherwise its messages, and a control that was not evaluated is never a pass (`metadata.not_evaluated_count`, `metadata.count_basis`). The attestation row now counts attested controls as passed. Expect lower `passed_controls` and `compliance_percentage` for M365 rows.
+- **Field fixes from Microsoft's documentation:** 2.1.11 reads `FileTypes` (published also as `FileTypeFilter`, which the policy reads); 8.5.8 selects `AllowExternalNonTrustedMeetingChat`; 5.2.3.1/5.2.3.5/5.2.3.7/5.2.3.10 match the PascalCase authentication-method ids Graph returns; 5.1.4.1/5.1.4.4 read the `allowedToJoin` / `registeringUsers` membership type and 5.1.4.5 reads `localAdminPassword.isEnabled` from the device registration policy; `PersonalAccountsEnabled` is collected for 6.3.2.
+- **2.1.8-2.1.10 read published DNS**, not the records Microsoft says a domain should publish (which always contained SPF). Needs `dnspython` in the execution environment; without it each customer domain is "evidence missing: DNS lookup not available". New module option `dns_timeout` on `m365_exchange_facts`.
+- **Attestations:** new role variable `m365_attestations` (`[{control_id, observed, attested_by, attested_on, evidence_ref}]`, as `cis_windows_attestations`) reaches the policy as `input.attestations`; ids are checked against the policy's own ledger after evaluation.
+- Unavailable reasons from the Exchange and Teams collectors now name every control they block (`(blocks …)`).
+
 ### Fixed — `winrm_eventlog` event source: quiet polls, hung calls and restarts no longer break the Windows drift watcher
 
 - A poll that found no matching events was logged as a failed WinRM call: PowerShell exits 1 when the suppressed `Get-WinEvent` error is the last statement. The script now always exits 0 and prints PowerShell errors as `<<<PS_ERROR>>>` lines, which the plugin logs (except the routine "No events were found").

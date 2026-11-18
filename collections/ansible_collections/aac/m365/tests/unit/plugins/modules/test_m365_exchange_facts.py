@@ -5,9 +5,9 @@ Mocks GraphClient. Pins:
   - Initial .onmicrosoft.com domains are excluded from customer
     DNS-hygiene checks (CIS 4.5/4.6/4.7 apply to customer-owned
     domains).
-  - DNS records are classified correctly: TXT v=spf1 → SPF;
-    TXT v=DMARC1 at label `_dmarc` → DMARC; CNAME at
-    `selectorN._domainkey` → DKIM.
+  - SPF / DKIM / DMARC are read from PUBLISHED DNS (TXT v=spf1 at the
+    domain, TXT v=DMARC1 at _dmarc, CNAME at selectorN._domainkey), and
+    a lookup that fails or a missing DNS library is dns_unavailable.
   - Mailbox audit aggregate: distinguishes evaluable
     (mailboxAuditEnabled key present) from non-evaluable.
   - Per-user mailbox 4xx falls back to skipping the user, not
@@ -62,7 +62,9 @@ class FakeGraphClient:
 
 
 # Minimal response set — every test extends this with whatever the
-# specific scenario needs.
+# specific scenario needs. `domain_dns` maps a domain to its PUBLISHED
+# records for FakeResolver; Graph's serviceConfigurationRecords (the
+# records Microsoft requires) is deliberately no longer read.
 def _baseline(domain_rows, domain_dns, user_rows, user_mailbox):
     responses = {
         "/domains": domain_rows,
@@ -71,120 +73,154 @@ def _baseline(domain_rows, domain_dns, user_rows, user_mailbox):
         "/users": {"value": user_rows},
         "/organization": {"value": [{"displayName": "Acme", "tenantType": "AAD"}]},
     }
-    for d_id, records in domain_dns.items():
-        responses[f"/domains/{d_id}/serviceConfigurationRecords"] = records
     for uid, settings in user_mailbox.items():
         responses[f"/users/{uid}/mailboxSettings"] = settings
     return responses
 
 
-# ── DNS classification ──────────────────────────────────────────────
+class FakeResolver:
+    """Published DNS keyed by (name, rtype). Unknown names do not exist
+    (NXDOMAIN -> []); names in `failing` raise like a timeout would."""
+
+    def __init__(self, records=None, failing=()):
+        self.records = records or {}
+        self.failing = set(failing)
+        self.queries = []
+
+    def query(self, name, rtype):
+        self.queries.append((name, rtype))
+        if name in self.failing:
+            raise m365_exchange_facts.DnsLookupError("DNS lookup for %s %s timed out" % (rtype, name))
+        return list(self.records.get((name, rtype), []))
 
 
-def test_initial_domain_is_excluded_from_customer_set():
-    """The default acme.onmicrosoft.com is is_initial=true; CIS DNS
-    checks don't apply to it (Microsoft auto-publishes SPF for them)."""
+PUBLISHED_OK = {
+    ("acme.com", "TXT"): ["v=spf1 include:spf.protection.outlook.com -all", "google-site-verification=x"],
+    ("_dmarc.acme.com", "TXT"): ["v=DMARC1; p=reject"],
+    ("selector1._domainkey.acme.com", "CNAME"): ["selector1-acme-com._domainkey.acme.onmicrosoft.com."],
+}
+
+
+def _collect(responses, resolver=None, dns_error=None, raises=None):
+    return m365_exchange_facts.collect_facts(
+        FakeGraphClient(responses, raises), resolver=resolver, dns_error=dns_error)
+
+
+# ── Published DNS (2.1.8 / 2.1.9 / 2.1.10) ──────────────────────────
+
+
+def test_initial_domain_is_excluded_and_not_looked_up():
+    """The default acme.onmicrosoft.com is is_initial=true; the policy skips
+    it and the tenant cannot publish DNS for it, so nothing is queried."""
     responses = _baseline(
         domain_rows=[
             {"id": "acme.onmicrosoft.com", "isVerified": True, "isInitial": True, "isDefault": True},
             {"id": "acme.com", "isVerified": True, "isInitial": False},
         ],
-        domain_dns={
-            "acme.onmicrosoft.com": [],
-            "acme.com": [
-                {"recordType": "TXT", "label": "@", "text": "v=spf1 -all"},
-            ],
-        },
-        user_rows=[],
-        user_mailbox={},
+        domain_dns={}, user_rows=[], user_mailbox={},
     )
-    facts = m365_exchange_facts.collect_facts(FakeGraphClient(responses))
-    domain_ids = [d["id"] for d in facts["verified_domains"]]
-    assert "acme.com" in domain_ids
-    # The initial domain IS in the verified_domains list (we report
-    # what we saw), but the Rego skips it via is_initial. The unit
-    # test just confirms the flag is preserved.
+    resolver = FakeResolver(PUBLISHED_OK)
+    facts = _collect(responses, resolver)
     initial = next(d for d in facts["verified_domains"] if d["id"] == "acme.onmicrosoft.com")
     assert initial["is_initial"] is True
+    assert "spf_present" not in initial and "dns_unavailable" not in initial
+    assert not any("onmicrosoft" in name for name, _ in resolver.queries)
 
 
-def test_spf_dmarc_dkim_classification():
+def test_published_spf_dmarc_dkim_are_read_from_dns():
     responses = _baseline(
-        domain_rows=[
-            {"id": "acme.com", "isVerified": True, "isInitial": False},
-        ],
-        domain_dns={
-            "acme.com": [
-                {"recordType": "TXT", "label": "@", "text": "v=spf1 include:spf.protection.outlook.com -all"},
-                {"recordType": "TXT", "label": "_dmarc", "text": "v=DMARC1; p=reject; rua=mailto:dmarc@acme.com"},
-                {"recordType": "CNAME", "label": "selector1._domainkey", "text": "selector1-acme-com._domainkey.acme.onmicrosoft.com"},
-            ],
-        },
-        user_rows=[],
-        user_mailbox={},
+        domain_rows=[{"id": "acme.com", "isVerified": True, "isInitial": False}],
+        domain_dns={}, user_rows=[], user_mailbox={},
     )
-    facts = m365_exchange_facts.collect_facts(FakeGraphClient(responses))
-    d = facts["verified_domains"][0]
+    resolver = FakeResolver(PUBLISHED_OK)
+    d = _collect(responses, resolver)["verified_domains"][0]
     assert d["spf_present"] is True
     assert d["dmarc_present"] is True
     assert d["dkim_present"] is True
+    assert d["dns_source"] == "published_dns"
+    assert ("acme.com", "TXT") in resolver.queries
+    assert ("_dmarc.acme.com", "TXT") in resolver.queries
+    assert ("selector2._domainkey.acme.com", "CNAME") in resolver.queries
 
 
-def test_dns_classification_handles_missing_records():
+def test_nothing_published_is_a_definite_absence():
+    """NXDOMAIN / no answer is a finding, not a gap: this used to pass 2.1.8
+    because Microsoft's *required* records always contain the SPF TXT."""
     responses = _baseline(
-        domain_rows=[
-            {"id": "acme.com", "isVerified": True, "isInitial": False},
-        ],
-        domain_dns={"acme.com": []},
-        user_rows=[],
-        user_mailbox={},
+        domain_rows=[{"id": "acme.com", "isVerified": True, "isInitial": False}],
+        domain_dns={}, user_rows=[], user_mailbox={},
     )
-    facts = m365_exchange_facts.collect_facts(FakeGraphClient(responses))
-    d = facts["verified_domains"][0]
+    d = _collect(responses, FakeResolver({}))["verified_domains"][0]
     assert d["spf_present"] is False
     assert d["dmarc_present"] is False
     assert d["dkim_present"] is False
 
 
-def test_dns_query_error_marks_custom_domain_unavailable_not_false():
-    # M2: a custom domain whose serviceConfigurationRecords request errors
-    # (e.g. 403) must be reported as dns_unavailable -- NOT spf/dkim/dmarc=false,
-    # which defender_validation.rego would read as a definite violation.
+def test_a_txt_that_is_not_spf_does_not_count():
     responses = _baseline(
         domain_rows=[{"id": "acme.com", "isVerified": True, "isInitial": False}],
-        domain_dns={},
-        user_rows=[],
-        user_mailbox={},
+        domain_dns={}, user_rows=[], user_mailbox={},
+    )
+    resolver = FakeResolver({("acme.com", "TXT"): ["MS=ms12345678"],
+                             ("_dmarc.acme.com", "TXT"): ["v=spf1 -all"]})
+    d = _collect(responses, resolver)["verified_domains"][0]
+    assert d["spf_present"] is False
+    assert d["dmarc_present"] is False
+
+
+def test_service_configuration_records_are_not_read():
+    """The wrong source must not be consulted at all."""
+    responses = _baseline(
+        domain_rows=[{"id": "acme.com", "isVerified": True, "isInitial": False}],
+        domain_dns={}, user_rows=[], user_mailbox={},
     )
     raises = {"/domains/acme.com/serviceConfigurationRecords"}
-    facts = m365_exchange_facts.collect_facts(FakeGraphClient(responses, raises))
-    d = facts["verified_domains"][0]
-    assert "dns_unavailable" in d
-    assert "permission denied" in d["dns_unavailable"]     # sanitized 403 reason
-    assert "synthetic forbidden" not in d["dns_unavailable"]  # raw body not leaked
+    d = _collect(responses, FakeResolver(PUBLISHED_OK), raises=raises)["verified_domains"][0]
+    assert d["spf_present"] is True
+
+
+def test_dns_lookup_failure_marks_domain_unavailable_not_false():
+    # A domain whose records could not be READ is dns_unavailable -- NOT
+    # spf/dkim/dmarc=false, which defender_validation.rego would read as a
+    # definite violation, and never true.
+    responses = _baseline(
+        domain_rows=[{"id": "acme.com", "isVerified": True, "isInitial": False}],
+        domain_dns={}, user_rows=[], user_mailbox={},
+    )
+    d = _collect(responses, FakeResolver(PUBLISHED_OK, failing={"_dmarc.acme.com"}))["verified_domains"][0]
+    assert d["dns_unavailable"].startswith("evidence missing:")
+    assert "timed out" in d["dns_unavailable"]
     assert "spf_present" not in d
     assert "dkim_present" not in d
     assert "dmarc_present" not in d
 
 
-def test_dns_query_error_on_initial_domain_preserves_is_initial():
-    # The Microsoft-managed initial domain is excluded from the DNS controls
-    # policy-side (defender skips is_initial); on error the collector still
-    # marks it dns_unavailable and preserves the flag so the policy can exclude it.
+def test_no_dns_library_is_evidence_missing_for_every_customer_domain():
     responses = _baseline(
         domain_rows=[
-            {"id": "acme.onmicrosoft.com", "isVerified": True, "isInitial": True, "isDefault": True},
+            {"id": "acme.onmicrosoft.com", "isVerified": True, "isInitial": True},
+            {"id": "acme.com", "isVerified": True, "isInitial": False},
+            {"id": "acme.net", "isVerified": True, "isInitial": False},
         ],
-        domain_dns={},
-        user_rows=[],
-        user_mailbox={},
+        domain_dns={}, user_rows=[], user_mailbox={},
     )
-    raises = {"/domains/acme.onmicrosoft.com/serviceConfigurationRecords"}
-    facts = m365_exchange_facts.collect_facts(FakeGraphClient(responses, raises))
-    d = facts["verified_domains"][0]
-    assert d["is_initial"] is True
-    assert "dns_unavailable" in d
-    assert "spf_present" not in d
+    facts = _collect(responses, resolver=None)   # no resolver -> library missing
+    custom = [d for d in facts["verified_domains"] if not d["is_initial"]]
+    assert len(custom) == 2
+    for d in custom:
+        assert d["dns_unavailable"] == m365_exchange_facts.DNS_LIBRARY_MISSING
+        assert "spf_present" not in d
+
+
+def test_legacy_record_classifier_still_classifies():
+    """_classify_dns_records is no longer on the verdict path; its parsing
+    is still pinned so nobody reuses it wrongly."""
+    out = m365_exchange_facts._classify_dns_records([
+        {"recordType": "TXT", "label": "@", "text": "v=spf1 -all"},
+        {"recordType": "TXT", "label": "_dmarc", "text": "v=DMARC1; p=reject"},
+        {"recordType": "CNAME", "label": "selector1._domainkey", "text": "x"},
+    ])
+    assert out == {"spf_present": True, "dmarc_present": True, "dkim_present": True}
 
 
 # ── Mailbox audit aggregate ─────────────────────────────────────────

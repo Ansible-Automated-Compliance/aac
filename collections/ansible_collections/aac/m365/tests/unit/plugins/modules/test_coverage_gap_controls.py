@@ -81,15 +81,24 @@ class FakePwsh:
         self.errors = errors or {}
         self.snippets: list[str] = []
 
-    def try_run(self, snippet):
+    def try_run(self, snippet, shape="raw"):
+        # Responses are the raw parsed JSON a cmdlet would print; the
+        # runner's own shape normalisation is applied, as the real one does.
+        from ansible_collections.aac.m365.plugins.module_utils import pwsh
         self.snippets.append(snippet)
         for needle, reason in self.errors.items():
             if needle in snippet:
                 return None, reason
-        for needle, value in self.responses.items():
+        value = []
+        for needle, candidate in self.responses.items():
             if needle in snippet:
-                return value, None
-        return [], None
+                value = candidate
+                break
+        if shape == pwsh.LIST:
+            return pwsh.as_list(value)
+        if shape == pwsh.OBJECT:
+            return pwsh.as_object(value)
+        return value, None
 
 
 # ── 1.3.3 and 1.2.2 -- Exchange Online ───────────────────────────────

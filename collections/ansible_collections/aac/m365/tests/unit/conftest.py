@@ -133,3 +133,10 @@ _register_file(
     "ansible_collections.aac.m365.plugins.modules.m365_teams_facts",
     COLLECTION_ROOT / "plugins" / "modules" / "m365_teams_facts.py",
 )
+
+# PowerShell collectors whose result shapes are pinned in
+# test_collector_result_shapes.py.
+for _name in ("m365_teams_ps_facts", "m365_purview_ps_facts", "m365_sharepoint_ps_facts"):
+    _qualified = "ansible_collections.aac.m365.plugins.modules." + _name
+    if _qualified not in sys.modules:
+        _register_file(_qualified, COLLECTION_ROOT / "plugins" / "modules" / (_name + ".py"))
