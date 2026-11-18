@@ -64,6 +64,11 @@
   ansible.builtin.include_tasks: collect.yml
   tags: [m365, collect]
 
+- name: Capture the shape of the collected facts (opt-in diagnostic)
+  ansible.builtin.include_tasks: shape_capture.yml
+  when: m365_shape_capture | bool
+  tags: [m365, collect, shape_capture]
+
 - name: Evaluate against OPA
   ansible.builtin.include_tasks: evaluate.yml
   tags: [m365, evaluate]

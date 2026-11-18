@@ -106,6 +106,15 @@ m365_attestations: []
 # set this false to skip them deliberately and have the report say so.
 m365_include_powershell_sections: true
 
+# ── Shape capture (diagnostic, default off) ───────────────────────────
+# true -> after collection, record the SHAPE of every collected fact (JSON
+# types, list lengths, field names and types; distinct values only for an
+# allowlist of non-sensitive configuration fields) and nothing else. See
+# tasks/shape_capture.yml for where it lands. Use it once on a real tenant
+# to settle the shapes that could not be confirmed without one.
+m365_shape_capture: false
+m365_shape_capture_dir: "{{ lookup('ansible.builtin.env', 'TMPDIR') | default('/tmp', true) }}/aac_m365_shape"
+
 # Fail the play when a section cannot be evaluated at all. Off by default
 # so a partial assessment still produces evidence; the report always
 # records which sections were incomplete either way.

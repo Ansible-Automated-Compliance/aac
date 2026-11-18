@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added — CIS M365 v7: opt-in shape capture (`m365_shape_capture`)
+
+- `m365_shape_capture: true` (default `false`) makes the `m365_assessment` role record, after collection, the shape of every collected fact and nothing else: JSON types, list lengths, field-name unions and field types, and distinct values only for an allowlist of closed configuration enums, booleans and numeric settings (`aac.m365.m365_fact_shape`). Names, addresses, domains, ids, mailbox data and free text are never recorded. Output: `<m365_shape_capture_dir>/m365_fact_shape_<UTC>.json`, the job artifact `m365_fact_shape` (`set_stats`) and the job output. One real run with it on settles the collector shapes that could not be confirmed without a tenant (enum serialisation, `AllowedDomains`, `RecipientTags`, `AssignedRoles`, `SetSCL`, `transferMethods`, Graph beta fields).
+
 ### Fixed — CIS M365 v7 collector: single-row results, stored counts, field names, published DNS, attestations
 
 - **Single-row PowerShell results no longer pass.** `ConvertTo-Json` turned a cmdlet that returned one row into a bare object, and the policy, iterating it, passed: with only the Default policy present (the usual tenant) 2.1.1-2.1.4, 2.1.6, 2.1.7, 2.1.11-2.1.15, 1.3.3, 6.2.1-6.2.3, 6.3.1, 6.3.2 and 6.5.3 could not fail. Every query in `aac.m365` now declares its shape (`pwsh.py`): collections are always lists (zero rows `[]`, so a tenant with no audit-bypass mailbox now passes 6.1.3 instead of reporting it unavailable), organisation-level settings are always one object, and anything else is recorded unavailable. Output is written with `-EnumsAsStrings`, and JSON that would be truncated at the depth limit is "evidence missing" instead of evidence.

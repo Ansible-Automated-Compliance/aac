@@ -96,6 +96,33 @@ compliant. A control that was not evaluated is stored in
 passed; `metadata.count_basis` says whether the counts came from the
 policy's per-control `control_results` or from its messages.
 
+## Shape capture (diagnostic)
+
+Some collector questions can only be settled against a real tenant: how
+an enum serialises, what an empty result looks like, the nested shape of
+properties such as `AllowedDomains`, `RecipientTags` or `AssignedRoles`.
+Run one assessment with
+
+```yaml
+m365_shape_capture: true
+m365_shape_capture_dir: /tmp/aac_m365_shape   # default: $TMPDIR (or /tmp)/aac_m365_shape
+```
+
+and the role, after collection, records the SHAPE of every collected
+fact: JSON types, list lengths, the union of field names with each
+field's types, and distinct values only for an allowlist of closed
+configuration enums, booleans and numeric settings
+(`plugins/filter/m365_shape.py`, `VALUE_ALLOWLIST`). Names, addresses,
+domains, tenant and object ids, mailbox data and free text are never
+recorded; maps keyed by ids or names list only their key count.
+
+It lands in three places, because an AAP execution environment's files
+are discarded when the job ends: the file
+`<m365_shape_capture_dir>/m365_fact_shape_<UTC timestamp>.json`, the
+job's artifacts (`set_stats` key `m365_fact_shape`, visible on the AAP
+job and passed down a workflow), and the job output. The assessment
+itself runs and persists as usual. Leave it off for routine runs.
+
 ## Modules
 
 | Module | Section | Source |
