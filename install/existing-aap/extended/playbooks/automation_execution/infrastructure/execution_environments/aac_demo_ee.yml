@@ -1,18 +1,11 @@
 ---
 
+# Optional demo EE (public demo image). Registered only when aac_register_demo_ee is true; see main.yml.
 - name: AAC Demo EE
   ansible.controller.execution_environment:
     name: AAC Demo EE
-    description: AAC Demo EE
+    description: AAC Demo EE (public demo image, optional)
     image: quay.io/jumedina/aac-compliance-ee:latest
     pull: missing
     organization: "{{ aac_organization }}"
     state: present
-    readme: |
-      # AAC Demo EE
-      ## Info
-      - Created by: Juan Medina
-      - Email: jumedina@redhat.com
-      - Date: 2026-10-19
-      ## Description
-      This is a demo execution environment for AAC Demo EE.

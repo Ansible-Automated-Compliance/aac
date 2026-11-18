@@ -249,11 +249,9 @@ Bootstrap creates the *AAC Compliance EE* object on the controller from that fil
 
 ==== Optional: maintainer demo execution environment
 
-CaC also ships `aac_demo_ee.yml`, which registers *AAC Demo EE* against a public demo image (`quay.io/jumedina/aac-compliance-ee:latest`) for quick trials without building locally. A customer controller should not keep that object unless you explicitly want the demo image.
+CaC also ships `aac_demo_ee.yml`, which registers *AAC Demo EE* against a public demo image (`quay.io/jumedina/aac-compliance-ee:latest`) for quick trials without building locally. It is off by default: bootstrap registers only *AAC Compliance EE* unless you set `aac_register_demo_ee: true` (for example in `playbooks/vars/` or with `-e aac_register_demo_ee=true`). A customer controller should leave it off.
 
-For production, remove `aac_demo_ee.yml` from the `loop` in `playbooks/automation_execution/infrastructure/execution_environments/main.yml` before bootstrap so only `aac_compliance_ee.yml` runs.
-
-If you maintain Private Automation Hub content from this tree, `playbooks/automation_content/execution_environments/aac_demo_juan.yml` is the same demo upstream; omit it from your hub seeding playbooks. It is not invoked by `bootstrap_controller.yml`.
+The same variable controls the Private Automation Hub copy, `playbooks/automation_content/execution_environments/aac_demo_ee.yml`.
 
 === Bootstrap CaC
 
@@ -267,7 +265,7 @@ ansible-playbook -J playbooks/bootstrap_controller.yml
 This creates:
 
 - Credential Types and Credentials (attached to each job template that needs them)
-- Controller Execution Environments (*AAC Compliance EE*, and *AAC Demo EE* only if you left it in `execution_environments/main.yml`)
+- Controller Execution Environments (*AAC Compliance EE*, and *AAC Demo EE* only when `aac_register_demo_ee` is true)
 - Projects (pointing at your fork and branch)
 - Inventories and Hosts (`localhost` and `aac_host`)
 - Templates and Workflows

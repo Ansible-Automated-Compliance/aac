@@ -1,6 +1,6 @@
 ---
 
+# The demo EE is optional and off by default; set aac_register_demo_ee: true to mirror it into Private Automation Hub.
 - name: Create Execution Environments
-  ansible.builtin.include_tasks: "{{ item }}"
-  loop:
-    - aac_demo_juan.yml
+  ansible.builtin.include_tasks: aac_demo_ee.yml
+  when: aac_register_demo_ee | default(false) | bool

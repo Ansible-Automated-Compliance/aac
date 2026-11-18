@@ -1,0 +1,16 @@
+---
+
+- name: AAC Demo EE
+  ansible.hub.ah_ee_repository:
+    name: AAC Demo EE
+    upstream_name: quay.io/jumedina/aac-compliance-ee:latest
+    state: present
+    description: AAC Demo EE (public demo image, optional)
+    registry: quay.io
+    include_tags: latest
+    readme: |
+      # AAC Demo EE
+      ## Description
+      Optional demo execution environment for AAC trials. Registered only when
+      aac_register_demo_ee is true; production installs build and use AAC Compliance EE.
+  no_log: true

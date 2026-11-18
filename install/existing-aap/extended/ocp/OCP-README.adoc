@@ -399,7 +399,7 @@ Verify the Orchestrator:
 
 [source,bash]
 ----
-curl -sk -o /dev/null -w "orchestrator %{http_code}\n" https://ao-automation-orchestrator.apps crc.testing/ 
+curl -sk -o /dev/null -w "orchestrator %{http_code}\n" https://ao-automation-orchestrator.apps-crc.testing/ 
 ----
 
 Verify the platform:

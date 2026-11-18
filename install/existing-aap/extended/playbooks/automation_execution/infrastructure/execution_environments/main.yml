@@ -1,7 +1,7 @@
 ---
 
+# AAC Compliance EE is always registered. The demo EE (public demo image) is optional and off by default;
+# set aac_register_demo_ee: true to register it as well.
 - name: Create Execution Environments
   ansible.builtin.include_tasks: "{{ item }}"
-  loop:
-    - aac_compliance_ee.yml
-    # - aac_demo_ee.yml
+  loop: "{{ ['aac_compliance_ee.yml'] + (['aac_demo_ee.yml'] if (aac_register_demo_ee | default(false) | bool) else []) }}"
