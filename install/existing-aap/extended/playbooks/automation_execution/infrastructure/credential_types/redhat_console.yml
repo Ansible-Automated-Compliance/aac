@@ -1,0 +1,26 @@
+---
+
+- name: Create Red Hat Console Credentials
+  ansible.controller.credential_type:
+    name: Red Hat Console
+    description: Red Hat Console Credentials
+    kind: cloud
+    state: present
+    inputs:
+      fields:
+        - id: redhat_username
+          type: string
+          label: Red Hat username
+        - id: redhat_offline_token
+          type: string
+          label: Red Hat offline token
+          secret: true
+      required:
+        - redhat_username
+        - redhat_offline_token
+    injectors:
+      extra_vars:
+        redhat_username: "{{ '{{' }} redhat_username {{ '}}' }}"
+        redhat_offline_token: "{{ '{{' }} redhat_offline_token {{ '}}' }}"
+        vault_redhat_username: "{{ '{{' }} redhat_username {{ '}}' }}"
+        vault_redhat_offline_token: "{{ '{{' }} redhat_offline_token {{ '}}' }}"

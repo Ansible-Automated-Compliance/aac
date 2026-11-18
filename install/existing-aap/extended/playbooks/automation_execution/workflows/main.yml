@@ -1,0 +1,8 @@
+---
+
+- name: Create Workflows
+  ansible.builtin.include_tasks: "{{ item }}"
+  loop:
+    - cis_complete.yml
+    - m365_complete.yml
+    - cis_dummy.yml

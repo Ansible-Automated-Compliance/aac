@@ -1,0 +1,6 @@
+---
+
+- name: Create EDA Decision Environments
+  ansible.builtin.include_tasks: "{{ item }}"
+  with_items:
+    - aac_default.yml

@@ -1,0 +1,11 @@
+---
+
+- name: AAC Default Decision Environment
+  ansible.eda.decision_environment:
+    name: "{{ eda_de_name }}"
+    description: "{{ eda_de_description }}"
+    organization_name: "{{ aac_organization }}"
+    image_url: "{{ eda_de_image }}"
+    credential: "Red Hat Container Registry"
+    pull_policy: always
+    state: present

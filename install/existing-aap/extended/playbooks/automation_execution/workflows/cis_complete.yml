@@ -1,0 +1,39 @@
+---
+
+- name: CIS Complete Workflow
+  ansible.controller.workflow_job_template:
+    name: "{{ cis_name }}"
+    description: "{{ cis_description }}"
+    organization: "{{ aac_organization }}"
+    state: present
+    extra_vars:
+      aac_caa_enabled: false
+      opa_security_url: http://{{ aac_host }}:8181
+
+- name: Collect
+  ansible.controller.workflow_job_template_node:
+    identifier: "Collect Facts"
+    workflow: "{{ cis_name }}"
+    unified_job_template: AAC_Collect_Facts
+    organization: "{{ aac_organization }}"
+    all_parents_must_converge: false
+    
+- name: Evaluate
+  ansible.controller.workflow_job_template_node:
+    identifier: "Evaluate Results"
+    workflow: "{{ cis_name }}"
+    unified_job_template: AAC_Evaluate_Results
+    organization: "{{ aac_organization }}"
+    all_parents_must_converge: false
+    success_nodes:
+      - "Collect Facts"
+
+- name: Report
+  ansible.controller.workflow_job_template_node:
+    identifier: "Compliance Report"
+    workflow: "{{ cis_name }}"
+    unified_job_template: AAC_Compliance_Report
+    organization: "{{ aac_organization }}"
+    all_parents_must_converge: false
+    success_nodes:
+      - "Evaluate Results"

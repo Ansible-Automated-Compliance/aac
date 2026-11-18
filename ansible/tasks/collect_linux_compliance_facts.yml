@@ -47,11 +47,88 @@
   changed_when: false
   failed_when: false
 
+# One text from one of two sources (running rules, else the rules.d files).
+# Kept for the STIG mapper and drift detection, which read it as one text.
+# The CIS mapper does NOT read it: CIS 6.2.3.x need the two sources apart
+# (the two tasks below).
 - name: Gather auditd rules
   shell: auditctl -l 2>/dev/null || cat /etc/audit/rules.d/*.rules 2>/dev/null || echo ""
   register: auditd_rules_raw
   changed_when: false
   failed_when: false
+
+# CIS 6.2.3.1-6.2.3.33 require each rule in the RUNNING rules (auditd.active_rules)
+# AND in the ON-DISK rules (auditd.rules); 6.2.3.34 / 6.2.3.35 read the -c and
+# -e lines, which only the on-disk files carry (auditctl -l never prints them).
+# Running rules: one r|<rule> line per rule of auditctl -l. A kernel with no
+# rules prints the single line "No rules", which is not a rule (norules). A
+# missing auditctl (missing_cmd) or a failing one (unreadable, e.g. no
+# CAP_AUDIT_CONTROL) means NOT COLLECTED, never an empty list. auditctl -s adds
+# the enabled flag (2 = immutable) and the failure mode as status|<key>|<n>.
+- name: Gather running audit rules and audit status (auditctl)
+  shell: |
+    export LC_ALL=C
+    if command -v auditctl >/dev/null 2>&1; then
+      if out=$(auditctl -l 2>/dev/null); then
+        printf '%s\n' "$out" | while read -r l; do
+          case "$l" in
+            '') ;;
+            'No rules') echo "norules" ;;
+            -*) printf 'r|%s\n' "$l" ;;
+            *) printf 'unexpected|%s\n' "$l" ;;
+          esac
+        done
+      else
+        echo "unreadable|auditctl -l|rc=$?"
+      fi
+      auditctl -s 2>/dev/null | awk '($1 == "enabled" || $1 == "failure") && $2 ~ /^[0-9]+$/ {print "status|" $1 "|" $2}'
+    else
+      echo "missing_cmd|auditctl"
+    fi
+    echo "end:ok"
+  args:
+    executable: /bin/bash
+  register: auditd_active_rules_raw
+  changed_when: false
+  failed_when: false
+  timeout: 60
+
+# On-disk rules: the *.rules files of /etc/audit/rules.d in the order augenrules
+# loads them (ls -1v, a version sort: 9-x.rules before 10-y.rules), each as
+# file|<name> followed by one l|<line> per line, verbatim (the policy skips
+# comments itself). /etc/audit/audit.rules is not read: augenrules generates it
+# from these files, and CIS 6.2.3.36 (augenrules --check) already compares the
+# two. No rules.d directory is a collected, empty list (nodir); a file that
+# cannot be read is NOT COLLECTED (unreadable).
+- name: Gather on-disk audit rules (/etc/audit/rules.d, augenrules order)
+  shell: |
+    export LC_ALL=C
+    d=/etc/audit/rules.d
+    if [ -d "$d" ]; then
+      if names=$(ls -1v "$d" 2>/dev/null); then
+        printf '%s\n' "$names" | grep '[.]rules$' | while IFS= read -r f; do
+          p="$d/$f"
+          [ -f "$p" ] || continue
+          if txt=$(cat -- "$p" 2>/dev/null); then
+            echo "file|$f"
+            printf '%s\n' "$txt" | while IFS= read -r l; do printf 'l|%s\n' "$l"; done
+          else
+            echo "unreadable|$p"
+          fi
+        done
+      else
+        echo "unreadable|$d"
+      fi
+    else
+      echo "nodir|$d"
+    fi
+    echo "end:ok"
+  args:
+    executable: /bin/bash
+  register: auditd_ondisk_rules_raw
+  changed_when: false
+  failed_when: false
+  timeout: 60
 
 - name: Gather auditd daemon configuration
   shell: cat /etc/audit/auditd.conf 2>/dev/null || echo ""
@@ -115,7 +192,10 @@
 # The lists stay capped at 100 paths (stored-facts schema), but the cap is no
 # longer silent: the last line is __count__|<true total>, or __count__|timeout
 # when the sweep did not finish, and the payload carries the total and a
-# truncated flag (see "Derive true totals" below).
+# truncated flag (see "Derive true totals" below). This sweep covers the root
+# filesystem only; it stays for the STIG mapper, drift detection and stored
+# rows. CIS 7.1.11 is mapped from the wwfile list of the filesystem sweep below
+# (every local filesystem), and from these fields only for older stored rows.
 - name: Gather world-writable files (first 100 + true total)
   shell: |
     timeout 80 find / -xdev -type f -perm -0002 2>/dev/null | awk 'NR <= 100 {print} END {print "__count__|" NR}'
@@ -1090,12 +1170,14 @@
   failed_when: false
 
 # CIS 6.2.3.10, 7.1.11, 7.1.12. One traversal per local filesystem (xfs, ext*,
-# btrfs; -xdev) lists unowned / ungrouped files, world-writable directories
+# btrfs; -xdev) lists unowned / ungrouped files, world-writable files (wwfile:
+# every local filesystem, as the CIS 7.1.11 audit sweeps them, not only the
+# root one), world-writable directories
 # without the sticky bit and, on filesystems mounted without noexec and nosuid,
 # SUID/SGID executables (the privileged commands auditd must watch). Lists are
 # capped (truncated|<tag>) and the true totals printed (count|<tag>|<n>); a find
 # that fails or times out is truncated|<tag> for every list.
-- name: Sweep local filesystems for unowned files, non-sticky world-writable directories and privileged commands
+- name: Sweep local filesystems for unowned and world-writable files, non-sticky world-writable directories and privileged commands
   shell: |
     # ── common prologue (see EVIDENCE INTEGRITY above) ──
     export LC_ALL=C
@@ -1113,15 +1195,15 @@
     need find findmnt
     # lastpipe: the while loop below runs in this shell, so its counts survive
     shopt -s lastpipe
-    declare -A cnt=([unowned]=0 [ungrouped]=0 [nosticky]=0 [priv]=0)
-    declare -A lim=([unowned]=100 [ungrouped]=100 [nosticky]=100 [priv]=1000)
+    declare -A cnt=([unowned]=0 [ungrouped]=0 [nosticky]=0 [priv]=0 [wwfile]=0)
+    declare -A lim=([unowned]=100 [ungrouped]=100 [nosticky]=100 [priv]=1000 [wwfile]=100)
     # records under container image storage (rootless or root podman), counted
     # apart for the report; they are NOT excluded from the totals
-    declare -A cst=([unowned]=0 [ungrouped]=0 [nosticky]=0 [priv]=0)
+    declare -A cst=([unowned]=0 [ungrouped]=0 [nosticky]=0 [priv]=0 [wwfile]=0)
     swept=0
     while IFS=' ' read -r tgt opts; do
       tgt=$(printf '%b' "$tgt"); swept=$((swept + 1))
-      args=(\( -nouser -printf 'unowned|%p\0' \) , \( -nogroup -printf 'ungrouped|%p\0' \) , \( -type d -perm -0002 ! -perm -1000 -printf 'nosticky|%p\0' \))
+      args=(\( -nouser -printf 'unowned|%p\0' \) , \( -nogroup -printf 'ungrouped|%p\0' \) , \( -type d -perm -0002 ! -perm -1000 -printf 'nosticky|%p\0' \) , \( -type f -perm -0002 -printf 'wwfile|%p\0' \))
       case ",$opts," in *,noexec,*|*,nosuid,*) ;; *) args+=(, \( -type f -perm /6000 -printf 'priv|%p\0' \)) ;; esac
       timeout 50 find "$tgt" -xdev "${args[@]}" 2>/dev/null | while IFS= read -r -d '' rec; do
         t=${rec%%|*}; p=${rec#*|}
@@ -1132,12 +1214,12 @@
       # find failed (some path unreadable) or hit its 50 s timeout (124): no list
       # is the whole truth, and every count is then only a lower bound
       rc=${PIPESTATUS[0]}
-      if [ "$rc" -ne 0 ]; then echo "sweep_rc|$swept|$rc"; for t in unowned ungrouped nosticky priv; do echo "truncated|$t"; done; fi
+      if [ "$rc" -ne 0 ]; then echo "sweep_rc|$swept|$rc"; for t in unowned ungrouped nosticky priv wwfile; do echo "truncated|$t"; done; fi
     done < <(findmnt -rn -o TARGET,OPTIONS -t xfs,ext4,ext3,ext2,btrfs 2>/dev/null)
     # no local filesystem found (root on an unlisted type): nothing was swept,
     # which must not read as "no unowned files"
-    [ "$swept" -gt 0 ] || for t in unowned ungrouped nosticky priv; do echo "truncated|$t"; done
-    for t in unowned ungrouped nosticky priv; do echo "count|$t|${cnt[$t]}"; echo "container_storage|$t|${cst[$t]}"; done
+    [ "$swept" -gt 0 ] || for t in unowned ungrouped nosticky priv wwfile; do echo "truncated|$t"; done
+    for t in unowned ungrouped nosticky priv wwfile; do echo "count|$t|${cnt[$t]}"; echo "container_storage|$t|${cst[$t]}"; done
     kill "$wd" 2>/dev/null; echo "end:ok"
   timeout: 300
   args:
@@ -1178,6 +1260,8 @@
         password_aging_raw: "{{ password_aging_raw.stdout | default('') }}"
         pam_config_raw: "{{ pam_config_raw.stdout | default('') }}"
         auditd_rules_raw: "{{ auditd_rules_raw.stdout | default('') }}"
+        auditd_active_rules_raw: "{{ auditd_active_rules_raw.stdout | default('') }}"
+        auditd_ondisk_rules_raw: "{{ auditd_ondisk_rules_raw.stdout | default('') }}"
         auditd_conf_raw: "{{ auditd_conf_raw.stdout | default('') }}"
         sudoers_raw: "{{ sudoers_raw.stdout | default('') }}"
         kernel_modules_raw: "{{ kernel_modules_raw.stdout | default('') }}"

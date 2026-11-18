@@ -1,0 +1,6 @@
+---
+
+- name: Create Remotes
+  ansible.builtin.include_tasks: "{{ item }}"
+  loop:
+    - quay.yml

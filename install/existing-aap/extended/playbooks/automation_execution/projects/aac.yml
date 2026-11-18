@@ -1,0 +1,15 @@
+---
+
+- name: AAC Compliance Automation
+  ansible.controller.project:
+    name: "{{ aap_project_name }}"
+    description: "{{ aap_project_description }}"
+    organization: "{{ aac_organization }}"
+    default_environment: "{{ aap_project_default_ee }}"
+    state: present
+    scm_type: git
+    scm_url: "{{ git_repo_url }}"
+    scm_branch: "{{ git_repo_branch }}"
+    credential: "{{ aac_cred_github_pat_controller }}"
+    scm_update_on_launch: true
+    scm_track_submodules: true

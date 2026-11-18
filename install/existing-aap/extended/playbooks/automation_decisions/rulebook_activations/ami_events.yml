@@ -1,0 +1,13 @@
+---
+
+- name: Create AMI Events Rulebook Activation
+  ansible.eda.rulebook_activation:
+    name: "AMI Event Webhook"
+    description: "AMI event webhook :5001 → AMI / smart meter events"
+    organization: "{{ aac_organization }}"
+    project: "{{ eda_project_name }}"
+    rulebook: "ami_events.yml" 
+    decision_environment: "{{ eda_de_name | default('Default Decision Environment') }}"
+    credentials:
+      - Controller Token
+    restart_policy: always

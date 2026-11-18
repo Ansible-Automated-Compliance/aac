@@ -1,0 +1,13 @@
+---
+
+- name: Create Golden Image Rulebook Activation
+  ansible.eda.rulebook_activation:
+    name: "Golden Image Enforcement"
+    description: "Golden image drift detection :5004 → Golden image enforcement"
+    organization: "{{ aac_organization }}"
+    project: "{{ eda_project_name }}"
+    rulebook: "golden_image.yml"
+    decision_environment: "{{ eda_de_name | default('Default Decision Environment') }}"
+    credentials:
+      - Controller Token
+    restart_policy: always

@@ -1,0 +1,13 @@
+---
+
+- name: Create Webhook Events Rulebook Activation
+  ansible.eda.rulebook_activation:
+    name: "Compliance Webhook Events"
+    description: "Compliance event webhook :5000 → CIS / NERC-CIP / CAF templates"
+    organization: "{{ aac_organization }}"
+    project: "{{ eda_project_name }}"
+    rulebook: "compliance_webhook_events.yml"
+    decision_environment: "{{ eda_de_name | default('Default Decision Environment') }}"
+    credentials:
+      - "Controller Token"
+    restart_policy: always

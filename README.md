@@ -16,8 +16,8 @@
 [![Policies](https://img.shields.io/badge/Rego_Policies-729-brightgreen.svg)](https://github.com/ynotbhatc/rego_policy_libraries)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
-**Repository:** https://github.com/ansible-automated-compliance/aac  
-**Policy Library:** https://github.com/ynotbhatc/rego_policy_libraries  
+**Repository:** [https://github.com/ansible-automated-compliance/aac](https://github.com/ansible-automated-compliance/aac)
+**Policy Library:** [https://github.com/ynotbhatc/rego_policy_libraries](https://github.com/ynotbhatc/rego_policy_libraries)
 **Demos:** the demo environments repository (`aac-demos`: runbooks, demo playbooks, RHPDS provisioning) is maintained by the project maintainers and is not published. References to it in these documents describe the maintainers' demo material, available on request.  
 **Version:** 2.8.0 (authoritative source: the `VERSION` file) | **Last Updated:** 2026-10-07
 
@@ -32,50 +32,49 @@ Built on **Ansible Automation Platform 2.6+** (2.7 is the reference deployment),
 ### Why It Matters
 
 | | Manual Compliance | Commercial Tools | **AAC** |
-|---|---|---|---|
+| -- | -- | -- | -- |
 | **Coverage** | Partial, delayed | Usually 1–2 frameworks | **55+ frameworks** |
 | **Frequency** | Annual or quarterly | Periodic scans | **Continuous, real-time** |
 | **Remediation** | Manual | Alerts only | **Automated rollback + enforcement** |
 | **Historical trending** | Spreadsheets | Limited | **Full time-series in PostgreSQL** |
 | **Audit evidence** | Manual collection | PDF exports | **Automated, dashboard-ready** |
 
-
 ---
 
 ## Platform Overview
 
-```
+```yaml
 ┌────────────────────────────────────────────────────────────────────────┐
-│                    Ansible Automated Compliance (AAC)                   │
+│                    Ansible Automated Compliance (AAC)                  │
 ├────────────────────────────────────────────────────────────────────────┤
-│                                                                         │
+│                                                                        │
 │   Analyzed Targets (see "What AAC Analyzes" below):                    │
 │     Hosts · OSes · Network · Databases · Apps · Storage · Cloud · K8s  │
 │     Smart Meters / SCADA · Containers · CI/CD pipelines                │
 │              │  SSH · WinRM · API · SNMP · Cloud SDK · K8s API         │
-│              ▼                                                          │
+│              ▼                                                         │
 │   ┌────────────────────────────────────────────────────────┐           │
-│   │         Ansible Automation Platform 2.6+ (2.7 ref)      │           │
+│   │         Ansible Automation Platform 2.6+ (2.7 ref)     │           │
 │   │   Controller · EDA (drift detection) · MCP · Gateway   │           │
 │   └──────────────┬────────────────────┬────────────────────┘           │
-│                  │ store facts         │ CI/CD policy gates             │
-│                  ▼                     ▼                                │
+│                  │ store facts        │ CI/CD policy gates             │
+│                  ▼                    ▼                                │
 │   ┌──────────────────┐   ┌─────────────────────────────────┐           │
 │   │   PostgreSQL 15  │   │   Three Domain-Specific OPAs    │           │
 │   │                  │   │  opa-security    (CIS/NIST)     │           │
 │   │                  │◄──│  opa-compliance  (ISO/SOC2/…)   │           │
 │   │  compliance_     │   │  opa-ot          (NERC/AMI)     │           │
 │   │  results (JSONB) │   └─────────────────────────────────┘           │
-│   │  compliance_     │                                                  │
-│   │  facts           │                                                  │
-│   │  remediation_    │                                                  │
-│   │  rates           │                                                  │
-│   │  technical_debt  │                                                  │
+│   │  compliance_     │                                                 │
+│   │  facts           │                                                 │
+│   │  remediation_    │                                                 │
+│   │  rates           │                                                 │
+│   │  technical_debt  │                                                 │
 │   └────────┬─────────┘                                                 │
-│            ▼                                                            │
+│            ▼                                                           │
 │   ┌──────────────────────────────────────────────────────┐             │
-│   │                  Grafana Dashboards                   │             │
-│   │  NCSC CAF 4.0  │  Technical Debt  │  AMI/NERC-CIP   │             │
+│   │                  Grafana Dashboards                  │             │
+│   │  NCSC CAF 4.0  │  Technical Debt  │  AMI/NERC-CIP    │             │
 │   │  AAC Compliance│  Sovereignty     │  NERC-CIP        │             │
 │   └──────────────────────────────────────────────────────┘             │
 └────────────────────────────────────────────────────────────────────────┘
@@ -97,7 +96,7 @@ category. Add a target type by writing the fact-collection playbook + the matchi
 the rest (storage, dashboards, evidence export) is handled by the platform.
 
 | Target category | Examples | Fact collection | Framework coverage today |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | **Hosts / Servers** | RHEL 8/9/10, Oracle Linux 8/9, Ubuntu 22.04, Amazon Linux, Rocky Linux, SUSE | Ansible `gather_facts` over SSH | CIS, STIG (RHEL and Oracle Linux: `stig_linux_assessment.yml`), NIST 800-53, NCSC CAF, ISO 27001 |
 | **Operating systems (Windows)** | Windows Server 2019/2022, Windows 10/11 | Ansible facts over WinRM | CIS Windows, STIG Windows, MS Security Baselines |
 | **Network equipment** | Cisco IOS/NX-OS, Arista, Juniper, F5, pfSense, VyOS | `ansible.netcommon`, SSH, SNMP, NETCONF | CIS network-device benchmarks, NERC CIP-005/007 |
@@ -130,7 +129,7 @@ deploys the five core dashboards; the other three are deployed individually by p
 `dashboard_file` as an extra var to the same template.
 
 | Dashboard (JSON) | Deploy | Description |
-|-----------|--------|-------------|
+| ----------- | -------- | ------------- |
 | **AAC Compliance** (`aac_compliance_dashboard`) | auto | Overall compliance posture across all assessed frameworks — score, pass/fail breakdown, per-host drill-down. Includes CIS benchmark results; the policy set evaluates 224 distinct CIS RHEL 9 control IDs of the benchmark's 338 — see [CIS coverage](#cis-coverage-and-the-assessment-contract). |
 | **NCSC CAF 4.0 Compliance** (`ncsc_caf_dashboard`) | auto | Maps all 23 Cyber Outcomes (B2–D1) across Phase 1 technical and Phase 2 governance pillars. Single-pane view for UK CNI compliance. |
 | **AMI Compliance** (`ami_compliance_dashboard`) | auto | Advanced Metering Infrastructure controls — NIST IR 7628, IEC 62443, device and head-end posture. |
@@ -152,7 +151,7 @@ All Rego policies live in a dedicated repository and are included here as a **gi
 at `policies/`. This separation keeps the policy library independently versioned, testable,
 and reusable across projects.
 
-**Policy library:** https://github.com/ynotbhatc/rego_policy_libraries
+**Policy library:** [https://github.com/ynotbhatc/rego_policy_libraries](https://github.com/ynotbhatc/rego_policy_libraries)
 
 ```bash
 # Clone this repo with policies included
@@ -165,7 +164,7 @@ git submodule update --remote policies/
 ### Policy Library Coverage
 
 | Domain | Path | Policies | Frameworks |
-|--------|------|----------|------------|
+| -------- | ------ | ---------- | ------------ |
 | CIS Benchmarks | `benchmarks/cis/` | 265 | RHEL 9/8/10, Ubuntu, Windows, AWS, Azure, GCP, Docker, K8s |
 | DISA STIGs | `benchmarks/stig/` | 67 | RHEL 8/9, Oracle Linux 8/9, Oracle Database 19c, Oracle MySQL 8.0, Ubuntu 20/22, SLES 15, Amazon Linux 2023, Windows 10/11 + Server 2016–2025, K8s, OpenShift 4, VMware vSphere 8, Cisco IOS-XE, MS SQL 2016, PostgreSQL 16, Apache |
 | Federal | `frameworks/federal/` | 93 | NIST 800-53, FISMA, FedRAMP, CMMC, **NIST SP 800-171 r3**, **NIST SSDF**, **Zero Trust**, **CJIS**, **IRS 1075**, **CISA CPG** |
@@ -238,7 +237,7 @@ evaluating normally on real facts.
 
 ## Repository Structure
 
-```
+```bash
 compliance/
 ├── policies/                    # ⚠ Git submodule → ynotbhatc/rego_policy_libraries
 │                                #   Rego v1 policies across 55+ frameworks
@@ -295,7 +294,7 @@ submodule at release tags. `aac-demo-datacenter` is likewise its own repository.
 ### Security Benchmarks (OPA service: `opa-security`)
 
 | Framework | Coverage | Highlights |
-|-----------|----------|------------|
+| --------- | -------- | ---------- |
 | **CIS RHEL 9** | 224 of 338 control IDs referenced ([measured](#cis-coverage-and-the-assessment-contract)) | + 3 extended STIG/NIST hardening modules; EDA drift detection |
 | **CIS RHEL 8** | 300+ controls | Full v2.0.0 coverage |
 | **CIS Ubuntu 22.04** | 280+ controls | Full v2.0.0 coverage |
@@ -311,7 +310,7 @@ submodule at release tags. `aac-demo-datacenter` is likewise its own repository.
 ### Regulatory Compliance (OPA service: `opa-compliance`)
 
 | Framework | Industry | Key Controls |
-|-----------|----------|-------------|
+| --------- | -------- | ----------- |
 | **ISO 27001** | Global | ISMS — all 93 Annex A controls |
 | **SOC 2** | Technology/SaaS | Trust Service Criteria (CC, A, C, PI, P) |
 | **PCI-DSS** | Financial/Retail | 12 requirements, 250+ sub-controls |
@@ -342,7 +341,7 @@ submodule at release tags. `aac-demo-datacenter` is likewise its own repository.
 ### OT / Critical Infrastructure (OPA service: `opa-ot`)
 
 | Framework | Domain | Coverage |
-|-----------|--------|----------|
+| ----------- | -------- | ---------- |
 | **NERC-CIP** | Energy/Utilities | CIP-002 through CIP-015 + CIP-015 INSM |
 | **AMI / NIST IR 7628** | Smart Grid | Device, head-end, and network security |
 | **IEC 62443** | Industrial Automation | Security levels 1–4 |
@@ -359,7 +358,7 @@ stack. It pins this repo as its `product/` submodule so every demo runs against 
 product release. What the demos show:
 
 | Demo | What It Shows | Story |
-|------|---------------|-------|
+| ------ | --------------- | ------- |
 | **Mythos Patch Lifecycle** | AI-scale vulnerability discovery → targeted remediation → proven closure | A 13-node AAP workflow: observe the estate, match CVEs to observed inventory, open the change record, back up, drain, patch, assure, undrain, verify, close — then rebuild the risk heat map to prove the exposure is gone. |
 | **Golden Image** | Drift detect → auto-rollback → help desk ticket | A SELinux config change is detected in seconds. Enforcement workflow restores golden state and files a ticket — no human intervention. |
 | **AAC Comply** | Policy gates in CI/CD | A violating Ansible playbook is blocked at git commit. A Terraform plan missing required tags fails pre-apply. Compliant versions pass both gates. 5 enforcement points vs HashiCorp Sentinel's 2. |
@@ -382,7 +381,7 @@ In addition, ready-to-use playbooks in `ansible/playbooks/` push compliance data
 external systems:
 
 | Integration | Playbook | What It Does |
-|-------------|----------|-------------|
+| ------------- | ---------- | ------------- |
 | **Prometheus** | `deploy_prometheus_exporter.yml` | Deploys a rootless podman container that reads `compliance_results` from PostgreSQL and exposes 7 Prometheus metrics on port 9101. Includes `aac_compliance_score`, `aac_compliant`, `aac_controls_total/passed/failed`, `aac_violations_total`, and `aac_assessments_24h`. |
 | **Nagios / Icinga** | `notify_nagios_compliance.yml` | Pushes latest compliance results to Nagios as passive check results via NSCA. Supports custom OK/WARNING/CRITICAL thresholds and per-framework filtering. |
 | **ServiceNow** | `notify_servicenow_violations.yml` | Creates ServiceNow incidents for non-compliant systems after each assessment. Idempotent — checks for existing open incidents before creating new ones. Supports P2/P3/P4 severity mapping based on compliance score. |
@@ -394,7 +393,7 @@ external systems:
 ### vs. HashiCorp Sentinel
 
 | Capability | HashiCorp Sentinel | AAC |
-|------------|-------------------|-----|
+| ------------ | ------------------- | ----- |
 | Terraform pre-apply gate | ✅ | ✅ |
 | Terraform git check-in gate | ✅ | ✅ |
 | Ansible git check-in gate | ❌ | ✅ |
@@ -410,13 +409,12 @@ external systems:
 ### vs. Commercial Compliance Platforms
 
 | Capability | Qualys / Rapid7 / Tenable | AAC |
-|------------|--------------------------|-----|
+| ------------ | -------------------------- | ----- |
 | Frameworks covered | 5–15 | 55+ |
 | Remediation automation | Alerts only | Automated rollback + enforcement |
 | Custom policy authoring | Vendor roadmap | Full Rego v1, open source |
 | Works on AAP you already own | ❌ | ✅ |
 | OT/SCADA/NERC-CIP | Limited | Full coverage |
-
 
 ---
 
@@ -427,7 +425,7 @@ on your starting point; tiers and tested status for every method are recorded ho
 [`install/SUPPORT_MATRIX.md`](install/SUPPORT_MATRIX.md).
 
 | Path | Starting point | Best for |
-|------|---------------|----------|
+| ------ | --------------- | ---------- |
 | [**Standard**](install/standard/README.md) — *start here* | Any target; profile-driven (`lab` / `rhpds` / `customer`) | The canonical method: fail-closed environment profiles + preflight/verify gates. Includes the [EC2 provisioning path](install/standard/PROVISION_EC2.md) for fresh instances |
 | [Existing AAP](install/existing-aap/README.md) | AAP 2.6+ already running | Adding AAC to an existing AAP deployment |
 | [Config as Code](install/config-as-code/README.md) | Git repo + AAP API access | CI/CD pipelines, repeatable environment rebuilds |
@@ -450,7 +448,7 @@ Quick outline of any install (details and gates in the per-path READMEs):
 ## Technology Stack
 
 | Component | Version | Role |
-|-----------|---------|------|
+| ----------- | --------- | ------ |
 | Ansible Automation Platform | 2.6+ (2.7 reference) | Orchestration, scheduling, EDA, MCP |
 | Open Policy Agent | 1.10.0 | Policy-as-Code evaluation (Rego v1) |
 | PostgreSQL | 15+ | Historical compliance data (JSONB) |
@@ -533,13 +531,13 @@ MCP tool calls are governed by OPA policy evaluation (`governance/mcp/mcp_govern
 
 ### All AI Actions Are Policy-Evaluated
 
-```
+```bash
 AI Agent (Claude / MCP / any LLM tool)
           │
           │  intended action (tool call, API call, playbook launch)
           ▼
 ┌─────────────────────────────────────┐
-│  OPA Compliance Service              │
+│  OPA Compliance Service             │
 │  governance/mcp/mcp_governance.rego │
 │                                     │
 │  ALLOW  → action proceeds           │
@@ -555,6 +553,7 @@ against five risk categories: **read-only**, **state-changing**, **destructive**
 explicitly approves them in the AAP UI.
 
 This means an AI agent cannot:
+
 - Modify any AAP job template or workflow without human approval
 - Delete or alter credentials
 - Change OPA policies (see lockdown section below)
@@ -569,35 +568,35 @@ This means an AI agent cannot:
 
 #### Three-Layer Lockdown Architecture
 
-```
+```bash
 ┌─────────────────────────────────────────────────────────────────────┐
-│                   OPA AI Governance Lockdown                         │
+│                   OPA AI Governance Lockdown                        │
 ├─────────────────────────────────────────────────────────────────────┤
-│                                                                      │
-│  Layer 1 — Cryptographic (Bundle Signing)                            │
-│  ─────────────────────────────────────────                           │
-│  AI governance policies are loaded as a signed OPA bundle            │
-│  (RS256 / ECDSA). OPA verifies the signature on every load.          │
-│  An AI agent cannot create a valid signed bundle without             │
-│  the private key — which is held only by human operators.            │
-│                                                                      │
-│  Layer 2 — API (Policy Proxy)                                        │
-│  ────────────────────────────                                        │
+│                                                                     │
+│  Layer 1 — Cryptographic (Bundle Signing)                           │
+│  ─────────────────────────────────────────                          │
+│  AI governance policies are loaded as a signed OPA bundle           │
+│  (RS256 / ECDSA). OPA verifies the signature on every load.         │
+│  An AI agent cannot create a valid signed bundle without            │
+│  the private key — which is held only by human operators.           │
+│                                                                     │
+│  Layer 2 — API (Policy Proxy)                                       │
+│  ────────────────────────────                                       │
 │  A lightweight nginx sidecar in front of the opa-compliance service │
-│  blocks all PUT and DELETE requests to /v1/policies when the         │
-│  governance lockfile is present. AI agents see HTTP 423 (Locked).    │
-│  The lockfile is only removed by the human unlock workflow below.    │
-│                                                                      │
-│  Layer 3 — Procedural (AAP Approval Gate)                            │
-│  ────────────────────────────────────────                            │
-│  Even if layers 1 and 2 are bypassed (e.g. direct host access),      │
-│  the AAP "Load OPA Policies" playbook checks a lock record in        │
-│  PostgreSQL at the start. If locked, governance policies are         │
-│  excluded from the load run. Overriding requires modifying the       │
-│  playbook itself — a git commit that triggers CI review.             │
-│                                                                      │
-│  All three layers must be bypassed simultaneously to modify          │
-│  AI governance policies without human involvement.                   │
+│  blocks all PUT and DELETE requests to /v1/policies when the        │
+│  governance lockfile is present. AI agents see HTTP 423 (Locked).   │
+│  The lockfile is only removed by the human unlock workflow below.   │
+│                                                                     │
+│  Layer 3 — Procedural (AAP Approval Gate)                           │
+│  ────────────────────────────────────────                           │
+│  Even if layers 1 and 2 are bypassed (e.g. direct host access),     │
+│  the AAP "Load OPA Policies" playbook checks a lock record in       │
+│  PostgreSQL at the start. If locked, governance policies are        │
+│  excluded from the load run. Overriding requires modifying the      │
+│  playbook itself — a git commit that triggers CI review.            │
+│                                                                     │
+│  All three layers must be bypassed simultaneously to modify         │
+│  AI governance policies without human involvement.                  │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -618,7 +617,7 @@ When `AAC - Load OPA Policies` completes for the governance container:
 Changing AI governance policies requires completing a four-step human workflow in AAP. No
 step can be skipped or automated.
 
-```
+```bash
 Step 1 — Submit Unlock Request
   Template: AAC - Request OPA Governance Unlock
   Survey fields (all required):
@@ -686,70 +685,70 @@ trigger automatic containment.
 
 ### How It Works
 
-```
-┌──────────────────────────────────────────────────────────────────────────┐
+```bash
+┌───────────────────────────────────────────────────────────────────────────┐
 │                     AI Threat Correlation Engine                          │
-├──────────────────────────────────────────────────────────────────────────┤
+├───────────────────────────────────────────────────────────────────────────┤
 │                                                                           │
 │   Signal Collectors (EDA rulebooks, always running)                       │
 │                                                                           │
 │   STORAGE                  NETWORK                  SYSTEMS               │
 │   ─────────────────        ────────────────         ───────────────────   │
-│   • Encryption rate        • Unusual egress         • Auth failures       │
-│     (inotifywait mass        (netstat / ss)         • Privilege escalation│
-│     modify events)         • New outbound           • New processes       │
-│   • Mass file rename         connections            • Cron/systemd adds   │
-│   • Shadow copy delete     • C2 beacon patterns     • SSH key injection   │
-│   • Backup deletion        • DNS query spikes       • /etc/passwd changes │
-│   • Permission changes     • Port scan signatures   • Package installs    │
+│   • Encryption rate        • Unusual egress        • Auth failures        │
+│     (inotifywait mass        (netstat / ss)        • Privilege escalation │
+│     modify events)         • New outbound          • New processes        │
+│   • Mass file rename         connections           • Cron/systemd adds    │
+│   • Shadow copy delete     • C2 beacon patterns    • SSH key injection    │
+│   • Backup deletion        • DNS query spikes      • /etc/passwd changes  │
+│   • Permission changes     • Port scan signatures  • Package installs     │
 │          │                        │                         │             │
 │          └────────────────────────┴─────────────────────────┘             │
-│                                   │                                        │
-│                                   ▼                                        │
-│              ┌────────────────────────────────────┐                        │
-│              │   PostgreSQL — signal_events table  │                        │
-│              │   (timestamp, host, vector, type,   │                        │
-│              │    severity, raw_data JSONB)         │                        │
-│              └──────────────┬─────────────────────┘                        │
-│                             │                                              │
-│                             ▼                                              │
-│              ┌────────────────────────────────────┐                        │
-│              │   AI Correlation Layer (LLM + OPA) │                        │
-│              │                                    │                        │
-│              │  1. Sliding time window (5 min)    │                        │
-│              │  2. Cross-vector pattern matching  │                        │
-│              │  3. OPA threat taxonomy scoring    │                        │
-│              │  4. AI narrative: "storage + net   │                        │
-│              │     + system signals match         │                        │
-│              │     ransomware lateral movement"   │                        │
-│              └──────────────┬─────────────────────┘                        │
-│                             │  threat_score > threshold                    │
-│                             ▼                                              │
-│              ┌────────────────────────────────────┐                        │
-│              │   Automated Containment Workflow    │                        │
-│              │   (AAP Enforcement Workflow)        │                        │
-│              │                                    │                        │
-│              │  STORAGE:  revoke write permissions │                        │
-│              │            snapshot volumes         │                        │
-│              │            quarantine mount points  │                        │
-│              │  NETWORK:  firewall isolation rules │                        │
-│              │            block egress by host     │                        │
-│              │            null-route suspicious IPs│                        │
-│              │  SYSTEMS:  isolate from inventory   │                        │
-│              │            disable SSH/WinRM access │                        │
-│              │            kill suspicious processes│                        │
-│              │                                    │                        │
-│              │  + Ticket → ITSM / Slack / PagerDuty│                       │
-│              │  + Forensic snapshot → PostgreSQL   │                        │
-│              │  + Grafana alert + timeline         │                        │
-│              └────────────────────────────────────┘                        │
-└──────────────────────────────────────────────────────────────────────────┘
+│                                   │                                       │
+│                                   ▼                                       │
+│              ┌────────────────────────────────────┐                       │
+│              │   PostgreSQL — signal_events table │                       │
+│              │   (timestamp, host, vector, type,  │                       │
+│              │    severity, raw_data JSONB)       │                       │
+│              └──────────────┬─────────────────────┘                       │
+│                             │                                             │
+│                             ▼                                             │
+│              ┌────────────────────────────────────┐                       │
+│              │   AI Correlation Layer (LLM + OPA) │                       │
+│              │                                    │                       │
+│              │  1. Sliding time window (5 min)    │                       │
+│              │  2. Cross-vector pattern matching  │                       │
+│              │  3. OPA threat taxonomy scoring    │                       │
+│              │  4. AI narrative: "storage + net   │                       │
+│              │     + system signals match         │                       │
+│              │     ransomware lateral movement"   │                       │
+│              └──────────────┬─────────────────────┘                       │
+│                             │  threat_score > threshold                   │
+│                             ▼                                             │
+│              ┌────────────────────────────────────┐                       │
+│              │   Automated Containment Workflow   │                       │
+│              │   (AAP Enforcement Workflow)       │                       │
+│              │                                    │                       │
+│              │  STORAGE: revoke write permissions │                       │
+│              │           snapshot volumes         │                       │
+│              │           quarantine mount points  │                       │
+│              │  NETWORK: firewall isolation rules │                       │
+│              │           block egress by host     │                       │
+│              │           null-route suspicious IPs│                       │
+│              │  SYSTEMS: isolate from inventory   │                       │
+│              │           disable SSH/WinRM access │                       │
+│              │           kill suspicious processes│                       │
+│              │                                    │                       │
+│              │ + Ticket → ITSM / Slack / PagerDuty│                       │
+│              │ + Forensic snapshot → PostgreSQL   │                       │
+│              │ + Grafana alert + timeline         │                       │
+│              └────────────────────────────────────┘                       │
+└───────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Attack Patterns Detected
 
 | Pattern | Storage Signal | Network Signal | System Signal |
-|---------|---------------|----------------|---------------|
+| --------- | --------------- | ---------------- | --------------- |
 | **Ransomware** | Mass file encrypt/rename, shadow copy delete | C2 beaconing, unusual egress spike | New service install, scheduled task, privilege escalation |
 | **Data Exfiltration** | Mass read on sensitive paths, backup access | Large sustained egress, unusual DNS | New process with net access, auth from new IP |
 | **Lateral Movement** | Credential file access (`/etc/shadow`) | Internal east-west scanning | SSH key injection, new sudo rules, `su` failures |
@@ -760,7 +759,7 @@ trigger automatic containment.
 ### Containment Response Levels
 
 | Threat Score | Level | Action |
-|---|---|---|
+| --- | --- | --- |
 | 40–60 | **Watch** | Log, alert, increase monitoring frequency — no action |
 | 60–80 | **Contain** | Isolate affected host from network, disable outbound rules, alert SOC |
 | 80–95 | **Quarantine** | Full network isolation + storage write lock + SOC page |
@@ -783,7 +782,7 @@ and the AI layer generates a human-readable narrative of why the correlation tri
 ## Documentation
 
 | Document | Description |
-|----------|-------------|
+| ---------- | ------------- |
 | [install/README.md](install/README.md) | Install chooser — which of the 4 install paths fits your starting point |
 | [install/SUPPORT_MATRIX.md](install/SUPPORT_MATRIX.md) | Which install paths exist, their support tier, and what has actually been tested |
 | [docs/AAC_HONEST_STATUS_AND_POSITIONING.md](docs/AAC_HONEST_STATUS_AND_POSITIONING.md) | What is and is not supported — the honest status statement |
@@ -798,8 +797,8 @@ and the AI layer generates a human-readable narrative of why the correlation tri
 
 ## Support & Community
 
-- **Issues:** https://github.com/ansible-automated-compliance/aac/issues
-- **Policy Library Issues:** https://github.com/ynotbhatc/rego_policy_libraries/issues
+- **Issues:** [https://github.com/ansible-automated-compliance/aac/issues](https://github.com/ansible-automated-compliance/aac/issues)
+- **Policy Library Issues:** [https://github.com/ynotbhatc/rego_policy_libraries/issues](https://github.com/ynotbhatc/rego_policy_libraries/issues)
 
 ---
 

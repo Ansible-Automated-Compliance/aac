@@ -1,0 +1,99 @@
+== CIS RHEL 9 Assessment
+
+Open the grafana dashboard `http://<your-aac-host>:3000` and go to the `AAC Infrastructure Compliance` dashboard with the `cis` tag.
+
+Click the refresh button on the top right of the dashboard to see the results.
+
+[NOTE]
+====
+Troubleshoot if there is data in the database but not in the dashboard.
+
+From the AAC host:
+
+[source,bash]
+----
+podman exec -it aac-postgresql psql -U compliance -d compliance \
+   -c "SELECT hostname,compliance_percentage FROM compliance_results;"
+
+   hostname    | compliance_percentage 
+---------------+-----------------------
+ <your-aac-host> |                100.00
+ <your-aac-host> |                100.00
+----
+
+Verify the data source is as follows:
+
+[source,yaml]
+----
+Name: aac-compliance-db
+Type: PostgreSQL
+Url: <your-aac-host>:5432
+User: compliance
+Password: <from vault>
+TLS Mode: Disable
+----
+====
+
+== EDA activations are running
+
+In the AAP UI under *Automation Decisions -> Rulebook Activations*, confirm every activation shows *Running*. If an activation shows *Failed* or *Stopped*, click into it and check the *History* tab for the error. Common causes:
+
+- *Credential mismatch* — the activation must use the `AAP Controller Token` credential, not a machine credential.
+- *Port conflict* — another activation (or process) already bound to the same port. Check with `ss -tlnp | grep <port>` on the AAP host.
+- *Decision Environment pull failure* — the DE image pull needs the `Red Hat Container Registry` credential attached to the DE definition. Check *Automation Decisions -> Decision Environments*.
+
+=== Test the Compliance Webhook rulebook (port 5000)
+
+[source,bash]
+----
+curl -X POST http://<your-aap-host>:5000/endpoint \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "event_type": "manual_check",
+    "hosts": "all",
+    "requested_by": "install-test",
+    "reason": "EDA webhook validation"
+  }'
+----
+
+Expect: HTTP 200 response. Within a few seconds, a *CIS RHEL 9 Assessment* job should appear in *Automation Execution -> Jobs* in the AAP UI.
+
+=== Test the Golden Image Enforcement rulebook (port 5004)
+
+[source,bash]
+----
+curl -X POST http://<your-aap-host>:5004/endpoint \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "drift_trigger": "webhook",
+    "changed_file": "/opt/golden-image/test.conf",
+    "change_type": "modified",
+    "target_host": "demo-rhel9"
+  }'
+----
+
+Expect: the *AAC_GoldenImage_Enforcement* workflow launches in AAP.
+
+=== Test the Sentinel GitHub Webhook rulebook (port 5003)
+
+[source,bash]
+----
+curl -X POST http://<your-aap-host>:5003/endpoint \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "ref": "refs/heads/main",
+    "after": "abc123def456",
+    "repository": {
+      "full_name": "Ansible-Automated-Compliance/aac"
+    },
+    "commits": [{
+      "modified": ["ansible/playbooks/test_playbook.yml"],
+      "added": []
+    }]
+  }'
+----
+
+Expect: the *AAC_Comply_AnsibleDeny* job template launches.
+Expect: A workflow approval
+Expect: AAC_Comply_AnsibleDeny job template to fail
+Expect: A second workflow approval

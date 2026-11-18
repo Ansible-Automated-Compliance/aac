@@ -1,0 +1,13 @@
+---
+
+- name: AAC_CIS_Complete_Schedule
+  ansible.controller.schedule:
+    name: AAC_CIS_Complete_Schedule
+    description: "AAC CIS Complete Schedule"
+    organization: "{{ aac_organization }}"
+    state: present
+    unified_job_template: AAC_CIS_Complete_Workflow
+    # Run every day at 00:00:00
+    rrule: "DTSTART:20261020T000000Z RRULE:FREQ=DAILY;INTERVAL=1"
+    enabled: true
+  register: cis_complete_schedule_result

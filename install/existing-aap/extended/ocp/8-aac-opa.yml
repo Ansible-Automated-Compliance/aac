@@ -1,0 +1,241 @@
+# AAC evaluation OPA services on OpenShift.
+#
+# Gatekeeper is not used here as the primary engine because AAC's playbooks and
+# workflows expect raw OPA REST APIs for:
+#   - policy load   (PUT /v1/policies/...)
+#   - decision eval (POST /v1/data/...)
+#   - policy list   (GET /v1/policies)
+#
+# These Deployments start with an empty policy store. Load the policies later
+# with ansible/playbooks/load_opa_policies.yml or the matching AAP template.
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: opa-security
+  namespace: aac
+  labels:
+    app: opa-security
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: opa-security
+  template:
+    metadata:
+      labels:
+        app: opa-security
+    spec:
+      containers:
+        - name: opa
+          image: docker.io/openpolicyagent/opa:0.70.0-static
+          args:
+            - run
+            - --server
+            - --addr=0.0.0.0:8181
+            - --log-level=info
+            - --set=decision_logs.console=true
+          ports:
+            - containerPort: 8181
+              name: http
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8181
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8181
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: opa-security
+  namespace: aac
+spec:
+  selector:
+    app: opa-security
+  ports:
+    - name: http
+      port: 8181
+      targetPort: 8181
+
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: opa-security
+  namespace: aac
+spec:
+  to:
+    kind: Service
+    name: opa-security
+  port:
+    targetPort: http
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: opa-compliance
+  namespace: aac
+  labels:
+    app: opa-compliance
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: opa-compliance
+  template:
+    metadata:
+      labels:
+        app: opa-compliance
+    spec:
+      containers:
+        - name: opa
+          image: docker.io/openpolicyagent/opa:0.70.0-static
+          args:
+            - run
+            - --server
+            - --addr=0.0.0.0:8182
+            - --log-level=info
+            - --set=decision_logs.console=true
+          ports:
+            - containerPort: 8182
+              name: http
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8182
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8182
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: opa-compliance
+  namespace: aac
+spec:
+  selector:
+    app: opa-compliance
+  ports:
+    - name: http
+      port: 8182
+      targetPort: 8182
+
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: opa-compliance
+  namespace: aac
+spec:
+  to:
+    kind: Service
+    name: opa-compliance
+  port:
+    targetPort: http
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: opa-ot
+  namespace: aac
+  labels:
+    app: opa-ot
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: opa-ot
+  template:
+    metadata:
+      labels:
+        app: opa-ot
+    spec:
+      containers:
+        - name: opa
+          image: docker.io/openpolicyagent/opa:0.70.0-static
+          args:
+            - run
+            - --server
+            - --addr=0.0.0.0:8183
+            - --log-level=info
+            - --set=decision_logs.console=true
+          ports:
+            - containerPort: 8183
+              name: http
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8183
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8183
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: opa-ot
+  namespace: aac
+spec:
+  selector:
+    app: opa-ot
+  ports:
+    - name: http
+      port: 8183
+      targetPort: 8183
+
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: opa-ot
+  namespace: aac
+spec:
+  to:
+    kind: Service
+    name: opa-ot
+  port:
+    targetPort: http
