@@ -363,3 +363,39 @@ jobs:
             exit 1
           fi
           echo "OK: no hygiene violations across $evaluated playbooks"
+
+      # ── 4. ansible-lint, profile min ──────────────────────────────────────
+      # .ansible-lint existed and nothing ran it. Profile min is fatal
+      # correctness only (unparseable files, invalid play structure, modules
+      # that do not resolve). It covers install/ and examples/ as well, which
+      # the syntax check above does not reach. Added 2026-11-18.
+      #
+      # The public collections are installed so that module names resolve;
+      # certified collections need an Automation Hub token and are not. The
+      # mitogen strategy path in ansible.cfg exists only inside the Execution
+      # Environment, so it is commented out in this checkout before linting.
+      - name: Install lint tools and public collections
+        if: steps.detect.outputs.changed == 'true'
+        run: |
+          pip install ansible-lint yamllint
+          ansible-galaxy collection install -p "$RUNNER_TEMP/collections" \
+            community.postgresql community.general ansible.posix ansible.utils \
+            ansible.windows community.windows amazon.aws kubernetes.core \
+            ansible.eda infra.aap_configuration
+
+      - name: ansible-lint (profile min)
+        if: steps.detect.outputs.changed == 'true'
+        run: |
+          sed -i 's|^strategy_plugins = /opt/mitogen_strategies|#&|' ansible.cfg
+          export ANSIBLE_COLLECTIONS_PATH="$RUNNER_TEMP/collections:$PWD/collections"
+          ansible-lint --nocolor
+          git checkout -- ansible.cfg
+
+      # ── 5. yamllint, correctness rules only ───────────────────────────────
+      # .yamllint enables duplicate keys and anchor faults and nothing about
+      # style. A duplicated key is valid YAML in which the second value
+      # silently replaces the first; no other step here reports it.
+      - name: yamllint (duplicate keys, anchors)
+        if: steps.detect.outputs.changed == 'true'
+        run: |
+          yamllint -f parsable ansible install examples extensions collections

@@ -1,0 +1,19 @@
+---
+# yamllint configuration for AAC
+#
+# Correctness only, on purpose. The default rule set reports about 8,600 style
+# findings here (line length, spacing, braces); a gate that noisy gets muted.
+# What is left are the faults that change what a file means:
+#   - a file that does not parse (always reported, no rule needed)
+#   - a mapping key given twice, where the second silently replaces the first
+#   - an anchor that is used but never defined, or defined twice
+rules:
+  key-duplicates: enable
+  anchors:
+    forbid-undeclared-aliases: true
+    forbid-duplicated-anchors: true
+    forbid-unused-anchors: false
+
+ignore: |
+  policies/
+  .git/
