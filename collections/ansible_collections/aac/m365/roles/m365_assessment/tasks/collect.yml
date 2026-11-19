@@ -157,4 +157,5 @@
         | combine({'defender': m365_defender_ps.facts} if m365_defender_ps.facts | default({}) else {})
         | combine({'exchange': (m365_exchange_ps.facts | default({}))
                                | combine(m365_exchange_graph.facts | default({}))})
+        | combine({'attestations': m365_attestations | default([])})
       }}

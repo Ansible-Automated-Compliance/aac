@@ -79,7 +79,8 @@
       ansible.builtin.uri:
         url: "{{ _api }}/{{ item.endpoint }}/?name={{ item.name | urlencode }}"
         headers: "{{ _headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       loop:
         - {key: inventory, endpoint: inventories, name: "{{ inventory_name }}"}
         - {key: credential, endpoint: credentials, name: "{{ aws_credential_name }}"}
@@ -101,7 +102,8 @@
       ansible.builtin.uri:
         url: "{{ _api }}/inventories/{{ _lookup.results[0].json.results[0].id | int }}/inventory_sources/?name={{ source_name | urlencode }}"
         headers: "{{ _headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: _existing_src
 
     - name: Require at most one match
@@ -116,12 +118,13 @@
             if (_existing_src.json.count | int) == 1 else '' }}
         method: "{{ 'PATCH' if (_existing_src.json.count | int) == 1 else 'POST' }}"
         headers: "{{ _headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body: >-
           {{ source_body | combine({'inventory': (_lookup.results[0].json.results[0].id | int),
                                      'credential': (_lookup.results[1].json.results[0].id | int)}) }}
         status_code: [200, 201]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: _src
 
     - name: Seeded

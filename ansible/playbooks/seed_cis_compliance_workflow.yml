@@ -68,7 +68,8 @@
       ansible.builtin.uri:
         url: "{{ _api }}/workflow_job_templates/?name={{ wf_name | urlencode }}"
         headers: "{{ _headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: _wf
 
     - name: Require exactly one workflow
@@ -80,7 +81,8 @@
       ansible.builtin.uri:
         url: "{{ _api }}/job_templates/?name={{ item.value | urlencode }}"
         headers: "{{ _headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       loop: "{{ jt_names | dict2items }}"
       loop_control:
         label: "{{ item.value }}"
@@ -103,7 +105,8 @@
       ansible.builtin.uri:
         url: "{{ _api }}/workflow_job_templates/{{ wf_id }}/workflow_nodes/?page_size=100"
         headers: "{{ _headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: _existing
 
     - name: Delete them
@@ -111,8 +114,9 @@
         url: "{{ _api }}/workflow_job_template_nodes/{{ item.id | int }}/"
         method: DELETE
         headers: "{{ _headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         status_code: [204]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       loop: "{{ _existing.json.results }}"
       loop_control:
         label: "{{ item.id }}"
@@ -122,10 +126,11 @@
         url: "{{ _api }}/workflow_job_templates/{{ wf_id }}/workflow_nodes/"
         method: POST
         headers: "{{ _headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body: "{{ {'unified_job_template': (jt.manage | int), 'extra_data': {'instance_state': 'running'}} }}"
         status_code: [201]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: _start
 
     - name: Node — stop the AWS lab
@@ -133,10 +138,11 @@
         url: "{{ _api }}/workflow_job_templates/{{ wf_id }}/workflow_nodes/"
         method: POST
         headers: "{{ _headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body: "{{ {'unified_job_template': (jt.manage | int), 'extra_data': {'instance_state': 'stopped'}, 'all_parents_must_converge': true} }}"
         status_code: [201]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: _stop
 
     - name: Node — stop the AWS lab when the start job fails
@@ -144,10 +150,11 @@
         url: "{{ _api }}/workflow_job_templates/{{ wf_id }}/workflow_nodes/"
         method: POST
         headers: "{{ _headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body: "{{ {'unified_job_template': (jt.manage | int), 'extra_data': {'instance_state': 'stopped'}} }}"
         status_code: [201]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: _stop_on_start_fail
 
     - name: Nodes — one per assessment
@@ -155,10 +162,11 @@
         url: "{{ _api }}/workflow_job_templates/{{ wf_id }}/workflow_nodes/"
         method: POST
         headers: "{{ _headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body: "{{ {'unified_job_template': (jt[item] | int)} }}"
         status_code: [201]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       loop: "{{ assessment_keys }}"
       register: _assess
 
@@ -167,10 +175,11 @@
         url: "{{ _api }}/workflow_job_template_nodes/{{ _start.json.id | int }}/success_nodes/"
         method: POST
         headers: "{{ _headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body: "{{ {'id': (item.json.id | int)} }}"
         status_code: [204]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       loop: "{{ _assess.results }}"
       loop_control:
         label: "{{ item.item }}"
@@ -180,20 +189,22 @@
         url: "{{ _api }}/workflow_job_template_nodes/{{ _start.json.id | int }}/failure_nodes/"
         method: POST
         headers: "{{ _headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body: "{{ {'id': (_stop_on_start_fail.json.id | int)} }}"
         status_code: [204]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
 
     - name: Edges — each assessment → stop (ALWAYS, so the lab stops whatever the outcome)
       ansible.builtin.uri:
         url: "{{ _api }}/workflow_job_template_nodes/{{ item.json.id | int }}/always_nodes/"
         method: POST
         headers: "{{ _headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body: "{{ {'id': (_stop.json.id | int)} }}"
         status_code: [204]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       loop: "{{ _assess.results }}"
       loop_control:
         label: "{{ item.item }}"

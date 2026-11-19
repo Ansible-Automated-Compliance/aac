@@ -125,6 +125,7 @@
           --input "{{ assessment_results_path }}/input.json" \
           --format json \
           "data.{{ platform_policy_map[target_platform] }}.compliant"
+      changed_when: false
       register: opa_compliant_result
       when: policy_check.stat.exists
 
@@ -135,6 +136,7 @@
           --input "{{ assessment_results_path }}/input.json" \
           --format json \
           "data.{{ platform_policy_map[target_platform] }}.violations"
+      changed_when: false
       register: opa_violations_result
       when: policy_check.stat.exists
 
@@ -145,6 +147,7 @@
           --input "{{ assessment_results_path }}/input.json" \
           --format json \
           "data.{{ platform_policy_map[target_platform] }}.findings"
+      changed_when: false
       register: opa_findings_result
       when: policy_check.stat.exists
 

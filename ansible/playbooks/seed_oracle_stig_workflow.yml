@@ -130,8 +130,9 @@
         url: "{{ aap_api }}/{{ item.path }}/?name={{ item.name | urlencode }}"
         method: GET
         headers: { Authorization: "Bearer {{ aap_api_token }}" }
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         status_code: 200
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       loop:
         - { key: "project",    path: "projects",               name: "{{ project_name }}" }
         - { key: "inventory",  path: "inventories",            name: "{{ inventory_name }}" }
@@ -160,8 +161,9 @@
         url: "{{ aap_api }}/job_templates/?name={{ item.name | urlencode }}"
         method: GET
         headers: { Authorization: "Bearer {{ aap_api_token }}" }
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         status_code: 200
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       loop: "{{ oracle_templates }}"
       loop_control:
         label: "{{ item.name }}"
@@ -186,8 +188,9 @@
           ask_limit_on_launch: true
           become_enabled: "{{ item.item.needs_machine | default(false) }}"
           verbosity: 1
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         status_code: [200, 201]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       loop: "{{ jt_lookup.results }}"
       loop_control:
         label: "{{ item.item.name }}"
@@ -201,8 +204,9 @@
         url: "{{ aap_api }}/job_templates/?name={{ item.name | urlencode }}"
         method: GET
         headers: { Authorization: "Bearer {{ aap_api_token }}" }
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         status_code: 200
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       loop: "{{ oracle_templates }}"
       loop_control:
         label: "{{ item.name }}"
@@ -229,8 +233,9 @@
         headers: { Authorization: "Bearer {{ aap_api_token }}", Content-Type: "application/json" }
         body_format: json
         body: "{{ {'id': dep_ids.credential | int} }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         status_code: [200, 201, 204]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       loop: "{{ jt_meta }}"
       loop_control:
         label: "vault -> {{ item.name }}"
@@ -246,8 +251,9 @@
         headers: { Authorization: "Bearer {{ aap_api_token }}", Content-Type: "application/json" }
         body_format: json
         body: "{{ {'id': dep_ids.machine | int} }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         status_code: [200, 201, 204]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       loop: "{{ jt_meta }}"
       loop_control:
         label: "machine -> {{ item.name }}"
@@ -262,8 +268,9 @@
         url: "{{ aap_api }}/workflow_job_templates/?name={{ workflow_name | urlencode }}"
         method: GET
         headers: { Authorization: "Bearer {{ aap_api_token }}" }
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         status_code: 200
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: wf_lookup
 
     - name: Create the workflow when absent
@@ -281,8 +288,9 @@
           ask_variables_on_launch: true
           ask_limit_on_launch: true
           survey_enabled: true
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         status_code: [200, 201]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       when: wf_lookup.json.count == 0
       register: wf_created
 
@@ -301,8 +309,9 @@
           name: "{{ workflow_survey.name }}"
           description: "{{ workflow_survey.description }}"
           spec: "{{ workflow_survey.spec }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         status_code: [200, 201]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
 
     - name: Read existing workflow nodes
       ansible.builtin.uri:
@@ -310,8 +319,9 @@
         url: "{{ aap_api }}/workflow_job_templates/{{ wf_id }}/workflow_nodes/?page_size=100"
         method: GET
         headers: { Authorization: "Bearer {{ aap_api_token }}" }
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         status_code: 200
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: existing_nodes
 
     - name: Delete existing nodes (the graph is rebuilt whole)
@@ -320,8 +330,9 @@
         url: "{{ aap_api }}/workflow_job_template_nodes/{{ item.id }}/"
         method: DELETE
         headers: { Authorization: "Bearer {{ aap_api_token }}" }
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         status_code: [204, 404]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       loop: "{{ existing_nodes.json.results }}"
       loop_control:
         label: "node {{ item.id }}"
@@ -336,8 +347,9 @@
         body: "{{ {'unified_job_template': (dep_ids.project if item.template == '__PROJECT__' else jt[item.template]) | int,
                    'identifier': item.id,
                    'extra_data': item.extra | default({})} }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         status_code: [200, 201]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       loop:
         - { id: "00-sync-project",  template: "__PROJECT__" }
         - { id: "01-stig-linux",    template: "AAC - STIG Linux Assessment (RHEL / Oracle Linux)" }
@@ -365,8 +377,9 @@
         headers: { Authorization: "Bearer {{ aap_api_token }}", Content-Type: "application/json" }
         body_format: json
         body: "{{ {'id': node[item.to] | int} }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         status_code: [200, 201, 204]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       loop:
         - { from: "00-sync-project", to: "01-stig-linux",   kind: "success" }
         - { from: "01-stig-linux",   to: "02-stig-oracle",  kind: "always" }

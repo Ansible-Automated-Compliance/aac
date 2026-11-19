@@ -39,8 +39,7 @@ click==8.5.1
 openpyxl==3.1.5
 xlsxwriter==3.3.1
 
-# Email reporting (optional)
-smtplib-ssl==1.0.0
+# Email reporting uses smtplib from the standard library; nothing to install.
 
 # Progress bars
 tqdm==4.70.1

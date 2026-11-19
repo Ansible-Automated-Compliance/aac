@@ -42,6 +42,9 @@ URL = environ.get("CONTROLLER_OPENAPI_SPEC_URL")
 HOST = environ.get("HOST", "0.0.0.0")
 PORT = int(environ.get("PORT", 8004))
 OPA_URL = environ.get("OPA_URL", "http://host.containers.internal:8182")
+# Certificate checking for an https OPA_URL is on unless OPA_VERIFY_TLS is set
+# to a false value. It was hard-coded off until 2026-11-18.
+OPA_VERIFY_TLS = environ.get("OPA_VERIFY_TLS", "true").strip().lower() not in ("0", "false", "no", "off")
 OPA_PATH = "/v1/data/ai_governance/mcp/response"
 # Governance is UNCONDITIONAL. There is no disable path: the customer-facing
 # claim is "every tool call passes through the policy engine", and a
@@ -143,7 +146,7 @@ def _opa_check(tool_name: str, arguments: dict) -> dict:
     """Query OPA. Raises RuntimeError on unreachable (fail-closed)."""
     payload = {"input": {"tool": tool_name, "arguments": arguments, "agent": AGENT_ID}}
     try:
-        r = httpx.post(f"{OPA_URL}{OPA_PATH}", json=payload, timeout=5.0, verify=False)
+        r = httpx.post(f"{OPA_URL}{OPA_PATH}", json=payload, timeout=5.0, verify=OPA_VERIFY_TLS)
         r.raise_for_status()
         return r.json().get("result", {})
     except httpx.TimeoutException:

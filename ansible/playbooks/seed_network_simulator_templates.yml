@@ -29,7 +29,8 @@
         use_proxy: false
         url: "{{ aap_api }}/inventories/?name={{ aap_inventory_name | urlencode }}"
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: inv_lookup
 
     - name: Set inventory ID
@@ -41,7 +42,8 @@
         use_proxy: false
         url: "{{ aap_api }}/projects/?name={{ aap_project_name | urlencode }}"
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: proj_lookup
 
     - name: Set project ID
@@ -53,7 +55,8 @@
         use_proxy: false
         url: "{{ aap_api }}/execution_environments/?name={{ aap_ee_name | urlencode }}"
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: ee_lookup
 
     - name: Set EE ID
@@ -65,7 +68,8 @@
         use_proxy: false
         url: "{{ aap_api }}/credentials/?name={{ aap_vault_credential_name | urlencode }}"
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: vault_cred_lookup
 
     - name: Set Vault credential ID
@@ -78,7 +82,8 @@
         use_proxy: false
         url: "{{ aap_api }}/job_templates/?name=AAC+-+Deploy+Network+Simulators"
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: deploy_existing
 
     - name: Create 'AAC - Deploy Network Simulators' template
@@ -87,7 +92,7 @@
         url: "{{ aap_api }}/job_templates/"
         method: POST
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body:
           name: "AAC - Deploy Network Simulators"
@@ -103,6 +108,7 @@
           execution_environment: "{{ ee_id }}"
           become_enabled: false
         status_code: [200, 201]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: deploy_created
       when: deploy_existing.json.count == 0
       failed_when: false
@@ -120,11 +126,12 @@
         url: "{{ aap_api }}/job_templates/{{ deploy_jt_id }}/credentials/"
         method: POST
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body:
           id: "{{ vault_cred_id | int }}"
         status_code: [200, 201, 204]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       failed_when: false
       when:
         - deploy_existing.json.count == 0
@@ -136,7 +143,8 @@
         use_proxy: false
         url: "{{ aap_api }}/job_templates/?name=AAC+-+Gather+Network+Facts"
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: gather_existing
 
     - name: Create 'AAC - Gather Network Facts' template
@@ -145,7 +153,7 @@
         url: "{{ aap_api }}/job_templates/"
         method: POST
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body:
           name: "AAC - Gather Network Facts"
@@ -162,6 +170,7 @@
           ask_variables_on_launch: false
           survey_enabled: true
         status_code: [200, 201]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: gather_created
       when: gather_existing.json.count == 0
       failed_when: false
@@ -179,7 +188,7 @@
         url: "{{ aap_api }}/job_templates/{{ gather_jt_id }}/survey_spec/"
         method: POST
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body:
           name: "Network Facts Survey"
@@ -192,6 +201,7 @@
               default: "{{ aac_host }}"
               required: false
         status_code: [200, 201]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       failed_when: false
       when: gather_existing.json.count == 0
 
@@ -201,11 +211,12 @@
         url: "{{ aap_api }}/job_templates/{{ gather_jt_id }}/credentials/"
         method: POST
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body:
           id: "{{ vault_cred_id | int }}"
         status_code: [200, 201, 204]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       failed_when: false
       when:
         - gather_existing.json.count == 0

@@ -71,6 +71,7 @@
           Content-Type: application/merge-patch+json
         validate_certs: "{{ _k8s_verify }}"
         status_code: [200]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
 
     - name: Roll opa-routing so OPA reloads the policies
       ansible.builtin.uri:
@@ -83,6 +84,7 @@
           Content-Type: application/strategic-merge-patch+json
         validate_certs: "{{ _k8s_verify }}"
         status_code: [200]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: _rollout
 
     # A PATCH only acknowledges the request. Wait for the new ReplicaSet to
@@ -96,6 +98,7 @@
           Authorization: "Bearer {{ _k8s_token }}"
         validate_certs: "{{ _k8s_verify }}"
         return_content: true
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: _dep
       until:
         - _dep.json.status.observedGeneration | default(0) >= _dep.json.metadata.generation

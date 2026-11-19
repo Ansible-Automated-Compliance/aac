@@ -242,7 +242,9 @@
         - name: Log in to the registry
           ansible.builtin.shell: >
             /usr/bin/podman login quay.io
-            -u {{ vault_quay_username }} -p {{ vault_quay_password }}
+            -u {{ vault_quay_username }} --password-stdin
+          args:
+            stdin: "{{ vault_quay_password }}"
           no_log: true
 
         - name: Push the versioned tag

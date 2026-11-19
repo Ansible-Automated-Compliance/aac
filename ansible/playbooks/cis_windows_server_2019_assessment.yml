@@ -38,6 +38,7 @@
         $policy['minimum_password_age'] = (net accounts | Select-String "Minimum password age").ToString().Split(':')[1].Trim()
         $policy['minimum_password_length'] = (net accounts | Select-String "Minimum password length").ToString().Split(':')[1].Trim()
         $policy | ConvertTo-Json
+      changed_when: false
       register: password_policy_raw
       failed_when: false
 
@@ -48,6 +49,7 @@
         $lockout['account_lockout_threshold'] = (net accounts | Select-String "Lockout threshold").ToString().Split(':')[1].Trim()
         $lockout['reset_lockout_counter'] = (net accounts | Select-String "Lockout observation window").ToString().Split(':')[1].Trim()
         $lockout | ConvertTo-Json
+      changed_when: false
       register: account_lockout_raw
       failed_when: false
 
@@ -63,6 +65,7 @@
           $defender['error'] = $_.Exception.Message
         }
         $defender | ConvertTo-Json
+      changed_when: false
       register: windows_defender_raw
       failed_when: false
 
@@ -83,6 +86,7 @@
           $bitlocker['error'] = $_.Exception.Message
         }
         $bitlocker | ConvertTo-Json
+      changed_when: false
       register: bitlocker_raw
       failed_when: false
 
@@ -98,6 +102,7 @@
           }
         }
         $firewall | ConvertTo-Json
+      changed_when: false
       register: firewall_status_raw
       failed_when: false
 
@@ -108,6 +113,7 @@
         $auditpol = auditpol /get /category:* 2>&1
         $audit['audit_policy'] = $auditpol
         $audit | ConvertTo-Json
+      changed_when: false
       register: audit_policy_raw
       failed_when: false
 
@@ -125,6 +131,7 @@
           }
         }
         $eventlogs | ConvertTo-Json
+      changed_when: false
       register: event_log_config_raw
       failed_when: false
 

@@ -35,7 +35,8 @@
         use_proxy: false
         url: "{{ aap_api }}/inventories/?name={{ aap_inventory_name | urlencode }}"
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: inv_lookup
     - set_fact:
         inventory_id: "{{ inv_lookup.json.results[0].id }}"
@@ -45,7 +46,8 @@
         use_proxy: false
         url: "{{ aap_api }}/execution_environments/?name={{ aap_ee_name | urlencode }}"
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: ee_lookup
     - set_fact:
         ee_id: "{{ ee_lookup.json.results[0].id }}"
@@ -55,7 +57,8 @@
         use_proxy: false
         url: "{{ aap_api }}/credentials/?name={{ aap_vault_credential_name | urlencode }}&credential_type__kind=vault"
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: vault_cred_lookup
     - set_fact:
         vault_cred_id: "{{ vault_cred_lookup.json.results[0].id }}"
@@ -65,7 +68,8 @@
         use_proxy: false
         url: "{{ aap_api }}/projects/?name={{ aap_project_name | urlencode }}"
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: project_lookup
     - set_fact:
         project_id: "{{ project_lookup.json.results[0].id }}"
@@ -77,7 +81,8 @@
         use_proxy: false
         url: "{{ aap_api }}/job_templates/?name=AAC+-+Collect+Facts"
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: collect_jt_lookup
     - set_fact:
         collect_jt_id: "{{ collect_jt_lookup.json.results[0].id }}"
@@ -87,7 +92,8 @@
         use_proxy: false
         url: "{{ aap_api }}/job_templates/?name=AAC+-+Evaluate+Stored+Facts"
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: evaluate_jt_lookup
     - set_fact:
         evaluate_jt_id: "{{ evaluate_jt_lookup.json.results[0].id }}"
@@ -100,7 +106,7 @@
         url: "{{ aap_api }}/job_templates/"
         method: POST
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body:
           name: "AAC - Detect Fact Drift"
@@ -118,6 +124,7 @@
           execution_environment: "{{ ee_id | int }}"
           survey_enabled: true
         status_code: [200, 201]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: detect_jt
     - set_fact:
         detect_jt_id: "{{ detect_jt.json.id }}"
@@ -128,7 +135,7 @@
         url: "{{ aap_api }}/job_templates/"
         method: POST
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body:
           name: "AAC - Authorize Change"
@@ -145,6 +152,7 @@
           execution_environment: "{{ ee_id | int }}"
           survey_enabled: true
         status_code: [200, 201]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: authorize_jt
     - set_fact:
         authorize_jt_id: "{{ authorize_jt.json.id }}"
@@ -155,7 +163,7 @@
         url: "{{ aap_api }}/job_templates/"
         method: POST
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body:
           name: "AAC - Drift Report"
@@ -171,6 +179,7 @@
           execution_environment: "{{ ee_id | int }}"
           survey_enabled: true
         status_code: [200, 201]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: drift_report_jt
     - set_fact:
         drift_report_jt_id: "{{ drift_report_jt.json.id }}"
@@ -183,11 +192,12 @@
         url: "{{ aap_api }}/job_templates/{{ item }}/credentials/"
         method: POST
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body:
           id: "{{ vault_cred_id | int }}"
         status_code: [200, 201, 204]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       loop:
         - "{{ detect_jt_id }}"
         - "{{ authorize_jt_id }}"
@@ -202,7 +212,7 @@
         url: "{{ aap_api }}/job_templates/{{ detect_jt_id }}/survey_spec/"
         method: POST
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body:
           name: "Detect Fact Drift Survey"
@@ -222,6 +232,7 @@
               default: "true"
               required: false
         status_code: [200, 201]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       failed_when: false
 
     - name: Add survey to 'AAC - Authorize Change'
@@ -230,7 +241,7 @@
         url: "{{ aap_api }}/job_templates/{{ authorize_jt_id }}/survey_spec/"
         method: POST
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body:
           name: "Authorize Change Survey"
@@ -259,6 +270,7 @@
               default: ""
               required: false
         status_code: [200, 201]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       failed_when: false
 
     - name: Add survey to 'AAC - Drift Report'
@@ -267,7 +279,7 @@
         url: "{{ aap_api }}/job_templates/{{ drift_report_jt_id }}/survey_spec/"
         method: POST
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body:
           name: "Drift Report Survey"
@@ -293,6 +305,7 @@
               default: "false"
               required: false
         status_code: [200, 201]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       failed_when: false
 
     # ── Create the 'AAC - Collect and Assess' workflow ────────────────────────
@@ -304,7 +317,7 @@
         url: "{{ aap_api }}/workflow_job_templates/"
         method: POST
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body:
           name: "AAC - Collect and Assess"
@@ -316,6 +329,7 @@
           organization: 1
           inventory: "{{ inventory_id | int }}"
         status_code: [200, 201]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: workflow
 
     - name: Create workflow node 1 — Collect Facts
@@ -324,12 +338,13 @@
         url: "{{ aap_api }}/workflow_job_templates/{{ workflow.json.id }}/workflow_nodes/"
         method: POST
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body:
           unified_job_template: "{{ collect_jt_id | int }}"
           identifier: collect_facts
         status_code: [200, 201]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: node1
 
     - name: Create workflow node 2 — Detect Drift
@@ -338,12 +353,13 @@
         url: "{{ aap_api }}/workflow_job_templates/{{ workflow.json.id }}/workflow_nodes/"
         method: POST
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body:
           unified_job_template: "{{ detect_jt_id | int }}"
           identifier: detect_drift
         status_code: [200, 201]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: node2
 
     - name: Create workflow node 3 — Evaluate Stored Facts
@@ -352,12 +368,13 @@
         url: "{{ aap_api }}/workflow_job_templates/{{ workflow.json.id }}/workflow_nodes/"
         method: POST
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body:
           unified_job_template: "{{ evaluate_jt_id | int }}"
           identifier: evaluate_facts
         status_code: [200, 201]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: node3
 
     - name: Link node 1 → node 2 on success
@@ -366,10 +383,11 @@
         url: "{{ aap_api }}/workflow_job_template_nodes/{{ node1.json.id }}/success_nodes/"
         method: POST
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body: "{{ {'id': node2.json.id | int} }}"
         status_code: [200, 201, 204]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
 
     - name: Link node 2 → node 3 on success
       uri:
@@ -377,10 +395,11 @@
         url: "{{ aap_api }}/workflow_job_template_nodes/{{ node2.json.id }}/success_nodes/"
         method: POST
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body: "{{ {'id': node3.json.id | int} }}"
         status_code: [200, 201, 204]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
 
     # ── Summary ───────────────────────────────────────────────────────────────
 

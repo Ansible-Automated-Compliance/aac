@@ -65,7 +65,7 @@
     estate_continuity_retirements_file: "{{ playbook_dir }}/../vars/decisions/estate_continuity.yml"
     estate_continuity_store: true
     estate_continuity_fail_on_findings: false
-    _validate_certs: "{{ aap_validate_certs | default(false) | bool }}"
+    _validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
 
   tasks:
 
@@ -134,6 +134,7 @@
         url: "{{ _api }}/inventories/?name={{ item | urlencode }}"
         headers: "{{ _headers }}"
         validate_certs: "{{ _validate_certs }}"
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       loop: "{{ estate_continuity_inventories }}"
       register: _inv_lookup
       failed_when: _inv_lookup.json.count | default(0) != 1
@@ -146,6 +147,7 @@
         url: "{{ _api }}/inventories/{{ item.json.results[0].id }}/hosts/?page_size=200&order_by=name"
         headers: "{{ _headers }}"
         validate_certs: "{{ _validate_certs }}"
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       loop: "{{ _inv_lookup.results }}"
       loop_control:
         label: "{{ item.item }}"
@@ -180,6 +182,7 @@
         url: "{{ _api }}/hosts/{{ item.value.id }}/job_host_summaries/?order_by=-id&page_size=1"
         headers: "{{ _headers }}"
         validate_certs: "{{ _validate_certs }}"
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       loop: "{{ _inventory | default({}) | dict2items }}"
       loop_control:
         label: "{{ item.key }}"
@@ -193,6 +196,7 @@
         url: "{{ _api }}/activity_stream/?object1=host&operation=delete&order_by=-timestamp&page_size=200"
         headers: "{{ _headers }}"
         validate_certs: "{{ _validate_certs }}"
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: _deletions
 
     # ── 2. The registry, the evidence and the decommission records ──────

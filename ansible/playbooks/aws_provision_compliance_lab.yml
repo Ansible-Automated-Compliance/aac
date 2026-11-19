@@ -431,7 +431,7 @@
         method: POST
         user: "{{ aap_username | default('admin') }}"
         password: "{{ aap_password | default(lookup('env', 'CONTROLLER_PASSWORD')) }}"
-        validate_certs: no
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body:
           name: "{{ item.name }}"

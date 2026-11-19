@@ -39,7 +39,8 @@
         url: "{{ aap_url }}/api/controller/v2/workflow_job_templates/{{ wf_id }}/workflow_nodes/?page_size=50"
         headers:
           Authorization: "Bearer {{ aap_token }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: existing_nodes
 
     - name: Delete existing nodes
@@ -49,8 +50,9 @@
         method: DELETE
         headers:
           Authorization: "Bearer {{ aap_token }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         status_code: [200, 204]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       loop: "{{ existing_nodes.json.results }}"
 
     # -------------------------------------------------------------------------
@@ -64,12 +66,13 @@
         headers:
           Authorization: "Bearer {{ aap_token }}"
           Content-Type: "application/json"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body:
           unified_job_template: "{{ jt_nerc }}"
           all_parents_must_converge: false
         status_code: [200, 201]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: node_nerc
 
     - name: Node 2 — AMI Full Compliance Audit and Store
@@ -80,12 +83,13 @@
         headers:
           Authorization: "Bearer {{ aap_token }}"
           Content-Type: "application/json"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body:
           unified_job_template: "{{ jt_ami }}"
           all_parents_must_converge: false
         status_code: [200, 201]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: node_ami
 
     - name: Node 3 — Remediation Report
@@ -96,12 +100,13 @@
         headers:
           Authorization: "Bearer {{ aap_token }}"
           Content-Type: "application/json"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body:
           unified_job_template: "{{ jt_report }}"
           all_parents_must_converge: false
         status_code: [200, 201]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: node_report
 
     # No connections — all three are root nodes running in parallel

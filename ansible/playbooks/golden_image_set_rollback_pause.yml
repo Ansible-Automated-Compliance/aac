@@ -132,6 +132,7 @@
         validate_certs: "{{ (lookup('env', 'K8S_AUTH_VERIFY_SSL') | default('true', true)) | bool }}"
         return_content: true
         status_code: [200]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: _persist
 
     # Verify BOTH stores before declaring success: the live OPA read-back (_get,

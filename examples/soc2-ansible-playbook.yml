@@ -32,11 +32,13 @@
           
         - name: Check sudo configuration
           command: cat /etc/sudoers
+          changed_when: false
           register: sudo_config
           ignore_errors: yes
           
         - name: Get SSH configuration
           command: cat /etc/ssh/sshd_config
+          changed_when: false
           register: ssh_config
           ignore_errors: yes
           
@@ -47,6 +49,7 @@
           
         - name: Get login logging configuration
           command: cat /etc/rsyslog.conf
+          changed_when: false
           register: logging_config
           ignore_errors: yes
     
@@ -54,20 +57,24 @@
       block:
         - name: Get firewall status (firewalld)
           command: firewall-cmd --state
+          changed_when: false
           register: firewall_status
           ignore_errors: yes
           
         - name: Get iptables rules
           command: iptables -L -n
+          changed_when: false
           register: iptables_rules
           ignore_errors: yes
           
         - name: Check network interfaces
           command: ip addr show
+          changed_when: false
           register: network_interfaces
           
         - name: Get network connections
           command: ss -tuln
+          changed_when: false
           register: network_connections
     
     - name: Collect database security settings
@@ -77,12 +84,14 @@
           
         - name: Get PostgreSQL configuration (if present)
           command: cat /var/lib/pgsql/data/postgresql.conf
+          changed_when: false
           register: postgres_config
           ignore_errors: yes
           when: "'postgresql' in services"
           
         - name: Get MySQL configuration (if present)
           command: cat /etc/mysql/mysql.conf.d/mysqld.cnf
+          changed_when: false
           register: mysql_config
           ignore_errors: yes
           when: "'mysql' in services"
@@ -95,18 +104,22 @@
       block:
         - name: Get system uptime
           command: uptime
+          changed_when: false
           register: system_uptime
           
         - name: Check system load
           command: cat /proc/loadavg
+          changed_when: false
           register: system_load
           
         - name: Get memory usage
           command: free -m
+          changed_when: false
           register: memory_usage
           
         - name: Get disk usage
           command: df -h
+          changed_when: false
           register: disk_usage
           
         - name: Check systemd services status
@@ -123,6 +136,7 @@
           
         - name: Get crontab entries
           command: crontab -l
+          changed_when: false
           register: crontab_entries
           ignore_errors: yes
           
@@ -151,6 +165,7 @@
           
         - name: Get log rotation configuration
           command: cat /etc/logrotate.conf
+          changed_when: false
           register: logrotate_config
           ignore_errors: yes
     
@@ -238,6 +253,7 @@
       block:
         - name: Check disk encryption status
           command: lsblk -f
+          changed_when: false
           register: disk_encryption_status
           
         - name: Get SSL/TLS configuration
@@ -248,11 +264,13 @@
           
         - name: Check for encryption tools
           command: which gpg
+          changed_when: false
           register: gpg_available
           ignore_errors: yes
           
         - name: Get file system mount options
           command: mount
+          changed_when: false
           register: mount_options
     
     # =================================================================

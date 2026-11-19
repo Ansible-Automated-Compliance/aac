@@ -37,7 +37,7 @@
         url: "{{ grafana_url }}/api/health"
         method: GET
         status_code: 200
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
       register: grafana_health
 
     - name: Generate new Grafana password
@@ -62,7 +62,7 @@
         url_password: "{{ grafana_admin_password }}"
         force_basic_auth: true
         status_code: 200
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
       no_log: true
 
     - name: Validate new password — test login
@@ -74,7 +74,7 @@
         url_password: "{{ new_grafana_password }}"
         force_basic_auth: true
         status_code: 200
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
       register: grafana_validate
       no_log: true
 

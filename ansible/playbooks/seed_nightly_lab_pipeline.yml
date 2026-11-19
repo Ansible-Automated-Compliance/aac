@@ -12,7 +12,7 @@
 #
 # TLS: verification defaults ON (fail closed). Environments with
 # self-signed controller certs (the lab CRC) pass
-# -e aap_validate_certs=false explicitly at launch.
+# -e aac_validate_certs=false explicitly at launch.
 #
 # Resulting graph:
 #
@@ -108,7 +108,7 @@
         use_proxy: false
         url: "{{ api }}/job_templates/?name={{ item.value | urlencode }}"
         headers: "{{ hdrs }}"
-        validate_certs: "{{ aap_validate_certs | default(true) | bool }}"
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
       register: jt_lookup
       loop: "{{ jt_names | dict2items }}"
       failed_when: jt_lookup.json.count != 1
@@ -123,7 +123,7 @@
         use_proxy: false
         url: "{{ api }}/workflow_job_templates/?name={{ item | urlencode }}"
         headers: "{{ hdrs }}"
-        validate_certs: "{{ aap_validate_certs | default(true) | bool }}"
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
       register: wf_lookup
       loop:
         - "{{ wf_name }}"
@@ -141,7 +141,7 @@
         use_proxy: false
         url: "{{ api }}/workflow_job_templates/{{ wf_id }}/workflow_nodes/?page_size=50"
         headers: "{{ hdrs }}"
-        validate_certs: "{{ aap_validate_certs | default(true) | bool }}"
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
       register: existing_nodes
 
     - name: Delete existing nodes
@@ -150,7 +150,7 @@
         url: "{{ api }}/workflow_job_template_nodes/{{ item.id }}/"
         method: DELETE
         headers: "{{ hdrs }}"
-        validate_certs: "{{ aap_validate_certs | default(true) | bool }}"
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         status_code: [200, 204]
       loop: "{{ existing_nodes.json.results }}"
       loop_control:
@@ -163,7 +163,7 @@
         url: "{{ api }}/workflow_job_templates/{{ wf_id }}/workflow_nodes/"
         method: POST
         headers: "{{ hdrs }}"
-        validate_certs: "{{ aap_validate_certs | default(true) | bool }}"
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         # Template the WHOLE body as one expression — uri renders
         # per-key templated values as strings and AAP 400s on "id": "5".
@@ -204,7 +204,7 @@
         url: "{{ api }}/workflow_job_template_nodes/{{ node[item.parent] }}/{{ item.rel }}/"
         method: POST
         headers: "{{ hdrs }}"
-        validate_certs: "{{ aap_validate_certs | default(true) | bool }}"
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body: "{{ {'id': node[item.child] | int} }}"
         status_code: [204]
@@ -238,7 +238,7 @@
         use_proxy: false
         url: "{{ api }}/schedules/?name={{ item | urlencode }}"
         headers: "{{ hdrs }}"
-        validate_certs: "{{ aap_validate_certs | default(true) | bool }}"
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
       register: sched_lookup
       loop: "{{ disable_schedules }}"
 
@@ -248,7 +248,7 @@
         url: "{{ api }}/schedules/{{ item.json.results[0].id }}/"
         method: PATCH
         headers: "{{ hdrs }}"
-        validate_certs: "{{ aap_validate_certs | default(true) | bool }}"
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body: { enabled: false }
       loop: "{{ sched_lookup.results }}"

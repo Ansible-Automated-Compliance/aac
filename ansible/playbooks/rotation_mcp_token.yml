@@ -45,7 +45,7 @@
         headers:
           Authorization: "Basic {{ (aap_admin_user + ':' + aap_admin_password) | b64encode }}"
         status_code: 201
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
       register: token_response
       no_log: true
 
@@ -114,7 +114,7 @@
         method: GET
         status_code: [200, 404]
         timeout: 5
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
       register: mcp_health
       until: mcp_health.status in [200, 404]
       retries: 12

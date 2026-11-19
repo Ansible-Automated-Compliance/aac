@@ -46,8 +46,8 @@
           - quay.io
           - "-u"
           - "{{ vault_quay_username }}"
-          - "-p"
-          - "{{ vault_quay_password }}"
+          - "--password-stdin"
+        stdin: "{{ vault_quay_password }}"
       when:
         - vault_quay_username is defined
         - vault_quay_password is defined

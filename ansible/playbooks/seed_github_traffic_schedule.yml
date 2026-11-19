@@ -34,7 +34,8 @@
         use_proxy: false
         url:     "{{ aap_api }}/projects/?name={{ aap_project_name | urlencode }}"
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: project_lookup
 
     - name: Look up inventory ID
@@ -42,7 +43,8 @@
         use_proxy: false
         url:     "{{ aap_api }}/inventories/?name={{ aap_inventory_name | urlencode }}"
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: inventory_lookup
 
     - name: Look up execution environment ID
@@ -50,7 +52,8 @@
         use_proxy: false
         url:     "{{ aap_api }}/execution_environments/?name={{ aap_ee_name | urlencode }}"
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: ee_lookup
 
     - name: Look up vault credential ID
@@ -58,7 +61,8 @@
         use_proxy: false
         url:     "{{ aap_api }}/credentials/?name={{ aap_vault_credential_name | urlencode }}"
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: vault_cred_lookup
 
     - name: Set resolved IDs
@@ -75,7 +79,8 @@
         use_proxy: false
         url:     "{{ aap_api }}/job_templates/?name={{ template_name | urlencode }}"
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: template_check
 
     - name: Create or update job template
@@ -87,7 +92,7 @@
             if template_check.json.count > 0 else '' }}
         method: "{{ 'PATCH' if template_check.json.count > 0 else 'POST' }}"
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body:
           name:                    "{{ template_name }}"
@@ -106,6 +111,7 @@
           ask_variables_on_launch: false
           extra_vars:              "{}"
         status_code: [200, 201]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: template_result
 
     - name: Set template ID
@@ -118,11 +124,12 @@
         url:     "{{ aap_api }}/job_templates/{{ template_id }}/credentials/"
         method:  POST
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body:
           id: "{{ vault_cred_id | int }}"
         status_code: [204, 400]   # 400 = already attached
+      no_log: "{{ aac_no_log | default(true) | bool }}"
 
     # ── Create daily schedule ─────────────────────────────────────────────
 
@@ -131,7 +138,8 @@
         use_proxy: false
         url:     "{{ aap_api }}/job_templates/{{ template_id }}/schedules/?name={{ schedule_name | urlencode }}"
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: schedule_check
 
     - name: Create daily schedule (06:00 UTC)
@@ -140,7 +148,7 @@
         url:     "{{ aap_api }}/job_templates/{{ template_id }}/schedules/"
         method:  POST
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body:
           name:        "{{ schedule_name }}"
@@ -149,6 +157,7 @@
           rrule:       "DTSTART:20260101T060000Z RRULE:FREQ=DAILY;INTERVAL=1"
           extra_data:  {}
         status_code: [200, 201]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: schedule_result
       when: schedule_check.json.count == 0
 

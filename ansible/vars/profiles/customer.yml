@@ -42,3 +42,9 @@ aac_db_skip_container_deploy: true
 ee_image: "quay.io/rh-ee-tcoulter/aac-compliance-ee:v1.3.0"
 
 secret_source: aap_credential
+
+# --- TLS ---
+# Certificate checking is on. Install the issuing CA in the Execution
+# Environment; set this to false only for an endpoint whose certificate cannot
+# be trusted yet, and record why.
+aac_validate_certs: true

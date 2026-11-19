@@ -40,3 +40,8 @@ secret_source: aap_credential
 
 # --- External managed demo host (EC2), discovered at provision time ---
 rhpds_demo_host_ip: "PENDING_EC2_IP"
+
+# --- TLS ---
+# Certificate checking is on unless a site turns it off. This environment's
+# routes use certificates the Execution Environment does not trust, so it does.
+aac_validate_certs: false

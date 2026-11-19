@@ -32,3 +32,18 @@ test_reason_host_not_in_bundle if {
 	"host_not_in_bundle" in data.enforceauth.aac_compliance_bundle.deny_reasons with data.aac as _compliant_fresh.aac
 		with input as {"host": "unknown-host"}
 }
+
+# ── Malformed numbers never allow ────────────────────────────────────────────
+_malformed(pct, age) := _bundle({"web-01": {"frameworks": {"cis_rhel9": {"compliant": true, "compliance_percentage": pct, "stale": false, "age_seconds": age}}}})
+
+test_deny_when_percentage_is_a_string if {
+	not data.enforceauth.aac_compliance_bundle.allow with data.aac as _malformed("12.5", 100).aac with input as {"host": "web-01"}
+}
+
+test_deny_when_age_is_null if {
+	not data.enforceauth.aac_compliance_bundle.allow with data.aac as _malformed(94.67, null).aac with input as {"host": "web-01"}
+}
+
+test_deny_when_age_is_negative if {
+	not data.enforceauth.aac_compliance_bundle.allow with data.aac as _malformed(94.67, -5).aac with input as {"host": "web-01"}
+}
