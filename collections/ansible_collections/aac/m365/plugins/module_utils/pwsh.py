@@ -36,6 +36,16 @@ import tempfile
 PWSH = "/usr/local/bin/pwsh"
 DEFAULT_TIMEOUT = 300
 
+# Result shapes. Every query states which one it is, because the policy
+# either iterates a fact (a list) or dereferences fields of it (an
+# object), and PowerShell's JSON output does not preserve the difference.
+RAW = "raw"
+LIST = "list"
+OBJECT = "object"
+
+JSON_DEPTH = 6
+TRUNCATED_MARKER = "AAC_JSON_DEPTH_EXCEEDED"
+
 # Connection preambles per service. Each authenticates app-only with a
 # certificate and suppresses the banner so stdout carries only our JSON.
 CONNECT = {
@@ -88,6 +98,46 @@ class PwshError(Exception):
         super().__init__(message)
 
 
+def as_list(value, service="powershell"):
+    """Normalise a collection result to a list of objects.
+
+    Returns (rows, error). null -> [], one object -> [object], and null
+    rows are dropped. A row that is not an object is an error: a policy
+    reading `row.Field` on a string or number gets undefined and passes.
+    """
+    if value is None:
+        return [], None
+    rows = value if isinstance(value, list) else [value]
+    rows = [r for r in rows if r is not None]
+    bad = sorted({type(r).__name__ for r in rows if not isinstance(r, dict)})
+    if bad:
+        return None, (f"{service} returned a collection whose rows are not objects "
+                      f"({', '.join(bad)}), so its fields cannot be read")
+    return rows, None
+
+
+def as_object(value, service="powershell"):
+    """Normalise a single-object result. Returns (object, error).
+
+    A one-element list is unwrapped. null, an empty list or several rows
+    are errors: an organisation-level setting that arrives as an array
+    makes every `.Field` dereference undefined, which reads as a pass.
+    """
+    if isinstance(value, list):
+        rows = [r for r in value if r is not None]
+        if len(rows) == 1:
+            value = rows[0]
+        else:
+            return None, (f"{service} returned {len(rows)} objects where exactly one "
+                          "was expected")
+    if value is None:
+        return None, f"{service} cmdlet returned no object"
+    if not isinstance(value, dict):
+        return None, (f"{service} returned {type(value).__name__} where an object "
+                      "was expected")
+    return value, None
+
+
 class PwshRunner:
     """Runs PowerShell audit snippets against a Microsoft 365 service."""
 
@@ -118,33 +168,70 @@ class PwshRunner:
         finding."""
         return os.path.exists(self.pwsh_path)
 
-    def _wrap(self, body):
+    def _wrap(self, body, shape=RAW):
         """Build a script that connects, runs `body`, and emits JSON.
 
-        -Depth 6 because several Exchange policy objects nest deeply
-        enough that the default of 2 silently truncates them to strings.
+        Shape. ConvertTo-Json unrolls a one-element pipeline into a bare
+        object, and a policy that iterates a list then walks the object's
+        field values and passes. For a LIST query the body's output is
+        collected with the array subexpression operator directly around
+        the invocation -- `@(& { body })` -- and handed to -InputObject,
+        which serialises an array as an array: zero rows become [], one
+        row [row]. It is deliberately not `$r = & { body }; @($r)`: an
+        empty pipeline assigns $null, and `@($null)` is a one-element
+        array, so zero rows would come back as [null].
+
+        -EnumsAsStrings: without it ConvertTo-Json writes .NET enum values
+        as integers (the cmdlet's own examples show "DayOfWeek": 5), while
+        every policy comparison on these fields is against the enum NAME
+        ("Enabled", "Off", "ExternalUserAndGuestSharing"). Strings are left
+        unchanged, so the switch can only turn an int into the name the
+        policy expects.
+
+        Depth: ConvertTo-Json (PowerShell 7.1+) warns and truncates when an
+        object nests deeper than -Depth. The warning is captured, and a
+        truncated document is an error rather than evidence -- truncated
+        members serialise as type-name strings that a policy would read.
+        The throw sits inside `try` so the session is still disconnected.
+
         Compress keeps stdout to one line so partial writes cannot yield
         half-valid JSON.
         """
+        if shape == LIST:
+            collect = f"  $aacValue = @(& {{ {body} }})"
+            depth = JSON_DEPTH + 1   # the wrapping array costs one level
+        else:
+            collect = f"  $aacValue = & {{ {body} }}"
+            depth = JSON_DEPTH
         return "\n".join([
             "$ErrorActionPreference = 'Stop'",
             "$ProgressPreference = 'SilentlyContinue'",
             CONNECT[self.service],
             "try {",
-            f"  $result = & {{ {body} }}",
-            "  $result | ConvertTo-Json -Depth 6 -Compress",
+            collect,
+            f"  $aacJson = ConvertTo-Json -InputObject $aacValue -Depth {depth} -Compress -EnumsAsStrings "
+            "-WarningAction SilentlyContinue -WarningVariable aacJsonWarnings",
+            "  if ($aacJsonWarnings) { throw \"" + TRUNCATED_MARKER + ": $($aacJsonWarnings -join ' ')\" }",
+            "  $aacJson",
             "} finally {",
             f"  {DISCONNECT[self.service]}",
             "}",
         ])
 
-    def try_run(self, body):
+    def try_run(self, body, shape=RAW):
         """Run a snippet. Returns (value, error); never raises for a
-        cmdlet-level failure."""
+        cmdlet-level failure.
+
+        shape=LIST    the value is always a list of objects (see as_list)
+        shape=OBJECT  the value is always one object (see as_object)
+        shape=RAW     the parsed JSON as returned (legacy behaviour)
+        """
+        if shape not in (RAW, LIST, OBJECT):
+            raise PwshError("unknown result shape '%s'" % shape)
         if not self.available():
             return None, f"PowerShell not available at {self.pwsh_path} -- this EE cannot audit {self.service}"
 
-        script = self._wrap(body)
+        script = self._wrap(body, shape)
         path = None
         try:
             # A temp file rather than -Command: long snippets hit argv
@@ -174,14 +261,22 @@ class PwshRunner:
             # a policy must not read as a configured-and-empty result.
             return None, f"{self.service} cmdlet returned no output"
         try:
-            return json.loads(out), None
+            value = json.loads(out)
         except ValueError:
             return None, f"{self.service} returned output that is not JSON: {out[:200]}"
+        if shape == LIST:
+            return as_list(value, self.service)
+        if shape == OBJECT:
+            return as_object(value, self.service)
+        return value, None
 
     def _reason(self, stderr):
         """Turn a PowerShell error into something an operator can act on."""
         text = (stderr or "").strip()
         low = text.lower()
+        if TRUNCATED_MARKER.lower() in low:
+            return (f"evidence missing: {self.service} output exceeded the JSON "
+                    f"depth limit ({JSON_DEPTH}) and would have been truncated")
         if "certificate" in low and ("password" in low or "not find" in low):
             return f"{self.service} certificate could not be loaded -- check the certificate path and password"
         if "unauthorized" in low or "access is denied" in low or "accessdenied" in low:

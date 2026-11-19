@@ -17,6 +17,8 @@ not establish a CIS recommendation.
   Get-HostedConnectionFilterPolicy  2.1.12, 2.1.13
   Get-HostedContentFilterPolicy     2.1.14
   Get-EOPProtectionPolicyRule       2.4.2
+  Get-ATPProtectionPolicyRule       2.4.2
+  Get-DkimSigningConfig             2.1.9 (signing enabled per domain)
   Get-TeamsProtectionPolicy         2.4.4
 
 SPF, DKIM and DMARC (2.1.8, 2.1.9, 2.1.10) are NOT here -- those are
@@ -100,32 +102,43 @@ facts:
 
 from ansible.module_utils.basic import AnsibleModule
 from ansible_collections.aac.m365.plugins.module_utils.pwsh import (
+    LIST,
+    OBJECT,
     PwshRunner,
     PwshError,
 )
 
+# fact key -> (snippet, controls it answers, shape). LIST for every
+# policy collection the Rego iterates or counts; OBJECT for the two
+# tenant singletons it dereferences (Get-AtpPolicyForO365,
+# Get-TeamsProtectionPolicy). A tenant with only the Default policy used
+# to return a bare object for the LIST keys, and the rules then passed.
 QUERIES = {
     "safe_links_policies": (
         "@(Get-SafeLinksPolicy | Select-Object Name, IsEnabled, "
         "EnableSafeLinksForEmail, EnableSafeLinksForTeams, "
         "EnableSafeLinksForOffice, TrackClicks, AllowClickThrough)",
         ["2.1.1"],
+        LIST,
     ),
     "malware_filter_policies": (
         "@(Get-MalwareFilterPolicy | Select-Object Identity, IsDefault, "
-        "EnableFileFilter, FileTypeFilter, EnableInternalSenderAdminNotifications, "
+        "EnableFileFilter, FileTypes, EnableInternalSenderAdminNotifications, "
         "ZapEnabled)",
         ["2.1.2", "2.1.3", "2.1.11"],
+        LIST,
     ),
     "safe_attachment_policies": (
         "@(Get-SafeAttachmentPolicy | Select-Object Name, Enable, Action, "
         "Redirect, QuarantineTag)",
         ["2.1.4"],
+        LIST,
     ),
     "atp_policy_for_o365": (
         "Get-AtpPolicyForO365 | Select-Object Name, "
         "EnableATPForSPOTeamsODB, EnableSafeDocs, AllowSafeDocsOpen",
         ["2.1.5"],
+        OBJECT,
     ),
     "outbound_spam_policies": (
         "@(Get-HostedOutboundSpamFilterPolicy | Select-Object Name, IsDefault, "
@@ -133,6 +146,7 @@ QUERIES = {
         "RecipientLimitExternalPerHour, RecipientLimitInternalPerHour, "
         "RecipientLimitPerDay, ActionWhenThresholdReached)",
         ["2.1.6", "2.1.15"],
+        LIST,
     ),
     "anti_phish_policies": (
         "@(Get-AntiPhishPolicy | Select-Object Name, Enabled, "
@@ -141,25 +155,47 @@ QUERIES = {
         "EnableFirstContactSafetyTips, EnableTargetedUserProtection, "
         "AuthenticationFailAction)",
         ["2.1.7"],
+        LIST,
     ),
     "connection_filter_policies": (
         "@(Get-HostedConnectionFilterPolicy | Select-Object Name, IsDefault, "
         "IPAllowList, EnableSafeList)",
         ["2.1.12", "2.1.13"],
+        LIST,
     ),
     "content_filter_policies": (
         "@(Get-HostedContentFilterPolicy | Select-Object Name, IsDefault, "
         "AllowedSenders, AllowedSenderDomains)",
         ["2.1.14"],
+        LIST,
     ),
     "eop_protection_rules": (
         "@(Get-EOPProtectionPolicyRule | Select-Object Name, State, Priority, "
-        "SentTo, SentToMemberOf)",
+        "SentTo, SentToMemberOf, RecipientDomainIs)",
         ["2.4.2"],
+        LIST,
+    ),
+    # 2.4.2 -- the strict preset has two rules, one per protection stack
+    # (EOP above, Defender for Office 365 here); the policy needs both enabled
+    # and scoped to recipients.
+    "atp_protection_rules": (
+        "@(Get-ATPProtectionPolicyRule | Select-Object Name, State, Priority, "
+        "SentTo, SentToMemberOf, RecipientDomainIs)",
+        ["2.4.2"],
+        LIST,
+    ),
+    # 2.1.9 -- published selector CNAMEs (read from DNS by m365_exchange_facts)
+    # do not show that Exchange Online signs: the signing configuration has to
+    # be enabled per domain.
+    "dkim_signing_configs": (
+        "@(Get-DkimSigningConfig | Select-Object Domain, Name, Enabled, Status)",
+        ["2.1.9"],
+        LIST,
     ),
     "teams_protection_policy": (
         "Get-TeamsProtectionPolicy | Select-Object Name, ZapEnabled",
         ["2.4.4"],
+        OBJECT,
     ),
 }
 
@@ -183,10 +219,33 @@ PRIORITY_ALERTS_QUERY = (
 )
 
 
+def _with_file_type_filter(policy):
+    """2.1.11 -- the common attachment filter's list is the FileTypes
+    property (Set-MalwareFilterPolicy -FileTypes <String[]>; the cmdlet's
+    own example reads it with `Get-MalwareFilterPolicy | select -Expand
+    FileTypes`). FileTypeFilter, which this collector used to select, is
+    not a property: Select-Object filled it with null, `count(null)` is
+    undefined in Rego, and 2.1.11 could never fire.
+
+    The shipped policy still reads `FileTypeFilter`, so the real list is
+    published under both names. A missing or null list becomes [] -- the
+    direction that reports a violation rather than a pass.
+    """
+    types = policy.get("FileTypes")
+    if types is None:
+        types = []
+    elif not isinstance(types, list):
+        types = [types]
+    out = dict(policy)
+    out["FileTypes"] = types
+    out["FileTypeFilter"] = types
+    return out
+
+
 def collect_facts(runner, ipps_runner=None):
     facts, unavailable = {}, {}
-    for key, (snippet, controls) in QUERIES.items():
-        value, err = runner.try_run(snippet)
+    for key, (snippet, controls, shape) in QUERIES.items():
+        value, err = runner.try_run(snippet, shape=shape)
         if err:
             # A tenant without Defender for Office 365 simply does not have
             # some of these cmdlets. Record which controls that blocks
@@ -195,9 +254,15 @@ def collect_facts(runner, ipps_runner=None):
         else:
             facts[key] = value
 
+    if "malware_filter_policies" in facts:
+        facts["malware_filter_policies"] = [
+            _with_file_type_filter(p) for p in facts["malware_filter_policies"]
+        ]
+
     # ── 2.4.1, part 1 -- the tenant-level toggle (Exchange Online) ────
     value, err = runner.try_run(
-        "Get-EmailTenantSettings | Select-Object EnablePriorityAccountProtection"
+        "Get-EmailTenantSettings | Select-Object EnablePriorityAccountProtection",
+        shape=OBJECT,
     )
     if err:
         unavailable["email_tenant_settings"] = "%s (blocks 2.4.1)" % err
@@ -211,7 +276,7 @@ def collect_facts(runner, ipps_runner=None):
             "(blocks 2.4.1)"
         )
     else:
-        value, err = ipps_runner.try_run(PRIORITY_ALERTS_QUERY)
+        value, err = ipps_runner.try_run(PRIORITY_ALERTS_QUERY, shape=LIST)
         if err:
             unavailable["priority_account_alerts"] = "%s (blocks 2.4.1)" % err
         else:

@@ -137,7 +137,7 @@
         use_proxy: false
         url: "https://{{ target_host }}/api/gateway/v1/ping/"
         method: GET
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         status_code: 200
         timeout: 10
       register: gateway_check
@@ -151,11 +151,12 @@
         use_proxy: false
         url: "https://{{ target_host }}/api/controller/v2/ping/"
         method: GET
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         status_code: 200
         timeout: 10
         headers:
           Authorization: "Basic {{ ('admin:' + new_aap_admin_password) | b64encode }}"
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: controller_check
       until: controller_check.status == 200
       retries: 30

@@ -18,7 +18,7 @@
 # every run.
 #
 # TLS: verification defaults ON (fail closed). Environments with self-signed
-# controller certs pass -e aap_validate_certs=false explicitly at launch.
+# controller certs pass -e aac_validate_certs=false explicitly at launch.
 #
 # Where the token goes. Inside an AAP job (JOB_ID is in the environment) the
 # API base MUST equal the controller's own URL from the job environment
@@ -52,7 +52,7 @@
     # Monday 06:00 UTC — ahead of a working week of demo builds.
     pack_rrule: "DTSTART:20261012T060000Z RRULE:FREQ=WEEKLY;INTERVAL=1;BYDAY=MO"
     pack_schedule_enabled: true
-    _validate_certs: "{{ aap_validate_certs | default(true) | bool }}"
+    _validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
 
   tasks:
 
@@ -136,6 +136,7 @@
         url:     "{{ aap_api }}/{{ item.endpoint }}/?name={{ item.name | urlencode }}"
         headers: "{{ aap_headers }}"
         validate_certs: "{{ _validate_certs }}"
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       loop:
         - { key: project,    endpoint: projects,               name: "{{ pack_project_name }}" }
         - { key: inventory,  endpoint: inventories,            name: "{{ _inventory_name }}" }
@@ -186,6 +187,7 @@
         url:     "{{ aap_api }}/job_templates/?name={{ template_name | urlencode }}"
         headers: "{{ aap_headers }}"
         validate_certs: "{{ _validate_certs }}"
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: template_check
       failed_when: template_check.json.count > 1
 
@@ -220,6 +222,7 @@
           extra_vars:              "{}"
           survey_enabled:          true
         status_code: [200, 201]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: template_result
 
     - name: Set template ID
@@ -234,6 +237,7 @@
         url:     "{{ aap_api }}/job_templates/{{ template_id }}/credentials/?page_size=200"
         headers: "{{ aap_headers }}"
         validate_certs: "{{ _validate_certs }}"
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: attached
 
     - name: Attach the missing credentials
@@ -247,6 +251,7 @@
         body:
           id: "{{ item | int }}"
         status_code: [204]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       loop: "{{ [obj.vault_cred.id, obj.pat_cred.id] | difference(attached.json.results | map(attribute='id') | list) }}"
       loop_control:
         label: "credential {{ item }}"
@@ -273,6 +278,7 @@
               default: "false"
               choices: "false\ntrue"
         status_code: [200]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
 
     # ── Schedule: create, or converge the existing one ───────────────────
 
@@ -282,6 +288,7 @@
         url:     "{{ aap_api }}/job_templates/{{ template_id }}/schedules/?name={{ schedule_name | urlencode }}"
         headers: "{{ aap_headers }}"
         validate_certs: "{{ _validate_certs }}"
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: schedule_check
       failed_when: schedule_check.json.count > 1
 
@@ -303,6 +310,7 @@
           rrule:       "{{ pack_rrule }}"
           extra_data:  {}
         status_code: [200, 201]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: schedule_result
 
     # ── Summary ───────────────────────────────────────────────────────────

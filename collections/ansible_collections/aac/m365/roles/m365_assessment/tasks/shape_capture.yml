@@ -1,0 +1,55 @@
+---
+# Opt-in shape capture (m365_shape_capture: true). Records the SHAPE of
+# every collected fact -- JSON types, list lengths, field-name unions and
+# field types, and distinct values only for allowlisted configuration
+# fields (plugins/filter/m365_shape.py) -- so the collector questions that
+# need a live tenant can be settled from one real run. It never records
+# names, addresses, domains, ids, mailbox data or free text.
+#
+# Three outputs, because an AAP execution environment's filesystem is
+# discarded when the job ends:
+#   1. a JSON file on the controller node / EE:
+#        {{ m365_shape_capture_dir }}/m365_fact_shape_<UTC timestamp>.json
+#   2. set_stats key m365_fact_shape -- shown in the AAP job's artifacts
+#      and passed to the next node of a workflow;
+#   3. the same document in the job output (debug).
+
+- name: Shape capture — describe the collected facts
+  ansible.builtin.set_fact:
+    _m365_fact_shape: >-
+      {{ (m365_facts | aac.m365.m365_fact_shape)
+         | combine({'captured_at': now(utc=true).strftime('%Y-%m-%dT%H:%M:%SZ'),
+                    'benchmark': 'CIS Microsoft 365 Foundations v7.0.0',
+                    'sections_requested': m365_sections,
+                    'powershell_sections_included': m365_include_powershell_sections | bool}) }}
+
+- name: Shape capture — write the file
+  block:
+    - name: Shape capture — ensure the output directory exists
+      ansible.builtin.file:
+        path: "{{ m365_shape_capture_dir }}"
+        state: directory
+        mode: "0750"
+
+    - name: Shape capture — write the shape document
+      ansible.builtin.copy:
+        content: "{{ _m365_fact_shape | to_nice_json(sort_keys=true) }}\n"
+        dest: "{{ m365_shape_capture_dir }}/m365_fact_shape_{{ now(utc=true).strftime('%Y%m%dT%H%M%SZ') }}.json"
+        mode: "0640"
+      register: _m365_shape_file
+  rescue:
+    - name: Shape capture — the file could not be written (the job output and artifacts still carry it)
+      ansible.builtin.debug:
+        msg: "could not write to {{ m365_shape_capture_dir }}; use the m365_fact_shape artifact instead"
+
+- name: Shape capture — publish as a job artifact
+  ansible.builtin.set_stats:
+    data:
+      m365_fact_shape: "{{ _m365_fact_shape }}"
+    per_host: false
+
+- name: Shape capture — show the document
+  ansible.builtin.debug:
+    msg:
+      file: "{{ _m365_shape_file.dest | default('not written') }}"
+      shape: "{{ _m365_fact_shape }}"

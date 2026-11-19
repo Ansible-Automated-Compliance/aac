@@ -224,7 +224,7 @@
           input: "{{ opa_input }}"
         return_content: true
         status_code: 200
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
       register: opa_response
       delegate_to: localhost
       failed_when: false

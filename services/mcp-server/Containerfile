@@ -28,7 +28,7 @@ USER 1001
 
 # Environment variables (override at runtime)
 ENV AAP_URL="https://aap-aap.apps.cluster-9d56n-2.dynamic.redhatworkshops.io" \
-    AAP_VERIFY_SSL="false" \
+    AAP_VERIFY_SSL="true" \
     MCP_PORT="3000"
 
 EXPOSE 3000

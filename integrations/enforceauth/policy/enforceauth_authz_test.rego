@@ -101,3 +101,36 @@ test_reason_framework_not_ok if {
 	"framework_not_ok:cis_rhel9" in data.enforceauth.aac_compliance.deny_reasons with http.send as _below_threshold
 		with input as {"host": "web-01.lab.local"}
 }
+
+# ── Malformed numbers never allow ────────────────────────────────────────────
+# Rego orders values of different types, so before the type guards a string
+# percentage or a null age satisfied the comparisons and the request was allowed.
+_malformed(pct, age) := _resp({
+	"found": true,
+	"frameworks": {"cis_rhel9": {
+		"compliant": true,
+		"compliance_percentage": pct,
+		"stale": false,
+		"age_seconds": age,
+	}},
+})
+
+test_deny_when_percentage_is_a_string if {
+	not data.enforceauth.aac_compliance.allow with http.send as _malformed("12.5", 100)
+		with input as {"host": "web-01.lab.local"}
+}
+
+test_deny_when_age_is_null if {
+	not data.enforceauth.aac_compliance.allow with http.send as _malformed(94.67, null)
+		with input as {"host": "web-01.lab.local"}
+}
+
+test_deny_when_age_is_negative if {
+	not data.enforceauth.aac_compliance.allow with http.send as _malformed(94.67, -5)
+		with input as {"host": "web-01.lab.local"}
+}
+
+test_deny_when_both_are_malformed if {
+	not data.enforceauth.aac_compliance.allow with http.send as _malformed("12.5", null)
+		with input as {"host": "web-01.lab.local"}
+}

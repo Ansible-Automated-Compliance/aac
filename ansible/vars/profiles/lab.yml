@@ -48,3 +48,8 @@ ee_image: "image-registry.openshift-image-registry.svc:5000/aac/aac-compliance-e
 # aap_credential: a custom AAP credential injects secrets as extra_vars at run
 # time (works inside the EE pod, where the gitignored vault file is absent).
 secret_source: aap_credential
+
+# --- TLS ---
+# Certificate checking is on unless a site turns it off. This environment's
+# routes use certificates the Execution Environment does not trust, so it does.
+aac_validate_certs: false

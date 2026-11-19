@@ -41,8 +41,9 @@
         method: GET
         headers:
           Authorization: "Bearer {{ aap_token }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         status_code: 200
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: project_lookup
 
     - name: Look up inventory ID by name
@@ -52,8 +53,9 @@
         method: GET
         headers:
           Authorization: "Bearer {{ aap_token }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         status_code: 200
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: inventory_lookup
 
     - name: Look up execution environment ID by name
@@ -63,8 +65,9 @@
         method: GET
         headers:
           Authorization: "Bearer {{ aap_token }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         status_code: 200
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: ee_lookup
 
     - name: Look up vault credential ID by name
@@ -74,8 +77,9 @@
         method: GET
         headers:
           Authorization: "Bearer {{ aap_token }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         status_code: 200
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: vault_cred_lookup
 
     - name: Set resolved AAP object IDs
@@ -95,8 +99,9 @@
         method: GET
         headers:
           Authorization: "Bearer {{ aap_token }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         status_code: 200
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: caa_cred_lookup
 
     - name: Ensure CAA signing credential type + credential exist (fresh cluster; key provided)
@@ -111,8 +116,9 @@
             method: GET
             headers:
               Authorization: "Bearer {{ aap_token }}"
-            validate_certs: false
+            validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
             status_code: 200
+          no_log: "{{ aac_no_log | default(true) | bool }}"
           register: caa_ct_lookup
 
         - name: Create CAA signing credential type (injects the key as extra_vars)
@@ -124,7 +130,7 @@
             headers:
               Authorization: "Bearer {{ aap_token }}"
               Content-Type: "application/json"
-            validate_certs: false
+            validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
             body_format: json
             body:
               name: "{{ aac_caa_credential_type_name }}"
@@ -141,6 +147,7 @@
                   caa_signing_private_key: "{{ '{{' }} (caa_signing_private_key | default('', true)) {{ '}}' }}"
                   caa_signing_password: "{{ '{{' }} (caa_signing_password | default('', true)) {{ '}}' }}"
             status_code: [200, 201]
+          no_log: "{{ aac_no_log | default(true) | bool }}"
           register: caa_ct_created
 
         - name: Resolve CAA credential type ID
@@ -155,7 +162,7 @@
             headers:
               Authorization: "Bearer {{ aap_token }}"
               Content-Type: "application/json"
-            validate_certs: false
+            validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
             body_format: json
             body:
               name: "{{ aac_caa_credential_name }}"
@@ -165,6 +172,7 @@
                 caa_signing_private_key: "{{ (caa_signing_private_key | default('', true)) }}"
                 caa_signing_password: "{{ caa_signing_password | default('', true) }}"
             status_code: [200, 201]
+          no_log: "{{ aac_no_log | default(true) | bool }}"
           register: caa_cred_created
 
     - name: Resolve CAA credential ID (existing or just-created; empty if unavailable)
@@ -189,8 +197,9 @@
         method: GET
         headers:
           Authorization: "Bearer {{ aap_token }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         status_code: 200
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: existing_jt
 
     - name: Build existing template name→ID map
@@ -210,7 +219,7 @@
         headers:
           Authorization: "Bearer {{ aap_token }}"
           Content-Type: "application/json"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body:
           name: "AAC - Digital Sovereignty Assessment"
@@ -228,6 +237,7 @@
           ask_variables_on_launch: false
           survey_enabled: true
         status_code: [200, 201]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: jt_result
 
     - name: Store assessment job template ID
@@ -242,10 +252,11 @@
         headers:
           Authorization: "Bearer {{ aap_token }}"
           Content-Type: "application/json"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body: "{{ {'id': vault_cred_id | int} }}"
         status_code: [200, 204, 400]  # 400 = already attached
+      no_log: "{{ aac_no_log | default(true) | bool }}"
 
     - name: Attach CAA signing credential to assessment job template
       uri:
@@ -255,10 +266,11 @@
         headers:
           Authorization: "Bearer {{ aap_token }}"
           Content-Type: "application/json"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body: "{{ {'id': caa_cred_id | int} }}"
         status_code: [200, 204, 400]  # 400 = already attached
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       when: (caa_cred_id | default('')) | length > 0
 
     # =========================================================================
@@ -272,7 +284,7 @@
         headers:
           Authorization: "Bearer {{ aap_token }}"
           Content-Type: "application/json"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body:
           name: "Digital Sovereignty Assessment Survey"
@@ -322,6 +334,7 @@
               default: "true"
               required: true
         status_code: 200
+      no_log: "{{ aac_no_log | default(true) | bool }}"
 
     # =========================================================================
     # WORKFLOW TEMPLATE
@@ -333,8 +346,9 @@
         method: GET
         headers:
           Authorization: "Bearer {{ aap_token }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         status_code: 200
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: existing_wf
 
     - name: Build existing workflow name→ID map
@@ -354,7 +368,7 @@
         headers:
           Authorization: "Bearer {{ aap_token }}"
           Content-Type: "application/json"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body:
           name: "AAC - Digital Sovereignty Workflow"
@@ -368,6 +382,7 @@
           survey_enabled: true
           ask_variables_on_launch: true
         status_code: [200, 201]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: wf_result
 
     - name: Store workflow ID
@@ -385,7 +400,7 @@
         headers:
           Authorization: "Bearer {{ aap_token }}"
           Content-Type: "application/json"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body:
           name: "Digital Sovereignty Workflow Survey"
@@ -431,6 +446,7 @@
               default: "true"
               required: true
         status_code: 200
+      no_log: "{{ aac_no_log | default(true) | bool }}"
 
     # =========================================================================
     # LOOK UP the Load OPA Policies job template ID
@@ -453,8 +469,9 @@
         url: "{{ aap_url }}/api/controller/v2/job_templates/{{ load_opa_jt_id | int }}/"
         headers:
           Authorization: "Bearer {{ aap_token }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         status_code: 200
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: _load_opa_jt
       when: load_opa_jt_id != ''
 
@@ -476,8 +493,9 @@
         method: GET
         headers:
           Authorization: "Bearer {{ aap_token }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         status_code: 200
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: existing_wf_nodes
 
     - name: Delete existing workflow nodes
@@ -487,8 +505,9 @@
         method: DELETE
         headers:
           Authorization: "Bearer {{ aap_token }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         status_code: [200, 204]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       loop: "{{ existing_wf_nodes.json.results }}"
       when: existing_wf_nodes.json.count > 0
 
@@ -503,7 +522,7 @@
         headers:
           Authorization: "Bearer {{ aap_token }}"
           Content-Type: "application/json"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body:
           unified_job_template: "{{ load_opa_jt_id | int }}"
@@ -515,6 +534,7 @@
             {{ {'source': 'extra_vars', 'frameworks_to_load': 'digital_sovereignty', 'reconcile': false}
                if (_load_opa_jt.json.ask_variables_on_launch | default(false)) else {} }}
         status_code: [200, 201]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: node1_result
       when: load_opa_jt_id != ''
 
@@ -526,12 +546,13 @@
         headers:
           Authorization: "Bearer {{ aap_token }}"
           Content-Type: "application/json"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body:
           unified_job_template: "{{ assessment_jt_id | int }}"
           all_parents_must_converge: false
         status_code: [200, 201]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: node2_result
 
     - name: Store node IDs
@@ -551,10 +572,11 @@
         headers:
           Authorization: "Bearer {{ aap_token }}"
           Content-Type: "application/json"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body: "{{ {'id': node2_id | int} }}"
         status_code: [200, 204]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       when: node1_id != ''
 
     # =========================================================================
@@ -571,7 +593,7 @@
         headers:
           Authorization: "Bearer {{ aap_token }}"
           Content-Type: "application/json"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body:
           name: "DS - Generate Audit PDF"
@@ -592,6 +614,7 @@
           execution_environment: "{{ ee_id | int }}"
           ask_variables_on_launch: false
         status_code: [200, 201]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: pdf_jt_result
 
     - name: Store PDF job template ID
@@ -606,10 +629,11 @@
         headers:
           Authorization: "Bearer {{ aap_token }}"
           Content-Type: "application/json"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body: "{{ {'id': vault_cred_id | int} }}"
         status_code: [200, 204, 400]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
 
     # =========================================================================
     # DONE

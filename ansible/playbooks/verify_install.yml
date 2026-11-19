@@ -68,7 +68,7 @@
         method: GET
         status_code: [200]
         timeout: 8
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
       register: _opa
       loop:
         - { bucket: security,   url: "{{ opa_security_url }}" }
@@ -142,7 +142,7 @@
         method: GET
         status_code: [200]
         timeout: 8
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
       register: _grafana
       ignore_errors: true
 
@@ -153,7 +153,7 @@
         method: GET
         status_code: [200, 401, 404]
         timeout: 8
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
       register: _mcp
       ignore_errors: true
 
@@ -169,7 +169,8 @@
         force_basic_auth: "{{ (_aap_token | length == 0) and (_aap_admin_password | length > 0) }}"
         status_code: [200]
         timeout: 8
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: _aap_jt
       ignore_errors: true
 

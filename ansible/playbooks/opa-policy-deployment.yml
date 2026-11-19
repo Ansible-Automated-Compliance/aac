@@ -148,6 +148,7 @@
     - name: Validate OPA policies syntax
       shell: |
         find {{ opa_home }}/policies -name "*.rego" -exec /usr/local/bin/opa fmt --diff {} \;
+      changed_when: false
       register: opa_syntax_check
       failed_when: opa_syntax_check.rc != 0
       become_user: "{{ opa_user }}"
@@ -155,6 +156,7 @@
     - name: Run OPA policy tests
       shell: |
         /usr/local/bin/opa test {{ opa_home }}/compliance-repo/tests/
+      changed_when: false
       register: opa_test_results
       become_user: "{{ opa_user }}"
       when: run_tests | default(true) | bool

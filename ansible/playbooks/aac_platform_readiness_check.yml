@@ -287,10 +287,11 @@
             url: "{{ _aap_url }}/api/controller/v2/{{ item.endpoint }}/?name={{ item.name | urlencode }}"
             headers:
               Authorization: "Bearer {{ aap_token }}"
-            validate_certs: false
+            validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
             return_content: true
             status_code: 200
             timeout: 15
+          no_log: "{{ aac_no_log | default(true) | bool }}"
           loop: >-
             {{ (readiness_required_templates | map('community.general.dict_kv', 'name') | map('combine', {'endpoint': 'job_templates', 'kind': 'template'}) | list)
                + (readiness_required_credentials | map('community.general.dict_kv', 'name') | map('combine', {'endpoint': 'credentials', 'kind': 'credential'}) | list)
@@ -331,7 +332,7 @@
             method: POST
             body_format: json
             body: {username: "{{ ao_username }}", password: "{{ ao_password }}"}
-            validate_certs: false
+            validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
             status_code: 200
           register: _ao_login
           no_log: true
@@ -340,8 +341,9 @@
           ansible.builtin.uri:
             url: "{{ ao_url }}/api/v1/workflows?limit=100"
             headers: {Authorization: "Bearer {{ _ao_login.json.access_token }}"}
-            validate_certs: false
+            validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
             status_code: 200
+          no_log: "{{ aac_no_log | default(true) | bool }}"
           register: _ao_wf
 
         - name: Index AO workflows by name
@@ -373,9 +375,10 @@
             url: "{{ _aap_url }}/api/controller/v2/workflow_jobs/?name={{ item | urlencode }}&order_by=-finished&page_size=1"
             headers:
               Authorization: "Bearer {{ aap_token }}"
-            validate_certs: false
+            validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
             status_code: 200
             timeout: 15
+          no_log: "{{ aac_no_log | default(true) | bool }}"
           loop: "{{ readiness_required_recent_workflows }}"
           register: _wfruns
 

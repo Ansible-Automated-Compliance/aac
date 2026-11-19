@@ -14,6 +14,50 @@
       for every section.
     quiet: true
 
+- name: Validate the shape of every operator attestation
+  # Structure only; the control ids are checked against the policy's own
+  # ledger after evaluation (evaluate.yml), so the list of names cannot
+  # drift from the library.
+  ansible.builtin.assert:
+    that:
+      - m365_attestations is sequence
+      - m365_attestations is not string
+      - m365_attestations | reject('mapping') | list | length == 0
+    fail_msg: >-
+      m365_attestations must be a list of mappings with control_id, observed,
+      attested_by, attested_on and evidence_ref.
+    quiet: true
+
+- name: Validate each operator attestation
+  ansible.builtin.assert:
+    that:
+      - (item.control_id | default('') | string) is match('^[0-9]+(\.[0-9]+)+$')
+      - item.observed is defined
+      - item.observed is boolean
+      - item.observed
+      - (item.attested_by | default('') | string | trim | length) > 0
+      - (item.attested_on | default('') | string) is match('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+      - (item.evidence_ref | default('') | string | trim | length) > 0
+    fail_msg: >-
+      Attestation for '{{ item.control_id | default('?') }}' is not admissible:
+      it needs a dotted control_id, observed: true, a non-empty attested_by
+      and evidence_ref, and attested_on as YYYY-MM-DD. observed: false is
+      refused because the policy does not read `observed` and would clear
+      the control; leave the control out to have it reported as not
+      attested.
+    quiet: true
+  loop: "{{ m365_attestations }}"
+  loop_control:
+    label: "{{ item.control_id | default('?') }}"
+
+- name: Refuse duplicate attestations for one control
+  ansible.builtin.assert:
+    that:
+      - (m365_attestations | map(attribute='control_id') | map('string') | list | length)
+        == (m365_attestations | map(attribute='control_id') | map('string') | unique | list | length)
+    fail_msg: m365_attestations names the same control_id more than once.
+    quiet: true
+
 - name: Determine which requested sections need PowerShell
   ansible.builtin.set_fact:
     m365_powershell_sections: >-

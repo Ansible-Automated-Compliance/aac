@@ -51,6 +51,7 @@
       ansible.builtin.shell: |
         ls {{ repo_dir }}/scripts/install.sh
         git -C {{ repo_dir }} log --oneline -3
+      changed_when: false
       delegate_to: "{{ target_host }}"
       vars:
         ansible_user: ec2-user
@@ -148,6 +149,7 @@
     - name: Check OPA containers are running
       ansible.builtin.shell: |
         podman ps --filter name=opa- --format "{{.Names}}: {{.Status}}"
+      changed_when: false
       delegate_to: "{{ target_host }}"
       vars:
         ansible_user: ec2-user
@@ -156,6 +158,7 @@
     - name: Check PostgreSQL is running
       ansible.builtin.shell: |
         podman ps --filter name=postgresql --format "{{.Names}}: {{.Status}}"
+      changed_when: false
       delegate_to: "{{ target_host }}"
       vars:
         ansible_user: ec2-user

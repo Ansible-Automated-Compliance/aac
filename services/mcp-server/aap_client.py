@@ -12,7 +12,7 @@ class AAPClient:
     def __init__(self):
         self.base_url = os.getenv("AAP_URL", "https://localhost").rstrip("/")
         self.token = os.getenv("AAP_TOKEN", "")
-        self.verify_ssl = os.getenv("AAP_VERIFY_SSL", "false").lower() == "true"
+        self.verify_ssl = os.getenv("AAP_VERIFY_SSL", "true").lower() == "true"
         self.timeout = int(os.getenv("AAP_TIMEOUT", "30"))
 
         self.client = httpx.Client(

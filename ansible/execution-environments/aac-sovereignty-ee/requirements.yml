@@ -12,8 +12,8 @@
 # concerns and would bloat this image without serving the DS flow.
 collections:
   - name: community.postgresql
-    version: ">=3.0.0"
+    version: ">=3.0.0,<6.0.0"
   - name: community.general
-    version: ">=8.0.0"
+    version: ">=8.0.0,<15.0.0"
   - name: ansible.utils
-    version: ">=2.10.0"
+    version: ">=2.10.0,<7.0.0"

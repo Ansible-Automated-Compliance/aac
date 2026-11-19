@@ -13,7 +13,7 @@
 # Idempotent: find-or-create by name; host/limit assignment converges.
 # TLS: verification defaults ON (fail closed). Environments with
 # self-signed controller certs (the lab CRC) pass
-# -e aap_validate_certs=false explicitly at launch.
+# -e aac_validate_certs=false explicitly at launch.
 # Run from a job template with the "AAP Token (extra_vars)" credential
 # and -e aap_url=https://<gateway-host>, or from an operator machine
 # where site_config/vault_secrets provide both.
@@ -76,7 +76,7 @@
         use_proxy: false
         url: "{{ api }}/inventories/?name={{ item | urlencode }}"
         headers: "{{ hdrs }}"
-        validate_certs: "{{ aap_validate_certs | default(true) | bool }}"
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
       register: inv_lookup
       loop: "{{ groups_spec | map(attribute='inventory') | unique | list }}"
       failed_when: inv_lookup.json.count != 1
@@ -92,7 +92,7 @@
         url: "{{ api }}/inventories/{{ inv_ids[item.inventory] }}/groups/"
         method: POST
         headers: "{{ hdrs }}"
-        validate_certs: "{{ aap_validate_certs | default(true) | bool }}"
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body: "{{ {'name': item.name, 'description': item.desc} }}"
         status_code: [201, 400]   # 400 = already exists — converge, don't fail
@@ -105,7 +105,7 @@
         use_proxy: false
         url: "{{ api }}/inventories/{{ inv_ids[item.inventory] }}/groups/?name={{ item.name | urlencode }}"
         headers: "{{ hdrs }}"
-        validate_certs: "{{ aap_validate_certs | default(true) | bool }}"
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
       register: grp_lookup
       loop: "{{ groups_spec }}"
       loop_control:
@@ -118,7 +118,7 @@
         url: "{{ api }}/groups/{{ (grp_lookup.results | selectattr('item.name', 'equalto', item.0.name) | first).json.results.0.id }}/hosts/"
         method: POST
         headers: "{{ hdrs }}"
-        validate_certs: "{{ aap_validate_certs | default(true) | bool }}"
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body: "{{ {'name': item.1, 'inventory': inv_ids[item.0.inventory] | int} }}"
         status_code: [201, 204, 400]
@@ -131,7 +131,7 @@
         use_proxy: false
         url: "{{ api }}/job_templates/?name={{ item.jt | urlencode }}"
         headers: "{{ hdrs }}"
-        validate_certs: "{{ aap_validate_certs | default(true) | bool }}"
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
       register: jt_lookup
       loop: "{{ jt_limits }}"
       loop_control:
@@ -144,7 +144,7 @@
         url: "{{ api }}/job_templates/{{ (jt_lookup.results | selectattr('item.jt', 'equalto', item.jt) | first).json.results.0.id }}/"
         method: PATCH
         headers: "{{ hdrs }}"
-        validate_certs: "{{ aap_validate_certs | default(true) | bool }}"
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body: "{{ {'limit': item.limit} }}"
       loop: "{{ jt_limits }}"
