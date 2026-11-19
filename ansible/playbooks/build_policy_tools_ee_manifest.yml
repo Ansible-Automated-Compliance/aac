@@ -39,6 +39,7 @@
   tasks:
 
     - name: Login to quay.io
+      changed_when: true
       ansible.builtin.command:
         argv:
           - podman
@@ -66,6 +67,7 @@
       changed_when: false
 
     - name: Create multi-arch manifest at versioned tag
+      changed_when: true
       ansible.builtin.command:
         argv: >-
           {{
@@ -86,6 +88,7 @@
       when: tag_latest | bool
 
     - name: Create :latest multi-arch manifest
+      changed_when: true
       ansible.builtin.command:
         argv: >-
           {{

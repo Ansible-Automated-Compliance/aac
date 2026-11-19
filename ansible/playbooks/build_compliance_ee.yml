@@ -54,6 +54,7 @@
         creates: /usr/local/bin/ansible-builder
 
     - name: Generate Containerfile using ansible-builder
+      changed_when: true
       ansible.builtin.command: ansible-builder create
       args:
         chdir: "{{ ee_build_dir }}"
@@ -86,6 +87,7 @@
       delegate_to: aap_physical_host
 
     - name: Build EE image with podman on host
+      changed_when: true
       ansible.builtin.shell: >
         /usr/bin/podman build
         -f {{ ee_build_dir }}/context/Dockerfile
@@ -114,11 +116,13 @@
           - "Cosign: {{ cosign_verify.stdout_lines[0] }}"
 
     - name: Tag image as latest
+      changed_when: true
       ansible.builtin.shell: >
         /usr/bin/podman tag {{ ee_image }}:{{ ee_version }} {{ ee_image }}:latest
       delegate_to: aap_physical_host
 
     - name: Login to quay.io on host
+      changed_when: true
       ansible.builtin.shell: >
         /usr/bin/podman login quay.io
         -u {{ vault_quay_username }}
@@ -129,12 +133,14 @@
       no_log: true
 
     - name: Push versioned image to quay.io
+      changed_when: true
       ansible.builtin.shell: >
         /usr/bin/podman push {{ ee_image }}:{{ ee_version }}
       delegate_to: aap_physical_host
       register: push_versioned
 
     - name: Push latest tag to quay.io
+      changed_when: true
       ansible.builtin.shell: >
         /usr/bin/podman push {{ ee_image }}:latest
       delegate_to: aap_physical_host
@@ -145,6 +151,7 @@
     # separate from the standard user podman store (~/.local/share/containers).
     # Without this step AAP jobs keep using the old cached EE image.
     - name: Load new EE image into receptor podman store
+      changed_when: true
       ansible.builtin.shell: >
         CONTAINERS_STORAGE_CONF=/home/aapuser1/aap/containers/storage.conf
         /usr/bin/podman load -i <(/usr/bin/podman save {{ ee_image }}:{{ ee_version }})
@@ -154,6 +161,7 @@
       register: receptor_load
 
     - name: Load latest tag into receptor podman store
+      changed_when: true
       ansible.builtin.shell: >
         CONTAINERS_STORAGE_CONF=/home/aapuser1/aap/containers/storage.conf
         /usr/bin/podman load -i <(/usr/bin/podman save {{ ee_image }}:latest)

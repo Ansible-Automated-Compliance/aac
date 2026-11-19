@@ -71,6 +71,7 @@
         # Fresh temp repo every run — simplest way to force-push a single
         # commit to backup/latest without orphan branch complexity.
         - name: Init fresh backup repo and stage backup file
+          changed_when: true
           ansible.builtin.shell: |
             set -euo pipefail
             rm -rf {{ git_repo_dir | quote }}
@@ -95,6 +96,7 @@
           # legitimate transfer.
           # Note: stdout/stderr are routed through `sed` to scrub any
           # echo of the PAT before logging (the URL includes the PAT).
+          changed_when: true
           ansible.builtin.shell: |
             set -euo pipefail
             cd {{ git_repo_dir | quote }}
