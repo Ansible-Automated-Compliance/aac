@@ -248,11 +248,13 @@ test_nist_sp800_53_large_control_set_performance if {
     large_ac_input := {
         "ac_controls": {
             "session_lock": {
+                "odp": {"inactivity_timeout": 900},
                 "inactivity_timeout": 900,
                 "pattern_hiding": true,
                 "authentication_required": true
             },
             "logon_attempts": {
+                "odp": {"max_attempts": 3},
                 "lockout_configured": true,
                 "maximum_attempts": 3,
                 "lockout_duration": 15,
@@ -341,6 +343,7 @@ test_resource_constrained_evaluation if {
         },
         "ac_controls": {
             "session_lock": {
+                "odp": {"inactivity_timeout": 900},
                 "inactivity_timeout": 900,
                 "pattern_hiding": true,
                 "authentication_required": true

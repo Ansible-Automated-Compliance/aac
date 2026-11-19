@@ -37,18 +37,9 @@ Only the **vocabulary** lives here.
 
 | AAC key | canonical library entrypoint | bucket |
 |---|---|---|
-| `cis_ubuntu_2004` | `cis_ubuntu_20_04.main` | security |
-| `cis_ubuntu_2204` | `cis_ubuntu_22_04.main` | security |
-| `cis_ubuntu_2404` | `cis_ubuntu_24_04.main` | security |
-| `cis_windows_2019` | `cis_windows_server_2019.main` | security |
-| `cis_windows_2022` | `cis_windows_server_2022.main` | security |
-| `cis_rhel10` | `cis.rhel_10.main` | security |
-| `stig_kubernetes` | `stig.kubernetes.main` | security |
-| `stig_openshift_4` | `stig.openshift_4.main` | security |
 | `stig_rke2` | `stig.rke2.main` | security |
-| `nist_800_53` | `nist.sp800_53.main` | security |
-| `nist_csf` | `nist.csf.main` | security |
-| `nist_ai_rmf` | `nist.ai_rmf.main` | ot |
+
+Eleven other bridges lived here until 2026-11-19 (`cis_ubuntu_2004/2204/2404`, `cis_windows_2019/2022`, `cis_rhel10`, `stig_kubernetes`, `stig_openshift_4`, `nist_800_53`, `nist_csf`, `nist_ai_rmf`). From library commit `a84e39cf` the library ships those entrypoints itself as `*_key_main.rego`, and loading both makes OPA report a rule conflict on `<key>.main.compliance_report`. They were removed with the pin bump, and the loader now prunes a bridge that this checkout no longer ships. Before adding a bridge, check that the library does not already define the package.
 
 Every other key in `opa_framework_map` addresses a library package whose name
 already matches, and needs no bridge.

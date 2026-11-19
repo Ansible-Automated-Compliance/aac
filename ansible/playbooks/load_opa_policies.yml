@@ -158,9 +158,9 @@
           - { dir: "benchmarks/cis/ubuntu_24_04",                prefix: "ubuntu_24_04_",                key: cis_ubuntu_2404 }
           - { dir: "benchmarks/cis/vmware",                      prefix: "vmware_",                      key: cis_vmware }
           - { dir: "benchmarks/cis/web_servers",                 prefix: "web_servers_",                 key: cis_web_servers }
-          - { dir: "benchmarks/cis/windows_10",                  prefix: "windows_10_",                  key: cis_windows_10 }
-          - { dir: "benchmarks/cis/windows_11",                  prefix: "windows_11_",                  key: cis_windows_11 }
-          - { dir: "benchmarks/cis/windows_server_2016",         prefix: "windows_server_2016_",         key: cis_windows_server_2016 }
+          - { dir: "benchmarks/cis/windows_10_modular",                  prefix: "windows_10_",                  key: cis_windows_10 }
+          - { dir: "benchmarks/cis/windows_11_modular",                  prefix: "windows_11_",                  key: cis_windows_11 }
+          - { dir: "benchmarks/cis/windows_server_2016_modular",         prefix: "windows_server_2016_",         key: cis_windows_server_2016 }
           - { dir: "benchmarks/cis/windows_server_2019_modular", prefix: "windows_server_2019_modular_", key: cis_windows_2019 }
           - { dir: "benchmarks/cis/windows_server_2022",         prefix: "windows_server_2022_",         key: cis_windows_server_2022 }
           - { dir: "benchmarks/cis/windows_server_2022_modular", prefix: "windows_server_2022_modular_", key: cis_windows_2022 }
@@ -716,8 +716,17 @@
     # prior load (especially one that changed its ID scheme) stay resident and
     # collide on recompile. Runs for EVERY source now (was source=database only),
     # so the store always converges to == the checkout. WANTED = exactly the IDs
-    # this run's load targeted. Protected from pruning: the always-loaded bridges
-    # (aac_bridge_*) and the waiver module (exceptions_waivers).
+    # this run's load targeted. Protected from pruning: the bridges THIS checkout
+    # ships (aac_bridge_<file>) and the waiver module (exceptions_waivers).
+    #
+    # A bridge that is no longer shipped IS pruned. Until 2026-11-19 every
+    # aac_bridge_* id was protected, so a bridge deleted from the repo stayed in
+    # OPA for ever. That became a fault when the library began shipping the same
+    # entrypoints itself: the stale bridge and the library module both define
+    # <key>.main.compliance_report, OPA reports a rule conflict, and the
+    # assessment for that key fails. If the bridge file-find came back empty the
+    # old behaviour applies (protect them all), for the same reason an empty
+    # wanted-set is never pruned against.
     #
     # SAFETY: a container is pruned ONLY if its wanted-set is non-empty. An empty
     # wanted-set means the file-find failed (ignore_errors) — pruning against it
@@ -753,12 +762,20 @@
       ansible.builtin.set_fact:
         _prune_targets: >-
           {%- set out = [] -%}
+          {%- set bridge_ids = [] -%}
+          {%- for r in (bridge_files_raw.results | default([])) -%}
+            {%- for f in (r.files | default([])) -%}
+              {%- set _ = bridge_ids.append('aac_bridge_' + (f.path | basename | regex_replace('\.rego$', ''))) -%}
+            {%- endfor -%}
+          {%- endfor -%}
           {%- for pr in _present_pol.results -%}
             {%- set url = pr.item.url -%}
             {%- set wanted = _wanted_by_url.get(url, []) -%}
             {%- if wanted | length > 0 -%}
               {%- for pol in (pr.json.result | default([])) -%}
-                {%- if pol.id not in wanted and not pol.id.startswith('aac_bridge_') and pol.id != 'exceptions_waivers' -%}
+                {%- set is_bridge = pol.id.startswith('aac_bridge_') -%}
+                {%- set keep_bridge = is_bridge and (bridge_ids | length == 0 or pol.id in bridge_ids) -%}
+                {%- if pol.id not in wanted and not keep_bridge and pol.id != 'exceptions_waivers' -%}
                   {%- set _ = out.append({'url': url, 'id': pol.id}) -%}
                 {%- endif -%}
               {%- endfor -%}

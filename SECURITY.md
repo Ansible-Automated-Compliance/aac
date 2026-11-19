@@ -2,12 +2,12 @@
 
 ## Supported Versions
 
-AAC 2.6.x receives security updates.
+AAC 2.8.x receives security updates. The current version is in the `VERSION` file.
 
 | Version | Supported |
 |---------|-----------|
-| 2.6.x | ✅ Active |
-| 2.5.x | ❌ End of life |
+| 2.8.x | ✅ Active |
+| 2.7.x and earlier | ❌ End of life |
 
 ## Reporting a Vulnerability
 
