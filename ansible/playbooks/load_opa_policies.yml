@@ -800,6 +800,47 @@
         msg: "Reconcile pruned {{ _prune_targets | default([]) | length }} orphaned policies (present in OPA, not in this load)."
       when: reconcile | bool and _prune_allowed | bool
 
+    # A file renamed in the library collides with its own old copy: the old
+    # module is still loaded under the old id, so the PUT of the new file is
+    # refused ("package annotation redeclared"), and the old copy is pruned only
+    # afterwards. Without this retry the first load after such an upgrade fails
+    # and leaves the framework EMPTY until someone runs the loader again.
+    - name: Retry the policy files that failed before the prune
+      uri:
+        use_proxy: false
+        url: "{{ item.0.item.0.url }}/v1/policies/{{ item.0.item.1.prefix }}{{ item.1.path | regex_replace('^.*/' + item.0.item.1.dir + '/', '') | regex_replace('/', '_') | regex_replace('\\.rego$', '') }}"
+        method: PUT
+        body: "{{ lookup('file', item.1.path) }}"
+        body_format: raw
+        headers:
+          Content-Type: "text/plain"
+        status_code: 200
+        timeout: 60
+      loop: "{{ load_results.results | selectattr('failed', 'equalto', true) | map(attribute='item') | list }}"
+      loop_control:
+        label: "{{ item.0.item.0.name }}: {{ item.1.path | basename }}"
+      register: load_retry_results
+      retries: 6
+      delay: 3
+      until: >-
+        (load_retry_results.status | default(0) == 200)
+        or (load_retry_results.status | default(0) >= 400 and load_retry_results.status | default(0) < 500)
+      ignore_errors: true
+      when:
+        - reconcile | bool and _prune_allowed | bool
+        - _prune_targets | default([]) | length > 0
+        - failed_policies | length > 0
+
+    - name: Keep only the policy files that still fail after the retry
+      ansible.builtin.set_fact:
+        failed_policies: >-
+          {{ load_retry_results.results
+             | selectattr('failed', 'equalto', true)
+             | map(attribute='item.1.path')
+             | map('basename')
+             | list }}
+      when: load_retry_results.results is defined
+
     # FAIL LOUD — placed AFTER the prune so a sediment-collision run still gets
     # its orphans cleaned first (making the re-run converge); only then do we
     # fail on any genuine remaining load failure. A partial load is a silent
@@ -813,8 +854,9 @@
           MISSING from OPA — the frameworks they belong to will return {} and
           their assessment jobs will silently pass empty. Failed:
           {{ failed_policies | join(', ') }}.
-          Orphans were pruned this run; re-run to converge, or fix the failing
-          file(s). Pass allow_partial_load=true to tolerate deliberately.
+          Files that collided with a stale copy were retried after the prune,
+          so what is listed here needs fixing. Pass allow_partial_load=true to
+          tolerate deliberately.
       when:
         - failed_policies | length > 0
         - not (allow_partial_load | bool)
