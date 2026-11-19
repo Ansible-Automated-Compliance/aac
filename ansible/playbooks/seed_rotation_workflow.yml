@@ -163,7 +163,6 @@
           ask_variables_on_launch: false
 
       register: jt_results
-      no_log: false
 
     - name: Collect job template IDs by name
       set_fact:
