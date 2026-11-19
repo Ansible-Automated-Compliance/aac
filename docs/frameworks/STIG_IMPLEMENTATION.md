@@ -14,7 +14,7 @@
 
 ## Overview
 
-**DISA STIG (Security Technical Implementation Guide)** compliance policies for Department of Defense (DoD) and federal systems. Each module evaluates a subset of its STIG (see the measured table below). Covers **6 operating systems** with automated assessment via OPA and Ansible.
+**DISA STIG (Security Technical Implementation Guide)** compliance policies for Department of Defense (DoD) and federal systems. Each module evaluates a subset of its STIG (see the measured table below). Covers **6 operating systems** (two more are sunset) with automated assessment via OPA and Ansible.
 
 ### What is STIG?
 
@@ -33,10 +33,10 @@
 | **Windows Server 2019** | 104 | Assessed |
 | **Windows Server 2016** | 103 | Assessed |
 | **Windows 11** | 117 | Assessed |
-| **Windows 10** | none | No module in the pinned library |
+| **Windows 10** | none | SUNSET — retired by DISA; module removed from the library 2026-11-10 |
 | **RHEL 9** | 104 | Assessed |
 | **RHEL 8** | 53 | Assessed |
-| **Ubuntu 20.04 LTS** | none reported | Module has no assessment report |
+| **Ubuntu 20.04 LTS** | none reported | SUNSET — module frozen for historical assessments; do not use for new ones |
 
 Measured 2026-11-18 at library commit `a84e39cf`: each number is the module's own
 `total_controls`. Every module is a subset of its STIG; a full DISA STIG for these
@@ -47,20 +47,22 @@ platforms has several hundred rules. Earlier versions of this table gave figures
 
 ## STIG Severity Categories
 
+DISA defines the three categories and their severities (high, medium, low). It does not set remediation deadlines; those come from the organisation and its authorizing official. The day counts below are example targets, not DISA requirements.
+
 ### CAT I - High Severity
 - **Risk:** Immediate threat to system security
 - **Examples:** Missing antivirus, disabled firewalls, unpatched critical vulnerabilities
-- **Remediation:** Must be fixed immediately (typically within 15 days)
+- **Remediation:** Example target: 15 days
 
 ### CAT II - Medium Severity
 - **Risk:** Significant security vulnerability
 - **Examples:** Weak password policies, improper audit settings, insecure configurations
-- **Remediation:** Must be remediated within 30 days
+- **Remediation:** Example target: 30 days
 
 ### CAT III - Low Severity
 - **Risk:** Lower-impact security issues
 - **Examples:** Missing legal banners, suboptimal log sizes, minor config issues
-- **Remediation:** Should be fixed within 90 days
+- **Remediation:** Example target: 90 days
 
 ---
 

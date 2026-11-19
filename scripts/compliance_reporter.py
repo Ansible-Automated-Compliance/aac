@@ -59,7 +59,7 @@ class ComplianceReporter:
             "iso27001": {
                 "name": "ISO/IEC 27001:2022",
                 "policies": ["iso27001"],
-                "test_files": ["iso27001_test_suite.rego"]
+                "test_files": ["comprehensive_test_suite.rego"]
             },
             "soc2": {
                 "name": "SOC 2 Trust Service Criteria",

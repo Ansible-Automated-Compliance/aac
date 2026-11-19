@@ -1,0 +1,89 @@
+name: Policy Pin Freshness
+
+# Why this exists
+# ---------------
+# The policies/ submodule is a pinned commit of the Rego policy library. On
+# 2026-11-18 an audit found the pin 43 commits and 27 days behind the library,
+# missing fixes for checks that passed without evidence. Nothing had said so:
+# a stale pin is silent, every check stays green.
+#
+# Once a week this job measures how far the pin is behind the library's main
+# branch. Past either limit it fails and opens an issue (or comments on the
+# one already open). It does not move the pin: a pin bump changes what
+# customers are assessed against, touches a protected path, and is reviewed
+# like any other change.
+
+on:
+  schedule:
+    - cron: '17 14 * * 1'   # Mondays 14:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+env:
+  MAX_COMMITS_BEHIND: '25'
+  MAX_DAYS_BEHIND: '21'
+
+jobs:
+  freshness:
+    name: Pin is close to library main
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Measure the distance
+        id: measure
+        shell: bash
+        run: |
+          set -euo pipefail
+          url="$(git config -f .gitmodules submodule.policies.url)"
+          pin="$(git ls-tree HEAD policies | awk '{print $3}')"
+          git clone --quiet --filter=blob:none --no-checkout "$url" "$RUNNER_TEMP/lib"
+          cd "$RUNNER_TEMP/lib"
+          head_sha="$(git rev-parse origin/HEAD)"
+          behind="$(git rev-list --count "$pin..$head_sha")"
+          pin_ts="$(git show -s --format=%ct "$pin")"
+          head_ts="$(git show -s --format=%ct "$head_sha")"
+          days=$(( (head_ts - pin_ts) / 86400 ))
+          [ "$behind" -eq 0 ] && days=0
+          {
+            echo "pin=$pin"
+            echo "head=$head_sha"
+            echo "behind=$behind"
+            echo "days=$days"
+          } >> "$GITHUB_OUTPUT"
+          echo "pin ${pin:0:8} is $behind commit(s) and $days day(s) behind library main ${head_sha:0:8}" | tee -a "$GITHUB_STEP_SUMMARY"
+          if [ "$behind" -gt "$MAX_COMMITS_BEHIND" ] || [ "$days" -gt "$MAX_DAYS_BEHIND" ]; then
+            echo "stale=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "stale=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Open or update the issue
+        if: steps.measure.outputs.stale == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PIN: ${{ steps.measure.outputs.pin }}
+          LIB_HEAD: ${{ steps.measure.outputs.head }}
+          BEHIND: ${{ steps.measure.outputs.behind }}
+          DAYS: ${{ steps.measure.outputs.days }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          title="Policy library pin is stale"
+          body="The \`policies/\` pin \`${PIN:0:8}\` is ${BEHIND} commit(s) and ${DAYS} day(s) behind the library's main branch (\`${LIB_HEAD:0:8}\`). Limits: ${MAX_COMMITS_BEHIND} commits, ${MAX_DAYS_BEHIND} days. Open a pin-bump pull request."
+          existing="$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "in:title \"$title\"" --json number --jq '.[0].number // empty')"
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --repo "$GITHUB_REPOSITORY" --body "$body"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body "$body"
+          fi
+
+      - name: Fail when stale
+        if: steps.measure.outputs.stale == 'true'
+        run: |
+          echo "FAIL: the policy pin is past its freshness limit."
+          exit 1

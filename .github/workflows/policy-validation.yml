@@ -97,6 +97,10 @@ jobs:
           - unit_tests.rego
           - integration_tests.rego
           - performance_tests.rego
+          # Added 2026-11-18: these two suites existed and passed but no job
+          # ran them. Every .rego file under tests/ is now in this matrix.
+          - cis_nginx_1_20_test.rego
+          - cis_vmware_vcenter_test.rego
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

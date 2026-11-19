@@ -13,13 +13,13 @@
 [![OPA](https://img.shields.io/badge/OPA-Rego_v1-green.svg)](https://www.openpolicyagent.org/)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-15+-blue.svg)](https://www.postgresql.org/)
 [![Frameworks](https://img.shields.io/badge/Frameworks-55+-orange.svg)](#compliance-frameworks)
-[![Policies](https://img.shields.io/badge/Rego_Policies-729-brightgreen.svg)](https://github.com/ynotbhatc/rego_policy_libraries)
+[![Policies](https://img.shields.io/badge/Rego_Policies-1052-brightgreen.svg)](https://github.com/ynotbhatc/rego_policy_libraries)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
 **Repository:** [https://github.com/ansible-automated-compliance/aac](https://github.com/ansible-automated-compliance/aac)
 **Policy Library:** [https://github.com/ynotbhatc/rego_policy_libraries](https://github.com/ynotbhatc/rego_policy_libraries)
 **Demos:** the demo environments repository (`aac-demos`: runbooks, demo playbooks, RHPDS provisioning) is maintained by the project maintainers and is not published. References to it in these documents describe the maintainers' demo material, available on request.  
-**Version:** 2.8.0 (authoritative source: the `VERSION` file) | **Last Updated:** 2026-10-07
+**Version:** 2.8.0 (authoritative source: the `VERSION` file) | **Last Updated:** 2026-11-18
 
 ---
 
@@ -101,8 +101,8 @@ the rest (storage, dashboards, evidence export) is handled by the platform.
 | **Operating systems (Windows)** | Windows Server 2019/2022, Windows 10/11 | Ansible facts over WinRM | CIS Windows, STIG Windows, MS Security Baselines |
 | **Network equipment** | Cisco IOS/NX-OS, Arista, Juniper, F5, pfSense, VyOS | `ansible.netcommon`, SSH, SNMP, NETCONF | CIS network-device benchmarks, NERC CIP-005/007 |
 | **Databases** | PostgreSQL (active), Oracle Database 19c (active: `stig_oracle_database_19c_assessment.yml`, the STIG's own queries as SYSDBA), MySQL/MariaDB, MongoDB, SQL Server | `community.postgresql`, `sqlplus`, vendor SDKs | CIS DBMS benchmarks, DISA STIG Oracle Database 19c, PCI-DSS 8/10, HIPAA technical safeguards |
-| **Applications** | Web servers (Apache, Nginx), runtimes (Java, Python), middleware | Module-based introspection + config file evaluation | CIS application benchmarks, ISO 27001 A.14, Sentinel enforcement |
-| **Storage** | NetApp, NAS/SAN arrays, S3/object stores, encrypted volumes | Vendor REST APIs + `ansible.builtin` storage facts | NIST SC-28, ISO 27001 A.10, HIPAA §164.312(a)(2)(iv) |
+| **Applications** | Web servers (Apache, Nginx), runtimes (Java, Python), middleware | Module-based introspection + config file evaluation | CIS application benchmarks, ISO 27001:2022 A.8.25–A.8.29, Sentinel enforcement |
+| **Storage** | NetApp, NAS/SAN arrays, S3/object stores, encrypted volumes | Vendor REST APIs + `ansible.builtin` storage facts | NIST SC-28, ISO 27001:2022 A.8.24, HIPAA §164.312(a)(2)(iv) |
 | **Smart meters / AMI** | Smart meter endpoints, head-end systems, MDMS | Smart Meter simulator + REST APIs | NIST IR 7628 (all 7 domains), NERC CIP-002→015, IEC 62443 |
 | **Cloud providers** | AWS (active), Azure, GCP | `amazon.aws`, `azure.azcollection`, `google.cloud` | CIS AWS / Azure / GCP, FedRAMP, SOC 2 CC6 |
 | **Kubernetes / OpenShift** | OCP 4.14+, generic K8s clusters, admission controllers | `kubernetes.core`, `community.okd` | CIS Kubernetes, STIG K8s, STIG OpenShift 4, NIST 800-190 |
@@ -131,7 +131,7 @@ deploys the five core dashboards; the other three are deployed individually by p
 | Dashboard (JSON) | Deploy | Description |
 | ----------- | -------- | ------------- |
 | **AAC Compliance** (`aac_compliance_dashboard`) | auto | Overall compliance posture across all assessed frameworks — score, pass/fail breakdown, per-host drill-down. Includes CIS benchmark results; for what each benchmark module evaluates see [CIS coverage](#cis-coverage-and-the-assessment-contract). |
-| **NCSC CAF 4.0 Compliance** (`ncsc_caf_dashboard`) | auto | Maps all 23 Cyber Outcomes (B2–D1) across Phase 1 technical and Phase 2 governance pillars. Single-pane view for UK CNI compliance. |
+| **NCSC CAF 4.0 Compliance** (`ncsc_caf_dashboard`) | auto | Maps 23 of the 41 contributing outcomes in CAF 4.0 (the ones the policy module evaluates, in A3 and B2–D1) across Phase 1 technical and Phase 2 governance pillars. Single-pane view for UK CNI compliance. |
 | **AMI Compliance** (`ami_compliance_dashboard`) | auto | Advanced Metering Infrastructure controls — NIST IR 7628, IEC 62443, device and head-end posture. |
 | **NERC-CIP** (`nerc_cip_dashboard`) | auto | NERC-CIP critical infrastructure controls, CIP-002 through CIP-015. |
 | **Digital Sovereignty** (`digital_sovereignty_dashboard`) | auto | 7-domain, 70-control sovereignty framework — data residency, cryptographic controls, infrastructure independence, supply chain, operational, network, and AI/ML sovereignty. |
@@ -176,13 +176,13 @@ Policy counts are `.rego` files, tests excluded, at the pinned library commit `a
 | Critical Infrastructure | `frameworks/critical_infrastructure/` | 59 | NERC-CIP (CIP-002–015), AMI/NIST IR 7628, IEC 62443 |
 | Digital Sovereignty | `frameworks/sovereignty/` | 12 | 7-domain, 70 controls |
 | Enforcement | `enforcement/` | 22 | Ansible, Terraform, Dockerfile, Kubernetes, Git |
-| Governance | `governance/` | 21 | AI governance, MCP tool-call controls, **EU AI Act (2024/1689)** |
-| Threat Detection | `threat_detection/` | 1 | Crypto mining (xmrig, 20+ miners) |
+| Governance | `governance/` | 26 | AI governance, MCP tool-call controls, **EU AI Act (2024/1689)** |
+| Threat Detection | `threat_detection/` | 2 | Crypto mining (xmrig, 20+ miners) |
 
-*(Per-domain counts measured at the pinned submodule commit, 2026-10-07; remaining files
+*(Per-domain counts measured at the pinned submodule commit `a84e39cf`, 2026-11-18; remaining files
 sit in shared/other paths.)*
 
-**Total: 722 policy files** (959 including tests) across **55+ frameworks** — all using Rego v1
+**Total: 1,052 policy files** (2,463 including tests) across **55+ frameworks** — all using Rego v1
 syntax with `import rego.v1`. Counted at the pinned submodule commit; the number drifts with every
 merge, so count it rather than quoting it:
 
@@ -329,20 +329,20 @@ Each figure is what the module itself reports as `total_controls` when evaluated
 | **CMMC 2.0** | Defense contractors | Levels 1–3 |
 | **GDPR** | EU/Global | Data protection + privacy controls |
 | **HIPAA** | Healthcare | Technical + administrative safeguards |
-| **NCSC CAF 4.0** | UK CNI | 23 Cyber Outcomes across B2–D1 |
+| **NCSC CAF 4.0** | UK CNI | 23 of the 41 contributing outcomes (A3, B2–D1). CAF 4.0 has 4 objectives and 14 principles |
 | **DORA** | EU Financial | ICT risk management + resilience |
 | **NIS2** | EU Critical Sectors | Network and information security |
 | **NY DFS (NYDFS)** | US Financial | 23 NYCRR 500 cybersecurity requirements |
 | **SEC Cyber** | US Public Companies | 2023 SEC cybersecurity rules |
 | **SWIFT CSP** | Global Banking | SWIFT Customer Security Programme |
-| **HITRUST CSF** | Healthcare/Regulated | 49 control categories |
+| **HITRUST CSF** | Healthcare/Regulated | 14 control categories, 49 control objectives, 156 control specifications |
 | **TISAX** | Automotive | VDA ISA information security |
 | **CFR Part 11** | Life Sciences/FDA | Electronic records & signatures |
 | **Digital Sovereignty** | Global | 7 domains, 70 controls |
 | **AI Governance** | All industries | 5 risk categories + PENDING_APPROVAL gate |
 | **Sentinel / AAC Comply** | All industries | Ansible + Terraform + Git policy gates |
-| **CSA CCM v4.0** | Cloud/SaaS | 16 domains, 197 controls (A&A, AIS, BCR, CEK, DSP, GRC, IAM, IVS, LOG, TVM, UEM…) |
-| **ISO/IEC 27701:2019** | Global/Privacy | PIMS — PII Controller (Art. 7), PII Processor (Art. 8), Data Subject Rights |
+| **CSA CCM v4.0** | Cloud/SaaS | 17 domains, 197 control objectives (A&A, AIS, BCR, CEK, DSP, GRC, IAM, IVS, LOG, TVM, UEM…) |
+| **ISO/IEC 27701:2019** | Global/Privacy | PIMS — PII Controller (Art. 7), PII Processor (Art. 8), Data Subject Rights. The 2019 edition is withdrawn; ISO/IEC 27701:2025 replaced it in October 2025 and is not implemented yet |
 | **NIST SP 800-171 Rev 3** | US Defense Contractors | Rev 3 defines 17 families and 97 requirements (Rev 2 had 14 and 110). The module reports 97 requirements; its per-family modules still follow the 14 Rev 2 families |
 | **CCPA / CPRA** | California/US | Consumer rights, sensitive PI, data minimization, DPAs (2023 amendments) |
 | **EU AI Act (2024/1689)** | EU/Global AI | Prohibited practices, high-risk requirements, transparency, GPAI, deployer obligations |
@@ -371,7 +371,7 @@ product release. What the demos show:
 | **Mythos Patch Lifecycle** | AI-scale vulnerability discovery → targeted remediation → proven closure | A 13-node AAP workflow: observe the estate, match CVEs to observed inventory, open the change record, back up, drain, patch, assure, undrain, verify, close — then rebuild the risk heat map to prove the exposure is gone. |
 | **Golden Image** | Drift detect → auto-rollback → help desk ticket | A SELinux config change is detected in seconds. Enforcement workflow restores golden state and files a ticket — no human intervention. |
 | **AAC Comply** | Policy gates in CI/CD | A violating Ansible playbook is blocked at git commit. A Terraform plan missing required tags fails pre-apply. Compliant versions pass both gates. 5 enforcement points vs HashiCorp Sentinel's 2. |
-| **NCSC CAF 4.0** | UK critical infrastructure audit | 23 Cyber Outcomes assessed and visualised on the CAF Grafana dashboard. Executive-ready compliance posture in one screen. |
+| **NCSC CAF 4.0** | UK critical infrastructure audit | 23 of the 41 contributing outcomes assessed and visualised on the CAF Grafana dashboard. Executive-ready compliance posture in one screen. |
 | **NERC-CIP + AMI** | Energy sector compliance | Simultaneous NERC-CIP (CIP-002–015) and smart meter AMI assessment. Nightly audit workflow runs automatically. |
 | **Digital Sovereignty** | 7-domain sovereignty | Data residency, cryptographic independence, infrastructure sovereignty — assessed and scored across 70 controls. |
 | **Technical Debt** | Compliance cost quantification | OPA scores remediation backlog in £/$. Technical Debt heatmap shows which frameworks carry the most financial exposure. |
@@ -500,7 +500,7 @@ MCP tool calls are governed by OPA policy evaluation (`governance/mcp/mcp_govern
 - [x] **Q1 2026** — Three-container OPA architecture (security / compliance / OT)
 - [x] **Q1 2026** — Digital Sovereignty framework (7 domains, 70 controls)
 - [x] **Q1 2026** — MCP integration for Claude Code (since grown to 440+ AAP tools)
-- [x] **Q2 2026** — NCSC CAF 4.0 (23 Cyber Outcomes, B2–D1) + Grafana dashboard
+- [x] **Q2 2026** — NCSC CAF 4.0 (23 of 41 contributing outcomes) + Grafana dashboard
 - [x] **Q2 2026** — Technical Debt scoring + Grafana heatmap
 - [x] **Q2 2026** — 10 new frameworks: DORA, NIS2, NY DFS, SEC Cyber, SWIFT CSP, HITRUST, TISAX, CFR Part 11, CIS GCP, NIST 800-82
 - [x] **Q2 2026** — Policy library extracted to dedicated repo (`ynotbhatc/rego_policy_libraries`)
@@ -811,4 +811,4 @@ and the AI layer generates a human-readable narrative of why the correlation tri
 
 ---
 
-**Version 2.8.0** (see `VERSION`) | 2026-09-29 | Tim Coulter · Claude (Anthropic)
+**Version 2.8.0** (see `VERSION`) | 2026-11-18 | Tim Coulter · Claude (Anthropic)
