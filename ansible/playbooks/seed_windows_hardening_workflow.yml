@@ -85,8 +85,9 @@
           description: "Windows hardening seed script"
           application: null
           scope: "write"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         status_code: [200, 201]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: auth_result
       ignore_errors: true
 
@@ -117,8 +118,9 @@
           ask_limit_on_launch: true
           ask_variables_on_launch: false
           become_enabled:  false
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         status_code: [200, 201]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: template_results
       loop: "{{ hardening_templates }}"
       failed_when: false
@@ -140,8 +142,9 @@
         body_format: json
         body:
           id: "{{ vault_cred_id }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         status_code: [200, 201, 204]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       loop: "{{ created_template_ids }}"
       when: item is not none
       failed_when: false
@@ -157,8 +160,9 @@
         body_format: json
         body:
           id: "{{ windows_cred_id }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         status_code: [200, 201, 204]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       loop: "{{ created_template_ids }}"
       when: item is not none
       failed_when: false
@@ -172,8 +176,9 @@
         method: GET
         headers:
           Authorization: "Bearer {{ ctrl_token }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         status_code: 200
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: assessment_lookup
 
     - name: Set assessment template ID
@@ -201,8 +206,9 @@
             Endpoint Security → Assessment (before/after comparison).
           organization: 1
           ask_limit_on_launch: true
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         status_code: [200, 201]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: wf_result
       failed_when: false
 
@@ -229,8 +235,9 @@
         body:
           unified_job_template: "{{ item }}"
           extra_data: {}
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         status_code: [200, 201]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: node_results
       loop: "{{ wf_node_template_ids }}"
       when: wf_id is defined and item is not none
@@ -252,8 +259,9 @@
         body_format: json
         body:
           id: "{{ node_ids[item_index + 1] }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         status_code: [200, 201, 204]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       loop: "{{ range(node_ids | length - 1) | list }}"
       loop_control:
         loop_var: item_index

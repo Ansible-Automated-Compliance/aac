@@ -44,7 +44,7 @@
           - "compliance.openshift.io/scan-name={{ ocp_scan_name }}"
         host: "{{ ocp_api_url | default(omit) }}"
         api_key: "{{ ocp_api_token | default(omit) }}"
-        validate_certs: "{{ ocp_verify_ssl | default(false) | bool }}"
+        validate_certs: "{{ ocp_verify_ssl | default(aac_validate_certs | default(true)) | bool }}"
       register: ccr_raw
 
     - name: Fail if no results (scan not run / RBAC / wrong scan name)

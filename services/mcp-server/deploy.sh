@@ -123,7 +123,7 @@ spec:
                   name: aap-mcp-credentials
                   key: AAP_TOKEN
             - name: AAP_VERIFY_SSL
-              value: "false"
+              value: "${AAP_VERIFY_SSL:-true}"
             - name: MCP_PORT
               value: "3000"
           resources:

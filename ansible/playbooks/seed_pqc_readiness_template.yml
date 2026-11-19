@@ -14,7 +14,7 @@
 # run on the whole inventory.
 #
 # TLS: controller certificates are verified by default; a lab with a self-signed
-# route sets aap_validate_certs: false in site_config.yml (never in the tree).
+# route sets aac_validate_certs: false in site_config.yml (never in the tree).
 #
 # Run via AAP Job Template: "AAC - Seed PQC Readiness Template"
 # Credentials: Ansible Vault   EE: AAC Compliance EE   Inventory: Compliance Infrastructure, limit: localhost
@@ -79,8 +79,9 @@
         url: "{{ aap_api }}/{{ item.path }}/?name={{ item.name | urlencode }}"
         method: GET
         headers: { Authorization: "Bearer {{ aap_api_token }}" }
-        validate_certs: "{{ aap_validate_certs | default(true) | bool }}"
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         status_code: 200
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       loop:
         - { key: "project",    path: "projects",               name: "{{ project_name }}" }
         - { key: "inventory",  path: "inventories",            name: "{{ inventory_name }}" }
@@ -109,8 +110,9 @@
         url: "{{ aap_api }}/job_templates/?name={{ pqc_template.name | urlencode }}"
         method: GET
         headers: { Authorization: "Bearer {{ aap_api_token }}" }
-        validate_certs: "{{ aap_validate_certs | default(true) | bool }}"
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         status_code: 200
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: jt_lookup
 
     - name: Create or update the job template
@@ -134,8 +136,9 @@
           verbosity: 1
           # the survey's space-separated strings become the lists the playbook reads
           extra_vars: "{{ {'pqc_tls_probe_ports': '{{ (pqc_tls_probe_ports_csv | default(\"443 636 6443 8443 9443\")) | split }}', 'pqc_extra_cert_dirs': '{{ (pqc_extra_cert_dirs_csv | default(\"\")) | split }}'} | to_json }}"
-        validate_certs: "{{ aap_validate_certs | default(true) | bool }}"
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         status_code: [200, 201]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: jt_write
 
     - name: Resolve the template id
@@ -150,8 +153,9 @@
         headers: { Authorization: "Bearer {{ aap_api_token }}", Content-Type: "application/json" }
         body_format: json
         body: { id: "{{ item | int }}" }
-        validate_certs: "{{ aap_validate_certs | default(true) | bool }}"
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         status_code: [200, 201, 204, 400]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       loop:
         - "{{ dep_ids.credential }}"
         - "{{ dep_ids.machine }}"
@@ -164,8 +168,9 @@
         headers: { Authorization: "Bearer {{ aap_api_token }}", Content-Type: "application/json" }
         body_format: json
         body: "{{ pqc_survey }}"
-        validate_certs: "{{ aap_validate_certs | default(true) | bool }}"
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         status_code: [200, 201]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
 
     - name: Enable the survey
       ansible.builtin.uri:
@@ -175,8 +180,9 @@
         headers: { Authorization: "Bearer {{ aap_api_token }}", Content-Type: "application/json" }
         body_format: json
         body: { survey_enabled: true }
-        validate_certs: "{{ aap_validate_certs | default(true) | bool }}"
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         status_code: 200
+      no_log: "{{ aac_no_log | default(true) | bool }}"
 
     - name: Seeded
       ansible.builtin.debug:

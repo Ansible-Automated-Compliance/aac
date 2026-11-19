@@ -164,6 +164,7 @@
           Authorization: "Basic {{ ('admin:' + (grafana_admin_password | default((_grafana_admin_password_default | default('', true)), true))) | b64encode }}"
         status_code: [200, 404]
         timeout: 5
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: grafana_ds
       ignore_errors: true
 
@@ -290,7 +291,7 @@
         url: "{{ aap_url }}/api/gateway/v1/ping/"
         method: GET
         status_code: 200
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         timeout: 10
       register: aap_gateway
       ignore_errors: true
@@ -301,7 +302,7 @@
         url: "{{ aap_url }}/api/controller/v2/ping/"
         method: GET
         status_code: 200
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         timeout: 10
       register: aap_controller
       ignore_errors: true
@@ -314,7 +315,7 @@
         headers:
           Authorization: "Bearer {{ aap_token | default((_aap_token_default | default('', true))) }}"
         status_code: 200
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         timeout: 10
       register: aap_templates
       ignore_errors: true
@@ -328,7 +329,7 @@
         headers:
           Authorization: "Bearer {{ aap_token | default((_aap_token_default | default('', true))) }}"
         status_code: 200
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         timeout: 10
       register: aap_credentials
       ignore_errors: true
@@ -342,7 +343,7 @@
         headers:
           Authorization: "Bearer {{ aap_token | default((_aap_token_default | default('', true))) }}"
         status_code: 200
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         timeout: 10
       register: aap_hosts
       ignore_errors: true
@@ -359,7 +360,7 @@
         headers:
           Authorization: "Bearer {{ aap_token | default((_aap_token_default | default('', true))) }}"
         status_code: [200, 404]
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         timeout: 10
       register: eda_activations
       ignore_errors: true
@@ -376,7 +377,7 @@
         headers:
           Authorization: "Bearer {{ aap_token | default((_aap_token_default | default('', true))) }}"
         status_code: 200
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         timeout: 10
       register: ec2_hosts
       ignore_errors: true

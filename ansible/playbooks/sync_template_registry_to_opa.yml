@@ -34,7 +34,6 @@
     - ../vars/site_config.yml
 
   vars:
-    aap_validate_certs: false
     # Only names matching this prefix are eligible for auto-approval by the
     # policy. Kept as a variable so the contract is visible here rather than
     # only in Rego.
@@ -59,7 +58,7 @@
         user: "{{ aap_username | default('admin') }}"
         password: "{{ aap_password | default(omit) }}"
         force_basic_auth: true
-        validate_certs: "{{ aap_validate_certs }}"
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         return_content: true
       register: jt_resp
       no_log: true
@@ -72,7 +71,7 @@
         user: "{{ aap_username | default('admin') }}"
         password: "{{ aap_password | default(omit) }}"
         force_basic_auth: true
-        validate_certs: "{{ aap_validate_certs }}"
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         return_content: true
       register: wf_resp
       no_log: true

@@ -23,7 +23,7 @@
                                       'assessment_date': lookup('pipe', 'date +%Y-%m-%d')}) }}"
     return_content: true
     status_code: 200
-    validate_certs: false
+    validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
   register: nist_opa_result
 
 - name: "[{{ utility_id }}] Extract NIST results"
@@ -79,7 +79,7 @@
       input: "{{ sim_response.json }}"
     return_content: true
     status_code: 200
-    validate_certs: false
+    validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
   register: device_opa_result
 
 - name: "[{{ utility_id }}] Extract device compliance results"
@@ -119,7 +119,7 @@
                                          'assessment_date': lookup('pipe', 'date +%Y-%m-%d')}) }}"
     return_content: true
     status_code: 200
-    validate_certs: false
+    validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
   register: headend_opa_result
 
 - name: "[{{ utility_id }}] Extract head-end results"

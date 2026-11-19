@@ -411,6 +411,7 @@
         return_content: true
         timeout: 120
         status_code: [200]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: ai_response
       when: enable_ai_summary | bool
       failed_when: false
