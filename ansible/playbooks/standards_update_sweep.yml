@@ -214,6 +214,7 @@
           Authorization: "Bearer {{ vault_github_pat }}"
           Accept: "application/vnd.github+json"
         timeout: 30
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       loop: "{{ rows_changed }}"
       loop_control:
         label: "{{ item.framework }}"
@@ -241,6 +242,7 @@
 
             This is change detection, not version parsing — a human should check whether the upstream published a new release/amendment. If yes, follow the registry's regeneration process; if it's page noise, close with a note.
           labels: ["standards-sweep"]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       loop: "{{ issue_searches.results | default([]) }}"
       loop_control:
         label: "{{ item.item.framework }}"

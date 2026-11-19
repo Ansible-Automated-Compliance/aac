@@ -174,10 +174,16 @@ def _authentication_methods(client, facts, unavailable):
     if err:
         unavailable["authentication_methods_policy"] = err
         return
-    configs = {c.get("id"): c for c in pol.get("authenticationMethodConfigurations", [])}
+    raw = pol.get("authenticationMethodConfigurations", []) or []
+    # Graph returns the configuration ids PascalCase ("MicrosoftAuthenticator",
+    # "Sms", "Voice", "Email", "Fido2" in the v1.0 GET example). The lookups
+    # below were lower-case, so every one missed, the states were None and
+    # 5.2.3.1 / 5.2.3.5 / 5.2.3.7 / 5.2.3.10 could never fire. Match on the
+    # lower-cased id; keep the ids as returned in the published map.
     facts["authentication_methods"] = {
-        mid: {"state": cfg.get("state")} for mid, cfg in configs.items()
+        c.get("id"): {"state": c.get("state")} for c in raw
     }
+    configs = {str(c.get("id") or "").lower(): c for c in raw}
     facts["weak_methods_enabled"] = sorted(
         m for m in WEAK_METHODS
         if configs.get(m, {}).get("state") == "enabled"
@@ -187,7 +193,7 @@ def _authentication_methods(client, facts, unavailable):
     # 5.2.3.1 / 5.2.3.10 -- Microsoft Authenticator feature settings. These
     # ride on the same policy object already fetched above; they were simply
     # not being projected.
-    authenticator = configs.get("microsoftAuthenticator", {}) or {}
+    authenticator = configs.get("microsoftauthenticator", {}) or {}
     features = authenticator.get("featureSettings", {}) or {}
     facts["authenticator"] = {
         "state": authenticator.get("state"),
@@ -315,6 +321,77 @@ def collect_b2b_management_policy(client, facts, unavailable):
     }
 
 
+# deviceRegistrationMembership @odata.type -> the value the policy compares.
+# Documented types: allDeviceRegistrationMembership,
+# enumeratedDeviceRegistrationMembership, noDeviceRegistrationMembership.
+_MEMBERSHIP = {
+    "#microsoft.graph.alldeviceregistrationmembership": "all",
+    "#microsoft.graph.enumerateddeviceregistrationmembership": "selected",
+    "#microsoft.graph.nodeviceregistrationmembership": "none",
+}
+
+
+def _membership(value):
+    """Map a deviceRegistrationMembership object to all/selected/none, or
+    None when it is missing or of an undocumented type."""
+    if not isinstance(value, dict):
+        return None
+    odata = str(value.get("@odata.type") or "").lower()
+    if odata and not odata.startswith("#"):
+        odata = "#" + odata
+    return _MEMBERSHIP.get(odata)
+
+
+def _device_registration(drp, facts, unavailable):
+    """5.1.4.1-5.1.4.5 from the one beta deviceRegistrationPolicy object.
+
+    The documented shape (beta deviceRegistrationPolicy GET example) is
+    azureADJoin.allowedToJoin and azureADJoin.localAdmins.registeringUsers,
+    each a deviceRegistrationMembership keyed by @odata.type, and
+    localAdminPassword.isEnabled on the same object. The collector used to
+    read `appliesTo` (not a property of either), which is always None, so
+    `== "all"` never fired; and it fetched localAdminPassword as a
+    sub-resource, which the documentation does not describe.
+
+    A membership that is missing or of an unknown type makes the whole
+    fact unavailable rather than None, because None reads as compliant.
+    """
+    azure_ad_join = drp.get("azureADJoin") or {}
+    local_admins = azure_ad_join.get("localAdmins") or {}
+    allowed_to_join = _membership(azure_ad_join.get("allowedToJoin"))
+    registering_users = _membership(local_admins.get("registeringUsers"))
+    problems = []
+    if allowed_to_join is None:
+        problems.append("azureADJoin.allowedToJoin")
+    if registering_users is None:
+        problems.append("azureADJoin.localAdmins.registeringUsers")
+    if problems:
+        unavailable["device_registration_policy"] = (
+            "deviceRegistrationPolicy did not return a recognised "
+            "deviceRegistrationMembership for %s (blocks 5.1.4.1, 5.1.4.2, "
+            "5.1.4.3, 5.1.4.4)" % " and ".join(problems)
+        )
+    else:
+        facts["device_registration"] = {
+            "azure_ad_join_allowed_to_join": allowed_to_join,
+            "azure_ad_join_is_admin_configurable": azure_ad_join.get("isAdminConfigurable"),
+            "user_device_quota": drp.get("userDeviceQuota"),
+            "local_admin_registering_user_enabled": registering_users,
+            "local_admin_global_admins_enabled": local_admins.get("enableGlobalAdmins"),
+            "multi_factor_auth_configuration": drp.get("multiFactorAuthConfiguration"),
+            "api_version": "beta",
+        }
+
+    laps = drp.get("localAdminPassword")
+    if isinstance(laps, dict) and isinstance(laps.get("isEnabled"), bool):
+        facts["laps_enabled"] = laps["isEnabled"]
+    else:
+        unavailable["laps_policy"] = (
+            "deviceRegistrationPolicy did not return localAdminPassword.isEnabled "
+            "(blocks 5.1.4.5)"
+        )
+
+
 def collect_facts(client, mfa_limit=999):
     facts, unavailable = {}, {}
 
@@ -328,30 +405,9 @@ def collect_facts(client, mfa_limit=999):
     drp, err = client.try_get("/policies/deviceRegistrationPolicy", beta=True)
     if err:
         unavailable["device_registration_policy"] = err
-    else:
-        azure_ad_join = drp.get("azureADJoin", {}) or {}
-        local_admins = azure_ad_join.get("localAdmins", {}) or {}
-        facts["device_registration"] = {
-            "azure_ad_join_allowed_to_join": azure_ad_join.get("appliesTo"),
-            "azure_ad_join_is_admin_configurable": azure_ad_join.get("isAdminConfigurable"),
-            "user_device_quota": drp.get("userDeviceQuota"),
-            "local_admin_registering_user_enabled":
-                (local_admins.get("registeringUsers", {}) or {}).get("appliesTo"),
-            "local_admin_global_admins_enabled":
-                (local_admins.get("enableGlobalAdmins")),
-            "multi_factor_auth_configuration": drp.get("multiFactorAuthConfiguration"),
-            "api_version": "beta",
-        }
-
-    # 5.1.4.5 -- Local Administrator Password Solution is a separate
-    # directory setting, not part of the device registration policy.
-    laps, err = client.try_get("/policies/deviceRegistrationPolicy/localAdminPassword", beta=True)
-    if err:
-        # Older tenants do not expose this sub-resource at all; record it
-        # rather than inferring LAPS is off.
         unavailable["laps_policy"] = err
     else:
-        facts["laps_enabled"] = laps.get("isEnabled")
+        _device_registration(drp, facts, unavailable)
 
     # ── 5.1.5.x -- application management policy ──────────────────────
     # Four controls: password addition blocked, password lifetime,

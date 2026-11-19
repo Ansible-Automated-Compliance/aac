@@ -105,6 +105,7 @@ spec:
           readinessProbe:
             exec:
               command: ["/bin/sh", "-c", "pg_isready -U ao -d ao_backend -h 127.0.0.1"]
+              changed_when: false
             initialDelaySeconds: 10
             periodSeconds: 10
           livenessProbe:

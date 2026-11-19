@@ -40,7 +40,8 @@
         url: "{{ aap_url }}/api/controller/v2/workflow_job_templates/{{ wf_id }}/workflow_nodes/?page_size=50"
         headers:
           Authorization: "Bearer {{ aap_token }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: existing_nodes
 
     - name: Delete existing nodes
@@ -50,8 +51,9 @@
         method: DELETE
         headers:
           Authorization: "Bearer {{ aap_token }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         status_code: [200, 204]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       loop: "{{ existing_nodes.json.results }}"
 
     # -------------------------------------------------------------------------
@@ -65,12 +67,13 @@
         headers:
           Authorization: "Bearer {{ aap_token }}"
           Content-Type: "application/json"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body:
           unified_job_template: "{{ jt_start }}"
           all_parents_must_converge: false
         status_code: [200, 201]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: node_start
 
     - name: Node 2a — Gather Facts (All Systems)
@@ -81,12 +84,13 @@
         headers:
           Authorization: "Bearer {{ aap_token }}"
           Content-Type: "application/json"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body:
           unified_job_template: "{{ jt_gather }}"
           all_parents_must_converge: false
         status_code: [200, 201]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: node_gather
 
     - name: Node 2b — Gather Network Facts
@@ -97,12 +101,13 @@
         headers:
           Authorization: "Bearer {{ aap_token }}"
           Content-Type: "application/json"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body:
           unified_job_template: "{{ jt_network }}"
           all_parents_must_converge: false
         status_code: [200, 201]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: node_network
 
     - name: Node 3 — Stop Compliance Lab
@@ -113,12 +118,13 @@
         headers:
           Authorization: "Bearer {{ aap_token }}"
           Content-Type: "application/json"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body:
           unified_job_template: "{{ jt_stop }}"
           all_parents_must_converge: false   # Stop even if one gather fails
         status_code: [200, 201]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: node_stop
 
     # -------------------------------------------------------------------------
@@ -132,11 +138,12 @@
         headers:
           Authorization: "Bearer {{ aap_token }}"
           Content-Type: "application/json"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body:
           id: "{{ node_gather.json.id }}"
         status_code: [200, 204]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
 
     - name: Start → Gather Network Facts (success)
       uri:
@@ -146,11 +153,12 @@
         headers:
           Authorization: "Bearer {{ aap_token }}"
           Content-Type: "application/json"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body:
           id: "{{ node_network.json.id }}"
         status_code: [200, 204]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
 
     - name: Gather Facts → Stop Lab (success)
       uri:
@@ -160,11 +168,12 @@
         headers:
           Authorization: "Bearer {{ aap_token }}"
           Content-Type: "application/json"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body:
           id: "{{ node_stop.json.id }}"
         status_code: [200, 204]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
 
     - name: Gather Network Facts → Stop Lab (success)
       uri:
@@ -174,11 +183,12 @@
         headers:
           Authorization: "Bearer {{ aap_token }}"
           Content-Type: "application/json"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body:
           id: "{{ node_stop.json.id }}"
         status_code: [200, 204]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
 
     # Also wire failure paths to Stop (so lab always shuts down)
     - name: Gather Facts → Stop Lab (failure)
@@ -189,11 +199,12 @@
         headers:
           Authorization: "Bearer {{ aap_token }}"
           Content-Type: "application/json"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body:
           id: "{{ node_stop.json.id }}"
         status_code: [200, 204]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
 
     - name: Gather Network Facts → Stop Lab (failure)
       uri:
@@ -203,11 +214,12 @@
         headers:
           Authorization: "Bearer {{ aap_token }}"
           Content-Type: "application/json"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body:
           id: "{{ node_stop.json.id }}"
         status_code: [200, 204]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
 
     # -------------------------------------------------------------------------
     # Done

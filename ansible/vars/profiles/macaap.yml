@@ -35,3 +35,8 @@ pg_db:   "compliance"
 ee_image: "image-registry.openshift-image-registry.svc:5000/aac/aac-compliance-ee:v1.3.0"
 
 secret_source: aap_credential
+
+# --- TLS ---
+# Certificate checking is on unless a site turns it off. This environment's
+# routes use certificates the Execution Environment does not trust, so it does.
+aac_validate_certs: false

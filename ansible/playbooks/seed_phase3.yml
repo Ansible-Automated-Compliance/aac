@@ -41,7 +41,8 @@
         use_proxy: false
         url: "{{ aap_api }}/inventories/?name={{ aap_inventory_name | urlencode }}"
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: inv_lookup
     - set_fact:
         inventory_id: "{{ inv_lookup.json.results[0].id }}"
@@ -51,7 +52,8 @@
         use_proxy: false
         url: "{{ aap_api }}/execution_environments/?name={{ aap_ee_name | urlencode }}"
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: ee_lookup
     - set_fact:
         ee_id: "{{ ee_lookup.json.results[0].id }}"
@@ -61,7 +63,8 @@
         use_proxy: false
         url: "{{ aap_api }}/credentials/?name={{ aap_vault_credential_name | urlencode }}&credential_type__kind=vault"
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: vault_cred_lookup
     - set_fact:
         vault_cred_id: "{{ vault_cred_lookup.json.results[0].id }}"
@@ -71,7 +74,8 @@
         use_proxy: false
         url: "{{ aap_api }}/projects/?name={{ aap_project_name | urlencode }}"
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: project_lookup
     - set_fact:
         project_id: "{{ project_lookup.json.results[0].id }}"
@@ -83,7 +87,8 @@
         use_proxy: false
         url: "{{ aap_api }}/job_templates/?name=AAC+-+Compare+to+Baseline"
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: compare_existing
 
     - name: Look up 'AAC - Generate Remediation Playbook' (if exists)
@@ -91,7 +96,8 @@
         use_proxy: false
         url: "{{ aap_api }}/job_templates/?name=AAC+-+Generate+Remediation+Playbook"
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: gen_existing
 
     - name: Look up 'AAC - Apply Remediation' (if exists)
@@ -99,7 +105,8 @@
         use_proxy: false
         url: "{{ aap_api }}/job_templates/?name=AAC+-+Apply+Remediation"
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: apply_existing
 
     # ── Create job templates ──────────────────────────────────────────────────
@@ -110,7 +117,7 @@
         url: "{{ aap_api }}/job_templates/"
         method: POST
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body:
           name: "AAC - Set Baseline"
@@ -128,6 +135,7 @@
           execution_environment: "{{ ee_id | int }}"
           survey_enabled: true
         status_code: [200, 201]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: set_baseline_jt
     - set_fact:
         set_baseline_jt_id: "{{ set_baseline_jt.json.id }}"
@@ -138,7 +146,7 @@
         url: "{{ aap_api }}/job_templates/"
         method: POST
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body:
           name: "AAC - Compare to Baseline"
@@ -155,6 +163,7 @@
           execution_environment: "{{ ee_id | int }}"
           survey_enabled: true
         status_code: [200, 201]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: compare_jt
     - set_fact:
         compare_jt_id: "{{ compare_jt.json.id }}"
@@ -165,7 +174,7 @@
         url: "{{ aap_api }}/job_templates/"
         method: POST
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body:
           name: "AAC - Generate Remediation Playbook"
@@ -185,6 +194,7 @@
           execution_environment: "{{ ee_id | int }}"
           survey_enabled: true
         status_code: [200, 201]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: gen_jt
     - set_fact:
         gen_jt_id: "{{ gen_jt.json.id }}"
@@ -195,7 +205,7 @@
         url: "{{ aap_api }}/job_templates/"
         method: POST
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body:
           name: "AAC - Apply Remediation"
@@ -213,6 +223,7 @@
           execution_environment: "{{ ee_id | int }}"
           survey_enabled: true
         status_code: [200, 201]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: apply_jt
     - set_fact:
         apply_jt_id: "{{ apply_jt.json.id }}"
@@ -225,11 +236,12 @@
         url: "{{ aap_api }}/job_templates/{{ item }}/credentials/"
         method: POST
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body:
           id: "{{ vault_cred_id | int }}"
         status_code: [200, 201, 204]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       loop:
         - "{{ set_baseline_jt_id }}"
         - "{{ compare_jt_id }}"
@@ -245,7 +257,7 @@
         url: "{{ aap_api }}/job_templates/{{ set_baseline_jt_id }}/survey_spec/"
         method: POST
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body:
           name: "Set Baseline Survey"
@@ -268,6 +280,7 @@
               default: "latest"
               required: false
         status_code: [200, 201]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       failed_when: false
 
     - name: Add survey to 'AAC - Compare to Baseline'
@@ -276,7 +289,7 @@
         url: "{{ aap_api }}/job_templates/{{ compare_jt_id }}/survey_spec/"
         method: POST
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body:
           name: "Compare to Baseline Survey"
@@ -294,6 +307,7 @@
               default: "latest"
               required: false
         status_code: [200, 201]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       failed_when: false
 
     - name: Add survey to 'AAC - Generate Remediation Playbook'
@@ -302,7 +316,7 @@
         url: "{{ aap_api }}/job_templates/{{ gen_jt_id }}/survey_spec/"
         method: POST
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body:
           name: "Generate Remediation Survey"
@@ -327,6 +341,7 @@
               default: "false"
               required: false
         status_code: [200, 201]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       failed_when: false
 
     - name: Add survey to 'AAC - Apply Remediation'
@@ -335,7 +350,7 @@
         url: "{{ aap_api }}/job_templates/{{ apply_jt_id }}/survey_spec/"
         method: POST
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body:
           name: "Apply Remediation Survey"
@@ -354,6 +369,7 @@
               default: "true"
               required: false
         status_code: [200, 201]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       failed_when: false
 
     # ── Create 'AAC - Reset to Known Good' workflow ───────────────────────────
@@ -364,7 +380,7 @@
         url: "{{ aap_api }}/workflow_job_templates/"
         method: POST
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body:
           name: "AAC - Reset to Known Good"
@@ -377,6 +393,7 @@
           organization: 1
           inventory: "{{ inventory_id | int }}"
         status_code: [200, 201]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: workflow
 
     - name: Create workflow node 1 — Compare to Baseline
@@ -385,12 +402,13 @@
         url: "{{ aap_api }}/workflow_job_templates/{{ workflow.json.id }}/workflow_nodes/"
         method: POST
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body:
           unified_job_template: "{{ compare_jt_id | int }}"
           identifier: compare_to_baseline
         status_code: [200, 201]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: node1
 
     - name: Create workflow node 2 — Generate Remediation Playbook
@@ -399,12 +417,13 @@
         url: "{{ aap_api }}/workflow_job_templates/{{ workflow.json.id }}/workflow_nodes/"
         method: POST
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body:
           unified_job_template: "{{ gen_jt_id | int }}"
           identifier: generate_remediation
         status_code: [200, 201]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: node2
 
     - name: Create workflow node 3 — Apply Remediation
@@ -413,12 +432,13 @@
         url: "{{ aap_api }}/workflow_job_templates/{{ workflow.json.id }}/workflow_nodes/"
         method: POST
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body:
           unified_job_template: "{{ apply_jt_id | int }}"
           identifier: apply_remediation
         status_code: [200, 201]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: node3
 
     - name: Link node 1 → node 2 on success
@@ -427,10 +447,11 @@
         url: "{{ aap_api }}/workflow_job_template_nodes/{{ node1.json.id }}/success_nodes/"
         method: POST
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body: "{{ {'id': node2.json.id | int} }}"
         status_code: [200, 201, 204]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
 
     - name: Link node 2 → node 3 on success
       uri:
@@ -438,10 +459,11 @@
         url: "{{ aap_api }}/workflow_job_template_nodes/{{ node2.json.id }}/success_nodes/"
         method: POST
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body: "{{ {'id': node3.json.id | int} }}"
         status_code: [200, 201, 204]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
 
     # ── Print summary ─────────────────────────────────────────────────────────
 

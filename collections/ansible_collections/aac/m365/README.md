@@ -62,6 +62,67 @@ The PowerShell-backed sections need `pwsh` plus
 `Microsoft.Online.SharePoint.PowerShell` is Windows-only and cannot be
 used on Linux, so SharePoint is collected with PnP.
 
+Published DNS. SPF, DKIM and DMARC (2.1.8-2.1.10) are read from the
+records actually published for each verified customer domain (TXT at the
+domain, TXT at `_dmarc.<domain>`, CNAME at `selector1|2._domainkey.<domain>`)
+with the EE's resolver. This needs the `dnspython` Python library; without
+it every customer domain is reported "evidence missing: DNS lookup not
+available", never compliant.
+
+## Attestations
+
+Controls the policy cannot measure (its `no_collector_path` ledger) are
+attested through `m365_attestations`, the same contract as the Windows
+collector's `cis_windows_attestations`:
+
+```yaml
+m365_attestations:
+  - control_id: "5.2.4.1"
+    observed: true
+    attested_by: "Jane Operator, Identity team"
+    attested_on: "2026-11-18"
+    evidence_ref: "CHG0012345"
+```
+
+The ids are checked against the ledger the policy reports, so a measured
+control cannot be attested away; `observed: false` is refused (leave the
+control out instead, and it is reported as not attested).
+
+## Stored counts
+
+`passed_controls` counts only controls the policy evaluated and found
+compliant. A control that was not evaluated is stored in
+`metadata.not_evaluated_count` / `not_evaluated_control_ids`, never as
+passed; `metadata.count_basis` says whether the counts came from the
+policy's per-control `control_results` or from its messages.
+
+## Shape capture (diagnostic)
+
+Some collector questions can only be settled against a real tenant: how
+an enum serialises, what an empty result looks like, the nested shape of
+properties such as `AllowedDomains`, `RecipientTags` or `AssignedRoles`.
+Run one assessment with
+
+```yaml
+m365_shape_capture: true
+m365_shape_capture_dir: /tmp/aac_m365_shape   # default: $TMPDIR (or /tmp)/aac_m365_shape
+```
+
+and the role, after collection, records the SHAPE of every collected
+fact: JSON types, list lengths, the union of field names with each
+field's types, and distinct values only for an allowlist of closed
+configuration enums, booleans and numeric settings
+(`plugins/filter/m365_shape.py`, `VALUE_ALLOWLIST`). Names, addresses,
+domains, tenant and object ids, mailbox data and free text are never
+recorded; maps keyed by ids or names list only their key count.
+
+It lands in three places, because an AAP execution environment's files
+are discarded when the job ends: the file
+`<m365_shape_capture_dir>/m365_fact_shape_<UTC timestamp>.json`, the
+job's artifacts (`set_stats` key `m365_fact_shape`, visible on the AAP
+job and passed down a workflow), and the job output. The assessment
+itself runs and persists as usual. Leave it off for routine runs.
+
 ## Modules
 
 | Module | Section | Source |

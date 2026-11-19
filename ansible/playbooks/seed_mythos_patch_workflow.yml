@@ -215,8 +215,9 @@
         method: GET
         headers:
           Authorization: "Bearer {{ aap_api_token }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         status_code: 200
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       loop:
         - { key: "project",    path: "projects",               name: "{{ project_name }}" }
         - { key: "inventory",  path: "inventories",            name: "{{ inventory_name }}" }
@@ -259,8 +260,9 @@
         method: GET
         headers:
           Authorization: "Bearer {{ aap_api_token }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         status_code: 200
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       loop: "{{ patch_templates }}"
       loop_control:
         label: "{{ item.name }}"
@@ -286,8 +288,9 @@
           ask_variables_on_launch: true
           ask_limit_on_launch: true
           verbosity: 1
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         status_code: [200, 201]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       loop: "{{ jt_lookup.results }}"
       loop_control:
         label: "{{ item.item.name }}"
@@ -303,8 +306,9 @@
         method: GET
         headers:
           Authorization: "Bearer {{ aap_api_token }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         status_code: 200
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       loop: "{{ patch_templates }}"
       loop_control:
         label: "{{ item.name }}"
@@ -335,8 +339,9 @@
           Content-Type: "application/json"
         body_format: json
         body: "{{ {'id': dep_ids.credential | int} }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         status_code: [200, 201, 204]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       loop: "{{ jt_ids_pass1 }}"
       loop_control:
         label: "vault -> {{ item.name }}"
@@ -357,8 +362,9 @@
           Content-Type: "application/json"
         body_format: json
         body: "{{ {'id': dep_ids.machine | int} }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         status_code: [200, 201, 204]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       loop: "{{ jt_ids_pass1 }}"
       loop_control:
         label: "machine -> {{ item.name }}"
@@ -374,8 +380,9 @@
         method: GET
         headers:
           Authorization: "Bearer {{ aap_api_token }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         status_code: 200
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       loop: "{{ patch_templates }}"
       loop_control:
         label: "{{ item.name }}"
@@ -409,8 +416,9 @@
         method: GET
         headers:
           Authorization: "Bearer {{ aap_api_token }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         status_code: 200
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: wf_lookup
 
     - name: Create the workflow when absent
@@ -432,8 +440,9 @@
           inventory: "{{ dep_ids.inventory | int }}"
           ask_variables_on_launch: true
           survey_enabled: true
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         status_code: [200, 201]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       when: wf_lookup.json.count == 0
       register: wf_created
 
@@ -454,8 +463,9 @@
           name: "{{ workflow_survey.name }}"
           description: "{{ workflow_survey.description }}"
           spec: "{{ workflow_survey.spec }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         status_code: [200, 201]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
 
     # -------------------------------------------------------------------------
     # Rebuild the node graph from scratch — partial edits leave orphan links
@@ -467,8 +477,9 @@
         method: GET
         headers:
           Authorization: "Bearer {{ aap_api_token }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         status_code: 200
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: existing_nodes
 
     - name: Delete existing nodes
@@ -478,8 +489,9 @@
         method: DELETE
         headers:
           Authorization: "Bearer {{ aap_api_token }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         status_code: [204, 404]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       loop: "{{ existing_nodes.json.results }}"
       loop_control:
         label: "node {{ item.id }}"
@@ -501,8 +513,9 @@
                                              else jt[item.template]) | int,
                    'identifier': item.id,
                    'extra_data': item.extra | default({})} }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         status_code: [200, 201]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       loop:
         # Node 00 syncs the project ONCE for the whole run. Without it, the
         # alternative is scm_update_on_launch on the project, which makes EVERY
@@ -553,8 +566,9 @@
           Content-Type: "application/json"
         body_format: json
         body: "{{ {'id': node[item.to] | int} }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         status_code: [200, 201, 204]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       loop:
         - { from: "00-sync-project",    to: "01-gather-facts" }
         - { from: "01-gather-facts",    to: "02-refresh-catalog" }
@@ -612,8 +626,9 @@
           Content-Type: "application/json"
         body_format: json
         body: "{{ {'id': node[item.to] | int} }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         status_code: [200, 201, 204]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       loop:
         - { from: "05-open-ticket", to: "12-close-ticket" }
         - { from: "06-backup",      to: "12-close-ticket" }
@@ -631,8 +646,9 @@
           Content-Type: "application/json"
         body_format: json
         body: "{{ {'id': node[item.to] | int} }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         status_code: [200, 201, 204]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       loop:
         - { from: "08-install",       to: "09-assurance" }
         - { from: "09-assurance",     to: "10-undrain" }

@@ -31,3 +31,8 @@ offline: true
 # is a no-op rather than running against the execution environment. It is suppressed
 # per-play with `# noqa: syntax-check[specific]`, so the rule stays live everywhere
 # else. A global skip would disable it for the whole repo to excuse three plays.
+
+# A collection requirements file that sits in a playbooks/ directory is read as
+# a playbook by default and fails the syntax check. Say what it is.
+kinds:
+  - requirements: "**/playbooks/requirements.yml"

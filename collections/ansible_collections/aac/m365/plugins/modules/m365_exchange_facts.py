@@ -2,8 +2,10 @@
 # -*- coding: utf-8 -*-
 """m365_exchange_facts — collect Exchange Online state for CIS Section 4.
 
-Covers the CIS Section 4 controls that are reachable via Graph
-v1.0 + the public DNS surface for the tenant's verified domains:
+Covers the CIS controls that are reachable via Graph v1.0 plus the
+published DNS records of the tenant's verified domains (SPF, DKIM and
+DMARC are CIS v7.0.0 2.1.8-2.1.10; the 4.x numbers below are the pre-v7
+ones this module was written against):
 
   - 4.1.1 Mailbox auditing enabled tenant-wide
   - 4.5.1 SPF record present for every verified domain
@@ -74,6 +76,14 @@ options:
         on the default.
     type: int
     default: 50
+  dns_timeout:
+    description:
+      - Seconds allowed for each published-DNS lookup (SPF, DKIM, DMARC).
+      - Lookups use the execution environment's own resolver configuration.
+        They need the dnspython library; without it every customer domain is
+        reported C(dns_unavailable) (evidence missing), never compliant.
+    type: float
+    default: 5.0
 author:
   - "AAC maintainers"
 """
@@ -103,7 +113,11 @@ facts:
   type: dict
   contains:
     verified_domains:
-      description: Domains the tenant has verified; each carries DNS records.
+      description:
+        - Domains the tenant has verified. Each customer (non-initial) domain
+          carries C(spf_present), C(dkim_present) and C(dmarc_present) read
+          from the records actually published in DNS, or C(dns_unavailable)
+          with the reason they could not be read.
       type: list
     mailbox_audit_summary:
       description: Aggregate of per-mailbox audit-enabled state.
@@ -140,13 +154,104 @@ _RELEVANT_SECURE_SCORE_CONTROLS = {
 }
 
 
+# ── Published DNS (2.1.8 SPF, 2.1.9 DKIM, 2.1.10 DMARC) ───────────────
+#
+# These controls are about what a receiving mail server sees, so the
+# evidence is the record PUBLISHED in DNS. Graph's
+# /domains/{id}/serviceConfigurationRecords is the list of records
+# Microsoft says the domain SHOULD publish: it always contains the SPF TXT
+# for a mail-enabled domain, so reading it made 2.1.8 pass whether or not
+# the record exists.
+#
+# NXDOMAIN / no answer is a definite "not published". Anything else -- a
+# timeout, SERVFAIL, no reachable name server, or no DNS library -- is
+# "could not be read", which the policy reports as not evaluated.
+
+try:
+    import dns.exception
+    import dns.resolver
+    HAS_DNSPYTHON = True
+except ImportError:  # pragma: no cover - depends on the EE
+    HAS_DNSPYTHON = False
+
+DNS_LIBRARY_MISSING = (
+    "evidence missing: DNS lookup not available -- the dnspython library is "
+    "not installed in this execution environment, so the published SPF, DKIM "
+    "and DMARC records could not be read"
+)
+
+# Exchange Online signs with one of two rotating selectors, each published
+# as a CNAME at selectorN._domainkey.<domain>.
+DKIM_SELECTORS = ("selector1", "selector2")
+
+
+class DnsLookupError(Exception):
+    """A lookup that neither found the record nor proved it absent."""
+
+
+class DnsResolver:
+    """Thin wrapper over dnspython, injectable for tests.
+
+    query(name, rtype) returns a list of strings -- the joined TXT strings or
+    the CNAME targets -- and [] when the name or record does not exist. It
+    raises DnsLookupError when the answer could not be obtained.
+    """
+
+    def __init__(self, timeout=5.0):
+        self._resolver = dns.resolver.Resolver()
+        self._resolver.lifetime = float(timeout)
+        self._resolver.timeout = float(timeout)
+
+    def query(self, name, rtype):
+        try:
+            answer = self._resolver.resolve(name, rtype)
+        except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer):
+            return []
+        except dns.exception.Timeout:
+            raise DnsLookupError("DNS lookup for %s %s timed out" % (rtype, name))
+        except dns.resolver.NoNameservers:
+            raise DnsLookupError("no name server answered for %s %s" % (rtype, name))
+        except dns.exception.DNSException as exc:
+            raise DnsLookupError("DNS lookup for %s %s failed: %s"
+                                 % (rtype, name, type(exc).__name__))
+        out = []
+        for rdata in answer:
+            if rtype == "TXT":
+                out.append(b"".join(rdata.strings).decode("utf-8", "replace"))
+            else:
+                out.append(str(getattr(rdata, "target", rdata)))
+        return out
+
+
+def published_mail_auth(domain, resolver):
+    """Return the policy's {spf,dkim,dmarc}_present for one domain from
+    published DNS, or {"dns_unavailable": reason}."""
+    try:
+        txt = resolver.query(domain, "TXT")
+        dmarc = resolver.query("_dmarc." + domain, "TXT")
+        dkim = [resolver.query("%s._domainkey.%s" % (sel, domain), "CNAME")
+                for sel in DKIM_SELECTORS]
+    except DnsLookupError as exc:
+        return {"dns_unavailable": "evidence missing: %s" % exc}
+    return {
+        "spf_present": any(t.strip().lower().startswith("v=spf1") for t in txt),
+        "dmarc_present": any(t.strip().lower().startswith("v=dmarc1") for t in dmarc),
+        "dkim_present": any(bool(rows) for rows in dkim),
+        "dns_source": "published_dns",
+    }
+
+
 def _classify_dns_records(records: list) -> dict:
     """Walk a domain's DNS record list and pick out SPF / DKIM /
     DMARC presence. Graph emits records as
     `{recordType, label, additionalProperties}`; SPF lives in a TXT
     record whose value starts with `v=spf1`, DMARC in a TXT at
     `_dmarc`, DKIM in CNAMEs at `selector1._domainkey` and
-    `selector2._domainkey`."""
+    `selector2._domainkey`.
+
+    NOT used for the verdict any more: these are the records Microsoft
+    requires, not the ones published (see published_mail_auth). Kept for
+    reference by the unit tests of the classification itself."""
     spf_present = False
     dmarc_present = False
     dkim_present = False
@@ -174,10 +279,16 @@ def _classify_dns_records(records: list) -> dict:
     }
 
 
-def collect_facts(client: GraphClient, mailbox_sample_size: int = 50) -> dict:
-    """Pure function — Graph access via the injected client so the
-    test suite can stub everything."""
+def collect_facts(client: GraphClient, mailbox_sample_size: int = 50,
+                  resolver=None, dns_error=None) -> dict:
+    """Pure function — Graph access via the injected client and DNS via the
+    injected resolver, so the test suite can stub everything.
+
+    `dns_error`, when set, is recorded for every customer domain instead of
+    looking anything up (used when no resolver can be built)."""
     facts: dict = {}
+    if resolver is None and dns_error is None:
+        dns_error = DNS_LIBRARY_MISSING
 
     # ── 4.5.1 / 4.6.1 / 4.7.1 — DNS records on verified domains ────
     domains = client.get_all("/domains")
@@ -186,33 +297,23 @@ def collect_facts(client: GraphClient, mailbox_sample_size: int = 50) -> dict:
         if not d.get("isVerified"):
             continue
         domain_id = d.get("id")
-        records: list = []
-        dns_error = None
-        try:
-            records = client.get_all(
-                f"/domains/{domain_id}/serviceConfigurationRecords"
-            )
-        except GraphError as e:
-            # Store a SANITIZED short reason, not str(e) (which carries the raw
-            # Graph response body) -- this is interpolated into the OPA
-            # violation/report downstream.
-            dns_error = GraphClient._reason(e)
         entry = {
             "id": domain_id,
             "is_default": bool(d.get("isDefault")),
             "is_initial": bool(d.get("isInitial")),
         }
-        # A domain whose records could NOT be queried is marked
-        # `dns_unavailable` so the policy reports it as not-evaluated rather
-        # than reading a missing record as a definite violation. The
-        # Microsoft-managed *initial* domain (…onmicrosoft.com) is excluded from
-        # the SPF/DKIM/DMARC controls policy-side (defender_validation.rego skips
-        # is_initial) -- the tenant cannot publish DNS for it -- so we never
-        # fabricate DNS absence for an errored domain here.
-        if dns_error is not None:
-            entry["dns_unavailable"] = dns_error
-        else:
-            entry.update(_classify_dns_records(records))
+        # The Microsoft-managed *initial* domain (…onmicrosoft.com) is
+        # excluded from the SPF/DKIM/DMARC controls policy-side
+        # (defender_validation.rego skips is_initial): the tenant cannot
+        # publish DNS for it, so it is not looked up.
+        if not entry["is_initial"]:
+            # A domain whose records could NOT be read is marked
+            # `dns_unavailable` so the policy reports it as not evaluated
+            # rather than reading a missing record as a definite violation.
+            if dns_error is not None:
+                entry["dns_unavailable"] = dns_error
+            else:
+                entry.update(published_mail_auth(domain_id, resolver))
         verified.append(entry)
     facts["verified_domains"] = verified
 
@@ -308,6 +409,7 @@ def main() -> None:
             use_proxy=dict(type="bool", default=True),
             proxy=dict(type="str", required=False, default=None),
             mailbox_sample_size=dict(type="int", default=50),
+            dns_timeout=dict(type="float", default=5.0),
         ),
         supports_check_mode=True,
     )
@@ -324,8 +426,18 @@ def main() -> None:
             use_proxy=module.params["use_proxy"],
             proxy=module.params["proxy"],
         )
+        resolver, dns_error = None, None
+        if HAS_DNSPYTHON:
+            try:
+                resolver = DnsResolver(timeout=module.params["dns_timeout"])
+            except Exception as exc:  # no resolv.conf, unreadable config
+                dns_error = ("evidence missing: DNS lookup not available -- the "
+                             "resolver could not be configured (%s)" % type(exc).__name__)
+        else:
+            dns_error = DNS_LIBRARY_MISSING
         facts = collect_facts(
-            client, mailbox_sample_size=module.params["mailbox_sample_size"]
+            client, mailbox_sample_size=module.params["mailbox_sample_size"],
+            resolver=resolver, dns_error=dns_error,
         )
     except GraphError as exc:
         module.fail_json(

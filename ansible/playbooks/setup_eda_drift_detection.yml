@@ -11,7 +11,6 @@
     eda_host: "https://{{ aac_host }}"
     eda_username: "admin"
     eda_password: "{{ vault_eda_admin_password | default(lookup('env', 'EDA_PASSWORD')) }}"  # Set via vault_eda_admin_password or EDA_PASSWORD env var
-    eda_validate_certs: false
 
     controller_host: "https://{{ aac_host }}"
     controller_username: "admin"
@@ -27,7 +26,7 @@
         body:
           username: "{{ eda_username }}"
           password: "{{ eda_password }}"
-        validate_certs: "{{ eda_validate_certs }}"
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         status_code: [200, 204]
       register: eda_login
       no_log: true
@@ -45,7 +44,8 @@
         url: "{{ eda_host }}/api/eda/v1/projects/?name=AAC%20Compliance%20Automation"
         method: GET
         headers: "{{ eda_headers }}"
-        validate_certs: "{{ eda_validate_certs }}"
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: existing_project
 
     - name: Create EDA Project
@@ -59,8 +59,9 @@
           description: "Ansible Automated Compliance - Drift Detection Rulebooks"
           url: "https://github.com/ansible-automated-compliance/aac.git"
           scm_branch: "main"
-        validate_certs: "{{ eda_validate_certs }}"
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         status_code: [201, 400]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: project_result
       when: existing_project.json.count == 0
 
@@ -74,7 +75,8 @@
         url: "{{ eda_host }}/api/eda/v1/projects/{{ project_id }}/"
         method: GET
         headers: "{{ eda_headers }}"
-        validate_certs: "{{ eda_validate_certs }}"
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: project_status
       until: project_status.json.import_state == "completed"
       retries: 30
@@ -87,7 +89,8 @@
         url: "{{ eda_host }}/api/eda/v1/decision-environments/"
         method: GET
         headers: "{{ eda_headers }}"
-        validate_certs: "{{ eda_validate_certs }}"
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: decision_envs
 
     - name: Set decision environment ID
@@ -101,7 +104,8 @@
         url: "{{ eda_host }}/api/eda/v1/activations/?name=Compliance%20Drift%20Detection"
         method: GET
         headers: "{{ eda_headers }}"
-        validate_certs: "{{ eda_validate_certs }}"
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: existing_activation
 
     - name: Create Rulebook Activation
@@ -120,8 +124,9 @@
           restart_policy: "on-failure"
           is_enabled: true
           awx_token_id: null  # Will need to be configured
-        validate_certs: "{{ eda_validate_certs }}"
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         status_code: [201, 400]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: activation_result
       when:
         - existing_activation.json.count == 0

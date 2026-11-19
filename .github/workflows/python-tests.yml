@@ -1,0 +1,58 @@
+name: Python Tests
+
+# Why this exists
+# ---------------
+# Until 2026-11-18 no workflow ran the Python unit tests. The repository had
+# 282 of them — exporters (SARIF, OSCAL, HDF), the findings extract and
+# workbook, the evidence envelope verifier, the M365 collector modules — and
+# nine were failing on main without anyone being told: six through a
+# test-ordering fault, three because the demo profiles they read moved to
+# another repository.
+#
+# The suite takes a few seconds and needs no lab access, so it runs on every
+# pull request and on every push to main, with no path filter.
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: '3.11'
+
+jobs:
+  pytest:
+    name: Python unit tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install "ansible-core>=2.16" pyyaml pytest cryptography requests openpyxl
+
+      - name: Run the tests
+        run: |
+          python -m pytest tests scripts integrations ansible/roles collections -q -rs | tee "$RUNNER_TEMP/pytest.out"
+
+      # Tripwire: a suite that silently stops collecting must fail, not pass.
+      - name: The suite still collects
+        run: |
+          passed=$(grep -Eo '[0-9]+ passed' "$RUNNER_TEMP/pytest.out" | tail -1 | grep -Eo '[0-9]+')
+          echo "passed: ${passed:-0}"
+          if [ "${passed:-0}" -lt 250 ]; then
+            echo "FAIL: only ${passed:-0} tests passed — expected about 278."
+            exit 1
+          fi

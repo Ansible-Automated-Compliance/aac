@@ -117,6 +117,7 @@
       ansible.builtin.shell: |
         podman exec postgresql psql -U postgres -d compliance -t -c \
           "SELECT table_name FROM information_schema.tables WHERE table_schema='public' ORDER BY table_name;"
+      changed_when: false
       delegate_to: "{{ target_host }}"
       vars:
         ansible_user: ec2-user
@@ -134,7 +135,7 @@
         use_proxy: false
         url: "https://{{ target_host }}/api/gateway/v1/ping/"
         method: GET
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         status_code: 200
         timeout: 10
       register: aap_gateway
@@ -145,11 +146,12 @@
         use_proxy: false
         url: "https://{{ target_host }}/api/controller/v2/ping/"
         method: GET
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         status_code: 200
         timeout: 10
         headers:
           Authorization: "Basic {{ ('admin:' + new_aap_admin_password) | b64encode }}"
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: aap_controller
       ignore_errors: true
 
@@ -159,11 +161,12 @@
         use_proxy: false
         url: "https://{{ target_host }}/api/controller/v2/job_templates/?page_size=200"
         method: GET
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         status_code: 200
         timeout: 15
         headers:
           Authorization: "Basic {{ ('admin:' + new_aap_admin_password) | b64encode }}"
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: aap_templates
       ignore_errors: true
 

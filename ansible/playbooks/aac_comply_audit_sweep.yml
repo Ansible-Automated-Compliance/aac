@@ -62,7 +62,7 @@
             plays:                "{{ lookup('file', item.path) | from_yaml }}"
             sentinel_environment: "{{ sentinel_environment }}"
         status_code: 200
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
       loop: "{{ playbook_files.files }}"
       loop_control:
         label: "{{ item.path | basename }}"

@@ -37,7 +37,7 @@
         use_proxy: false
         url: "{{ aap_controller_url }}/api/controller/v2/ping/"
         method: GET
-        validate_certs: no
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         status_code: [200, 401, 403]
         timeout: 10
       register: aap_controller_check
@@ -57,7 +57,7 @@
         use_proxy: false
         url: "{{ aap_gateway_url }}"
         method: GET
-        validate_certs: no
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         status_code: [200, 301, 302, 401, 403]
         timeout: 10
       register: aap_gateway_check
@@ -77,7 +77,7 @@
         use_proxy: false
         url: "{{ mcp_server_url }}/health"
         method: GET
-        validate_certs: no
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         status_code: 200
         timeout: 10
       register: mcp_health_check
@@ -97,7 +97,7 @@
         use_proxy: false
         url: "{{ mcp_server_url }}/mcp"
         method: POST
-        validate_certs: no
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body:
           jsonrpc: "2.0"
@@ -128,7 +128,7 @@
         use_proxy: false
         url: "{{ opa_server_url }}/health"
         method: GET
-        validate_certs: no
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         status_code: 200
         timeout: 10
       register: opa_health_check
@@ -148,7 +148,7 @@
         use_proxy: false
         url: "{{ opa_server_url }}/v1/policies"
         method: GET
-        validate_certs: no
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         status_code: 200
         timeout: 10
       register: opa_policies_check

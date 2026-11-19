@@ -10,10 +10,10 @@
 # ansible.windows, community.windows — core concerns, unused by AMI flows.
 collections:
   - name: community.postgresql
-    version: ">=3.0.0"
+    version: ">=3.0.0,<6.0.0"
   - name: community.general
-    version: ">=8.0.0"
+    version: ">=8.0.0,<15.0.0"
   - name: ansible.utils
-    version: ">=2.10.0"
+    version: ">=2.10.0,<7.0.0"
   - name: ansible.posix
-    version: ">=1.5.0"
+    version: ">=1.5.0,<3.0.0"

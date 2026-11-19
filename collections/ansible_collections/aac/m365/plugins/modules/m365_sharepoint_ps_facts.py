@@ -101,6 +101,7 @@ facts:
 
 from ansible.module_utils.basic import AnsibleModule
 from ansible_collections.aac.m365.plugins.module_utils.pwsh import (
+    OBJECT,
     PwshRunner,
     PwshError,
 )
@@ -130,7 +131,7 @@ def collect_facts(runner):
     # property that does not exist yields null, which is indistinguishable
     # from a genuinely-null setting; fetching everything lets us tell
     # "absent" from "set to nothing".
-    tenant, err = runner.try_run("Get-PnPTenant")
+    tenant, err = runner.try_run("Get-PnPTenant", shape=OBJECT)
     if err:
         unavailable["tenant"] = err
         facts["unavailable"] = unavailable

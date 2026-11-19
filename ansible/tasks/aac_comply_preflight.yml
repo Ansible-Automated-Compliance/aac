@@ -33,7 +33,7 @@
         environment: "{{ _sentinel_env }}"
     return_content: true
     status_code: 200
-    validate_certs: false
+    validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
   register: _sentinel_opa_response
 
 - name: "[Sentinel] Extract result"

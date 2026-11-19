@@ -13,6 +13,11 @@ sys.path.insert(0, os.path.join(_REPO, "scripts"))
 
 import sarif_mapper  # noqa: E402
 
+# The mapper reads FRAMEWORK once, at import. In a full run another test module
+# sets the variable first, so setdefault above is not enough: six tests here
+# failed in the suite and passed alone. Pin the value the assertions expect.
+sarif_mapper.FRAMEWORK = "cis_rhel9"
+
 
 _ROWS = [
     {
