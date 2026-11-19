@@ -70,8 +70,8 @@ platforms has several hundred rules. Earlier versions of this table gave figures
 policies/stig/
 ├── windows_server_2022/
 │   ├── cat_i_findings.rego          # CAT I (high) findings
-│   ├── cat_ii_findings.rego         # High severity findings
-│   ├── cat_iii_findings.rego        # Medium severity findings
+│   ├── cat_ii_findings.rego         # CAT II (medium) findings
+│   ├── cat_iii_findings.rego        # CAT III (low) findings
 │   └── stig_windows_server_2022_complete.rego  # Master orchestrator
 │
 ├── windows_server_2019/
