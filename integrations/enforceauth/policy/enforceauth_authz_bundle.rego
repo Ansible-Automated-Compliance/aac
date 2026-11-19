@@ -38,6 +38,7 @@ failing_frameworks contains fw if {
 framework_ok(fw) if {
 	f := host.frameworks[fw]
 	f.compliant == true
+
 	# Type guards before the comparisons. Rego orders values of different
 	# types, so without them a percentage of "12.5" (a string) compares as
 	# greater than any number and an age of null as less than any number: a

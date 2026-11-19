@@ -231,16 +231,12 @@ serve-docs: ## Serve documentation locally
 
 init-pre-commit: ## Initialize pre-commit hooks
 	@echo "🪝 Setting up pre-commit hooks..."
-	@cat > .git/hooks/pre-commit << 'EOF'
-#!/bin/bash
-echo "🔍 Running pre-commit validation..."
-make check-syntax check-accuracy
-if [ $$? -ne 0 ]; then
-    echo "❌ Pre-commit validation failed"
-    exit 1
-fi
-echo "✅ Pre-commit validation passed"
-EOF
+	@printf '%s\n' \
+		'#!/bin/bash' \
+		'echo "Running pre-commit validation..."' \
+		'make check-syntax check-accuracy || { echo "Pre-commit validation failed"; exit 1; }' \
+		'echo "Pre-commit validation passed"' \
+		> .git/hooks/pre-commit
 	@chmod +x .git/hooks/pre-commit
 	@echo "$(GREEN)✅ Pre-commit hooks installed$(NC)"
 
