@@ -1,0 +1,187 @@
+---
+# aac_assert_fresh_results.yml — fail when expected results or facts are stale
+#
+# The daily health check warns when NO assessment ran in 24 hours across the
+# whole estate. One framework that keeps writing rows hides another that
+# stopped weeks ago, and a report built from the stale rows looks complete.
+# This playbook checks each expected framework (optionally per host) and each
+# expected fact host against its own maximum age, and FAILS the job when one
+# is stale or has never produced a row. Run it as the last step of a scheduled
+# assessment workflow, or on its own schedule.
+#
+# AAP Job Template: "AAC - Assert Fresh Results"
+# Credentials: AAC Compliance DB Password
+# EE: AAC Compliance EE
+#
+# Variables (site_config.yml, inventory or extra_vars):
+#   aac_freshness_max_age_hours   default age limit, hours (default 26)
+#   aac_freshness_frameworks      what must be fresh in compliance_results.
+#                                 Each entry is a framework key, or a mapping:
+#                                   - cis_rhel9
+#                                   - framework: cis_m365_v7
+#                                     max_age_hours: 170      # weekly
+#                                   - framework: cis_ubuntu_2204
+#                                     hosts: [web01, web02]   # each host checked
+#   aac_freshness_fact_hosts      hostnames that must have a fresh row in
+#                                 host_facts (optional)
+#
+# Nothing declared is a failure, not a pass: a check with no expectations
+# proves nothing.
+#
+# Read-only: two SELECTs. Safe under --check.
+
+- name: Assert that expected results and facts are fresh
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - [ "../vars/vault_secrets.yml", "../vars/empty_fallback.yml" ]
+    - [ "../vars/site_config.yml", "../vars/empty_fallback.yml" ]
+
+  vars:
+    _default_age: "{{ aac_freshness_max_age_hours | default(26) | float }}"
+    _framework_items: "{{ aac_freshness_frameworks | default([], true) }}"
+    _fact_hosts: "{{ aac_freshness_fact_hosts | default([], true) }}"
+
+  tasks:
+
+    - name: Refuse to run with nothing to check
+      ansible.builtin.assert:
+        that: (_framework_items | length > 0) or (_fact_hosts | length > 0)
+        fail_msg: >-
+          Neither aac_freshness_frameworks nor aac_freshness_fact_hosts is set.
+          Declare what must be fresh; a check with no expectations proves nothing.
+
+    - name: Require the database settings
+      ansible.builtin.assert:
+        that:
+          - pg_host is defined and pg_host | string | length > 0
+          - compliance_db_password is defined and compliance_db_password | string | length > 0
+        fail_msg: >-
+          pg_host and compliance_db_password must be set — from
+          ansible/vars/site_config.yml / vault_secrets.yml or an AAP credential.
+      no_log: "{{ aac_no_log | default(true) | bool }}"
+
+    # One row per (framework, host) expectation; host null = any host.
+    - name: Expand the framework expectations
+      ansible.builtin.set_fact:
+        _result_expectations: >-
+          {%- set out = [] -%}
+          {%- for item in _framework_items -%}
+          {%-   if item is mapping -%}
+          {%-     set fw = item.framework -%}
+          {%-     set age = item.max_age_hours | default(_default_age) | float -%}
+          {%-     set hosts = item.hosts | default([], true) -%}
+          {%-   else -%}
+          {%-     set fw = item | string -%}
+          {%-     set age = _default_age | float -%}
+          {%-     set hosts = [] -%}
+          {%-   endif -%}
+          {%-   if hosts | length == 0 -%}
+          {%-     set _ = out.append({'framework': fw, 'hostname': none, 'max_age_hours': age}) -%}
+          {%-   else -%}
+          {%-     for h in hosts -%}
+          {%-       set _ = out.append({'framework': fw, 'hostname': h, 'max_age_hours': age}) -%}
+          {%-     endfor -%}
+          {%-   endif -%}
+          {%- endfor -%}
+          {{ out }}
+
+    - name: Read the newest result for each expectation
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port | default(5432) }}"
+        login_user: "{{ pg_user | default('postgres') }}"
+        login_password: "{{ compliance_db_password }}"
+        login_db: "{{ pg_db | default('compliance') }}"
+        query: |
+          SELECT e.framework,
+                 e.hostname,
+                 e.max_age_hours,
+                 MAX(r.evaluation_timestamp)::text AS newest,
+                 ROUND((EXTRACT(EPOCH FROM (NOW() - MAX(r.evaluation_timestamp))) / 3600)::numeric, 1) AS age_hours,
+                 (MAX(r.evaluation_timestamp) IS NULL
+                  OR MAX(r.evaluation_timestamp) < NOW() - (e.max_age_hours || ' hours')::interval) AS stale
+          FROM jsonb_to_recordset(%s::jsonb)
+                 AS e(framework text, hostname text, max_age_hours numeric)
+          LEFT JOIN compliance_results r
+                 ON r.framework = e.framework
+                AND (e.hostname IS NULL OR r.hostname = e.hostname)
+          GROUP BY e.framework, e.hostname, e.max_age_hours
+          ORDER BY e.framework, e.hostname
+        positional_args:
+          - "{{ _result_expectations | to_json }}"
+      register: _fresh_results
+      no_log: "{{ aac_no_log | default(true) | bool }}"
+      when: _result_expectations | length > 0
+
+    - name: Read the newest facts for each expected host
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port | default(5432) }}"
+        login_user: "{{ pg_user | default('postgres') }}"
+        login_password: "{{ compliance_db_password }}"
+        login_db: "{{ pg_db | default('compliance') }}"
+        query: |
+          SELECT e.hostname,
+                 MAX(f.collected_at)::text AS newest,
+                 ROUND((EXTRACT(EPOCH FROM (NOW() - MAX(f.collected_at))) / 3600)::numeric, 1) AS age_hours,
+                 (MAX(f.collected_at) IS NULL
+                  OR MAX(f.collected_at) < NOW() - (%s || ' hours')::interval) AS stale
+          FROM jsonb_array_elements_text(%s::jsonb) AS e(hostname)
+          LEFT JOIN host_facts f ON f.hostname = e.hostname
+          GROUP BY e.hostname
+          ORDER BY e.hostname
+        positional_args:
+          - "{{ _default_age }}"
+          - "{{ _fact_hosts | to_json }}"
+      register: _fresh_facts
+      no_log: "{{ aac_no_log | default(true) | bool }}"
+      when: _fact_hosts | length > 0
+
+    - name: Build the freshness report
+      ansible.builtin.set_fact:
+        _result_rows: "{{ _fresh_results.query_result | default([]) }}"
+        _fact_rows: "{{ _fresh_facts.query_result | default([]) }}"
+
+    - name: List what is stale
+      ansible.builtin.set_fact:
+        aac_freshness_stale: >-
+          {%- set out = [] -%}
+          {%- for r in _result_rows if r.stale -%}
+          {%-   set _ = out.append('results: ' ~ r.framework ~ (' on ' ~ r.hostname if r.hostname else '')
+                  ~ ' — ' ~ ('no row at all' if r.newest is none else (r.age_hours ~ ' h old'))
+                  ~ ' (limit ' ~ r.max_age_hours ~ ' h)') -%}
+          {%- endfor -%}
+          {%- for r in _fact_rows if r.stale -%}
+          {%-   set _ = out.append('facts: ' ~ r.hostname
+                  ~ ' — ' ~ ('no row at all' if r.newest is none else (r.age_hours ~ ' h old'))
+                  ~ ' (limit ' ~ _default_age ~ ' h)') -%}
+          {%- endfor -%}
+          {{ out }}
+
+    - name: Show every expectation and its age
+      ansible.builtin.debug:
+        msg:
+          - "Results checked: {{ _result_rows | length }}; fact hosts checked: {{ _fact_rows | length }}"
+          - "{{ _result_rows | map(attribute='framework') | zip(_result_rows | map(attribute='hostname'), _result_rows | map(attribute='age_hours'), _result_rows | map(attribute='stale')) | list }}"
+          - "{{ _fact_rows | map(attribute='hostname') | zip(_fact_rows | map(attribute='age_hours'), _fact_rows | map(attribute='stale')) | list }}"
+
+    - name: Publish the outcome as a job artifact
+      ansible.builtin.set_stats:
+        data:
+          aac_freshness:
+            checked_results: "{{ _result_rows | length }}"
+            checked_fact_hosts: "{{ _fact_rows | length }}"
+            stale: "{{ aac_freshness_stale }}"
+            fresh: "{{ aac_freshness_stale | length == 0 }}"
+
+    - name: Fail when anything expected is stale or missing
+      ansible.builtin.fail:
+        msg: "{{ aac_freshness_stale | length }} stale: {{ aac_freshness_stale | join('; ') }}"
+      when: aac_freshness_stale | length > 0
+
+    - name: Everything expected is fresh
+      ansible.builtin.debug:
+        msg: "All {{ (_result_rows | length) + (_fact_rows | length) }} expectations are within their age limit."
