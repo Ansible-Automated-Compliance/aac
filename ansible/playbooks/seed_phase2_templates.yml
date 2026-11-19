@@ -37,7 +37,8 @@
         use_proxy: false
         url: "{{ aap_api }}/inventories/?name={{ aap_inventory_name | urlencode }}"
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: inv_lookup
     - name: Set inventory_id
       set_fact:
@@ -48,7 +49,8 @@
         use_proxy: false
         url: "{{ aap_api }}/execution_environments/?name={{ aap_ee_name | urlencode }}"
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: ee_lookup
     - name: Set ee_id
       set_fact:
@@ -59,7 +61,8 @@
         use_proxy: false
         url: "{{ aap_api }}/credentials/?name={{ aap_vault_credential_name | urlencode }}&credential_type__kind=vault"
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: vault_cred_lookup
     - name: Fail if vault credential not found
       fail:
@@ -74,7 +77,8 @@
         use_proxy: false
         url: "{{ aap_api }}/credentials/?name={{ aap_ssh_credential_name | urlencode }}&credential_type__kind=ssh"
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: ssh_cred_lookup
     - name: Set ssh_cred_id
       set_fact:
@@ -85,7 +89,8 @@
         use_proxy: false
         url: "{{ aap_api }}/projects/?name={{ aap_project_name | urlencode }}"
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: project_lookup
     - name: Set project_id
       set_fact:
@@ -218,7 +223,8 @@
         use_proxy: false
         url: "{{ aap_api }}/job_templates/?name={{ item.name | urlencode }}"
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: existing_templates
       loop: "{{ phase2_templates }}"
       loop_control:
@@ -230,7 +236,7 @@
         url: "{{ aap_api }}/job_templates/"
         method: POST
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body:
           name: "{{ item.item.name }}"
@@ -243,6 +249,7 @@
           ask_variables_on_launch: false
           survey_enabled: "{{ item.item.survey | length > 0 }}"
         status_code: [200, 201]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       loop: "{{ existing_templates.results }}"
       loop_control:
         label: "{{ item.item.name }}"
@@ -271,11 +278,12 @@
         url: "{{ aap_api }}/job_templates/{{ template_ids[item.name] }}/credentials/"
         method: POST
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body:
           id: "{{ vault_cred_id | int }}"
         status_code: [200, 201, 204]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       loop: "{{ phase2_templates }}"
       loop_control:
         label: "{{ item.name }}"
@@ -287,11 +295,12 @@
         url: "{{ aap_api }}/job_templates/{{ template_ids['AAC - Collect Facts'] }}/credentials/"
         method: POST
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body:
           id: "{{ ssh_cred_id | int }}"
         status_code: [200, 201, 204]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       failed_when: false
 
     - name: Add survey to templates that have one
@@ -300,7 +309,7 @@
         url: "{{ aap_api }}/job_templates/{{ template_ids[item.name] }}/survey_spec/"
         method: POST
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body:
           name: "{{ item.name }} Survey"
@@ -320,6 +329,7 @@
             {%- endfor -%}
             {{ spec }}
         status_code: [200, 201]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       loop: "{{ phase2_templates }}"
       loop_control:
         label: "{{ item.name }}"

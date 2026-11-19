@@ -70,7 +70,7 @@
         body_format: json
         body: "{{ iec_input }}"
         return_content: true
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         timeout: 30
       register: iec_result
 

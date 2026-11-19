@@ -57,6 +57,7 @@
           Accept: "application/vnd.github.v3.raw"
         return_content: true
         status_code: 200
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: github_plan_response
       when: plan_source == "github"
 
@@ -78,7 +79,7 @@
           input: "{{ tf_plan }}"
         return_content: true
         status_code: 200
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
       register: opa_response
 
     - name: Extract Sentinel result
@@ -116,6 +117,7 @@
           description: "Sentinel: Terraform plan is policy-compliant"
           target_url: "{{ aap_url }}"
         status_code: 201
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       when:
         - plan_source == "github"
         - (github_sha | default('', true)) != ""
@@ -135,6 +137,7 @@
           description: "Sentinel: {{ sentinel_result.violation_count }} violation(s) — merge blocked"
           target_url: "{{ aap_url }}"
         status_code: 201
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       when:
         - plan_source == "github"
         - (github_sha | default('', true)) != ""

@@ -26,14 +26,14 @@ collections:
 
   # EDA controller modules — for eda_credentials, eda_projects, eda_rulebook_activations
   - name: ansible.eda
-    version: ">=2.0.0"
+    version: ">=2.0.0,<3.0.0"
 
   # AWS modules — required by provision_rhpds_demo_host.yml
   # (ec2_instance, ec2_key, ec2_security_group, ec2_eip, etc.)
   - name: amazon.aws
-    version: ">=8.0.0"
+    version: ">=8.0.0,<13.0.0"
 
   # PostgreSQL modules — required by seed/configure playbooks
   # (postgresql_query, postgresql_db, etc.)
   - name: community.postgresql
-    version: ">=3.0.0"
+    version: ">=3.0.0,<6.0.0"

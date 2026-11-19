@@ -146,8 +146,8 @@
         headers:
           Authorization: "Basic {{ (aap_admin_user + ':' + aap_admin_password) | b64encode }}"
         status_code: 202
-        validate_certs: false
-
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
+      no_log: "{{ aac_no_log | default(true) | bool }}"
     - name: Vault update complete
       debug:
         msg:

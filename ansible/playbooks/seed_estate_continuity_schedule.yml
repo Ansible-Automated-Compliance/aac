@@ -43,7 +43,7 @@
     ec_aws_credential_name: "AWS Compliance Lab"
     ec_template_extra_vars: {}
     ec_schedule_enabled: true
-    _validate_certs: "{{ aap_validate_certs | default(true) | bool }}"
+    _validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
 
   tasks:
 
@@ -145,6 +145,7 @@
         url:     "{{ aap_api }}/{{ item.endpoint }}/?name={{ item.name | urlencode }}"
         headers: "{{ aap_headers }}"
         validate_certs: "{{ _validate_certs }}"
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       loop:
         - { key: project,    endpoint: projects,               name: "{{ ec_project_name }}" }
         - { key: inventory,  endpoint: inventories,            name: "{{ _inventory_name }}" }
@@ -162,6 +163,7 @@
         url:     "{{ aap_api }}/credentials/?name={{ item | urlencode }}"
         headers: "{{ aap_headers }}"
         validate_certs: "{{ _validate_certs }}"
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       loop: "{{ _cred_names }}"
       register: cred_lookups
       failed_when: cred_lookups.json.count != 1
@@ -192,6 +194,7 @@
         url:     "{{ aap_api }}/job_templates/?name={{ template_name | urlencode }}"
         headers: "{{ aap_headers }}"
         validate_certs: "{{ _validate_certs }}"
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: template_check
       failed_when: template_check.json.count > 1
 
@@ -223,6 +226,7 @@
           extra_vars:              "{{ _template_vars | to_json }}"
           survey_enabled:          false
         status_code: [200, 201]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: template_result
 
     - name: Set template ID
@@ -237,6 +241,7 @@
         url:     "{{ aap_api }}/job_templates/{{ template_id }}/credentials/?page_size=200"
         headers: "{{ aap_headers }}"
         validate_certs: "{{ _validate_certs }}"
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: attached
 
     - name: Attach the missing credentials
@@ -250,6 +255,7 @@
         body:
           id: "{{ item | int }}"
         status_code: [204]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       loop: >-
         {{ cred_lookups.results | map(attribute='json.results.0.id') | list
            | difference(attached.json.results | map(attribute='id') | list) }}
@@ -264,6 +270,7 @@
         url:     "{{ aap_api }}/job_templates/{{ template_id }}/schedules/?name={{ schedule_name | urlencode }}"
         headers: "{{ aap_headers }}"
         validate_certs: "{{ _validate_certs }}"
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: schedule_check
       failed_when: schedule_check.json.count > 1
 
@@ -285,6 +292,7 @@
           rrule:       "{{ ec_rrule }}"
           extra_data:  {}
         status_code: [200, 201]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: schedule_result
 
     # ── Summary ───────────────────────────────────────────────────────────

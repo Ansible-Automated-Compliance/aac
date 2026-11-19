@@ -15,6 +15,20 @@ aap_url: "https://{{ aac_host }}"
 aap_admin_user: "admin"
 aap_ssh_user: "YOUR_SSH_USER"      # OS user for SSH access to aac_host (e.g. aapuser1)
 
+# ─── TLS certificate checking ────────────────────────────────────────────────
+# One switch for every HTTPS call the playbooks make (AAP, EDA, OPA, Grafana,
+# portal, OpenShift). It is ON when unset. A site whose certificates are
+# self-signed should install its CA in the Execution Environment; turning the
+# check off is the fallback, and it applies everywhere at once.
+# Playbooks that do not read this file take the same variable from the
+# inventory or from extra vars (-e aac_validate_certs=false).
+# aap_validate_certs is still honoured where it was used before.
+aac_validate_certs: true
+
+# Output of API tasks that carry a token is hidden from job output. Set this to
+# false for one run when you need to see a failing request.
+aac_no_log: true
+
 # ─── OPA (3 purpose-specific containers) ─────────────────────────────────────
 # Named variables — use these in playbooks
 opa_security_url:    "http://{{ aac_host }}:8181"   # CIS Benchmarks, NIST, STIGs, OS/Cloud/Container security

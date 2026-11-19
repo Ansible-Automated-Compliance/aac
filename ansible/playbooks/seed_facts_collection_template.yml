@@ -36,7 +36,8 @@
         use_proxy: false
         url: "{{ aap_api }}/inventories/?name={{ aap_inventory_name | urlencode }}"
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: inv_lookup
 
     - name: Set inventory ID
@@ -48,7 +49,8 @@
         use_proxy: false
         url: "{{ aap_api }}/execution_environments/?name={{ aap_ee_name | urlencode }}"
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: ee_lookup
 
     - name: Set EE ID
@@ -60,7 +62,8 @@
         use_proxy: false
         url: "{{ aap_api }}/projects/?name={{ aap_project_name | urlencode }}"
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: proj_lookup
 
     - name: Set project ID
@@ -72,7 +75,8 @@
         use_proxy: false
         url: "{{ aap_api }}/credentials/?name={{ aap_vault_credential_name | urlencode }}"
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: vault_cred_lookup
 
     - name: Set Vault credential ID
@@ -84,7 +88,8 @@
         use_proxy: false
         url: "{{ aap_api }}/credentials/?name={{ aap_ssh_credential_name | urlencode }}"
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: ssh_cred_lookup
 
     - name: Set SSH credential ID
@@ -96,7 +101,8 @@
         use_proxy: false
         url: "{{ aap_api }}/credentials/?name={{ aap_windows_credential_name | default('Windows Lab Administrator') | urlencode }}"
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: win_cred_lookup
 
     - name: Set Windows credential ID
@@ -112,7 +118,8 @@
         use_proxy: false
         url: "{{ aap_api }}/credentials/?name={{ aap_db_credential_name | default('AAC Compliance DB Password') | urlencode }}"
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: db_cred_lookup
 
     - name: Set Compliance DB credential ID
@@ -125,7 +132,8 @@
         use_proxy: false
         url: "{{ aap_api }}/job_templates/?name=AAC+-+Init+Facts+Schema"
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: init_schema_existing
 
     - name: Create 'AAC - Init Facts Schema' template
@@ -134,7 +142,7 @@
         url: "{{ aap_api }}/job_templates/"
         method: POST
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body:
           name: "AAC - Init Facts Schema"
@@ -146,6 +154,7 @@
           execution_environment: "{{ ee_id }}"
           become_enabled: false
         status_code: [200, 201]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: init_schema_created
       when: init_schema_existing.json.count == 0
 
@@ -162,11 +171,12 @@
         url: "{{ aap_api }}/job_templates/{{ init_schema_jt_id }}/credentials/"
         method: POST
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body:
           id: "{{ vault_cred_id | int }}"
         status_code: [200, 201, 204]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       failed_when: false
       when: init_schema_existing.json.count == 0
 
@@ -176,7 +186,8 @@
         use_proxy: false
         url: "{{ aap_api }}/job_templates/?name=AAC+-+Gather+Facts+%28All+Systems%29"
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: gather_facts_existing
 
     - name: Create 'AAC - Gather Facts (All Systems)' template
@@ -185,7 +196,7 @@
         url: "{{ aap_api }}/job_templates/"
         method: POST
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body:
           name: "AAC - Gather Facts (All Systems)"
@@ -202,6 +213,7 @@
           ask_variables_on_launch: false
           survey_enabled: true
         status_code: [200, 201]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: gather_facts_created
       when: gather_facts_existing.json.count == 0
 
@@ -218,7 +230,7 @@
         url: "{{ aap_api }}/job_templates/{{ gather_facts_jt_id }}/survey_spec/"
         method: POST
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body:
           name: "Gather Facts Survey"
@@ -231,6 +243,7 @@
               default: "all"
               required: false
         status_code: [200, 201]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       failed_when: false
       when: gather_facts_existing.json.count == 0
 
@@ -240,11 +253,12 @@
         url: "{{ aap_api }}/job_templates/{{ gather_facts_jt_id }}/credentials/"
         method: POST
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body:
           id: "{{ vault_cred_id | int }}"
         status_code: [200, 201, 204]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       failed_when: false
       when: gather_facts_existing.json.count == 0
 
@@ -254,11 +268,12 @@
         url: "{{ aap_api }}/job_templates/{{ gather_facts_jt_id }}/credentials/"
         method: POST
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body:
           id: "{{ ssh_cred_id | int }}"
         status_code: [200, 201, 204]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       failed_when: false
       when:
         - gather_facts_existing.json.count == 0
@@ -277,7 +292,8 @@
         use_proxy: false
         url: "{{ aap_api }}/job_templates/?name=AAC+-+Gather+Facts+%28Windows+Lab%29"
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: gather_win_existing
 
     - name: Create 'AAC - Gather Facts (Windows Lab)' template
@@ -286,7 +302,7 @@
         url: "{{ aap_api }}/job_templates/"
         method: POST
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body:
           name: "AAC - Gather Facts (Windows Lab)"
@@ -304,6 +320,7 @@
           become_enabled: false
           ask_variables_on_launch: false
         status_code: [200, 201]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: gather_win_created
       when: gather_win_existing.json.count == 0
 
@@ -320,11 +337,12 @@
         url: "{{ aap_api }}/job_templates/{{ gather_win_jt_id }}/credentials/"
         method: POST
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body:
           id: "{{ vault_cred_id | int }}"
         status_code: [200, 201, 204]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       failed_when: false
       when: gather_win_existing.json.count == 0
 
@@ -334,11 +352,12 @@
         url: "{{ aap_api }}/job_templates/{{ gather_win_jt_id }}/credentials/"
         method: POST
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body:
           id: "{{ win_cred_id | int }}"
         status_code: [200, 201, 204]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       failed_when: false
       when:
         - gather_win_existing.json.count == 0
@@ -350,7 +369,8 @@
         use_proxy: false
         url: "{{ aap_api }}/job_templates/{{ gather_facts_jt_id }}/schedules/?name=AAC+Nightly+Fact+Collection"
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: schedule_existing
 
     - name: Create nightly fact collection schedule (02:00 UTC)
@@ -359,7 +379,7 @@
         url: "{{ aap_api }}/job_templates/{{ gather_facts_jt_id }}/schedules/"
         method: POST
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body:
           name: "AAC Nightly Fact Collection"
@@ -369,6 +389,7 @@
           extra_data:
             target_hosts: "all"
         status_code: [200, 201]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       when: schedule_existing.json.count == 0
       failed_when: false
 
@@ -378,7 +399,8 @@
         use_proxy: false
         url: "{{ aap_api }}/job_templates/?name=AAC+-+Store+Sidecar+Dataset"
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: sidecar_existing
 
     - name: Create 'AAC - Store Sidecar Dataset' template
@@ -387,7 +409,7 @@
         url: "{{ aap_api }}/job_templates/"
         method: POST
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body:
           name: "AAC - Store Sidecar Dataset"
@@ -403,6 +425,7 @@
           become_enabled: false
           survey_enabled: true
         status_code: [200, 201]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: sidecar_created
       when: sidecar_existing.json.count == 0
       failed_when: false
@@ -420,7 +443,7 @@
         url: "{{ aap_api }}/job_templates/{{ sidecar_jt_id }}/survey_spec/"
         method: POST
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body:
           name: "Sidecar Dataset Survey"
@@ -446,6 +469,7 @@
               default: "examples/sidecars/digital_sovereignty.yml"
               required: true
         status_code: [200, 201]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       failed_when: false
       when: sidecar_existing.json.count == 0
 
@@ -455,11 +479,12 @@
         url: "{{ aap_api }}/job_templates/{{ sidecar_jt_id }}/credentials/"
         method: POST
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body:
           id: "{{ vault_cred_id | int }}"
         status_code: [200, 201, 204]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       failed_when: false
       when:
         - sidecar_existing.json.count == 0
@@ -475,11 +500,12 @@
         url: "{{ aap_api }}/job_templates/{{ sidecar_jt_id }}/credentials/"
         method: POST
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body:
           id: "{{ db_cred_id | int }}"
         status_code: [200, 201, 204, 400]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       when:
         - sidecar_jt_id != ''
         - db_cred_id != ''
@@ -494,7 +520,8 @@
         use_proxy: false
         url: "{{ aap_api }}/job_templates/{{ sidecar_jt_id }}/schedules/?name=AAC+Nightly+Sidecar+Collection"
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: sidecar_schedule_existing
       when: sidecar_jt_id != ''
 
@@ -504,7 +531,7 @@
         url: "{{ aap_api }}/job_templates/{{ sidecar_jt_id }}/schedules/"
         method: POST
         headers: "{{ aap_headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body:
           name: "AAC Nightly Sidecar Collection"
@@ -519,6 +546,7 @@
             entity_id: "{{ aap_inventory_name | default('default_org') }}"
             sidecar_file: "examples/sidecars/digital_sovereignty.yml"
         status_code: [200, 201]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       when:
         - sidecar_jt_id != ''
         - sidecar_schedule_existing.json.count == 0

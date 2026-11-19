@@ -141,7 +141,8 @@
             use_proxy: false
             url: "{{ aap_url }}/api/controller/v2/job_templates/?name=AAC%20-%20Load%20OPA%20Policies"
             headers: { Authorization: "Bearer {{ _tok }}" }
-            validate_certs: false
+            validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
+          no_log: "{{ aac_no_log | default(true) | bool }}"
           register: _ljt
 
         # AAP silently DROPS launch variables on a template that does not prompt
@@ -175,8 +176,9 @@
                 # Additive: never prune the rest of the container (the loader
                 # also refuses to prune a scoped load unless reconcile_scoped).
                 reconcile: false
-            validate_certs: false
+            validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
             status_code: [201, 202]
+          no_log: "{{ aac_no_log | default(true) | bool }}"
           register: _lload
           when: (_ljt.json.count | default(0) | int) > 0
 
@@ -185,7 +187,8 @@
             use_proxy: false
             url: "{{ aap_url }}/api/controller/v2/jobs/{{ _lload.json.job }}/"
             headers: { Authorization: "Bearer {{ _tok }}" }
-            validate_certs: false
+            validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
+          no_log: "{{ aac_no_log | default(true) | bool }}"
           register: _ljob
           until: _ljob.json.status in ['successful', 'failed', 'error', 'canceled']
           retries: 30

@@ -135,7 +135,7 @@
         url: "{{ aap_url }}/api/gateway/v1/ping/"
         method: GET
         status_code: 200
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         timeout: 10
       register: aap_gateway
       ignore_errors: true
@@ -146,7 +146,7 @@
         url: "{{ aap_url }}/api/controller/v2/ping/"
         method: GET
         status_code: 200
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         timeout: 10
       register: aap_controller
       ignore_errors: true
@@ -159,7 +159,7 @@
         headers:
           Authorization: "Bearer {{ aap_token | default((_aap_token_default | default('', true))) }}"
         status_code: 200
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         timeout: 10
       register: aap_token_check
       ignore_errors: true

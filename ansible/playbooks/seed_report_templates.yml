@@ -173,8 +173,9 @@
         use_proxy: false
         url: "{{ aap_api }}/projects/?name={{ aap_project_name | urlencode }}"
         headers: "{{ headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         status_code: 200
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: project_lookup
 
     - name: Look up inventory ID
@@ -182,8 +183,9 @@
         use_proxy: false
         url: "{{ aap_api }}/inventories/?name={{ aap_inventory_name | urlencode }}"
         headers: "{{ headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         status_code: 200
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: inventory_lookup
 
     - name: Look up EE ID
@@ -191,8 +193,9 @@
         use_proxy: false
         url: "{{ aap_api }}/execution_environments/?name={{ aap_ee_name | urlencode }}"
         headers: "{{ headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         status_code: 200
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: ee_lookup
 
     - name: Look up vault credential ID
@@ -200,8 +203,9 @@
         use_proxy: false
         url: "{{ aap_api }}/credentials/?name={{ aap_vault_credential_name | urlencode }}&credential_type__kind=vault"
         headers: "{{ headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         status_code: 200
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: vault_cred_lookup
 
     - name: Require every referenced object to exist
@@ -228,8 +232,9 @@
         use_proxy: false
         url: "{{ aap_api }}/job_templates/?page_size=200"
         headers: "{{ headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         status_code: 200
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: existing_templates
 
     - name: Build existing template name→ID map
@@ -247,7 +252,7 @@
             if item.name in existing_map else '' }}
         method: "{{ 'PATCH' if item.name in existing_map else 'POST' }}"
         headers: "{{ headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body:
           name: "{{ item.name }}"
@@ -261,6 +266,7 @@
           survey_enabled: true
           extra_vars: "{}"
         status_code: [200, 201]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       loop: "{{ report_templates }}"
       loop_control:
         label: "{{ item.name }}"
@@ -272,13 +278,14 @@
         url: "{{ aap_api }}/job_templates/{{ item.json.id | int }}/survey_spec/"
         method: POST
         headers: "{{ headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body:
           name: "{{ report_templates[idx].name }} Survey"
           description: ""
           spec: "{{ report_templates[idx].survey }}"
         status_code: [200, 204]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       loop: "{{ template_results.results }}"
       loop_control:
         index_var: idx
@@ -291,11 +298,12 @@
         url: "{{ aap_api }}/job_templates/{{ item.json.id | int }}/credentials/"
         method: POST
         headers: "{{ headers }}"
-        validate_certs: false
+        validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         body_format: json
         body:
           id: "{{ vault_cred_id }}"
         status_code: [200, 201, 204, 400]   # 400 = already attached
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       loop: "{{ template_results.results }}"
       loop_control:
         label: "{{ item.json.name | default('unknown') }}"

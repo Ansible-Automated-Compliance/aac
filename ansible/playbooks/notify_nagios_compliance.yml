@@ -136,6 +136,7 @@
         compliance_score={{ item.compliance_percentage }}%;{{ (warning_pct | default('90', true)) }};{{ (critical_pct | default('75', true)) }}
         controls_failed={{ item.failed_controls }}"
         | send_nsca -H {{ (nsca_host | default('', true)) }} -p {{ (nsca_port | default('5667', true)) }} -d "$(printf '\t')"
+      changed_when: false
       args:
         executable: /bin/bash
       delegate_to: "{{ aac_ssh_delegate }}"

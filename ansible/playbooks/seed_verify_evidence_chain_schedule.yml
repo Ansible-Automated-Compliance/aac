@@ -31,7 +31,7 @@
     # 02:30 UTC daily — after the 01:30 project sync and the nightly assessments.
     ec_rrule: "DTSTART:20261010T023000Z RRULE:FREQ=DAILY;INTERVAL=1"
     ec_schedule_enabled: true
-    _validate_certs: "{{ aap_validate_certs | default(true) | bool }}"
+    _validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
 
   tasks:
 
@@ -117,6 +117,7 @@
         url:     "{{ aap_api }}/{{ item.endpoint }}/?name={{ item.name | urlencode }}"
         headers: "{{ aap_headers }}"
         validate_certs: "{{ _validate_certs }}"
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       loop:
         - { key: project,    endpoint: projects,               name: "{{ ec_project_name }}" }
         - { key: inventory,  endpoint: inventories,            name: "{{ _inventory_name }}" }
@@ -155,6 +156,7 @@
         url:     "{{ aap_api }}/job_templates/?name={{ template_name | urlencode }}"
         headers: "{{ aap_headers }}"
         validate_certs: "{{ _validate_certs }}"
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: template_check
       failed_when: template_check.json.count > 1
 
@@ -187,6 +189,7 @@
           extra_vars:              "{}"
           survey_enabled:          true
         status_code: [200, 201]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: template_result
 
     - name: Set template ID
@@ -201,6 +204,7 @@
         url:     "{{ aap_api }}/job_templates/{{ template_id }}/credentials/?page_size=200"
         headers: "{{ aap_headers }}"
         validate_certs: "{{ _validate_certs }}"
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: attached
 
     - name: Attach the missing credentials
@@ -214,6 +218,7 @@
         body:
           id: "{{ item | int }}"
         status_code: [204]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       loop: "{{ [obj.vault_cred.id] | difference(attached.json.results | map(attribute='id') | list) }}"
       loop_control:
         label: "credential {{ item }}"
@@ -241,6 +246,7 @@
               choices: "false
 true"
         status_code: [200]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
 
     # ── Schedule: create, or converge the existing one ───────────────────
 
@@ -250,6 +256,7 @@ true"
         url:     "{{ aap_api }}/job_templates/{{ template_id }}/schedules/?name={{ schedule_name | urlencode }}"
         headers: "{{ aap_headers }}"
         validate_certs: "{{ _validate_certs }}"
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: schedule_check
       failed_when: schedule_check.json.count > 1
 
@@ -271,6 +278,7 @@ true"
           rrule:       "{{ ec_rrule }}"
           extra_data:  {}
         status_code: [200, 201]
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       register: schedule_result
 
     # ── Summary ───────────────────────────────────────────────────────────

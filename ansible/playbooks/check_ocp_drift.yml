@@ -74,7 +74,7 @@
           - "compliance.openshift.io/scan-name={{ ocp_scan_name }}"
         host: "{{ ocp_api_url | default(omit) }}"
         api_key: "{{ ocp_api_token | default(omit) }}"
-        validate_certs: "{{ ocp_verify_ssl | default(false) | bool }}"
+        validate_certs: "{{ ocp_verify_ssl | default(aac_validate_certs | default(true)) | bool }}"
       register: ccr_now
 
     - name: Index current CCRs by name (status + uid + cip controls)
@@ -109,7 +109,7 @@
         namespace: "{{ item.namespace | default(omit) }}"
         host: "{{ ocp_api_url | default(omit) }}"
         api_key: "{{ ocp_api_token | default(omit) }}"
-        validate_certs: "{{ ocp_verify_ssl | default(false) | bool }}"
+        validate_certs: "{{ ocp_verify_ssl | default(aac_validate_certs | default(true)) | bool }}"
       loop: "{{ ocp_baseline_objects }}"
       loop_control:
         label: "{{ item.kind }}/{{ item.name }}"
