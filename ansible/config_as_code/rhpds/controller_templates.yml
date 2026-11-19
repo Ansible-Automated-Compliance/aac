@@ -11,6 +11,9 @@
 # AAC Demo Host (SSH) from credentials and use limit: localhost.
 
 # ─── Shared defaults (referenced via YAML anchor) ────────────────────────────
+# ask_variables_on_launch is set on every template, not in these shared
+# defaults: a key that is merged from an anchor and then set again is valid
+# YAML, but ansible-core reports it as a duplicate mapping key on every load.
 _defaults: &defaults
   job_type: run
   inventory: Compliance Infrastructure
@@ -20,7 +23,6 @@ _defaults: &defaults
   credentials:
     - Ansible Vault
     - AAC Demo Host (SSH)
-  ask_variables_on_launch: true
 
 _local_only: &local_only
   job_type: run
@@ -30,7 +32,6 @@ _local_only: &local_only
   execution_environment: AAC Compliance EE
   credentials:
     - Ansible Vault
-  ask_variables_on_launch: true
 
 controller_templates:
 
@@ -92,26 +93,31 @@ controller_templates:
   # ── Demo: Comply (Sentinel) ─────────────────────────────────────────────────
 
   - <<: *local_only
+    ask_variables_on_launch: true
     name: AAC_Comply_ValidateAnsible
     description: "Comply demo: validate non-compliant Ansible playbook → DENY"
     playbook: ansible/playbooks/aac_comply_validate_ansible.yml
 
   - <<: *local_only
+    ask_variables_on_launch: true
     name: AAC_Comply_AnsibleDeny
     description: "Comply demo: Ansible DENY path (non-compliant example)"
     playbook: ansible/playbooks/aac_comply_validate_ansible.yml
 
   - <<: *local_only
+    ask_variables_on_launch: true
     name: AAC_Comply_AnsibleAllow
     description: "Comply demo: Ansible ALLOW path (compliant example)"
     playbook: ansible/playbooks/aac_comply_validate_ansible.yml
 
   - <<: *local_only
+    ask_variables_on_launch: true
     name: AAC_Comply_ValidateTerraform
     description: "Comply demo: validate non-compliant Terraform plan → DENY"
     playbook: ansible/playbooks/aac_comply_validate_terraform.yml
 
   - <<: *local_only
+    ask_variables_on_launch: true
     name: AAC_Comply_TerraformDeny
     description: "Comply demo: Terraform DENY path (non-compliant plan)"
     playbook: ansible/playbooks/aac_comply_validate_terraform.yml
@@ -149,6 +155,7 @@ controller_templates:
     ask_variables_on_launch: false
 
   - <<: *local_only
+    ask_variables_on_launch: true
     name: AAC_NERC_CIPReport
     description: "NERC-CIP: CIP-002 through CIP-015 + INSM compliance report → PostgreSQL"
     playbook: ansible/playbooks/nerc_cip_compliance_report.yml
@@ -166,11 +173,13 @@ controller_templates:
     ask_variables_on_launch: false
 
   - <<: *local_only
+    ask_variables_on_launch: true
     name: AAC_NERC_CIP010Baseline
     description: "CIP-010: Capture or check configuration baseline"
     playbook: ansible/playbooks/cip_010_baseline_capture.yml
 
   - <<: *local_only
+    ask_variables_on_launch: true
     name: AAC_NERC_CIP008Incident
     description: "CIP-008: Incident response — collect BES forensic evidence → PostgreSQL"
     playbook: ansible/playbooks/cip_008_incident_response.yml
@@ -178,6 +187,7 @@ controller_templates:
   # ── Demo: Digital Sovereignty ────────────────────────────────────────────────
 
   - <<: *local_only
+    ask_variables_on_launch: true
     name: AAC_DS_Assessment
     description: "Digital Sovereignty: 10-domain assessment → OPA → PostgreSQL"
     playbook: ansible/playbooks/digital_sovereignty_assessment.yml
@@ -198,6 +208,7 @@ controller_templates:
   # from opa_framework_map in site_config.yml.
 
   - <<: *local_only
+    ask_variables_on_launch: true
     name: AAC_Framework_DORA
     description: "EU DORA (Regulation 2022/2554): digital operational resilience assessment → OPA :8182 → PostgreSQL"
     playbook: ansible/playbooks/generic_framework_assessment.yml
@@ -206,6 +217,7 @@ controller_templates:
     survey_enabled: true
 
   - <<: *local_only
+    ask_variables_on_launch: true
     name: AAC_Framework_NIS2
     description: "EU NIS2 (Directive 2022/2555): network and information security assessment → OPA :8182 → PostgreSQL"
     playbook: ansible/playbooks/generic_framework_assessment.yml
@@ -214,6 +226,7 @@ controller_templates:
     survey_enabled: true
 
   - <<: *local_only
+    ask_variables_on_launch: true
     name: AAC_Framework_NIST80082
     description: "NIST SP 800-82 Rev 3: OT/ICS/SCADA security assessment → OPA :8183 → PostgreSQL"
     playbook: ansible/playbooks/generic_framework_assessment.yml
@@ -222,6 +235,7 @@ controller_templates:
     survey_enabled: true
 
   - <<: *local_only
+    ask_variables_on_launch: true
     name: AAC_Framework_NYDFS
     description: "NY DFS 23 NYCRR Part 500: financial services cybersecurity assessment → OPA :8182 → PostgreSQL"
     playbook: ansible/playbooks/generic_framework_assessment.yml
@@ -230,6 +244,7 @@ controller_templates:
     survey_enabled: true
 
   - <<: *local_only
+    ask_variables_on_launch: true
     name: AAC_Framework_SECCyber
     description: "SEC Cybersecurity Disclosure Rules: public company cyber assessment → OPA :8182 → PostgreSQL"
     playbook: ansible/playbooks/generic_framework_assessment.yml
@@ -238,6 +253,7 @@ controller_templates:
     survey_enabled: true
 
   - <<: *local_only
+    ask_variables_on_launch: true
     name: AAC_Framework_SWIFTCSP
     description: "SWIFT CSP: financial messaging security assessment → OPA :8182 → PostgreSQL"
     playbook: ansible/playbooks/generic_framework_assessment.yml
@@ -246,6 +262,7 @@ controller_templates:
     survey_enabled: true
 
   - <<: *local_only
+    ask_variables_on_launch: true
     name: AAC_Framework_HITRUST
     description: "HITRUST CSF v11.3: healthcare information security assessment → OPA :8182 → PostgreSQL"
     playbook: ansible/playbooks/generic_framework_assessment.yml
@@ -254,6 +271,7 @@ controller_templates:
     survey_enabled: true
 
   - <<: *local_only
+    ask_variables_on_launch: true
     name: AAC_Framework_TISAX
     description: "TISAX: automotive trusted information security assessment → OPA :8182 → PostgreSQL"
     playbook: ansible/playbooks/generic_framework_assessment.yml
@@ -262,6 +280,7 @@ controller_templates:
     survey_enabled: true
 
   - <<: *local_only
+    ask_variables_on_launch: true
     name: AAC_Framework_CFRPart11
     description: "FDA 21 CFR Part 11: electronic records and signatures assessment → OPA :8182 → PostgreSQL"
     playbook: ansible/playbooks/generic_framework_assessment.yml
@@ -270,6 +289,7 @@ controller_templates:
     survey_enabled: true
 
   - <<: *local_only
+    ask_variables_on_launch: true
     name: AAC_Framework_CISGCP
     description: "CIS GCP Foundation v2.0: Google Cloud security benchmark → OPA :8181 → PostgreSQL"
     playbook: ansible/playbooks/generic_framework_assessment.yml
@@ -280,6 +300,7 @@ controller_templates:
   # ── Technical Debt ───────────────────────────────────────────────────────────
 
   - <<: *local_only
+    ask_variables_on_launch: true
     name: AAC - Technical Debt Assessment
     description: "Technical debt scoring across all compliance domains → PostgreSQL + Grafana"
     playbook: ansible/playbooks/technical_debt_assessment.yml
