@@ -426,77 +426,77 @@
 # COMPLIANCE REPORT TEMPLATE
 # =================================================================
 
-- name: Create HTML report template
-  copy:
-    content: |
-      <!DOCTYPE html>
-      <html>
-      <head>
-          <title>ISO 27001:2022 Compliance Report</title>
-          <style>
-              body { font-family: Arial, sans-serif; margin: 20px; }
-              .header { background-color: #f0f0f0; padding: 20px; border-radius: 5px; }
-              .section { margin: 20px 0; padding: 15px; border: 1px solid #ddd; border-radius: 5px; }
-              .compliant { color: green; font-weight: bold; }
-              .non-compliant { color: red; font-weight: bold; }
-              .unknown { color: orange; font-weight: bold; }
-              table { border-collapse: collapse; width: 100%; }
-              th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
-              th { background-color: #f2f2f2; }
-          </style>
-      </head>
-      <body>
-          <div class="header">
-              <h1>ISO 27001:2022 Technical Controls Compliance Report</h1>
-              <p><strong>Host:</strong> {{ ansible_hostname }}</p>
-              <p><strong>Assessment Date:</strong> {{ ansible_date_time.iso8601 }}</p>
-              <p><strong>OS:</strong> {{ ansible_distribution }} {{ ansible_distribution_version }}</p>
-          </div>
+    - name: Create HTML report template
+      copy:
+        content: |
+          <!DOCTYPE html>
+          <html>
+          <head>
+              <title>ISO 27001:2022 Compliance Report</title>
+              <style>
+                  body { font-family: Arial, sans-serif; margin: 20px; }
+                  .header { background-color: #f0f0f0; padding: 20px; border-radius: 5px; }
+                  .section { margin: 20px 0; padding: 15px; border: 1px solid #ddd; border-radius: 5px; }
+                  .compliant { color: green; font-weight: bold; }
+                  .non-compliant { color: red; font-weight: bold; }
+                  .unknown { color: orange; font-weight: bold; }
+                  table { border-collapse: collapse; width: 100%; }
+                  th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+                  th { background-color: #f2f2f2; }
+              </style>
+          </head>
+          <body>
+              <div class="header">
+                  <h1>ISO 27001:2022 Technical Controls Compliance Report</h1>
+                  <p><strong>Host:</strong> {{ ansible_hostname }}</p>
+                  <p><strong>Assessment Date:</strong> {{ ansible_date_time.iso8601 }}</p>
+                  <p><strong>OS:</strong> {{ ansible_distribution }} {{ ansible_distribution_version }}</p>
+              </div>
           
-          <div class="section">
-              <h2>A.9 Access Control</h2>
-              <table>
-                  <tr><th>Control</th><th>Status</th><th>Details</th></tr>
-                  <tr><td>Password Policy</td><td class="compliant">Compliant</td><td>Minimum length enforced</td></tr>
-                  <tr><td>Privileged Access</td><td class="compliant">Compliant</td><td>SSH root login disabled</td></tr>
-              </table>
-          </div>
+              <div class="section">
+                  <h2>A.9 Access Control</h2>
+                  <table>
+                      <tr><th>Control</th><th>Status</th><th>Details</th></tr>
+                      <tr><td>Password Policy</td><td class="compliant">Compliant</td><td>Minimum length enforced</td></tr>
+                      <tr><td>Privileged Access</td><td class="compliant">Compliant</td><td>SSH root login disabled</td></tr>
+                  </table>
+              </div>
           
-          <div class="section">
-              <h2>A.10 Cryptography</h2>
-              <table>
-                  <tr><th>Control</th><th>Status</th><th>Details</th></tr>
-                  <tr><td>Disk Encryption</td><td class="{{ 'compliant' if 'crypt' in disk_encryption.stdout else 'non-compliant' }}">{{ 'Enabled' if 'crypt' in disk_encryption.stdout else 'Disabled' }}</td><td>{{ disk_encryption.stdout | default('Not detected') }}</td></tr>
-                  <tr><td>TLS Configuration</td><td class="compliant">Compliant</td><td>Modern TLS in use</td></tr>
-              </table>
-          </div>
+              <div class="section">
+                  <h2>A.10 Cryptography</h2>
+                  <table>
+                      <tr><th>Control</th><th>Status</th><th>Details</th></tr>
+                      <tr><td>Disk Encryption</td><td class="{{ 'compliant' if 'crypt' in disk_encryption.stdout else 'non-compliant' }}">{{ 'Enabled' if 'crypt' in disk_encryption.stdout else 'Disabled' }}</td><td>{{ disk_encryption.stdout | default('Not detected') }}</td></tr>
+                      <tr><td>TLS Configuration</td><td class="compliant">Compliant</td><td>Modern TLS in use</td></tr>
+                  </table>
+              </div>
           
-          <div class="section">
-              <h2>A.12 Operations Security</h2>
-              <table>
-                  <tr><th>Control</th><th>Status</th><th>Details</th></tr>
-                  <tr><td>Malware Protection</td><td class="{{ 'compliant' if 'clam' in antivirus_status.stdout.lower() else 'non-compliant' }}">{{ 'Detected' if 'clam' in antivirus_status.stdout.lower() else 'Not Detected' }}</td><td>{{ antivirus_status.stdout | default('No antivirus detected') }}</td></tr>
-                  <tr><td>Logging</td><td class="{{ 'compliant' if logging_config.stdout | length > 0 else 'non-compliant' }}">{{ 'Configured' if logging_config.stdout | length > 0 else 'Not Configured' }}</td><td>System logging active</td></tr>
-              </table>
-          </div>
+              <div class="section">
+                  <h2>A.12 Operations Security</h2>
+                  <table>
+                      <tr><th>Control</th><th>Status</th><th>Details</th></tr>
+                      <tr><td>Malware Protection</td><td class="{{ 'compliant' if 'clam' in antivirus_status.stdout.lower() else 'non-compliant' }}">{{ 'Detected' if 'clam' in antivirus_status.stdout.lower() else 'Not Detected' }}</td><td>{{ antivirus_status.stdout | default('No antivirus detected') }}</td></tr>
+                      <tr><td>Logging</td><td class="{{ 'compliant' if logging_config.stdout | length > 0 else 'non-compliant' }}">{{ 'Configured' if logging_config.stdout | length > 0 else 'Not Configured' }}</td><td>System logging active</td></tr>
+                  </table>
+              </div>
           
-          <div class="section">
-              <h2>A.13 Communications Security</h2>
-              <table>
-                  <tr><th>Control</th><th>Status</th><th>Details</th></tr>
-                  <tr><td>Firewall</td><td class="{{ 'compliant' if firewall_status.stdout | length > 0 else 'non-compliant' }}">{{ 'Enabled' if firewall_status.stdout | length > 0 else 'Disabled' }}</td><td>Network protection active</td></tr>
-                  <tr><td>Secure Protocols</td><td class="compliant">Compliant</td><td>SSH and TLS in use</td></tr>
-              </table>
-          </div>
+              <div class="section">
+                  <h2>A.13 Communications Security</h2>
+                  <table>
+                      <tr><th>Control</th><th>Status</th><th>Details</th></tr>
+                      <tr><td>Firewall</td><td class="{{ 'compliant' if firewall_status.stdout | length > 0 else 'non-compliant' }}">{{ 'Enabled' if firewall_status.stdout | length > 0 else 'Disabled' }}</td><td>Network protection active</td></tr>
+                      <tr><td>Secure Protocols</td><td class="compliant">Compliant</td><td>SSH and TLS in use</td></tr>
+                  </table>
+              </div>
           
-          <div class="section">
-              <h2>Summary</h2>
-              <p>This report provides a technical assessment of ISO 27001:2022 Annex A controls that can be validated through automated means. Organizational controls require manual verification.</p>
-              <p><strong>Note:</strong> This assessment covers technical implementations only. Policy, procedure, and organizational controls require separate validation.</p>
-          </div>
-      </body>
-      </html>
-    dest: "/tmp/iso27001-compliance-report.j2"
-    mode: '0644'
-  delegate_to: localhost
-  run_once: true
+              <div class="section">
+                  <h2>Summary</h2>
+                  <p>This report provides a technical assessment of ISO 27001:2022 Annex A controls that can be validated through automated means. Organizational controls require manual verification.</p>
+                  <p><strong>Note:</strong> This assessment covers technical implementations only. Policy, procedure, and organizational controls require separate validation.</p>
+              </div>
+          </body>
+          </html>
+        dest: "/tmp/iso27001-compliance-report.j2"
+        mode: '0644'
+      delegate_to: localhost
+      run_once: true

@@ -38,8 +38,16 @@ failing_frameworks contains fw if {
 framework_ok(fw) if {
 	f := host.frameworks[fw]
 	f.compliant == true
+	# Type guards before the comparisons. Rego orders values of different
+	# types, so without them a percentage of "12.5" (a string) compares as
+	# greater than any number and an age of null as less than any number: a
+	# malformed record was allowed. The API casts both today; this policy does
+	# not rely on that.
+	is_number(f.compliance_percentage)
 	f.compliance_percentage >= min_compliance
 	f.stale == false
+	is_number(f.age_seconds)
+	f.age_seconds >= 0
 	f.age_seconds <= max_age_seconds
 }
 

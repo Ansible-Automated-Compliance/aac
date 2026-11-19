@@ -7,6 +7,9 @@
 OPA_VERSION ?= 1.10.0
 PYTHON_VERSION ?= 3.11
 TEST_TIMEOUT ?= 300
+# The same exclusions CI uses (policy-validation.yml). Without them opa tries to
+# merge the library's converter fixtures and its own test files and fails.
+OPA_IGNORE := --ignore ".github" --ignore converters --ignore "*_test.rego" --ignore "test_*.rego"
 REPO_ROOT := $(shell pwd)
 
 # Colors for output
@@ -63,7 +66,7 @@ check-compilation: _check-submodules ## Check if policies compile
 test-unit: _check-submodules ## Run unit tests
 	@echo "🧪 Running unit tests..."
 	@if [ -f "tests/unit_tests.rego" ]; then \
-		timeout $(TEST_TIMEOUT) opa test policies/ tests/unit_tests.rego tests/comprehensive_test_suite.rego --verbose || (echo "$(RED)❌ Unit tests failed$(NC)" && exit 1); \
+		timeout $(TEST_TIMEOUT) opa test policies/ $(OPA_IGNORE) tests/unit_tests.rego tests/comprehensive_test_suite.rego --verbose || (echo "$(RED)❌ Unit tests failed$(NC)" && exit 1); \
 	else \
 		echo "$(YELLOW)⚠️  No unit tests found$(NC)"; \
 	fi
@@ -72,7 +75,7 @@ test-unit: _check-submodules ## Run unit tests
 test-integration: _check-submodules ## Run integration tests
 	@echo "🔗 Running integration tests..."
 	@if [ -f "tests/integration_tests.rego" ]; then \
-		timeout $(TEST_TIMEOUT) opa test policies/ tests/integration_tests.rego --verbose || (echo "$(RED)❌ Integration tests failed$(NC)" && exit 1); \
+		timeout $(TEST_TIMEOUT) opa test policies/ $(OPA_IGNORE) tests/integration_tests.rego --verbose || (echo "$(RED)❌ Integration tests failed$(NC)" && exit 1); \
 	else \
 		echo "$(YELLOW)⚠️  No integration tests found$(NC)"; \
 	fi
@@ -80,7 +83,7 @@ test-integration: _check-submodules ## Run integration tests
 test-performance: ## Run performance tests
 	@echo "⚡ Running performance tests..."
 	@if [ -f "tests/performance_tests.rego" ]; then \
-		timeout $(TEST_TIMEOUT) opa test . tests/performance_tests.rego --verbose || echo "$(YELLOW)⚠️  Performance tests had issues$(NC)"; \
+		timeout $(TEST_TIMEOUT) opa test policies/ $(OPA_IGNORE) tests/performance_tests.rego --verbose || echo "$(YELLOW)⚠️  Performance tests had issues$(NC)"; \
 	else \
 		echo "$(YELLOW)⚠️  No performance tests found$(NC)"; \
 	fi
