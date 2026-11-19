@@ -10,6 +10,15 @@
 # Fields: loader_key, display_name, domain, description, opa_container,
 #         policy_dir, tags (list), enabled_by_default, opa_keys (list)
 #
+# opa_keys is a CLAIM, and it is checked: every key listed must resolve to
+#   data.<key or opa_framework_path[key]>.main.compliance_report
+# when the entry's policy_dir is loaded (scripts/framework_coverage.py --check,
+# run in CI). An entry with `opa_keys: []` is a bundle that can be loaded but
+# has no report at that address -- an umbrella or legacy directory, a gate
+# policy, or a benchmark assessed by its own playbook under another package.
+# Corrected 2026-11-19: 27 listed keys resolved to nothing (for example
+# cis_saas, where every M365 playbook uses cis_m365_v7).
+#
 # A new install NEVER loads every bundle. Keep enabled_by_default to the small
 # set every estate needs; discovery (enroll_discovered_frameworks.yml) and the
 # customer add the rest.
@@ -144,7 +153,7 @@ framework_catalog_entries:
     policy_dir: benchmarks/cis/windows_server_2022
     tags: [cis, windows]
     enabled_by_default: false
-    opa_keys: [cis_windows_server_2022]
+    opa_keys: []
 
   - loader_key: cis_windows_server_2016
     display_name: "CIS Windows Server 2016"
@@ -244,7 +253,7 @@ framework_catalog_entries:
     policy_dir: benchmarks/cis/containers
     tags: [cis, container]
     enabled_by_default: false
-    opa_keys: [cis_containers]
+    opa_keys: []
 
   - loader_key: cis_aws
     display_name: "CIS AWS Foundations"
@@ -284,7 +293,7 @@ framework_catalog_entries:
     policy_dir: benchmarks/cis/cloud
     tags: [cis, cloud]
     enabled_by_default: false
-    opa_keys: [cis_cloud]
+    opa_keys: []
 
   - loader_key: cis_vmware
     display_name: "CIS VMware"
@@ -294,7 +303,7 @@ framework_catalog_entries:
     policy_dir: benchmarks/cis/vmware
     tags: [cis, vmware, hypervisor]
     enabled_by_default: false
-    opa_keys: [cis_vmware]
+    opa_keys: [cis_vmware_esxi, cis_vmware_esxi_9]
 
   - loader_key: cis_saas
     display_name: "CIS SaaS / M365"
@@ -304,7 +313,7 @@ framework_catalog_entries:
     policy_dir: benchmarks/cis/saas
     tags: [cis, saas, m365]
     enabled_by_default: false
-    opa_keys: [cis_saas]
+    opa_keys: [cis_m365_v7]
 
   - loader_key: cis_vyos
     display_name: "CIS VyOS"
@@ -334,7 +343,7 @@ framework_catalog_entries:
     policy_dir: benchmarks/cis/network_devices
     tags: [cis, network]
     enabled_by_default: false
-    opa_keys: [cis_network_devices]
+    opa_keys: [cis_cisco_ios_xe_17, cis_opnsense, cis_palo_alto_panos]
 
   - loader_key: cis_network
     display_name: "CIS Network (Cisco)"
@@ -344,7 +353,7 @@ framework_catalog_entries:
     policy_dir: benchmarks/cis/network
     tags: [cis, network, cisco]
     enabled_by_default: false
-    opa_keys: [cis_network]
+    opa_keys: []
 
   - loader_key: cis_mobile_devices
     display_name: "CIS Mobile Devices"
@@ -354,7 +363,7 @@ framework_catalog_entries:
     policy_dir: benchmarks/cis/mobile_devices
     tags: [cis, mobile]
     enabled_by_default: false
-    opa_keys: [cis_mobile_devices]
+    opa_keys: []
 
   - loader_key: cis_databases
     display_name: "CIS Databases"
@@ -364,7 +373,7 @@ framework_catalog_entries:
     policy_dir: benchmarks/cis/databases
     tags: [cis, database]
     enabled_by_default: false
-    opa_keys: [cis_databases]
+    opa_keys: []
 
   - loader_key: cis_mysql
     display_name: "CIS MySQL"
@@ -374,7 +383,7 @@ framework_catalog_entries:
     policy_dir: benchmarks/cis/mysql
     tags: [cis, database, mysql]
     enabled_by_default: false
-    opa_keys: [cis_mysql]
+    opa_keys: []
 
   - loader_key: cis_oracle
     display_name: "CIS Oracle Database"
@@ -384,7 +393,7 @@ framework_catalog_entries:
     policy_dir: benchmarks/cis/oracle
     tags: [cis, database, oracle]
     enabled_by_default: false
-    opa_keys: [cis_oracle]
+    opa_keys: []
 
   - loader_key: cis_oci
     display_name: "CIS Oracle Cloud Infrastructure Foundations"
@@ -414,7 +423,7 @@ framework_catalog_entries:
     policy_dir: benchmarks/cis/web_servers
     tags: [cis, webserver]
     enabled_by_default: false
-    opa_keys: [cis_web_servers]
+    opa_keys: []
 
   - loader_key: cis_apache
     display_name: "CIS Apache HTTP"
@@ -424,7 +433,7 @@ framework_catalog_entries:
     policy_dir: benchmarks/cis/apache
     tags: [cis, webserver, apache]
     enabled_by_default: false
-    opa_keys: [cis_apache]
+    opa_keys: []
 
   - loader_key: cis_nginx
     display_name: "CIS NGINX"
@@ -434,7 +443,7 @@ framework_catalog_entries:
     policy_dir: benchmarks/cis/nginx
     tags: [cis, webserver, nginx]
     enabled_by_default: false
-    opa_keys: [cis_nginx]
+    opa_keys: []
 
   - loader_key: cis_os_legacy
     display_name: "CIS OS (legacy variants)"
@@ -444,7 +453,7 @@ framework_catalog_entries:
     policy_dir: benchmarks/cis/os
     tags: [cis, linux, legacy]
     enabled_by_default: false
-    opa_keys: [cis_os_legacy]
+    opa_keys: []
 
   - loader_key: stigs
     display_name: "DISA STIGs"
@@ -454,7 +463,7 @@ framework_catalog_entries:
     policy_dir: benchmarks/stig
     tags: [stig, dod, disa, federal, rhel, oracle, windows, kubernetes, openshift, rke2, rancher, containers, database]
     enabled_by_default: false
-    opa_keys: [stig_rhel9, stig_rhel8, stig_oracle_linux_9, stig_oracle_linux_8, stig_oracle_database_19c, stig_oracle_mysql_8, stig_windows, stig_kubernetes, stig_openshift_4, stig_rke2]
+    opa_keys: [stig_rhel9, stig_rhel8, stig_oracle_linux_9, stig_oracle_linux_8, stig_oracle_database_19c, stig_oracle_mysql_8, stig_windows_server_2022, stig_windows_server_2025, stig_windows_11, stig_kubernetes, stig_openshift_4, stig_rke2, stig_amazon_linux_2023, stig_sles_15, stig_ubuntu_2204, stig_postgresql_16, stig_ms_sql_2016, stig_apache_2_4, stig_cisco_ios_xe_router, stig_vsphere_8_esxi]
 
   - loader_key: nist_800_53
     display_name: "NIST SP 800-53 Rev 5"
@@ -875,7 +884,7 @@ framework_catalog_entries:
     policy_dir: frameworks/management/corporate
     tags: [corporate, baseline]
     enabled_by_default: false
-    opa_keys: [corporate]
+    opa_keys: []
 
   - loader_key: technical_debt
     display_name: "Technical Debt Assessment"

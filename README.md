@@ -300,21 +300,35 @@ submodule at release tags. `aac-demo-datacenter` is likewise its own repository.
 
 ### Security Benchmarks (OPA service: `opa-security`)
 
-| Framework | Coverage | Highlights |
-| --------- | -------- | ---------- |
-| **CIS RHEL 9** | 263 recommendations in the default profile; 352 per-control results published | Benchmark v3.0.0; + 3 extended STIG/NIST hardening modules; EDA drift detection |
-| **CIS RHEL 8** | 257 recommendations in the default profile; 322 per-control results published | Benchmark v4.0.0 |
-| **CIS Ubuntu 22.04** | 246 recommendations in the default profile | Benchmark v3.0.0 |
-| **CIS Windows Server 2022** | 400 recommendations in the default profile; 408 per-control results published | Benchmark v5.1.0 |
-| **CIS AWS** | 94 controls | CIS AWS Foundations |
-| **CIS Azure** | 128 controls | CIS Azure Foundations |
-| **CIS GCP** | 93 controls | CIS Google Cloud Platform Foundation |
-| **CIS Docker** | 117 controls | Benchmark v1.9.0 |
-| **CIS Kubernetes** | 134 controls | Benchmark v2.1.0 |
-| **NIST 800-53 Rev 5** | 109 controls in 7 of the 20 families (AC, AU, CM, IA, IR, SC, SI) | The other 13 families are not implemented |
-| **DISA STIG** | RHEL 9: 104 rules, RHEL 8: 53, RHEL 10: 100, Oracle Linux 9: 114, Oracle Linux 8: 95, Windows Server 2022: 103; Oracle Database 19c (collectors shipped) | A subset of each STIG, not the whole of it — see `docs/frameworks/ORACLE_STIG_ASSESSMENT.md` |
+<!-- BEGIN GENERATED: framework coverage (scripts/framework_coverage.py --write) -->
 
-Each figure is what the module itself reports as `total_controls` when evaluated at the pinned library commit `a84e39cf`. It is the number of controls the module evaluates, which is not a statement that the published benchmark has no others. [How the figures are measured](#cis-coverage-and-the-assessment-contract).
+| Framework | Controls evaluated | Standard as the module names it |
+|---|---|---|
+| **CIS RHEL 9** (`cis_rhel9`) | 263 | CIS Red Hat Enterprise Linux 9 Benchmark v3.0.0 |
+| **CIS RHEL 8** (`cis_rhel8`) | 257 | CIS Red Hat Enterprise Linux 8 Benchmark v4.0.0 |
+| **CIS RHEL 10** (`cis_rhel10`) | 312 | CIS Red Hat Enterprise Linux 10 Benchmark v1.0.1 |
+| **CIS Ubuntu 22.04** (`cis_ubuntu_2204`) | 246 | CIS Ubuntu Linux 22.04 LTS Benchmark v3.0.0 |
+| **CIS Windows Server 2022** (`cis_windows_2022`) | 400 | CIS Microsoft Windows Server 2022 Benchmark v5.1.0 |
+| **CIS AWS Foundations** (`cis_aws`) | 94 | CIS Amazon Web Services Foundations Benchmark |
+| **CIS Azure Foundations** (`cis_azure`) | 128 | CIS Microsoft Azure Foundations Benchmark |
+| **CIS GCP Foundations** (`cis_gcp`) | 93 | CIS Google Cloud Platform Foundation Benchmark |
+| **CIS Docker** (`cis_docker`) | 117 | CIS Docker Benchmark v1.9.0 |
+| **CIS Kubernetes** (`cis_kubernetes`) | 134 | CIS Kubernetes Benchmark v2.1.0 |
+| **CIS SaaS / M365** (`cis_m365_v7`) | 160 | CIS Microsoft 365 Foundations Benchmark |
+| **DISA STIGs** (`stig_rhel9`) | 104 |  |
+| **DISA STIGs** (`stig_rhel8`) | 53 |  |
+| **DISA STIGs** (`stig_windows_server_2022`) | 103 |  |
+| **NIST SP 800-53 Rev 5** (`nist_800_53`) | 109 | NIST SP 800-53 Rev 5 |
+| **NIST SP 800-171 Rev 3** (`nist_800_171`) | 97 | NIST SP 800-171 Rev 3 |
+| **ISO/IEC 27001:2022** (`iso27001`) | 93 | ISO/IEC 27001:2022 |
+| **PCI-DSS v4.0** (`pci_dss`) | 12 | PCI DSS v4.0.1 |
+| **NERC CIP (CIP-002 to CIP-015)** (`nerc_cip`) | 33 | NERC CIP — Critical Infrastructure Protection |
+
+Measured at policy library pin `a84e39cf`: 101 of 107 catalog keys return a report with a control count. Each number is the module's own `total_controls`, the controls it evaluates, not the size of the published standard. Every framework, and the keys that fall short: [docs/reference/FRAMEWORK_COVERAGE.md](docs/reference/FRAMEWORK_COVERAGE.md).
+
+<!-- END GENERATED: framework coverage -->
+
+NIST 800-53 Rev 5 covers 7 of the 20 control families (AC, AU, CM, IA, IR, SC, SI). Each STIG module evaluates a subset of its STIG.
 
 ### Regulatory Compliance (OPA service: `opa-compliance`)
 

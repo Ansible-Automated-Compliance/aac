@@ -96,6 +96,16 @@ opa_framework_map:
   cis_azure:              security
   cis_cloud:              security
   cis_vmware:             security
+  cis_vmware_esxi:        security
+  cis_vmware_esxi_9:      security
+  cis_m365_v7:            security
+  cis_cisco_ios_xe_17:    security
+  cis_opnsense:           security
+  cis_palo_alto_panos:    security
+  cis_windows_server_2016: security
+  cis_windows_10:         security
+  cis_windows_11:         security
+  cis_postgresql:         security
   cis_openshift:          security
   cis_aks:                security
   cis_eks:                security

@@ -1,0 +1,59 @@
+name: Framework Coverage
+
+# Why this exists
+# ---------------
+# Two faults reached main without any check noticing:
+#
+#   - The README stated coverage by hand ("Complete", "300+ controls, full").
+#     An audit on 2026-11-18 measured the modules and found the claims well
+#     above what shipped.
+#   - 27 keys in the framework catalog resolved to nothing in OPA, so a
+#     customer could select a framework and get an empty report. A pin bump
+#     then made eleven more keys fail outright, because the library and this
+#     repository both defined the same entrypoint. Every test stayed green.
+#
+# This job evaluates every catalog key against the pinned policy library, the
+# way an assessment queries it, and fails when
+#   - a key resolves to nothing, or returns a report without a control count,
+#     and is not on the known-gaps list;
+#   - a key on the known-gaps list has been fixed (so the list only shrinks);
+#   - the generated README table or reference document is out of date.
+#
+# It runs on every pull request and push to main, with no path filter: the
+# result depends on the catalog, the bridges, the pin and the README, and it
+# takes seconds.
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+jobs:
+  coverage:
+    name: Catalog keys resolve; coverage figures are current
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          submodules: recursive
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: '3.11'
+
+      - name: Install PyYAML and OPA
+        run: |
+          pip install pyyaml
+          curl -sSL -o "$RUNNER_TEMP/opa" \
+            https://openpolicyagent.org/downloads/v1.10.0/opa_linux_amd64_static
+          chmod +x "$RUNNER_TEMP/opa"
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+
+      - name: Measure and compare
+        run: python scripts/framework_coverage.py --check

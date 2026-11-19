@@ -1,0 +1,20 @@
+---
+# Known gaps in framework coverage, checked by scripts/framework_coverage.py.
+#
+# The check fails when a catalog key falls short and is NOT listed here, and
+# also when a key listed here has been fixed, so this file can only shrink
+# deliberately. Add a key only with the reason beside it.
+
+# Keys that resolve to nothing: a customer who selects one gets no report.
+unresolved: []
+
+# Keys whose report carries no numeric total_controls. The assessment returns a
+# report, but nothing says how many controls it evaluated. These are library
+# modules that predate the total_controls contract; the fix is in the library.
+no_control_count:
+  - cis_controls_v8
+  - cjis
+  - cyber_essentials
+  - essential_eight
+  - irs_1075
+  - zero_trust
