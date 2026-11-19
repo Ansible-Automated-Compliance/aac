@@ -3,6 +3,7 @@
 # Triggered when the unit file is written or updated.
 
 - name: reload_and_enable_mcp_unit
+  changed_when: true
   shell: |
     systemctl --user daemon-reload
     systemctl --user enable container-{{ aac_mcp_container_name }}.service

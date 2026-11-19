@@ -71,6 +71,7 @@
       delegate_to: "{{ aac_ssh_delegate }}"
 
     - name: Restore from compressed backup (gz)
+      changed_when: true
       shell: >
         gunzip -c {{ backup_file }} |
         PGPASSWORD="{{ compliance_db_password }}"
@@ -81,6 +82,7 @@
       register: restore_gz
 
     - name: Restore from plain SQL backup
+      changed_when: true
       shell: >
         PGPASSWORD="{{ compliance_db_password }}"
         psql -U {{ pg_user }} -h 127.0.0.1 {{ pg_db }} < {{ backup_file }}

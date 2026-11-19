@@ -96,6 +96,7 @@
     # ── Run scripts/install.sh ─────────────────────────────────────────────────
     # Deploys OPA containers and PostgreSQL with full schema
     - name: Run install.sh (OPA containers + PostgreSQL)
+      changed_when: true
       ansible.builtin.shell: |
         cd {{ repo_dir }}
         ./scripts/install.sh \
@@ -123,17 +124,18 @@
     # ── Run scripts/configure_aap.sh ──────────────────────────────────────────
     # Creates AAP project, templates, runs bootstrap sequence
     - name: Run configure_aap.sh (create AAP project + templates)
+      changed_when: true
       ansible.builtin.shell: |
         cd {{ repo_dir }}
         ./scripts/configure_aap.sh \
           --aap-host {{ target_host }} \
-          --aap-password "$AAC_NEW_AAP_PASSWORD" \
           2>&1
-      # The password reaches the host through the task environment, so it is not
-      # in the rendered command that AAP records with the job. no_log hides the
-      # rest; the script's own output is shown by the next task.
+      # The script reads the password from AAC_AAP_PASSWORD, so it is neither in
+      # the rendered command that AAP records with the job nor in a process
+      # argument list on the host. no_log hides the rest; the script's own
+      # output is shown by the next task.
       environment:
-        AAC_NEW_AAP_PASSWORD: "{{ new_aap_admin_password }}"
+        AAC_AAP_PASSWORD: "{{ new_aap_admin_password }}"
       no_log: true
       delegate_to: "{{ target_host }}"
       vars:

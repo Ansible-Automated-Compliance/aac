@@ -150,6 +150,7 @@
 
     # ── Step 4: Push to registry ─────────────────────────────────────────
     - name: Login to quay.io (if credentials provided)
+      changed_when: true
       ansible.builtin.command:
         argv:
           - podman
@@ -166,6 +167,7 @@
       no_log: true
 
     - name: Push arch-tagged image
+      changed_when: true
       ansible.builtin.command:
         cmd: "podman push {{ ee_full_tag }}"
       when: push_to_registry | bool

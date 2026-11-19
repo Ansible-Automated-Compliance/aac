@@ -53,6 +53,7 @@
       register: reg_result
 
     - name: Enable AAP 2.6 repository
+      changed_when: true
       ansible.builtin.shell: |
         sudo subscription-manager repos \
           --enable ansible-automation-platform-2.6-for-rhel-9-x86_64-rpms
@@ -62,6 +63,7 @@
 
     # ── System Update ─────────────────────────────────────────────────────────
     - name: Update all packages
+      changed_when: true
       ansible.builtin.shell: |
         sudo dnf update -y
       delegate_to: "{{ target_host }}"
@@ -72,6 +74,7 @@
 
     # ── Required Packages ─────────────────────────────────────────────────────
     - name: Install required packages
+      changed_when: true
       ansible.builtin.shell: |
         sudo dnf install -y \
           podman \
@@ -116,6 +119,7 @@
 
     # ── Firewall Configuration ────────────────────────────────────────────────
     - name: Enable and start firewalld
+      changed_when: true
       ansible.builtin.shell: |
         sudo systemctl enable --now firewalld
       delegate_to: "{{ target_host }}"
@@ -123,6 +127,7 @@
         ansible_user: ec2-user
 
     - name: Open required firewall ports
+      changed_when: true
       ansible.builtin.shell: |
         sudo firewall-cmd --permanent --add-service=https
         sudo firewall-cmd --permanent --add-service=http
@@ -147,6 +152,7 @@
 
     # ── SELinux Contexts ──────────────────────────────────────────────────────
     - name: Create OPA policy directories
+      changed_when: true
       ansible.builtin.shell: |
         sudo mkdir -p /etc/opa/security /etc/opa/compliance /etc/opa/ot
         sudo chmod 755 /etc/opa /etc/opa/security /etc/opa/compliance /etc/opa/ot
@@ -155,6 +161,7 @@
         ansible_user: ec2-user
 
     - name: Set SELinux context for OPA directories
+      changed_when: true
       ansible.builtin.shell: |
         sudo semanage fcontext -a -t container_file_t "/etc/opa(/.*)?"
         sudo restorecon -Rv /etc/opa
@@ -163,6 +170,7 @@
         ansible_user: ec2-user
 
     - name: Create MCP server directory
+      changed_when: true
       ansible.builtin.shell: |
         sudo mkdir -p /opt/aap-mcp-server
         sudo semanage fcontext -a -t container_file_t "/opt/aap-mcp-server(/.*)?"
@@ -173,6 +181,7 @@
 
     # ── Enable podman linger (for rootless containers at boot) ────────────────
     - name: Enable loginctl linger for ec2-user
+      changed_when: true
       ansible.builtin.shell: |
         sudo loginctl enable-linger ec2-user
       delegate_to: "{{ target_host }}"
