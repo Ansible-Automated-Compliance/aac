@@ -81,6 +81,7 @@ facts:
 
 from ansible.module_utils.basic import AnsibleModule
 from ansible_collections.aac.m365.plugins.module_utils.pwsh import (
+    LIST,
     PwshRunner,
     PwshError,
 )
@@ -91,23 +92,25 @@ QUERIES = {
         "Workload, TeamsLocation, ExchangeLocation, SharePointLocation, "
         "OneDriveLocation, EndpointDlpLocation, Comment)",
         ["3.2.1", "3.2.2", "3.2.3"],
+        LIST,
     ),
     "label_policies": (
         "@(Get-LabelPolicy | Select-Object Name, Mode, Enabled, "
         "Workload, Labels, ExchangeLocation)",
         ["3.3.1"],
+        LIST,
     ),
 }
 
 
 def collect_facts(runner):
     facts, unavailable = {}, {}
-    for key, (snippet, controls) in QUERIES.items():
-        value, err = runner.try_run(snippet)
+    for key, (snippet, controls, shape) in QUERIES.items():
+        value, err = runner.try_run(snippet, shape=shape)
         if err:
             unavailable[key] = "%s (blocks %s)" % (err, ", ".join(controls))
         else:
-            facts[key] = value if isinstance(value, list) else [value]
+            facts[key] = value
 
     facts["unavailable"] = unavailable
     facts["collected"] = True

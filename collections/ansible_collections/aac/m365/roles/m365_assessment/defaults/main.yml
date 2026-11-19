@@ -78,12 +78,42 @@ m365_db_password: "{{ compliance_db_password | default('') }}"
 # expiry. OPA unreachable or module not loaded ⇒ nothing is waived.
 m365_waivers_enabled: true
 
+# ── Attestations ──────────────────────────────────────────────────────
+# Operator attestations for the controls the policy cannot measure (its
+# no_collector_path ledger: requires_attestation, unresolved and
+# not_implemented -- 16 controls at v7.0.0). Same contract as the Windows
+# collector's cis_windows_attestations; passed to the policy as
+# input.attestations. Every field is required:
+#
+#   m365_attestations:
+#     - control_id: "5.2.4.1"
+#       observed: true                 # the recommended state was observed
+#       attested_by: "Jane Operator, Identity team"
+#       attested_on: "2026-11-18"      # YYYY-MM-DD
+#       evidence_ref: "CHG0012345 / screenshot in the evidence store"
+#
+# A control_id that is not in the policy's ledger fails the play (a
+# measured control cannot be attested away), and so does observed: false
+# -- the policy does not read `observed`, so such an entry would clear the
+# control rather than record it as failed. Leave a control out to have it
+# reported as not attested.
+m365_attestations: []
+
 # ── Behaviour ─────────────────────────────────────────────────────────
 # The PowerShell-backed sections need an execution environment carrying
 # pwsh (aac-m365-ee). When it is absent the collectors report every fact
 # as unavailable and the Rego fails closed, which is correct but noisy --
 # set this false to skip them deliberately and have the report say so.
 m365_include_powershell_sections: true
+
+# ── Shape capture (diagnostic, default off) ───────────────────────────
+# true -> after collection, record the SHAPE of every collected fact (JSON
+# types, list lengths, field names and types; distinct values only for an
+# allowlist of non-sensitive configuration fields) and nothing else. See
+# tasks/shape_capture.yml for where it lands. Use it once on a real tenant
+# to settle the shapes that could not be confirmed without one.
+m365_shape_capture: false
+m365_shape_capture_dir: "{{ lookup('ansible.builtin.env', 'TMPDIR') | default('/tmp', true) }}/aac_m365_shape"
 
 # Fail the play when a section cannot be evaluated at all. Off by default
 # so a partial assessment still produces evidence; the report always

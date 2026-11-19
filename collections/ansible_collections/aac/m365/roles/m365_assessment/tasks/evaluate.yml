@@ -31,6 +31,25 @@
       policy bundle is loaded and that every report field is defaulted.
   when: m365_report | length == 0
 
+# Attested ids are checked against the ledger the policy itself reports,
+# not a copy kept here, so the accepted names cannot drift from the
+# library. A measured control cannot be attested away.
+- name: Fail on an attestation for a control the policy does not list as unmeasurable
+  vars:
+    _ledger_ids: >-
+      {{ ((m365_report.no_collector_path.requires_attestation | default({})).keys() | list)
+         + ((m365_report.no_collector_path.unresolved | default({})).keys() | list)
+         + ((m365_report.no_collector_path.not_implemented | default({})).keys() | list) }}
+    _unknown: >-
+      {{ m365_attestations | default([]) | map(attribute='control_id') | map('string')
+         | reject('in', _ledger_ids) | list }}
+  ansible.builtin.fail:
+    msg: >-
+      m365_attestations names {{ _unknown | join(', ') }}, which the policy does
+      not list as requiring attestation (requires_attestation, unresolved or
+      not_implemented). Accepted ids: {{ _ledger_ids | sort | join(', ') }}.
+  when: _unknown | length > 0
+
 - name: Fail if the assessment was incomplete and that was configured to be fatal
   ansible.builtin.fail:
     msg: >-
