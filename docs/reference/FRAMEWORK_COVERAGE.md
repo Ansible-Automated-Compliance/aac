@@ -2,7 +2,7 @@
 
 > **Generated** by `scripts/framework_coverage.py --write`. Do not edit by hand.
 
-Policy library pin: `a84e39cf`. Of 107 catalog keys, **101 return a report with a control count**, 6 return a report without one, and 0 resolve to nothing.
+Policy library pin: `3d3976e8`. Of 107 catalog keys, **101 return a report with a control count**, 6 return a report without one, and 0 resolve to nothing.
 
 "Controls evaluated" is the module's own `total_controls` on empty input: the number of controls it evaluates. It is not a statement about how many controls the published standard contains.
 
@@ -84,7 +84,7 @@ Policy library pin: `a84e39cf`. Of 107 catalog keys, **101 return a report with 
 | `cis_windows_server_2016` | CIS Windows Server 2016 | security | 415 | CIS Microsoft Windows Server 2016 Benchmark v4.0.0 |
 | `crypto_miner_detection` | Crypto Miner Detection | security | 8 |  |
 | `k8s_pss` | Kubernetes Pod Security Standards | security | 18 | Kubernetes Pod Security Standards |
-| `nist_800_53` | NIST SP 800-53 Rev 5 | security | 109 | NIST SP 800-53 Rev 5 |
+| `nist_800_53` | NIST SP 800-53 Rev 5 | security | 266 | NIST SP 800-53 Rev 5 |
 | `nist_csf` | NIST Cybersecurity Framework 2.0 | security | 106 | NIST Cybersecurity Framework 2.0 |
 | `nist_ssdf` | NIST SSDF (SP 800-218 v1.1) | security | 42 | NIST SSDF (SP 800-218 v1.1) |
 | `nsa_cisa_k8s` | NSA/CISA Kubernetes Hardening v1.2 | security | 43 | NSA/CISA Kubernetes Hardening Guidance |

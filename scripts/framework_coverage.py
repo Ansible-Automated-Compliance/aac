@@ -60,9 +60,11 @@ README_KEYS = [
 
 
 def pin() -> str:
-    out = subprocess.run(["git", "ls-tree", "HEAD", "policies"], cwd=REPO,
+    """The pinned library commit, read from the index rather than HEAD so the
+    label is right while a pin bump or a merge is staged but not yet committed."""
+    out = subprocess.run(["git", "ls-files", "-s", "policies"], cwd=REPO,
                          capture_output=True, text=True).stdout.split()
-    return out[2][:8] if len(out) > 2 else "unknown"
+    return out[1][:8] if len(out) > 1 else "unknown"
 
 
 def evaluate(opa: str, policies: pathlib.Path, entry: dict, key: str, path: str) -> dict:

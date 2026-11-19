@@ -1,5 +1,5 @@
 {
-  "pin": "a84e39cf",
+  "pin": "3d3976e8",
   "rows": [
     {
       "container": "compliance",
@@ -1065,7 +1065,7 @@
       "reason": "",
       "resolves": true,
       "standard": "NIST SP 800-53 Rev 5",
-      "total_controls": 109
+      "total_controls": 266
     },
     {
       "container": "security",

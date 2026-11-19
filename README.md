@@ -13,7 +13,7 @@
 [![OPA](https://img.shields.io/badge/OPA-Rego_v1-green.svg)](https://www.openpolicyagent.org/)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-15+-blue.svg)](https://www.postgresql.org/)
 [![Frameworks](https://img.shields.io/badge/Frameworks-55+-orange.svg)](#compliance-frameworks)
-[![Policies](https://img.shields.io/badge/Rego_Policies-1052-brightgreen.svg)](https://github.com/ynotbhatc/rego_policy_libraries)
+[![Policies](https://img.shields.io/badge/Rego_Policies-1065-brightgreen.svg)](https://github.com/ynotbhatc/rego_policy_libraries)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
 **Repository:** [https://github.com/ansible-automated-compliance/aac](https://github.com/ansible-automated-compliance/aac)
@@ -163,13 +163,13 @@ git submodule update --remote policies/
 
 ### Policy Library Coverage
 
-Policy counts are `.rego` files, tests excluded, at the pinned library commit `a84e39cf` (1,052 files in total). They are file counts, not control counts; the measured control figures are in [Compliance Frameworks](#compliance-frameworks).
+Policy counts are `.rego` files, tests excluded, at the pinned library commit `3d3976e8` (1,065 files in total). They are file counts, not control counts; the measured control figures are in [Compliance Frameworks](#compliance-frameworks).
 
 | Domain | Path | Policies | Frameworks |
 | -------- | ------ | ---------- | ------------ |
 | CIS Benchmarks | `benchmarks/cis/` | 449 | RHEL 9/8/10, Ubuntu, Windows, AWS, Azure, GCP, Docker, K8s |
 | DISA STIGs | `benchmarks/stig/` | 136 | RHEL 8/9, Oracle Linux 8/9, Oracle Database 19c, Oracle MySQL 8.0, Ubuntu 20/22, SLES 15, Amazon Linux 2023, Windows 10/11 + Server 2016–2025, K8s, OpenShift 4, VMware vSphere 8, Cisco IOS-XE, MS SQL 2016, PostgreSQL 16, Apache |
-| Federal | `frameworks/federal/` | 113 | NIST 800-53, FISMA, FedRAMP, CMMC, **NIST SP 800-171 r3**, **NIST SSDF**, **Zero Trust**, **CJIS**, **IRS 1075**, **CISA CPG** |
+| Federal | `frameworks/federal/` | 126 | NIST 800-53, FISMA, FedRAMP, CMMC, **NIST SP 800-171 r3**, **NIST SSDF**, **Zero Trust**, **CJIS**, **IRS 1075**, **CISA CPG** |
 | Management | `frameworks/management/` | 72 | ISO 27001, SOC 2, Corporate governance, **CSA CCM v4.0** |
 | Financial | `frameworks/financial/` | 32 | PCI-DSS, SOX |
 | Privacy | `frameworks/privacy/` | 36 | GDPR, HIPAA, **ISO 27701**, **CCPA/CPRA** |
@@ -179,10 +179,10 @@ Policy counts are `.rego` files, tests excluded, at the pinned library commit `a
 | Governance | `governance/` | 26 | AI governance, MCP tool-call controls, **EU AI Act (2024/1689)** |
 | Threat Detection | `threat_detection/` | 2 | Crypto mining (xmrig, 20+ miners) |
 
-*(Per-domain counts measured at the pinned submodule commit `a84e39cf`, 2026-11-18; remaining files
+*(Per-domain counts measured at the pinned submodule commit `3d3976e8`, 2026-11-19; remaining files
 sit in shared/other paths.)*
 
-**Total: 1,052 policy files** (2,463 including tests) across **55+ frameworks** — all using Rego v1
+**Total: 1,065 policy files** (2,506 including tests) across **55+ frameworks** — all using Rego v1
 syntax with `import rego.v1`. Counted at the pinned submodule commit; the number drifts with every
 merge, so count it rather than quoting it:
 
@@ -318,17 +318,17 @@ submodule at release tags. `aac-demo-datacenter` is likewise its own repository.
 | **DISA STIGs** (`stig_rhel9`) | 104 |  |
 | **DISA STIGs** (`stig_rhel8`) | 53 |  |
 | **DISA STIGs** (`stig_windows_server_2022`) | 103 |  |
-| **NIST SP 800-53 Rev 5** (`nist_800_53`) | 109 | NIST SP 800-53 Rev 5 |
+| **NIST SP 800-53 Rev 5** (`nist_800_53`) | 266 | NIST SP 800-53 Rev 5 |
 | **NIST SP 800-171 Rev 3** (`nist_800_171`) | 97 | NIST SP 800-171 Rev 3 |
 | **ISO/IEC 27001:2022** (`iso27001`) | 93 | ISO/IEC 27001:2022 |
 | **PCI-DSS v4.0** (`pci_dss`) | 12 | PCI DSS v4.0.1 |
 | **NERC CIP (CIP-002 to CIP-015)** (`nerc_cip`) | 33 | NERC CIP — Critical Infrastructure Protection |
 
-Measured at policy library pin `a84e39cf`: 101 of 107 catalog keys return a report with a control count. Each number is the module's own `total_controls`, the controls it evaluates, not the size of the published standard. Every framework, and the keys that fall short: [docs/reference/FRAMEWORK_COVERAGE.md](docs/reference/FRAMEWORK_COVERAGE.md).
+Measured at policy library pin `3d3976e8`: 101 of 107 catalog keys return a report with a control count. Each number is the module's own `total_controls`, the controls it evaluates, not the size of the published standard. Every framework, and the keys that fall short: [docs/reference/FRAMEWORK_COVERAGE.md](docs/reference/FRAMEWORK_COVERAGE.md).
 
 <!-- END GENERATED: framework coverage -->
 
-NIST 800-53 Rev 5 covers 7 of the 20 control families (AC, AU, CM, IA, IR, SC, SI). Each STIG module evaluates a subset of its STIG.
+NIST 800-53 Rev 5 covers all 20 control families. Each STIG module evaluates a subset of its STIG.
 
 ### Regulatory Compliance (OPA service: `opa-compliance`)
 
