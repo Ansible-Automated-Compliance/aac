@@ -206,11 +206,20 @@ def test_empty_profile_exits_one(tmp_path):
 # set our load playbook can consume.
 
 
+def _require_profile(profile_name):
+    """The demo profiles moved to the aac-demos repository on 2026-09-01. Skip,
+    with the reason, when a profile is not in this tree; a profile that IS here
+    is still held to the contract."""
+    if not (REPO_ROOT / "customer_profiles" / profile_name).exists():
+        pytest.skip(f"customer_profiles/{profile_name} is not shipped in this repository")
+
+
 @pytest.mark.parametrize(
     "profile_name",
     ["demos/golden_image.yml", "demos/comply.yml", "examples/acme_energy.yml"],
 )
 def test_shipped_profile_derives_non_empty(profile_name):
+    _require_profile(profile_name)
     rc, out, err = run(REPO_ROOT / "customer_profiles" / profile_name)
     assert rc == 0, err
     keys = [k for k in out.strip().splitlines() if k]
@@ -221,6 +230,7 @@ def test_golden_image_derives_minimum_set():
     """The point of the golden_image profile is that it's TIGHT — RHEL 9
     + CIS, that's it. If derivation pulls in more, either the profile
     is wrong or the mapping accidentally grew."""
+    _require_profile("demos/golden_image.yml")
     rc, out, _ = run(REPO_ROOT / "customer_profiles" / "demos" / "golden_image.yml")
     assert rc == 0
     keys = set(out.strip().splitlines())

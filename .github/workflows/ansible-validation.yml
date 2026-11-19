@@ -40,6 +40,8 @@ on:
       - 'ansible/**'
       - 'extensions/**'
       - 'collections/**'
+      - 'install/**'
+      - 'examples/**'
       - '.github/workflows/ansible-validation.yml'
   # No paths filter on pull_request: the job must report on every PR so the
   # required check is always satisfiable. Relevance is decided at runtime by
@@ -65,8 +67,13 @@ jobs:
       # Decide whether this PR actually touches ansible content. On push the
       # workflow is already path-filtered to ansible-relevant paths, so it is
       # always relevant there. On pull_request, diff the base against the head:
-      # if nothing under ansible/, extensions/, or collections/ changed, the
+      # if nothing under ansible/, extensions/, collections/, install/ or
+      # examples/ changed, and this workflow did not change either, the
       # validation has nothing to check and the job passes without running it.
+      # install/ and examples/ were added 2026-11-18 after two install task
+      # files with unquoted `name: {{ ... }}` values reached main unparseable.
+      # The workflow counts as relevant so that a change to the gate runs the
+      # gate.
       - name: Detect ansible-relevant changes
         id: detect
         shell: bash
@@ -80,12 +87,12 @@ jobs:
         run: |
           if [ "$EVENT_NAME" = "pull_request" ]; then
             files="$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")"
-            if printf '%s\n' "$files" | grep -E '^(ansible/|extensions/|collections/)' >/dev/null; then
+            if printf '%s\n' "$files" | grep -E '^(ansible/|extensions/|collections/|install/|examples/|\.github/workflows/ansible-validation\.yml$)' >/dev/null; then
               echo "changed=true"  >> "$GITHUB_OUTPUT"
               echo "Ansible-relevant changes detected — running full validation."
             else
               echo "changed=false" >> "$GITHUB_OUTPUT"
-              echo "No ansible/, extensions/, or collections/ changes in this PR —"
+              echo "No ansible/, extensions/, collections/, install/ or examples/ changes in this PR —"
               echo "nothing for the ansible gate to validate. Passing."
             fi
           else
@@ -126,7 +133,7 @@ jobs:
           python - <<'PY'
           import pathlib, sys, yaml
 
-          roots = ['ansible', 'extensions', 'collections']
+          roots = ['ansible', 'extensions', 'collections', 'install', 'examples']
           bad = []
           count = 0
           for root in roots:
