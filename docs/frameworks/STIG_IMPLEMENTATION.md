@@ -14,7 +14,7 @@
 
 ## Overview
 
-Complete **DISA STIG (Security Technical Implementation Guide)** compliance policies for Department of Defense (DoD) and federal systems. Covers **8 operating systems** with automated assessment via OPA and Ansible.
+**DISA STIG (Security Technical Implementation Guide)** compliance policies for Department of Defense (DoD) and federal systems. Each module evaluates a subset of its STIG (see the measured table below). Covers **6 operating systems** with automated assessment via OPA and Ansible.
 
 ### What is STIG?
 
@@ -27,32 +27,37 @@ Complete **DISA STIG (Security Technical Implementation Guide)** compliance poli
 
 ## Supported Operating Systems
 
-| OS | STIG Version | Total Checks | Status |
-|----|--------------|--------------|--------|
-| **Windows Server 2022** | V2R1 | ~300+ | ✅ Ready |
-| **Windows Server 2019** | V3R2 | ~300+ | ✅ Ready |
-| **Windows Server 2016** | V2R7 | ~300+ | ✅ Ready |
-| **Windows 11** | V2R2 | ~280+ | ✅ Ready |
-| **Windows 10** | V3R2 | ~280+ | ✅ Ready |
-| **RHEL 9** | V2R2 | ~320+ | ✅ Ready |
-| **RHEL 8** | V2R1 | ~320+ | ✅ Ready |
-| **Ubuntu 20.04 LTS** | V2R1 | ~280+ | ✅ Ready |
+| OS | Rules the module evaluates | Status |
+|----|----------------------------|--------|
+| **Windows Server 2022** | 103 | Assessed |
+| **Windows Server 2019** | 104 | Assessed |
+| **Windows Server 2016** | 103 | Assessed |
+| **Windows 11** | 117 | Assessed |
+| **Windows 10** | none | No module in the pinned library |
+| **RHEL 9** | 104 | Assessed |
+| **RHEL 8** | 53 | Assessed |
+| **Ubuntu 20.04 LTS** | none reported | Module has no assessment report |
+
+Measured 2026-11-18 at library commit `a84e39cf`: each number is the module's own
+`total_controls`. Every module is a subset of its STIG; a full DISA STIG for these
+platforms has several hundred rules. Earlier versions of this table gave figures of
+"~280+" to "~320+" per platform and a STIG release for each; neither was measured.
 
 ---
 
 ## STIG Severity Categories
 
-### CAT I - Critical Severity
+### CAT I - High Severity
 - **Risk:** Immediate threat to system security
 - **Examples:** Missing antivirus, disabled firewalls, unpatched critical vulnerabilities
 - **Remediation:** Must be fixed immediately (typically within 15 days)
 
-### CAT II - High Severity
+### CAT II - Medium Severity
 - **Risk:** Significant security vulnerability
 - **Examples:** Weak password policies, improper audit settings, insecure configurations
 - **Remediation:** Must be remediated within 30 days
 
-### CAT III - Medium Severity
+### CAT III - Low Severity
 - **Risk:** Lower-impact security issues
 - **Examples:** Missing legal banners, suboptimal log sizes, minor config issues
 - **Remediation:** Should be fixed within 90 days
@@ -64,7 +69,7 @@ Complete **DISA STIG (Security Technical Implementation Guide)** compliance poli
 ```
 policies/stig/
 ├── windows_server_2022/
-│   ├── cat_i_findings.rego          # Critical findings
+│   ├── cat_i_findings.rego          # CAT I (high) findings
 │   ├── cat_ii_findings.rego         # High severity findings
 │   ├── cat_iii_findings.rego        # Medium severity findings
 │   └── stig_windows_server_2022_complete.rego  # Master orchestrator
@@ -185,19 +190,19 @@ curl -s -X POST http://localhost:8181/v1/data/stig/rhel_9/stig_assessment \
   },
   "severity_breakdown": {
     "cat_i": {
-      "severity": "Critical",
+      "severity": "High",
       "total": 9,
       "open": 1,
       "compliant": false
     },
     "cat_ii": {
-      "severity": "High",
+      "severity": "Medium",
       "total": 16,
       "open": 3,
       "compliant": false
     },
     "cat_iii": {
-      "severity": "Medium",
+      "severity": "Low",
       "total": 10,
       "open": 1,
       "compliant": false
@@ -205,9 +210,9 @@ curl -s -X POST http://localhost:8181/v1/data/stig/rhel_9/stig_assessment \
   },
   "open_findings_details": [
     {
-      "vuln_id": "V-254238",
+      "vuln_id": "V-254442",
       "stig_id": "WN22-PK-000010",
-      "severity": "CAT I",
+      "severity": "CAT II",
       "rule_title": "Windows Server 2022 must have the DoD Root CA certificates installed",
       "status": "Open"
     }
@@ -269,7 +274,7 @@ python3 scripts/generate_stig_checklist.py \
       <VULN>
         <STIG_DATA>
           <VULN_ATTRIBUTE>Vuln_Num</VULN_ATTRIBUTE>
-          <ATTRIBUTE_DATA>V-254238</ATTRIBUTE_DATA>
+          <ATTRIBUTE_DATA>V-254442</ATTRIBUTE_DATA>
         </STIG_DATA>
         <STATUS>Open</STATUS>
         <FINDING_DETAILS>DoD Root CA certificates not installed</FINDING_DETAILS>
@@ -338,7 +343,7 @@ OPA automatically generates POAM entries for open findings:
 
 ```json
 {
-  "vuln_id": "V-254238",
+  "vuln_id": "V-254442",
   "scheduled_completion_date": "2025-12-24",
   "milestones": [
     "Review finding and assess impact",

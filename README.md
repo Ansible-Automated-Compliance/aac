@@ -130,7 +130,7 @@ deploys the five core dashboards; the other three are deployed individually by p
 
 | Dashboard (JSON) | Deploy | Description |
 | ----------- | -------- | ------------- |
-| **AAC Compliance** (`aac_compliance_dashboard`) | auto | Overall compliance posture across all assessed frameworks — score, pass/fail breakdown, per-host drill-down. Includes CIS benchmark results; the policy set evaluates 224 distinct CIS RHEL 9 control IDs of the benchmark's 338 — see [CIS coverage](#cis-coverage-and-the-assessment-contract). |
+| **AAC Compliance** (`aac_compliance_dashboard`) | auto | Overall compliance posture across all assessed frameworks — score, pass/fail breakdown, per-host drill-down. Includes CIS benchmark results; for what each benchmark module evaluates see [CIS coverage](#cis-coverage-and-the-assessment-contract). |
 | **NCSC CAF 4.0 Compliance** (`ncsc_caf_dashboard`) | auto | Maps all 23 Cyber Outcomes (B2–D1) across Phase 1 technical and Phase 2 governance pillars. Single-pane view for UK CNI compliance. |
 | **AMI Compliance** (`ami_compliance_dashboard`) | auto | Advanced Metering Infrastructure controls — NIST IR 7628, IEC 62443, device and head-end posture. |
 | **NERC-CIP** (`nerc_cip_dashboard`) | auto | NERC-CIP critical infrastructure controls, CIP-002 through CIP-015. |
@@ -163,17 +163,19 @@ git submodule update --remote policies/
 
 ### Policy Library Coverage
 
+Policy counts are `.rego` files, tests excluded, at the pinned library commit `a84e39cf` (1,052 files in total). They are file counts, not control counts; the measured control figures are in [Compliance Frameworks](#compliance-frameworks).
+
 | Domain | Path | Policies | Frameworks |
 | -------- | ------ | ---------- | ------------ |
-| CIS Benchmarks | `benchmarks/cis/` | 265 | RHEL 9/8/10, Ubuntu, Windows, AWS, Azure, GCP, Docker, K8s |
-| DISA STIGs | `benchmarks/stig/` | 67 | RHEL 8/9, Oracle Linux 8/9, Oracle Database 19c, Oracle MySQL 8.0, Ubuntu 20/22, SLES 15, Amazon Linux 2023, Windows 10/11 + Server 2016–2025, K8s, OpenShift 4, VMware vSphere 8, Cisco IOS-XE, MS SQL 2016, PostgreSQL 16, Apache |
-| Federal | `frameworks/federal/` | 93 | NIST 800-53, FISMA, FedRAMP, CMMC, **NIST SP 800-171 r3**, **NIST SSDF**, **Zero Trust**, **CJIS**, **IRS 1075**, **CISA CPG** |
-| Management | `frameworks/management/` | 62 | ISO 27001, SOC 2, Corporate governance, **CSA CCM v4.0** |
-| Financial | `frameworks/financial/` | 23 | PCI-DSS, SOX |
-| Privacy | `frameworks/privacy/` | 26 | GDPR, HIPAA, **ISO 27701**, **CCPA/CPRA** |
-| Critical Infrastructure | `frameworks/critical_infrastructure/` | 51 | NERC-CIP (CIP-002–015), AMI/NIST IR 7628, IEC 62443 |
+| CIS Benchmarks | `benchmarks/cis/` | 449 | RHEL 9/8/10, Ubuntu, Windows, AWS, Azure, GCP, Docker, K8s |
+| DISA STIGs | `benchmarks/stig/` | 136 | RHEL 8/9, Oracle Linux 8/9, Oracle Database 19c, Oracle MySQL 8.0, Ubuntu 20/22, SLES 15, Amazon Linux 2023, Windows 10/11 + Server 2016–2025, K8s, OpenShift 4, VMware vSphere 8, Cisco IOS-XE, MS SQL 2016, PostgreSQL 16, Apache |
+| Federal | `frameworks/federal/` | 113 | NIST 800-53, FISMA, FedRAMP, CMMC, **NIST SP 800-171 r3**, **NIST SSDF**, **Zero Trust**, **CJIS**, **IRS 1075**, **CISA CPG** |
+| Management | `frameworks/management/` | 72 | ISO 27001, SOC 2, Corporate governance, **CSA CCM v4.0** |
+| Financial | `frameworks/financial/` | 32 | PCI-DSS, SOX |
+| Privacy | `frameworks/privacy/` | 36 | GDPR, HIPAA, **ISO 27701**, **CCPA/CPRA** |
+| Critical Infrastructure | `frameworks/critical_infrastructure/` | 59 | NERC-CIP (CIP-002–015), AMI/NIST IR 7628, IEC 62443 |
 | Digital Sovereignty | `frameworks/sovereignty/` | 12 | 7-domain, 70 controls |
-| Enforcement | `enforcement/` | 17 | Ansible, Terraform, Dockerfile, Kubernetes, Git |
+| Enforcement | `enforcement/` | 22 | Ansible, Terraform, Dockerfile, Kubernetes, Git |
 | Governance | `governance/` | 21 | AI governance, MCP tool-call controls, **EU AI Act (2024/1689)** |
 | Threat Detection | `threat_detection/` | 1 | Crypto mining (xmrig, 20+ miners) |
 
@@ -195,17 +197,22 @@ cd policies && git ls-tree -r "$PINNED" --name-only \
 
 ### CIS coverage and the assessment contract
 
-**Coverage is measured, not claimed.** CIS RHEL 9 v2.0.0 defines 338 controls; the policy set
-references **224 distinct CIS control IDs** in its violation messages. A single rule can cover more
-than one control, so 224 is a floor rather than a ceiling — but the platform does not assert 100%
-coverage it has not measured. Every benchmark's `compliance_report` publishes a `controls_basis`
-field stating what its `total_controls` number actually counts.
+**Coverage is measured, not claimed.** Every benchmark's `compliance_report` publishes
+`total_controls`, the number of controls the module evaluates, and most publish a `controls_basis`
+field stating what that number counts. The figures in [Compliance Frameworks](#compliance-frameworks)
+are those numbers, read from the modules at the pinned library commit. The platform does not assert
+coverage of a published benchmark that it has not measured against that benchmark's own list of
+controls.
 
 ```bash
-# Count the control IDs a benchmark evaluates
-grep -rhoE 'CIS (L2 )?[0-9]+(\.[0-9]+)*' policies/benchmarks/cis/rhel_9 --include='*.rego' \
-  | sed -E 's/CIS L2 /CIS /' | sort -u | wc -l
+# What a module evaluates: its own total, on empty input
+echo '{}' | opa eval -d policies/benchmarks/cis/rhel_9 --ignore tests --stdin-input -f pretty \
+  'data.cis_rhel9.main.compliance_report.total_controls'
 ```
+
+An earlier version of this section gave "224 of 338 control IDs" for CIS RHEL 9, counted by
+searching violation messages for control IDs. The library has since moved to CIS RHEL 9 v3.0.0 and
+changed its message format, so that count and its command no longer describe what ships.
 
 **Assessments fail closed.** CIS controls are phrased "violate if the fact says X", so an
 assessment run with no facts would once report near-total compliance for something it never
@@ -295,17 +302,19 @@ submodule at release tags. `aac-demo-datacenter` is likewise its own repository.
 
 | Framework | Coverage | Highlights |
 | --------- | -------- | ---------- |
-| **CIS RHEL 9** | 224 of 338 control IDs referenced ([measured](#cis-coverage-and-the-assessment-contract)) | + 3 extended STIG/NIST hardening modules; EDA drift detection |
-| **CIS RHEL 8** | 300+ controls | Full v2.0.0 coverage |
-| **CIS Ubuntu 22.04** | 280+ controls | Full v2.0.0 coverage |
-| **CIS Windows Server 2022** | 400+ controls | Full v2.0.0 coverage |
-| **CIS AWS** | Complete | All CIS AWS Foundations controls |
-| **CIS Azure** | Complete | Azure Security Benchmark |
-| **CIS GCP** | Complete | Google Cloud Platform baseline |
-| **CIS Docker** | Complete | Container runtime hardening |
-| **CIS Kubernetes** | Complete | K8s cluster hardening |
-| **NIST 800-53** | Complete | All control families |
-| **DISA STIG** | RHEL 8/9, Oracle Linux 8/9, Oracle Database 19c (collectors shipped), Windows | DoD security requirements — see `docs/frameworks/ORACLE_STIG_ASSESSMENT.md` |
+| **CIS RHEL 9** | 263 recommendations in the default profile; 352 per-control results published | Benchmark v3.0.0; + 3 extended STIG/NIST hardening modules; EDA drift detection |
+| **CIS RHEL 8** | 257 recommendations in the default profile; 322 per-control results published | Benchmark v4.0.0 |
+| **CIS Ubuntu 22.04** | 246 recommendations in the default profile | Benchmark v3.0.0 |
+| **CIS Windows Server 2022** | 400 recommendations in the default profile; 408 per-control results published | Benchmark v5.1.0 |
+| **CIS AWS** | 94 controls | CIS AWS Foundations |
+| **CIS Azure** | 128 controls | CIS Azure Foundations |
+| **CIS GCP** | 93 controls | CIS Google Cloud Platform Foundation |
+| **CIS Docker** | 117 controls | Benchmark v1.9.0 |
+| **CIS Kubernetes** | 134 controls | Benchmark v2.1.0 |
+| **NIST 800-53 Rev 5** | 109 controls in 7 of the 20 families (AC, AU, CM, IA, IR, SC, SI) | The other 13 families are not implemented |
+| **DISA STIG** | RHEL 9: 104 rules, RHEL 8: 53, RHEL 10: 100, Oracle Linux 9: 114, Oracle Linux 8: 95, Windows Server 2022: 103; Oracle Database 19c (collectors shipped) | A subset of each STIG, not the whole of it — see `docs/frameworks/ORACLE_STIG_ASSESSMENT.md` |
+
+Each figure is what the module itself reports as `total_controls` when evaluated at the pinned library commit `a84e39cf`. It is the number of controls the module evaluates, which is not a statement that the published benchmark has no others. [How the figures are measured](#cis-coverage-and-the-assessment-contract).
 
 ### Regulatory Compliance (OPA service: `opa-compliance`)
 
@@ -334,7 +343,7 @@ submodule at release tags. `aac-demo-datacenter` is likewise its own repository.
 | **Sentinel / AAC Comply** | All industries | Ansible + Terraform + Git policy gates |
 | **CSA CCM v4.0** | Cloud/SaaS | 16 domains, 197 controls (A&A, AIS, BCR, CEK, DSP, GRC, IAM, IVS, LOG, TVM, UEM…) |
 | **ISO/IEC 27701:2019** | Global/Privacy | PIMS — PII Controller (Art. 7), PII Processor (Art. 8), Data Subject Rights |
-| **NIST SP 800-171 Rev 3** | US Defense Contractors | 14 families, 110 CUI requirements — complete DoD supply chain coverage |
+| **NIST SP 800-171 Rev 3** | US Defense Contractors | Rev 3 defines 17 families and 97 requirements (Rev 2 had 14 and 110). The module reports 97 requirements; its per-family modules still follow the 14 Rev 2 families |
 | **CCPA / CPRA** | California/US | Consumer rights, sensitive PI, data minimization, DPAs (2023 amendments) |
 | **EU AI Act (2024/1689)** | EU/Global AI | Prohibited practices, high-risk requirements, transparency, GPAI, deployer obligations |
 
