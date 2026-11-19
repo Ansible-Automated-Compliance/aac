@@ -179,11 +179,14 @@
           - "========================================="
       when: opa_policy_available | bool
 
-    - name: Display notice when OPA policy not available
-      debug:
-        msg:
-          - "OPA policy 'cis/amazon_linux_2023' is not available."
-          - "Facts saved to: {{ report_dir }}/{{ inventory_hostname }}_al2023_facts_{{ timestamp }}.json"
+    # No report is a failure, not a quiet pass.
+    - name: Fail when OPA returned no report
+      fail:
+        msg: >-
+          OPA returned no report for cis/amazon_linux_2023 ({{ opa_server_url }}).
+          The policy is not loaded, or the entrypoint changed. Facts were saved
+          to {{ report_dir }}; nothing was stored. Run "AAC - Load OPA Policies",
+          then run this assessment again.
       when: not (opa_policy_available | bool)
 
     # -------------------------------------------------------------------------
