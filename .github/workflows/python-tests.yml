@@ -41,18 +41,31 @@ jobs:
       - name: Install test dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install "ansible-core>=2.16" pyyaml pytest cryptography requests openpyxl
+          pip install "ansible-core>=2.16" pyyaml pytest cryptography requests openpyxl dnspython
 
       - name: Run the tests
         run: |
           python -m pytest tests scripts integrations ansible/roles collections -q -rs | tee "$RUNNER_TEMP/pytest.out"
 
-      # Tripwire: a suite that silently stops collecting must fail, not pass.
-      - name: The suite still collects
+      # Tripwires: a suite that silently stops running must fail, not pass.
+      #
+      # A count alone is not enough. A test module that cannot import a
+      # dependency skips itself, and the total can stay above any threshold
+      # while a whole area goes untested (the DNS collector tests did exactly
+      # that until dnspython was installed above). So every skip must carry a
+      # reason from the list below; any other skip fails the job.
+      - name: No unexpected skips; the suite still collects
         run: |
+          allowed='is not shipped in this repository|ansible filter plugins unavailable'
+          unexpected=$(grep -E '^SKIPPED' "$RUNNER_TEMP/pytest.out" | grep -Ev "$allowed" || true)
+          if [ -n "$unexpected" ]; then
+            echo "FAIL: tests were skipped for a reason that is not on the allowed list:"
+            echo "$unexpected"
+            exit 1
+          fi
           passed=$(grep -Eo '[0-9]+ passed' "$RUNNER_TEMP/pytest.out" | tail -1 | grep -Eo '[0-9]+')
           echo "passed: ${passed:-0}"
-          if [ "${passed:-0}" -lt 250 ]; then
-            echo "FAIL: only ${passed:-0} tests passed — expected about 278."
+          if [ "${passed:-0}" -lt 300 ]; then
+            echo "FAIL: only ${passed:-0} tests passed — expected about 340."
             exit 1
           fi

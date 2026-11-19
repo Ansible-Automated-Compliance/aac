@@ -45,12 +45,16 @@ blast_radius_threshold := 100
 # not match "CRITICAL" -- all three reached the auto route. A fact the policy
 # cannot read is never evidence that a change is low-consequence.
 
-# A count is a non-negative number, or a string of digits. Anything else
+# A count is a non-negative whole number, or a string of digits. Anything else
 # ("1,321", "many", "") is unreadable: a separator can mean thousands or a
 # decimal point, and guessing is not a basis for patching without a human.
 affected_count := input.facts.affected_count if {
 	is_number(input.facts.affected_count)
 	input.facts.affected_count >= 0
+
+	# A count of hosts is a whole number. 5.5 is a sign the fact was computed
+	# or parsed wrongly, and is unreadable like any other malformed count.
+	floor(input.facts.affected_count) == input.facts.affected_count
 }
 
 affected_count := to_number(trim_space(input.facts.affected_count)) if {

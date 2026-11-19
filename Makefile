@@ -60,7 +60,7 @@ check-syntax: _check-submodules ## Validate Rego syntax
 
 check-compilation: _check-submodules ## Check if policies compile
 	@echo "🔍 Checking policy compilation..."
-	@opa build policies/ tests/ --output /tmp/policy-bundle.tar.gz || (echo "$(RED)❌ Compilation failed$(NC)" && exit 1)
+	@opa build policies/ $(OPA_IGNORE) --output /tmp/policy-bundle.tar.gz || (echo "$(RED)❌ Compilation failed$(NC)" && exit 1)
 	@echo "$(GREEN)✅ All policies compile successfully$(NC)"
 
 test-unit: _check-submodules ## Run unit tests

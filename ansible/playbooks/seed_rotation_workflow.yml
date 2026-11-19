@@ -89,6 +89,7 @@
           Authorization: "Basic {{ (aap_admin_user + ':' + aap_admin_password) | b64encode }}"
         status_code: [200, 201]
         validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
+      no_log: "{{ aac_no_log | default(true) | bool }}"
       loop:
 
         - name: "AAC - Rotation: Pre-Backup"
@@ -162,7 +163,6 @@
           ask_variables_on_launch: false
 
       register: jt_results
-      no_log: false
 
     - name: Collect job template IDs by name
       set_fact:

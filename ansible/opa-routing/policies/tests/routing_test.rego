@@ -77,6 +77,10 @@ test_unreadable_kev_needs_approval if decide(with_fact("kev_present", "yes")).ro
 
 test_negative_count_needs_approval if decide(with_fact("affected_count", -1)).route == "approve"
 
+test_fractional_count_needs_approval if decide(with_fact("affected_count", 5.5)).route == "approve"
+
+test_whole_number_float_is_a_count if decide(with_fact("affected_count", 12.0)).route == "auto"
+
 test_non_numeric_count_needs_approval if decide(with_fact("affected_count", "many")).route == "approve"
 
 test_null_count_needs_approval if decide(with_fact("affected_count", null)).route == "approve"

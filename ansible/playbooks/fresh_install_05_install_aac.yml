@@ -127,8 +127,14 @@
         cd {{ repo_dir }}
         ./scripts/configure_aap.sh \
           --aap-host {{ target_host }} \
-          --aap-password "{{ new_aap_admin_password }}" \
+          --aap-password "$AAC_NEW_AAP_PASSWORD" \
           2>&1
+      # The password reaches the host through the task environment, so it is not
+      # in the rendered command that AAP records with the job. no_log hides the
+      # rest; the script's own output is shown by the next task.
+      environment:
+        AAC_NEW_AAP_PASSWORD: "{{ new_aap_admin_password }}"
+      no_log: true
       delegate_to: "{{ target_host }}"
       vars:
         ansible_user: ec2-user
