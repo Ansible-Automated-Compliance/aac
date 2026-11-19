@@ -21,12 +21,14 @@
         - name: Check user account information
           shell: |
             getent passwd | awk -F: '$3 >= 1000 && $3 != 65534 {print $1}' | wc -l
+          changed_when: false
           register: user_count
           
         - name: Check for unauthorized users
           shell: |
             comm -23 <(getent passwd | awk -F: '$3 >= 1000 && $3 != 65534 {print $1}' | sort) \
                      <(cat /etc/authorized_users 2>/dev/null | sort)
+          changed_when: false
           register: unauthorized_users
           failed_when: false
           
@@ -39,6 +41,7 @@
             elif [ -f /etc/pam.d/common-password ]; then
               grep pam_pwquality /etc/pam.d/common-password
             fi
+          changed_when: false
           register: password_policy
           failed_when: false
           
@@ -48,6 +51,7 @@
             if [ -f /etc/sudoers ]; then
               grep -v "^#" /etc/sudoers | grep -v "^$"
             fi
+          changed_when: false
           register: sudo_config
           failed_when: false
           
@@ -56,6 +60,7 @@
             if [ -f /etc/ssh/sshd_config ]; then
               grep -E "^(PermitRootLogin|MaxAuthTries|PasswordAuthentication|PubkeyAuthentication)" /etc/ssh/sshd_config
             fi
+          changed_when: false
           register: ssh_access_config
           failed_when: false
 
@@ -73,6 +78,7 @@
               # Check cipher suites
               openssl ciphers -v | head -10
             fi
+          changed_when: false
           register: tls_config
           failed_when: false
           
@@ -82,6 +88,7 @@
             if command -v cryptsetup &> /dev/null; then
               lsblk -f | grep -i crypt || echo "No encrypted volumes found"
             fi
+          changed_when: false
           register: disk_encryption
           failed_when: false
           
@@ -91,6 +98,7 @@
             if [ -d /etc/ssl/certs ]; then
               ls -la /etc/ssl/certs/ | wc -l
             fi
+          changed_when: false
           register: certificate_count
           failed_when: false
 
@@ -112,6 +120,7 @@
             else
               echo "No antivirus solution detected"
             fi
+          changed_when: false
           register: antivirus_status
           failed_when: false
           
@@ -126,6 +135,7 @@
             fi
             # Check for backup directories
             ls -la /backup* 2>/dev/null || echo "No standard backup directories found"
+          changed_when: false
           register: backup_config
           failed_when: false
           
@@ -137,6 +147,7 @@
             elif [ -f /etc/syslog.conf ]; then
               grep -v "^#" /etc/syslog.conf | grep -v "^$" | head -10
             fi
+          changed_when: false
           register: logging_config
           failed_when: false
           
@@ -148,6 +159,7 @@
             elif command -v yum-cron &> /dev/null; then
               systemctl is-enabled yum-cron
             fi
+          changed_when: false
           register: auto_updates
           failed_when: false
 
@@ -167,6 +179,7 @@
             elif command -v iptables &> /dev/null; then
               iptables -L | head -20
             fi
+          changed_when: false
           register: firewall_status
           failed_when: false
           
@@ -174,6 +187,7 @@
           shell: |
             # Check listening ports
             netstat -tlnp 2>/dev/null || ss -tlnp
+          changed_when: false
           register: listening_ports
           failed_when: false
           
@@ -183,6 +197,7 @@
             if command -v iwconfig &> /dev/null; then
               iwconfig 2>/dev/null | grep -E "(ESSID|Encryption)" || echo "No wireless interfaces"
             fi
+          changed_when: false
           register: wireless_config
           failed_when: false
 
@@ -200,6 +215,7 @@
             elif command -v yum &> /dev/null; then
               yum versionlock list
             fi
+          changed_when: false
           register: package_locks
           failed_when: false
           
@@ -212,6 +228,7 @@
                 echo "$tool: installed"
               fi
             done
+          changed_when: false
           register: development_tools
           failed_when: false
 
@@ -387,6 +404,7 @@
       shell: |
         cd {{ opa_policies_dir | default('/tmp') }}
         echo '{{ iso27001_data | to_json }}' | /usr/local/bin/opa eval -d . -i - "data.iso27001.iso27001_compliance_report"
+      changed_when: false
       register: compliance_evaluation
       failed_when: false
       

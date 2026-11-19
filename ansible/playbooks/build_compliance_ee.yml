@@ -96,12 +96,14 @@
     - name: Verify Terraform is in the image
       ansible.builtin.shell: >
         /usr/bin/podman run --rm {{ ee_image }}:{{ ee_version }} terraform version
+      changed_when: false
       register: tf_verify
       delegate_to: aap_physical_host
 
     - name: Verify Cosign is in the image
       ansible.builtin.shell: >
         /usr/bin/podman run --rm {{ ee_image }}:{{ ee_version }} cosign version 2>&1 | grep -E "^GitVersion"
+      changed_when: false
       register: cosign_verify
       delegate_to: aap_physical_host
 
@@ -120,7 +122,9 @@
       ansible.builtin.shell: >
         /usr/bin/podman login quay.io
         -u {{ vault_quay_username }}
-        -p {{ vault_quay_password }}
+        --password-stdin
+      args:
+        stdin: "{{ vault_quay_password }}"
       delegate_to: aap_physical_host
       no_log: true
 

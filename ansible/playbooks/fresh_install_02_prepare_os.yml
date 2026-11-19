@@ -32,27 +32,25 @@
   tasks:
 
     # ── Subscription Registration ─────────────────────────────────────────────
-    # The account name and password reach the host through the task
-    # environment, never through the rendered command: a templated
-    # `--password '...'` is recorded in the job event (and in the `cmd` field of
-    # a failure) for anyone who can read the job. no_log covers what is left.
-    # The password is still an argument of subscription-manager on the target
-    # for the moment it runs; moving to the redhat_subscription module removes
-    # that too and is the follow-up.
+    # The redhat_subscription module, not a shell command: the password is a
+    # no_log module argument, so it is not in the rendered task, the job events
+    # or the process list on the target, and the module reports "changed" only
+    # when it registers. The earlier shell version put the password on the
+    # subscription-manager command line and chained `A || B && C`, which printed
+    # "already registered" after a successful registration too.
+    # No auto-attach: Simple Content Access makes it a no-op, and current
+    # subscription-manager releases reject the option.
     - name: Register with Red Hat subscription manager
-      ansible.builtin.shell: |
-        sudo --preserve-env=RHSM_USERNAME,RHSM_PASSWORD sh -c \
-          'subscription-manager register --username "$RHSM_USERNAME" --password "$RHSM_PASSWORD" --auto-attach' \
-          || subscription-manager status | grep -q "Current" && echo "already registered"
-      environment:
-        RHSM_USERNAME: "{{ vault_redhat_username }}"
-        RHSM_PASSWORD: "{{ rhsm_password }}"
+      community.general.redhat_subscription:
+        state: present
+        username: "{{ vault_redhat_username }}"
+        password: "{{ rhsm_password }}"
+      become: true
       no_log: true
       delegate_to: "{{ target_host }}"
       vars:
         ansible_user: ec2-user
       register: reg_result
-      changed_when: "'already registered' not in reg_result.stdout"
 
     - name: Enable AAP 2.6 repository
       ansible.builtin.shell: |
@@ -96,6 +94,7 @@
 
     - name: Verify podman is installed
       ansible.builtin.shell: podman --version
+      changed_when: false
       delegate_to: "{{ target_host }}"
       vars:
         ansible_user: ec2-user
@@ -103,6 +102,7 @@
 
     - name: Verify ansible-core is installed
       ansible.builtin.shell: ansible --version | head -1
+      changed_when: false
       delegate_to: "{{ target_host }}"
       vars:
         ansible_user: ec2-user
@@ -182,6 +182,7 @@
     # ── Verify SELinux is enforcing ───────────────────────────────────────────
     - name: Check SELinux status
       ansible.builtin.shell: getenforce
+      changed_when: false
       delegate_to: "{{ target_host }}"
       vars:
         ansible_user: ec2-user

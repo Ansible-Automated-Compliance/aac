@@ -9,6 +9,6 @@
 # this image without adding value to the K8s/Dockerfile assessment flow.
 collections:
   - name: community.postgresql
-    version: ">=3.0.0"
+    version: ">=3.0.0,<6.0.0"
   - name: community.general
-    version: ">=8.0.0"
+    version: ">=8.0.0,<15.0.0"

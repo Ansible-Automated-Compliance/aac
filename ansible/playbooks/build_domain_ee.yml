@@ -125,6 +125,7 @@
       ansible.builtin.shell: >-
         /usr/bin/podman run --rm {{ ee_image }}:{{ ee_version }}
         python3 -c "import winrm, requests_credssp; print('winrm ok')"
+      changed_when: false
       delegate_to: aap_physical_host
       register: winrm_check
       when: ee_name == 'aac-windows-ee'
@@ -138,7 +139,9 @@
       ansible.builtin.shell: >-
         /usr/bin/podman login quay.io
         -u {{ vault_quay_username }}
-        -p {{ vault_quay_password }}
+        --password-stdin
+      args:
+        stdin: "{{ vault_quay_password }}"
       delegate_to: aap_physical_host
       no_log: true
 
