@@ -11,7 +11,9 @@ waiver_entries:
   - host: "web01.example.com"
     framework: "cis_rhel9"
     control_id: "CVE-2026-12345"
-    reason: "Vendor patch scheduled for Q4 maintenance window; WAF rule 4411 mitigates in the interim"
+    reason: "Vendor patch scheduled for Q4 maintenance window"
+    mitigation: "WAF rule 4411 blocks the vulnerable path"
+    evidence_ref: "CR-2188"
     approver: "security-officer@example.com"
     expires: "2026-12-31"
 
@@ -19,7 +21,9 @@ waiver_entries:
   - host: "legacy-app-01.example.com"
     framework: "cis_rhel9"
     control_id: "5.2.1"
-    reason: "Root SSH required by legacy backup agent; access restricted to jump host by firewall policy FW-118"
+    reason: "Root SSH required by legacy backup agent"
+    mitigation: "Access restricted to the jump host by firewall policy FW-118"
+    evidence_ref: "RISK-0412"
     approver: "ciso@example.com"
     expires: "2027-03-31"
 
@@ -27,6 +31,15 @@ waiver_entries:
   - host: "*"
     framework: "*"
     control_id: "1.1.6"
-    reason: "Separate /tmp partition deferred to next image release per change CR-2201"
+    reason: "Separate /tmp partition deferred to next image release"
+    mitigation: "/tmp mounted noexec,nosuid,nodev on the current image"
+    evidence_ref: "CR-2201"
     approver: "platform-lead@example.com"
     expires: "2026-11-30"
+
+# Site rules the policy enforces on every entry above. An entry that breaks one
+# is refused and its finding stays a violation.
+waiver_settings:
+  required_fields: [reason, approver, mitigation]
+  max_ttl_days: 180
+  expiring_within_days: 14

@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Added — waivers carry a mitigation and can be held to site rules
+
+- Waiver entries may carry `mitigation` and `evidence_ref`. New `waiver_settings` in `ansible/vars/waivers.yml` (`required_fields`, `max_ttl_days`, `expiring_within_days`) is loaded by "AAC - Load OPA Policies" with the entries. A waiver that matches a finding but breaks a rule is refused: the finding stays a violation and the stored row lists it in `metadata.waivers_refused`. Waivers close to expiry are listed in `metadata.waivers_expiring_soon`. Reference: `docs/operations/WAIVERS.md`. The rules take effect with a policy library that includes them (rego library after 2026-11-19); the shipped default applies none.
+- The loader reads the waiver file under its own name, so entries and settings can each come from the file, the inventory or extra vars.
+
+### Fixed — a waived result leaked into the next result for the same host
+
+- `aac_store_results` kept the waiver outcome of an earlier call. When one result had a waived finding, the next result stored for the same host in the same play (another framework, or the stored-facts loop) was written with the first result's violations and metadata, and a later result with no violations failed the play. The outcome is now cleared on every call.
+
 ### Added — CIS M365 v7: opt-in shape capture (`m365_shape_capture`)
 
 - `m365_shape_capture: true` (default `false`) makes the `m365_assessment` role record, after collection, the shape of every collected fact and nothing else: JSON types, list lengths, field-name unions and field types, and distinct values only for an allowlist of closed configuration enums, booleans and numeric settings (`aac.m365.m365_fact_shape`). Names, addresses, domains, ids, mailbox data and free text are never recorded. Output: `<m365_shape_capture_dir>/m365_fact_shape_<UTC>.json`, the job artifact `m365_fact_shape` (`set_stats`) and the job output. One real run with it on settles the collector shapes that could not be confirmed without a tenant (enum serialisation, `AllowedDomains`, `RecipientTags`, `AssignedRoles`, `SetSCL`, `transferMethods`, Graph beta fields).

@@ -58,6 +58,16 @@
 # the violations column into metadata.waivers_applied — stored and reportable,
 # never deleted. Any failure here (OPA down, module not loaded) waives nothing:
 # the failure direction is always "report more".
+# The three facts below are set only when a waiver applies. Without this reset a
+# second call for the same host in one play (two frameworks, or a loop over
+# stored facts) would store the FIRST call's violations and metadata whenever
+# the second call had no waiver of its own.
+- name: Clear the waiver outcome of any earlier call for this host
+  set_fact:
+    _aac_violations_final: "{{ aac_result_violations }}"
+    _aac_metadata_final: "{{ aac_result_metadata }}"
+    _aac_waived_count: 0
+
 - name: Query waiver decision from OPA
   uri:
     use_proxy: false
@@ -104,6 +114,38 @@
            'waiver_expired_matches': _wd.expired_matches
          }) }}
   when: _aac_waived_count | default(0) | int > 0
+
+# A waiver that matches a finding but breaks a site rule (a required field such
+# as mitigation is empty, or it runs longer than the maximum time to live) is
+# refused by the policy: the finding stays a violation. Refused waivers and
+# waivers about to expire are stored with the row so a report can show them.
+- name: Record waivers that were refused or are about to expire
+  vars:
+    _wd: "{{ (_aac_waiver_resp.json | default({})).get('result', {}) }}"
+  set_fact:
+    _aac_metadata_final: >-
+      {{ _aac_metadata_final | combine({
+           'waivers_refused': _wd.get('rejected', []),
+           'waivers_refused_count': _wd.get('rejected_count', 0),
+           'waivers_expiring_soon': _wd.get('expiring_soon', [])
+         }) }}
+  when:
+    - _aac_waiver_resp is not skipped
+    - _aac_metadata_final is mapping
+    - ((_aac_waiver_resp.json | default({})).get('result', {}).get('rejected', []) | length > 0)
+      or ((_aac_waiver_resp.json | default({})).get('result', {}).get('expiring_soon', []) | length > 0)
+
+- name: Say which waivers were refused
+  vars:
+    _wd: "{{ (_aac_waiver_resp.json | default({})).get('result', {}) }}"
+  debug:
+    msg: >-
+      {{ _wd.get('rejected_count', 0) }} finding(s) on {{ _aac_hostname }} matched a waiver that was
+      REFUSED and stay active:
+      {{ _wd.get('rejected', []) | map(attribute='problems') | flatten | unique | join('; ') }}
+  when:
+    - _aac_waiver_resp is not skipped
+    - (_aac_waiver_resp.json | default({})).get('result', {}).get('rejected', []) | length > 0
 
 # ── INSERT — with facts_id FK ─────────────────────────────────────────────────
 - name: Store result (with facts_id)
