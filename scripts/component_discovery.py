@@ -631,6 +631,24 @@ def is_privileged(comp) -> bool:
     return any((comp.get("privileged") or {}).get(c) for c in CAPABILITIES)
 
 
+def approver_accounts(approvers) -> dict:
+    """The site's approver list as {normalised username: {username, name}}.
+
+    An entry is a controller username, or {username: ..., name: ...}. The list
+    is keyed by account so that "the approver is not the launcher" compares two
+    controller accounts and not a person's name with an account.
+    """
+    out = {}
+    for a in approvers or []:
+        if isinstance(a, dict):
+            user, shown = a.get("username"), a.get("name") or ""
+        else:
+            user, shown = a, ""
+        if norm_name(user):
+            out[norm_name(user)] = {"username": str(user).strip(), "name": str(shown or "").strip()}
+    return out
+
+
 def norm_name(name) -> str:
     """A person's or account's name reduced to letters and digits, lower case.
 
@@ -658,13 +676,17 @@ def validate_overrides(entries, catalog, now=None, max_expiry_days=DEFAULT_MAX_E
     Hiding or renaming a component the catalog marks as privileged (exclude /
     reclassify) needs a second person, and the check does not rest on what the
     entry says about itself alone:
-      - the `approver` must be on the site's approver list (`approvers`);
+      - the `approver` must be the controller username of someone on the
+        site's approver list (`approvers`: usernames, or {username, name});
+        a display name is not accepted in its place;
       - the account that launched the job (`recorded_by`, supplied by the
         automation controller, not by the entry) must be known and must not be
-        the approver;
-      - the approver must not be the declared requester.
-    Names are compared with norm_name(). This is a recorded control: it shows
-    who launched the job and whom the entry names. It is not proof that the
+        that username. Both sides of this comparison are controller accounts.
+    Usernames are compared with norm_name(). `who` stays free text and is
+    recorded as a claim; an entry whose `who` is the approver's username or
+    display name is refused as well, but that is a plausibility check, not a
+    control. This is a recorded control: it shows which account launched the
+    job and which listed account the entry names. It is not proof that the
     approver agreed.
 
     `existing` holds the live rows of component_overrides. An entry that is
@@ -675,7 +697,9 @@ def validate_overrides(entries, catalog, now=None, max_expiry_days=DEFAULT_MAX_E
     by_key = {c["key"]: c for c in catalog["components"]}
     now = parse_ts(now) or datetime.now(timezone.utc)
     max_expiry_days = int(max_expiry_days)
-    listed = {norm_name(a) for a in (approvers or []) if norm_name(a)}
+    listed = approver_accounts(approvers)       # normalised username -> {username, name}
+    display_names = {norm_name(a["name"]) for a in listed.values() if norm_name(a["name"])}
+    seen_slots = set()
     launched_by = str(recorded_by or "").strip()
     good, errs = [], []
     if entries in (None, ""):
@@ -715,10 +739,20 @@ def validate_overrides(entries, catalog, now=None, max_expiry_days=DEFAULT_MAX_E
         elif vals["reclassify_to"]:
             problems.append("reclassify_to is only valid with action reclassify")
 
+        slot_key = (vals["host"].casefold(), vals["component"])
+        if vals["host"] and vals["component"]:
+            if slot_key in seen_slots:
+                problems.append("a second entry for the same host and component; keep one "
+                                "(remove an expired entry before adding its replacement)")
+            seen_slots.add(slot_key)
+
         entry = {"host": vals["host"], "component_key": vals["component"], "action": vals["action"],
                  "reclassify_to": vals["reclassify_to"], "requested_by": vals["who"],
                  "reason": vals["why"], "expires_at": iso(expires) if expires else None,
                  "approved_by": vals["approver"]}
+        if norm_name(vals["approver"]) in listed:
+            # Store the account as the site lists it, whatever spelling the entry used.
+            entry["approved_by"] = listed[norm_name(vals["approver"])]["username"]
         stored = next((r for r in existing or [] if expires and _same_override(r, entry)), None)
         recorder = str((stored or {}).get("recorded_by") or "").strip() if stored else launched_by
         privileged = is_privileged(by_key.get(vals["component"], {}))
@@ -730,14 +764,19 @@ def validate_overrides(entries, catalog, now=None, max_expiry_days=DEFAULT_MAX_E
             elif not vals["approver"]:
                 problems.append(f"{what} needs an approver")
             elif norm_name(vals["approver"]) not in listed:
-                problems.append(f"approver {vals['approver']!r} is not on the site's approver list "
-                                "(component_override_approvers)")
+                hint = (" It is a display name; give the approver's controller username"
+                        if norm_name(vals["approver"]) in display_names else "")
+                problems.append(f"approver {vals['approver']!r} is not a controller username on the "
+                                f"site's approver list (component_override_approvers).{hint}")
             if not recorder:
                 problems.append(f"{what} must be recorded by a job launched from the automation "
                                 "controller, so that the launching account is known")
             elif vals["approver"] and norm_name(recorder) == norm_name(vals["approver"]):
                 problems.append(f"the approver is the account that launched the job ({recorder})")
-            if vals["approver"] and norm_name(vals["approver"]) == norm_name(vals["who"]):
+            claimed = norm_name(vals["who"])
+            if vals["approver"] and claimed and claimed in (
+                    norm_name(vals["approver"]),
+                    norm_name(listed.get(norm_name(vals["approver"]), {}).get("name", ""))):
                 problems.append("the approver must be a different person from who asked")
         if problems:
             errs.append(f"{where}: " + "; ".join(problems))
@@ -1137,7 +1176,7 @@ def configured_db_host(site_config_path):
     return value, ""
 
 
-def configured_approvers(site_config_path) -> list[str]:
+def configured_approvers(site_config_path) -> list:
     """component_override_approvers from the site configuration file ([] when unset)."""
     path = Path(site_config_path)
     if not path.is_file():
@@ -1147,7 +1186,7 @@ def configured_approvers(site_config_path) -> list[str]:
     except yaml.YAMLError:
         return []
     names = site.get("component_override_approvers") if isinstance(site, dict) else None
-    return [str(n) for n in names if str(n).strip()] if isinstance(names, list) else []
+    return list(names) if isinstance(names, list) else []
 
 
 def check_launch(pg_host, site_config_path, paths, root=PROJECT_ROOT) -> list[str]:

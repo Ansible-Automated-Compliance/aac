@@ -239,9 +239,16 @@ aap_aws_credential_name: "AWS Compliance Lab"
 aap_scm_credential_name: "GitHub SCM"
 
 # ─── Component discovery (docs/reference/COMPONENT_DISCOVERY.md) ──────────────
-# People who may approve an override that excludes or reclassifies a privileged
-# component. Shipped empty: with no names here every such override is refused.
-# Read from this file only; it cannot be set at launch.
+# Who may approve an override that excludes or reclassifies a privileged
+# component. Each entry is an automation controller USERNAME, optionally with a
+# display name. An override names its approver by that username, and the
+# account that launches the job must be a different one. Shipped empty: with no
+# entries here every such override is refused. Read from this file only; it
+# cannot be set at launch.
+#   component_override_approvers:
+#     - username: asmith
+#       name: A. Smith
+#     - bjones
 component_override_approvers: []
 # Longest an operator override may run, in days.
 component_override_max_days: 90

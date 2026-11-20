@@ -2,8 +2,8 @@
 --
 -- Applied by ansible/playbooks/discover_host_components.yml. Additive and safe to
 -- re-run: every statement is CREATE ... IF NOT EXISTS, CREATE OR REPLACE (view,
--- function, trigger) or ALTER TABLE ... ADD COLUMN IF NOT EXISTS on a table this
--- file owns. CREATE OR REPLACE TRIGGER needs PostgreSQL 14 or later. Nothing
+-- function, trigger), ALTER TABLE ... ADD COLUMN IF NOT EXISTS on a table this
+-- file owns, or the one migration block for component_overrides below. CREATE OR REPLACE TRIGGER needs PostgreSQL 14 or later. Nothing
 -- here drops an object or touches a table of another feature, and nothing in
 -- the product deletes rows from these tables.
 --
@@ -120,7 +120,35 @@ ALTER TABLE component_overrides ADD COLUMN IF NOT EXISTS recorded_by TEXT;
 ALTER TABLE component_overrides ADD COLUMN IF NOT EXISTS source      TEXT NOT NULL DEFAULT 'file';
 ALTER TABLE component_overrides ADD COLUMN IF NOT EXISTS withdrawn_by     TEXT;
 ALTER TABLE component_overrides ADD COLUMN IF NOT EXISTS withdrawn_reason TEXT;
-CREATE INDEX IF NOT EXISTS idx_component_overrides_live
+
+-- Migration from the first version of this table. It carried a UNIQUE constraint
+-- over (host, component_key, action, reclassify_to, requested_by, expires_at),
+-- which would reject the new row of a changed entry. The constraint is found by
+-- its columns, not by an assumed name, and dropped if it is there. Safe to
+-- re-run: once it is gone the loop finds nothing.
+DO $cd$
+DECLARE
+    old_name text;
+BEGIN
+    FOR old_name IN
+        SELECT c.conname
+          FROM pg_constraint c
+         WHERE c.conrelid = 'component_overrides'::regclass
+           AND c.contype = 'u'
+           AND (SELECT array_agg(a.attname::text ORDER BY a.attname::text)
+                  FROM unnest(c.conkey) k
+                  JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = k)
+               = ARRAY['action', 'component_key', 'expires_at', 'host', 'reclassify_to', 'requested_by']
+    LOOP
+        EXECUTE format('ALTER TABLE component_overrides DROP CONSTRAINT %I', old_name);
+    END LOOP;
+    DROP INDEX IF EXISTS idx_component_overrides_live;   -- non-unique forerunner of the index below
+END
+$cd$;
+
+-- Identity of an override: one live (not withdrawn) row per host and component.
+-- Withdrawn rows are history and are not constrained.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_component_overrides_live
     ON component_overrides (host, component_key) WHERE withdrawn_at IS NULL;
 
 -- component_overrides is append-only. A row can be withdrawn once (withdrawn_at,

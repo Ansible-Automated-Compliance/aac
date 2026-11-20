@@ -18,10 +18,13 @@
 #              No further away than component_override_max_days (default 90).
 # and, to exclude or reclassify a component the catalog marks as privileged
 # (act / map / rank):
-#   approver   a second person: on the site's approver list
-#              (component_override_approvers in site_config.yml), not `who`,
-#              and not the account that launches the job. With no approvers
-#              configured, or outside the automation controller, it is refused.
+#   approver   the automation controller USERNAME of a second person on the
+#              site's approver list (component_override_approvers in
+#              site_config.yml). It must not be the account that launches the
+#              job. With no approvers configured, or outside the automation
+#              controller, it is refused. `who` is free text and is recorded
+#              as a claim.
+# One entry per host and component.
 #
 # An entry that breaks these rules is refused and the job stops before it
 # writes anything. The account that launched the job is recorded beside each

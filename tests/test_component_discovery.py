@@ -374,9 +374,10 @@ def test_override_beyond_the_maximum_expiry_window_is_refused():
 
 
 PRIV = {"host": "controller01.example.com", "component": "aap_controller", "action": "exclude",
-        "who": "A. Operator", "approver": "B. Reviewer", "why": "decommissioned, awaiting rebuild",
+        "who": "A. Operator", "approver": "brev01", "why": "decommissioned, awaiting rebuild",
         "expires": "2026-12-31"}
-APPROVERS = ["B. Reviewer", "C. Second"]
+# The approver list is keyed by controller username; a display name is optional.
+APPROVERS = [{"username": "brev01", "name": "B. Reviewer"}, "csecond"]
 
 
 def _check(entry, approvers=APPROVERS, recorded_by="jdoe", existing=()):
@@ -388,9 +389,38 @@ def _check(entry, approvers=APPROVERS, recorded_by="jdoe", existing=()):
 def test_hiding_a_privileged_component_needs_a_listed_approver(action, extra):
     entry = dict(PRIV, action=action, **extra)
     good, errs = _check(entry)
-    assert errs == [] and good[0]["approved_by"] == "B. Reviewer" and good[0]["privileged"] is True
+    assert errs == [] and good[0]["approved_by"] == "brev01" and good[0]["privileged"] is True
     assert "needs an approver" in _check(dict(entry, approver=""))[1][0]
-    assert "not on the site's approver list" in _check(dict(entry, approver="Z. Nobody"))[1][0]
+    assert "not a controller username" in _check(dict(entry, approver="znobody"))[1][0]
+
+
+def test_approver_given_as_a_display_name_is_refused():
+    # "B. Reviewer" is the display name of a listed approver, but not a listed username
+    _, errs = _check(dict(PRIV, approver="B. Reviewer"))
+    assert "not a controller username" in errs[0] and "display name" in errs[0]
+    # and a launcher cannot pass the separation check by naming themselves through a display name
+    _, errs = _check(dict(PRIV, approver="B. Reviewer"), recorded_by="brev01")
+    assert errs and "not a controller username" in errs[0]
+
+
+def test_launcher_equal_to_the_approver_username_is_refused():
+    for launcher in ("brev01", "BREV01", " brev.01 "):
+        _, errs = _check(PRIV, recorded_by=launcher)
+        assert "the approver is the account that launched the job" in errs[0], launcher
+    good, errs = _check(PRIV, recorded_by="jdoe")
+    assert errs == [] and (good[0]["approved_by"], good[0]["recorded_by"]) == ("brev01", "jdoe")
+
+
+def test_requester_is_recorded_as_a_claim_and_cannot_be_the_approver():
+    good, _ = _check(dict(PRIV, who="Anyone at all"))
+    assert good[0]["requested_by"] == "Anyone at all"            # free text, stored as written
+    for who in ("brev01", "B. Reviewer", "b reviewer"):       # the approver's username or display name
+        assert "different person from who asked" in _check(dict(PRIV, who=who))[1][0]
+
+
+def test_one_entry_per_host_and_component():
+    _, errs = cd.validate_overrides([GOOD, dict(GOOD, action="confirm")], CATALOG, now=RUN2)
+    assert len(errs) == 1 and "second entry for the same host and component" in errs[0]
 
 
 def test_with_no_approvers_configured_every_privileged_override_is_refused():
@@ -401,29 +431,23 @@ def test_with_no_approvers_configured_every_privileged_override_is_refused():
     assert plan["ok"] is False and plan["payload"] is None
 
 
-def test_recorder_equal_to_approver_is_refused():
-    _, errs = _check(PRIV, recorded_by="B. Reviewer")
-    assert "the approver is the account that launched the job" in errs[0]
-
-
 def test_privileged_override_outside_the_controller_is_refused():
     _, errs = _check(PRIV, recorded_by="")
     assert "launched from the automation controller" in errs[0]
 
 
-@pytest.mark.parametrize("same", ["a. operator", " A.OPERATOR ", "A  Operator", "a_operator"])
-def test_names_differing_by_case_spacing_or_punctuation_are_one_person(same):
-    assert cd.norm_name(same) == cd.norm_name("A. Operator")
-    # requester and approver
-    _, errs = _check(dict(PRIV, approver=same), approvers=["A. Operator"])
-    assert "different person from who asked" in errs[0]
-    # launching account and approver
-    _, errs = _check(dict(PRIV, who="D. Other", approver="A. Operator"), approvers=["a operator"],
-                     recorded_by=same)
+@pytest.mark.parametrize("same", ["asmith", "ASmith", " a.smith ", "a_smith", "A  Smith"])
+def test_names_differing_by_case_spacing_or_punctuation_are_one_account(same):
+    assert cd.norm_name(same) == cd.norm_name("asmith")
+    entry = dict(PRIV, approver=same)
+    # the approver list lookup, and launcher vs approver, use the same normalisation
+    good, errs = _check(entry, approvers=["asmith"], recorded_by="jdoe")
+    assert errs == [] and good[0]["approved_by"] == "asmith"      # stored as the site lists the account
+    _, errs = _check(dict(PRIV, approver="asmith"), approvers=["A.Smith"], recorded_by=same)
     assert "the approver is the account that launched the job" in errs[0]
-    # approver list lookup uses the same normalisation
-    good, errs = _check(dict(PRIV, who="D. Other", approver=same), approvers=["A. Operator"])
-    assert errs == [] and len(good) == 1
+    # requester vs approver
+    _, errs = _check(dict(PRIV, who=same, approver="asmith"), approvers=["asmith"])
+    assert "different person from who asked" in errs[0]
 
 
 def test_confirm_and_unprivileged_overrides_need_no_approver():
@@ -441,7 +465,7 @@ def test_approved_override_on_a_privileged_component_stays_visible():
     assert "aap_controller" not in {c["component"] for c in s["components_per_host"]["controller01.example.com"]}
     shown = s["overrides_on_privileged_components"]
     assert [(o["component"], o["who"], o["approver"], o["recorded_by"]) for o in shown] == [
-        ("aap_controller", "A. Operator", "B. Reviewer", "jdoe")]
+        ("aap_controller", "A. Operator", "brev01", "jdoe")]
     assert shown == s["overrides_in_force"]
     assert "[privileged component]" in cd.format_summary(s)
     assert _row(two, "controller01.example.com", "aap_controller")["status"] == "detected"
@@ -453,7 +477,7 @@ def test_approver_list_is_read_from_the_site_file_not_from_a_variable(tmp_path):
     data = {"now": RUN2, "hosts": _latest("round1"), "overrides": [PRIV], "launched_by": "jdoe",
             "approvers": APPROVERS, "site_config_file": str(site)}
     assert cd.build_plan(data, CATALOG)["ok"] is False          # the file wins over the passed list
-    site.write_text('component_override_approvers: ["B. Reviewer"]\n')
+    site.write_text('component_override_approvers:\n  - {username: brev01, name: B. Reviewer}\n')
     assert cd.build_plan(data, CATALOG)["ok"] is True
     shipped = yaml.safe_load((_root / "ansible" / "vars" / "site_config.yml.example").read_text())
     assert shipped["component_override_approvers"] == []        # shipped empty
@@ -475,7 +499,7 @@ def _plan(entries, existing=(), launched_by="jdoe"):
 def test_unchanged_override_is_not_rewritten_and_keeps_its_first_recorder():
     first = _plan([PRIV], launched_by="jdoe")
     rows = _stored(first)
-    assert [(r["recorded_by"], r["approved_by"]) for r in rows] == [("jdoe", "B. Reviewer")]
+    assert [(r["recorded_by"], r["approved_by"]) for r in rows] == [("jdoe", "brev01")]
     again = _plan([PRIV], existing=rows, launched_by="")        # e.g. a scheduled run, no launching user
     assert again["ok"] is True
     assert again["payload"]["overrides"] == [] and again["payload"]["override_withdrawals"] == []
@@ -484,19 +508,19 @@ def test_unchanged_override_is_not_rewritten_and_keeps_its_first_recorder():
 
 def test_changed_approver_withdraws_the_old_row_and_inserts_a_new_one_with_attribution():
     rows = _stored(_plan([PRIV], launched_by="jdoe"), start_id=7)
-    changed = _plan([dict(PRIV, approver="C. Second")], existing=rows, launched_by="asmith")
+    changed = _plan([dict(PRIV, approver="csecond")], existing=rows, launched_by="asmith")
     assert changed["ok"] is True
     assert changed["payload"]["override_withdrawals"] == [
         {"id": 7, "withdrawn_by": "asmith", "withdrawn_reason": "replaced by a changed entry"}]
     new = changed["payload"]["overrides"]
-    assert [(o["approved_by"], o["recorded_by"], o["source"]) for o in new] == [("C. Second", "asmith", "file")]
+    assert [(o["approved_by"], o["recorded_by"], o["source"]) for o in new] == [("csecond", "asmith", "file")]
     events = [(e["event"], e["detail"].get("approved_by"), e["detail"].get("withdrawn_by"),
                e["detail"].get("recorded_by")) for e in changed["payload"]["history"]
               if e["event"].startswith("override_")]
-    assert events == [("override_withdrawn", "B. Reviewer", "asmith", "jdoe"),
-                      ("override_recorded", "C. Second", None, "asmith")]
+    assert events == [("override_withdrawn", "brev01", "asmith", "jdoe"),
+                      ("override_recorded", "csecond", None, "asmith")]
     # the changed entry is checked against the account that launched THIS run
-    refused = _plan([dict(PRIV, approver="C. Second")], existing=rows, launched_by="c second")
+    refused = _plan([dict(PRIV, approver="csecond")], existing=rows, launched_by="C.Second")
     assert "launched the job" in refused["override_errors"][0]
 
 
@@ -629,14 +653,19 @@ def test_schema_sql_is_additive_and_idempotent():
     code = re.sub(r"\$cd\$.*?\$cd\$", "$body$", code, flags=re.S)      # the trigger function body
     statements = [s.strip() for s in re.split(r";[ \t]*\n", code) if s.strip()]
     assert statements
-    allowed = (r"CREATE (TABLE|INDEX) IF NOT EXISTS |CREATE OR REPLACE (VIEW|FUNCTION|TRIGGER) "
-               r"|ALTER TABLE component_overrides ADD COLUMN IF NOT EXISTS ")
+    allowed = (r"CREATE (TABLE|INDEX|UNIQUE INDEX) IF NOT EXISTS |CREATE OR REPLACE (VIEW|FUNCTION|TRIGGER) "
+               r"|ALTER TABLE component_overrides ADD COLUMN IF NOT EXISTS |DO \$body\$$")
     for stmt in statements:
         assert re.match(allowed, stmt), stmt[:60]
     # the only mentions of DELETE / TRUNCATE are the triggers that forbid them
     for stmt in statements:
         if not stmt.startswith("CREATE OR REPLACE TRIGGER component_overrides_append_only"):
             assert not re.search(r"\b(DROP|DELETE|TRUNCATE)\b", stmt), stmt[:60]
+    # the migration finds the old constraint by its columns and names no constraint itself
+    migration = re.search(r"DO \$cd\$(.*?)\$cd\$", SCHEMA_SQL, flags=re.S).group(1)
+    assert "pg_constraint" in migration and "DROP CONSTRAINT %I" in migration
+    assert "component_overrides_host" not in migration
+    assert "uq_component_overrides_live" in code and "WHERE withdrawn_at IS NULL" in code
     for view in ("v_host_components_current", "v_components_not_assessed",
                  "v_host_unrecognised", "v_privileged_services"):
         assert f"CREATE OR REPLACE VIEW {view} " in code
