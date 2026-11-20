@@ -189,6 +189,69 @@
   set_fact:
     aac_result_id: "{{ _aac_insert_result.query_result[0].id | default(None) }}"
 
+# ── Per-control state: passes as well as fails ───────────────────────────────
+# compliance_results is one summary row per run. When the caller passes the
+# report's control_results (one object per recommendation, from a policy module
+# that returns it), each control's current status is kept in control_state and
+# every change of status in control_state_history. One statement per result;
+# the database function is the only write path, so the least-privilege
+# evidence writer needs no UPDATE grant. Runs after the summary row exists, so
+# the state points at a real result. Reference:
+# docs/reference/PER_CONTROL_RESULTS.md.
+- name: Check that the per-control tables are installed
+  community.postgresql.postgresql_query:
+    login_host:     "{{ aac_result_pg_host }}"
+    login_port:     "{{ aac_result_pg_port }}"
+    login_user:     "{{ aac_result_pg_user }}"
+    login_password: "{{ aac_result_pg_password }}"
+    login_db:             "{{ aac_result_pg_db }}"
+    query: "SELECT to_regprocedure('control_state_record(bigint,text,text,jsonb)') IS NOT NULL AS present"
+  register: _aac_control_state_present
+  delegate_to: "{{ aac_result_delegate_to }}"
+  become: no
+  when:
+    - aac_result_control_results | default([], true) | length > 0
+    - aac_result_id | default('', true) | string | length > 0
+
+- name: Record per-control state and status changes
+  community.postgresql.postgresql_query:
+    login_host:     "{{ aac_result_pg_host }}"
+    login_port:     "{{ aac_result_pg_port }}"
+    login_user:     "{{ aac_result_pg_user }}"
+    login_password: "{{ aac_result_pg_password }}"
+    login_db:             "{{ aac_result_pg_db }}"
+    query: "SELECT * FROM control_state_record(%s::bigint, %s, %s, %s::jsonb)"
+    positional_args:
+      - "{{ aac_result_id }}"
+      - "{{ _aac_hostname }}"
+      - "{{ _aac_framework }}"
+      - "{{ aac_result_control_results | to_json }}"
+  register: _aac_control_state_write
+  delegate_to: "{{ aac_result_delegate_to }}"
+  become: no
+  when:
+    - _aac_control_state_present is not skipped
+    - _aac_control_state_present.query_result[0].present | bool
+
+- name: Per-control state recorded
+  debug:
+    msg: >-
+      {{ _aac_framework }} on {{ _aac_hostname }}:
+      {{ _aac_control_state_write.query_result[0].controls_reported }} control(s) recorded,
+      {{ _aac_control_state_write.query_result[0].status_changes }} status change(s),
+      {{ _aac_control_state_write.query_result[0].controls_not_reported }} no longer reported.
+  when: _aac_control_state_write is not skipped
+
+- name: Per-control tables are not installed
+  debug:
+    msg: >-
+      The report carries {{ aac_result_control_results | length }} per-control results but this database
+      has no control_state tables, so only the summary row was stored. Re-run the database role
+      (aac_compliance_db) or apply ansible/files/control_state_schema.sql to add them.
+  when:
+    - _aac_control_state_present is not skipped
+    - not (_aac_control_state_present.query_result[0].present | bool)
+
 # ── Optional CAA chain — write a compliance_certifications row ────────────────
 # Callers opt in with aac_caa_enabled: true. To make the CAA reproducible, callers
 # should also pass aac_result_caa_result (canonical OPA decision) and

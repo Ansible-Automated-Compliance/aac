@@ -141,6 +141,41 @@
   loop_control:
     label: "section {{ item.section }} — {{ item.name }}"
 
+# Per-control state: every recommendation's result, passes included. The
+# section rows above are the summary; this keeps each control's current status
+# and every change of status (control_state tables, written only through the
+# database function). Recorded against the newest section row of this run.
+# Skipped where the tables are not installed.
+- name: Check that the per-control tables are installed
+  community.postgresql.postgresql_query:
+    login_host: "{{ m365_db_host }}"
+    login_user: "{{ m365_db_user }}"
+    login_password: "{{ m365_db_password }}"
+    login_db: "{{ m365_db_name }}"
+    query: "SELECT to_regprocedure('control_state_record(bigint,text,text,jsonb)') IS NOT NULL AS present"
+  register: _m365_control_state_present
+  when: m365_report.control_results | default([], true) | length > 0
+
+- name: Record per-control state and status changes
+  community.postgresql.postgresql_query:
+    login_host: "{{ m365_db_host }}"
+    login_user: "{{ m365_db_user }}"
+    login_password: "{{ m365_db_password }}"
+    login_db: "{{ m365_db_name }}"
+    query: >-
+      SELECT s.* FROM
+        (SELECT max(id) AS id FROM compliance_results
+          WHERE hostname = %(hostname)s AND framework = %(framework)s) r,
+        LATERAL control_state_record(r.id, %(hostname)s, %(framework)s, %(controls)s::jsonb) s
+      WHERE r.id IS NOT NULL
+    named_args:
+      hostname: "{{ m365_organization | default('m365-tenant', true) }}"
+      framework: "{{ m365_framework_name }}"
+      controls: "{{ m365_report.control_results | to_json }}"
+  when:
+    - _m365_control_state_present is not skipped
+    - _m365_control_state_present.query_result[0].present | bool
+
 - name: Persist the controls that have no collector path
   vars:
     _attestation_violations: "{{ m365_report.no_collector_path.violations | default([]) }}"

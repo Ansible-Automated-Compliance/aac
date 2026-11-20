@@ -308,6 +308,8 @@
           evaluation_endpoint: "main/compliance_report"
           opa_server:         "{{ opa_server_url }}"
         aac_result_opa_server: "{{ opa_server_url }}"
+        # Every control's result, passes included (control_state tables).
+        aac_result_control_results: "{{ compliance_result.control_results | default([]) }}"
 
     # ── Summary ────────────────────────────────────────────────────────────────
 

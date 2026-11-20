@@ -202,6 +202,8 @@
         aac_result_compliance_pct:  "{{ compliance_score | float }}"
         aac_result_metadata: "{{ {'hostname': inventory_hostname, 'ip_address': ansible_default_ipv4.address | default('unknown'), 'distribution': ansible_distribution, 'distribution_version': ansible_distribution_version, 'kernel': ansible_kernel, 'architecture': ansible_architecture, 'assessment_time': assessment_timestamp, 'is_compliant': is_compliant, 'controls_basis': controls_basis, 'profile': cis_profile, 'attested': (cis_rhel9_selection.attest | dict2items | selectattr('value') | map(attribute='key') | list), 'assessment_coverage_percentage': assessment_coverage_pct | int, 'sections_not_assessed': sections_not_assessed, 'evaluation_endpoint': 'main/compliance_report', 'facts_schema_version': facts_schema_version} }}"
         aac_result_opa_server: "{{ opa_server_url }}"
+        # Every control's result, passes included (control_state tables).
+        aac_result_control_results: "{{ compliance_result.control_results | default([]) }}"
         # CAA opt-in — writes one compliance_certifications row per assessed host.
         # Pass-through vars use aac_result_caa_* naming to avoid Jinja recursion
         # in the wrapper role — see aac_store_results/tasks/main.yml for details.
