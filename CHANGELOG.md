@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Fixed — CIS Ubuntu 22.04 and Amazon Linux 2023 assessments report on the host
+
+- Both playbooks ran their own small collectors, whose field names the rebuilt library modules do not read, so almost every control was stored as failed for lack of evidence. They now follow the CIS RHEL 9 assessment: the shared collector, the shared mapper, the gated `main/compliance_report`, with the profile, coverage and unassessed sections stored with the row. New survey variables `cis_ubuntu_22_04_profile` / `cis_ubuntu_22_04_attestations` and `cis_amazon_linux_2023_profile` / `cis_amazon_linux_2023_attestations`, validated by the new shared `ansible/tasks/cis_linux_profile_attest.yml`.
+- The shared collector gains a Debian-family block (`deb_raw`: dpkg package states, unit states, running and persisted sysctl, the PAM common files, account and group rows without password or comment fields, banners, ufw, AppArmor, AIDE, limits, apport, cron directory modes) and the mapper a section that is emitted only from that block. RPM hosts receive what they received before (the RHEL 9 test fixture renders byte for byte the same).
+- Measured on live hosts: Ubuntu 22.04 from 0 to 140 of 246 controls passed, with 1 control still lacking evidence (was every control); Amazon Linux 2023 from 13 to 102 of 179, with 5 lacking evidence (was 145). CIS RHEL 9 is unchanged at 151 of 263. Expect the stored Ubuntu and Amazon Linux percentages to rise.
+
 ### Added — AAC - Assert Fresh Results: fail when an expected framework or host is stale
 
 - `ansible/playbooks/aac_assert_fresh_results.yml` checks each framework in `aac_freshness_frameworks` (optionally per host) and each host in `aac_freshness_fact_hosts` against its own age limit and fails the job when one is stale or has never produced a row. The daily health check only warns when nothing at all ran in 24 hours, so one busy framework hid another that had stopped. Read-only; nothing declared is a failure.
