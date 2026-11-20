@@ -25,11 +25,37 @@
     aap_user:      "{{ aap_ssh_user }}"
     aap_admin_user: "admin"
     rotation_dir:  "/tmp/aac_cred_rotation"
-    project_dir:   "/home/{{ aap_user }}/aap/controller/data/projects/_11__compliance_automation"
+    # The controller project that holds the vault file, and where its checkout
+    # lives on the controller host. Both differ per install: set them in
+    # site_config.yml (the defaults are those of the first lab install).
+    rotation_project_id:  "{{ aac_controller_project_id | default(11) }}"
+    project_dir:   "{{ aac_controller_project_dir | default('/home/' ~ aap_user ~ '/aap/controller/data/projects/_11__compliance_automation') }}"
+    # Where the re-encrypted vault is pushed: the SITE's own private repository,
+    # never the public upstream. Default: git_repo_url from site_config.yml.
+    rotation_push_url:    "{{ aac_vault_repo_url | default(git_repo_url | default(''), true) }}"
+    rotation_push_branch: "{{ aac_vault_repo_branch | default('main', true) }}"
     vault_file:    "{{ project_dir }}/ansible/vars/vault_secrets.yml"
     vault_pass:    "/home/{{ aap_user }}/.vault_pass"
 
   tasks:
+
+    # Until 2026-11-19 the push target was written into this playbook as the
+    # public upstream repository. A rotated vault belongs in the site's own
+    # private repository; refuse anything else before a credential is touched.
+    - name: Refuse to push the vault anywhere but the site's own repository
+      ansible.builtin.assert:
+        that:
+          - rotation_push_url | length > 0
+          - rotation_push_url is match('^https://')
+          - "'YOUR_ORG' not in rotation_push_url"
+          - not (rotation_push_url | lower is search('github\\.com[/:]ansible-automated-compliance/aac(\\.git)?/?$'))
+          - (vault_github_pat | default('')) | length > 0
+        fail_msg: >-
+          The vault push target is not usable: set git_repo_url (or
+          aac_vault_repo_url) in site_config.yml to this site's own private
+          repository as an https URL, and vault_github_pat to a token that may
+          push to it. The public upstream repository is never a valid target.
+        quiet: true
 
     - name: Check which credentials were rotated
       stat:
@@ -133,7 +159,15 @@
         git config user.name "AAC Credential Rotation"
         git add ansible/vars/vault_secrets.yml
         git commit -m "Security: rotate credentials ({{ ansible_date_time.date }}) [ci skip]"
-        git push "https://{{ vault_github_pat }}@github.com/ansible-automated-compliance/aac.git" main
+        git push "{{ rotation_push_url }}" "HEAD:{{ rotation_push_branch }}"
+      # The token travels as an HTTP header set through the environment, not
+      # in the URL: a URL with a token shows in the process list and in git's
+      # own error messages.
+      environment:
+        GIT_CONFIG_COUNT: "1"
+        GIT_CONFIG_KEY_0: "http.extraheader"
+        GIT_CONFIG_VALUE_0: "Authorization: Basic {{ ('x-access-token:' ~ vault_github_pat) | b64encode }}"
+        GIT_TERMINAL_PROMPT: "0"
       delegate_to: "{{ (aap_host | default(aac_host)) }}"
       no_log: true
       changed_when: true
@@ -141,7 +175,7 @@
     - name: Trigger AAP project sync
       uri:
         use_proxy: false
-        url: "{{ aap_url }}/api/controller/v2/projects/11/update/"
+        url: "{{ aap_url }}/api/controller/v2/projects/{{ rotation_project_id }}/update/"
         method: POST
         headers:
           Authorization: "Basic {{ (aap_admin_user + ':' + aap_admin_password) | b64encode }}"
@@ -153,5 +187,5 @@
         msg:
           - "✅ Ansible Vault updated with new credentials"
           - "✅ Vault verified encrypted"
-          - "✅ Committed to git and pushed to GitHub"
+          - "✅ Committed to git and pushed to the site repository"
           - "✅ AAP project sync triggered"
