@@ -14,10 +14,15 @@
 #              reclassify  report it as another component (needs reclassify_to)
 #   who        the person who asked for the override
 #   why        the reason
-#   expires    YYYY-MM-DD; the override stops applying on that date by itself
+#   expires    YYYY-MM-DD; the override stops applying on that date by itself.
+#              No further away than component_override_max_days (default 90).
+# and, to exclude or reclassify a component the catalog marks as privileged
+# (act / map / rank):
+#   approver   a second person, different from `who`
 #
-# An entry without who, why or expires is refused and the job stops before it
-# writes anything. Removing an entry from this list withdraws the override; its
+# An entry that breaks these rules is refused and the job stops before it
+# writes anything. The account that launched the job is recorded beside each
+# override (recorded_by), apart from the `who` the entry declares. Removing an entry from this list withdraws the override; its
 # record stays in component_overrides. Supply the list here or as the extra
 # variable component_override_entries.
 #

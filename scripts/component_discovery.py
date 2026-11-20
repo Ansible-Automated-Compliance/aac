@@ -135,8 +135,18 @@ def validate_catalog(catalog) -> list[str]:
             errs.append(f"{where}: no signal can identify it (ports, client and supporting signals cannot)")
     base = catalog.get("base_os")
     if not isinstance(base, dict) or not isinstance(base.get("service_units"), list) \
-            or not isinstance(base.get("listener_processes"), list):
-        errs.append("base_os must carry service_units and listener_processes lists")
+            or not isinstance(base.get("listeners"), list):
+        errs.append("base_os must carry service_units and listeners lists")
+    else:
+        for b in base["listeners"]:
+            # A bare process name is not accepted: it would allowlist that name on any socket.
+            if not isinstance(b, dict) or set(b) - {"process", "proto", "port", "scope"} \
+                    or not isinstance(b.get("process"), str) or not b["process"].strip() \
+                    or b.get("proto") not in ("tcp", "udp") \
+                    or isinstance(b.get("port"), bool) or not isinstance(b.get("port"), int) \
+                    or b.get("scope", "any") not in ("any", "loopback"):
+                errs.append(f"base_os listener {b!r}: needs process, proto (tcp/udp) and a numeric "
+                            "port; scope may be 'loopback'")
     return errs
 
 
@@ -185,6 +195,24 @@ def parse_listeners(lines) -> list[dict]:
         out.append({"proto": proto, "port": int(m.group(1)),
                     "bind": local[: m.start()], "processes": procs})
     return out
+
+
+def is_loopback(bind) -> bool:
+    b = str(bind or "").strip().strip("[]").lower()
+    return b.startswith("127.") or b == "::1" or b.endswith("%lo") or b == "localhost"
+
+
+def base_listener(lsn, proc, base) -> bool:
+    """True when this process on this socket is a base operating system listener.
+
+    The process name alone is not enough: protocol and port must match too, and
+    the bind address where the catalog states a scope.
+    """
+    for b in base.get("listeners", []):
+        if (_match_comm(b["process"], proc) and b["proto"] == lsn["proto"] and int(b["port"]) == lsn["port"]
+                and (b.get("scope", "any") != "loopback" or is_loopback(lsn["bind"]))):
+            return True
+    return False
 
 
 def normalise_host(row) -> dict:
@@ -399,7 +427,7 @@ def detect_host(host, catalog) -> dict:
         procs = lsn["processes"]
         if procs:
             unexplained = [p for p in procs if p not in explained_procs
-                           and not any(_match_comm(b, p) for b in base.get("listener_processes", []))]
+                           and not base_listener(lsn, p, base)]
             if not unexplained:
                 continue
         elif lsn["port"] in explained_ports:
@@ -595,14 +623,32 @@ def _still_running(host, kind, item) -> bool:
 
 # ── Operator overrides ───────────────────────────────────────────────────────
 
-def validate_overrides(entries, catalog) -> tuple[list[dict], list[str]]:
+DEFAULT_MAX_EXPIRY_DAYS = 90
+
+
+def is_privileged(comp) -> bool:
+    return any((comp.get("privileged") or {}).get(c) for c in CAPABILITIES)
+
+
+def validate_overrides(entries, catalog, now=None, max_expiry_days=DEFAULT_MAX_EXPIRY_DAYS,
+                       recorded_by="", source="file") -> tuple[list[dict], list[str]]:
     """Return (accepted overrides, refusals).
 
     An entry is refused unless it names host, component, a known action, who
-    asked for it, why, and an expiry date. Nothing is applied from a refused
-    entry; the playbook stops before it writes anything.
+    asked for it, why, and an expiry date no further away than
+    `max_expiry_days`. Hiding or renaming a component the catalog marks as
+    privileged (exclude / reclassify) also needs an `approver` who is not the
+    requester. Nothing is applied from a refused entry; the playbook stops
+    before it writes anything.
+
+    `who` is what the entry declares. `recorded_by` is the account that
+    launched the job and `source` is where the list came from; both are stored
+    beside the declared requester and are not taken from the entry.
     """
     keys = {c["key"] for c in catalog["components"]}
+    by_key = {c["key"]: c for c in catalog["components"]}
+    now = parse_ts(now) or datetime.now(timezone.utc)
+    max_expiry_days = int(max_expiry_days)
     good, errs = [], []
     if entries in (None, ""):
         return good, errs
@@ -615,7 +661,7 @@ def validate_overrides(entries, catalog) -> tuple[list[dict], list[str]]:
             continue
         problems = []
         vals = {k: str(e.get(k) if e.get(k) is not None else "").strip()
-                for k in ("host", "component", "action", "who", "why", "expires", "reclassify_to")}
+                for k in ("host", "component", "action", "who", "why", "expires", "reclassify_to", "approver")}
         where = f"override[{i}] ({vals['host'] or '?'} / {vals['component'] or '?'})"
         for field in ("host", "component", "action", "who", "why", "expires"):
             if not vals[field]:
@@ -630,6 +676,14 @@ def validate_overrides(entries, catalog) -> tuple[list[dict], list[str]]:
                 expires = parse_ts(vals["expires"])
             except ValueError:
                 problems.append(f"expires {vals['expires']!r} is not a date (YYYY-MM-DD)")
+        if expires and expires > now + timedelta(days=max_expiry_days):
+            problems.append(f"expires {vals['expires']} is more than {max_expiry_days} days away "
+                            "(the longest an override may run)")
+        if vals["action"] in ("exclude", "reclassify") and is_privileged(by_key.get(vals["component"], {})):
+            if not vals["approver"]:
+                problems.append(f"{vals['action']} of a privileged component needs an approver")
+            elif vals["approver"].casefold() == vals["who"].casefold():
+                problems.append("the approver must be a different person from who asked")
         if vals["action"] == "reclassify":
             if vals["reclassify_to"] not in keys:
                 problems.append("reclassify needs reclassify_to, a component key in the catalog")
@@ -642,7 +696,10 @@ def validate_overrides(entries, catalog) -> tuple[list[dict], list[str]]:
             continue
         good.append({"host": vals["host"], "component_key": vals["component"], "action": vals["action"],
                      "reclassify_to": vals["reclassify_to"], "requested_by": vals["who"],
-                     "reason": vals["why"], "expires_at": iso(expires)})
+                     "reason": vals["why"], "expires_at": iso(expires),
+                     "approved_by": vals["approver"], "recorded_by": str(recorded_by or "").strip(),
+                     "source": str(source or "file"),
+                     "privileged": is_privileged(by_key[vals["component"]])})
     return good, errs
 
 
@@ -704,7 +761,10 @@ def build_plan(data, catalog=None) -> dict:
     version = catalog["catalog_version"]
     by_key = {c["key"]: c for c in catalog["components"]}
 
-    overrides, refusals = validate_overrides(data.get("overrides"), catalog)
+    overrides, refusals = validate_overrides(
+        data.get("overrides"), catalog, now=now,
+        max_expiry_days=data.get("override_max_expiry_days", DEFAULT_MAX_EXPIRY_DAYS),
+        recorded_by=data.get("launched_by", ""), source=data.get("override_source", "file"))
     if refusals:
         return {"ok": False, "override_errors": refusals, "summary": {}, "payload": None}
 
@@ -773,7 +833,9 @@ def build_plan(data, catalog=None) -> dict:
 
     def brief(o):
         return {"host": o["host"], "component": o["component_key"], "action": o["action"],
-                "who": o["requested_by"], "expires": o["expires_at"][:10]}
+                "who": o["requested_by"], "approver": o["approved_by"] or None,
+                "recorded_by": o["recorded_by"] or None, "source": o["source"],
+                "privileged_component": o["privileged"], "expires": o["expires_at"][:10]}
 
     summary = {
         "catalog_version": version, "catalog_components": len(by_key),
@@ -793,6 +855,7 @@ def build_plan(data, catalog=None) -> dict:
         "overrides_in_force": [brief(o) for o in live],
         "overrides_expiring_soon": [brief(o) for o in soon],
         "overrides_expired": [brief(o) for o in overrides if o not in live],
+        "overrides_on_privileged_components": [brief(o) for o in live if o["privileged"]],
         "history_events": len(events),
     }
     payload = {
@@ -876,12 +939,15 @@ ON CONFLICT (host_id, item_kind, item) DO UPDATE SET
        facts_collected_at = EXCLUDED.facts_collected_at, not_seen_since = EXCLUDED.not_seen_since,
        not_seen_reason = EXCLUDED.not_seen_reason, last_run_id = EXCLUDED.last_run_id, updated_at = now();
 
-INSERT INTO component_overrides (host, component_key, action, reclassify_to, requested_by, reason, expires_at)
+INSERT INTO component_overrides (host, component_key, action, reclassify_to, requested_by, reason,
+       expires_at, approved_by, recorded_by, source)
 SELECT x->>'host', x->>'component_key', x->>'action', COALESCE(x->>'reclassify_to', ''),
-       x->>'requested_by', x->>'reason', (x->>'expires_at')::{_TS}
+       x->>'requested_by', x->>'reason', (x->>'expires_at')::{_TS},
+       NULLIF(x->>'approved_by', ''), NULLIF(x->>'recorded_by', ''), COALESCE(x->>'source', 'file')
   FROM _cd_payload, jsonb_array_elements(p->'overrides') x
+-- recorded_by and source keep the values of the run that first recorded the entry.
 ON CONFLICT (host, component_key, action, reclassify_to, requested_by, expires_at) DO UPDATE SET
-       reason = EXCLUDED.reason, withdrawn_at = NULL;
+       reason = EXCLUDED.reason, approved_by = EXCLUDED.approved_by, withdrawn_at = NULL;
 
 UPDATE component_overrides o SET withdrawn_at = now()
  WHERE o.withdrawn_at IS NULL
@@ -937,9 +1003,70 @@ def format_summary(summary) -> str:
                        ("Overrides expiring soon", "overrides_expiring_soon")):
         if s[key]:
             lines += ["", title]
-            lines += [f"  {o['host']}: {o['action']} {o['component']} by {o['who']}, expires {o['expires']}"
+            lines += [f"  {o['host']}: {o['action']} {o['component']} asked by {o['who']}"
+                      + (f", approved by {o['approver']}" if o["approver"] else "")
+                      + (f", recorded by {o['recorded_by']}" if o["recorded_by"] else "")
+                      + f" ({o['source']}), expires {o['expires']}"
+                      + (" [privileged component]" if o["privileged_component"] else "")
                       for o in s[key]]
     return "\n".join(lines)
+
+
+# ── Launch guard ─────────────────────────────────────────────────────────────
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+_REF_RE = re.compile(r"^\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}$")
+
+
+def configured_db_host(site_config_path):
+    """The database host the site configuration names, or (None, why).
+
+    Read straight from the file, so a variable supplied at launch cannot change
+    the answer. `pg_host: "{{ aac_host }}"` is followed inside the same file.
+    """
+    path = Path(site_config_path)
+    if not path.is_file():
+        return None, f"{path.name} does not exist in the project checkout"
+    try:
+        site = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except yaml.YAMLError as exc:
+        return None, f"{path.name} could not be read: {exc}"
+    value = site.get("pg_host") if isinstance(site, dict) else None
+    for _ in range(5):
+        m = _REF_RE.match(str(value or "").strip())
+        if not m:
+            break
+        value = site.get(m.group(1))
+    value = str(value or "").strip()
+    if not value:
+        return None, f"{path.name} sets no pg_host"
+    if "{{" in value:
+        return None, f"pg_host in {path.name} is an expression that cannot be checked: {value}"
+    return value, ""
+
+
+def check_launch(pg_host, site_config_path, paths, root=PROJECT_ROOT) -> list[str]:
+    """Reasons to refuse the run (an empty list means go).
+
+    The job holds the database credential, so it only connects to the database
+    host the site configuration names, and it only reads its catalog and
+    override files from inside the project checkout.
+    """
+    problems = []
+    expected, why = configured_db_host(site_config_path)
+    if expected is None:
+        problems.append(f"the database host cannot be verified: {why}")
+    elif str(pg_host or "").strip().casefold() != expected.casefold():
+        problems.append(f"database host {str(pg_host)!r} is not the configured site value "
+                        f"(pg_host in {Path(site_config_path).name})")
+    root = Path(root).resolve()
+    for label, raw in paths.items():
+        resolved = Path(raw).resolve()
+        if root != resolved and root not in resolved.parents:
+            problems.append(f"{label} file {str(raw)!r} is outside the project checkout")
+        elif not resolved.is_file():
+            problems.append(f"{label} file {str(raw)!r} does not exist")
+    return problems
 
 
 # ── CLI ──────────────────────────────────────────────────────────────────────
@@ -954,7 +1081,19 @@ def main(argv=None) -> int:
     plan.add_argument("--summary-out", required=True)
     check = sub.add_parser("check-catalog", help="validate the catalog file")
     check.add_argument("--catalog", default=str(DEFAULT_CATALOG))
+    guard = sub.add_parser("check-launch", help="refuse a run aimed at another database or at outside files")
+    guard.add_argument("--pg-host", required=True)
+    guard.add_argument("--site-config", required=True)
+    guard.add_argument("--catalog", required=True)
+    guard.add_argument("--overrides", required=True)
     args = ap.parse_args(argv)
+
+    if args.cmd == "check-launch":
+        problems = check_launch(args.pg_host, args.site_config,
+                                {"catalog": args.catalog, "overrides": args.overrides})
+        for line in problems:
+            print(line, file=sys.stderr)
+        return 4 if problems else 0
 
     try:
         catalog = load_catalog(args.catalog)

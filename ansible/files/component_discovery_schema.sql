@@ -1,9 +1,10 @@
 -- component_discovery_schema.sql — which technology components run on which host.
 --
 -- Applied by ansible/playbooks/discover_host_components.yml. Additive and safe to
--- re-run: every statement is CREATE ... IF NOT EXISTS or CREATE OR REPLACE VIEW.
--- Nothing here alters or drops an existing object, and nothing in the product
--- deletes rows from these tables.
+-- re-run: every statement is CREATE ... IF NOT EXISTS, CREATE OR REPLACE VIEW or
+-- ALTER TABLE ... ADD COLUMN IF NOT EXISTS on a table this file owns. Nothing
+-- here drops an object or touches a table of another feature, and nothing in
+-- the product deletes rows from these tables.
 --
 -- Two maps, kept apart:
 --   component_catalog    a copy of the shipped detection catalog (what CAN be found)
@@ -110,6 +111,13 @@ CREATE TABLE IF NOT EXISTS component_overrides (
     withdrawn_at  TIMESTAMPTZ,                    -- set when the entry leaves the operator's file
     UNIQUE (host, component_key, action, reclassify_to, requested_by, expires_at)
 );
+-- requested_by is what the entry declares. recorded_by is the account that
+-- launched the job that recorded it, source is where the list came from
+-- (file or variable), approved_by is the second person required to hide or
+-- rename a privileged component.
+ALTER TABLE component_overrides ADD COLUMN IF NOT EXISTS approved_by TEXT;
+ALTER TABLE component_overrides ADD COLUMN IF NOT EXISTS recorded_by TEXT;
+ALTER TABLE component_overrides ADD COLUMN IF NOT EXISTS source      TEXT NOT NULL DEFAULT 'file';
 
 -- ── Views ────────────────────────────────────────────────────────────────────
 
@@ -121,7 +129,8 @@ SELECT o.id, o.host, o.component_key, o.action, NULLIF(o.reclassify_to, '') AS r
        CASE WHEN o.withdrawn_at IS NOT NULL THEN 'withdrawn'
             WHEN o.expires_at <= now()      THEN 'expired'
             ELSE 'in_force' END                                  AS state,
-       (o.expires_at::date - now()::date)                        AS days_to_expiry
+       (o.expires_at::date - now()::date)                        AS days_to_expiry,
+       o.approved_by, o.recorded_by, o.source
   FROM component_overrides o;
 
 -- The whole map: every stored row with the override in force (if any) beside
@@ -155,7 +164,9 @@ SELECT hc.host_id, hc.hostname,
             ELSE 'not seen since ' || to_char(hc.not_seen_since AT TIME ZONE 'UTC', 'YYYY-MM-DD')
                  || ' (' || hc.not_seen_reason || ')' END  AS freshness,
        ov.action AS override_action, ov.requested_by AS override_by,
-       ov.reason AS override_reason, ov.expires_at AS override_expires
+       ov.reason AS override_reason, ov.expires_at AS override_expires,
+       ov.approved_by AS override_approved_by, ov.recorded_by AS override_recorded_by,
+       ov.source AS override_source
   FROM host_components hc
   CROSS JOIN run
   LEFT JOIN LATERAL (
@@ -168,7 +179,8 @@ SELECT l.host, l.host, l.component_key, l.component_key,
        NULL, NULL, '{}'::text[], '[]'::jsonb, NULL,
        NULL, NULL, NULL, NULL, NULL, NULL, NULL,
        'confirmed by override; not detected',
-       l.action, l.requested_by, l.reason, l.expires_at
+       l.action, l.requested_by, l.reason, l.expires_at,
+       l.approved_by, l.recorded_by, l.source
   FROM live l
  WHERE l.action = 'confirm'
    AND NOT EXISTS (SELECT 1 FROM host_components hc
@@ -181,7 +193,8 @@ CREATE OR REPLACE VIEW v_host_components_current AS
 SELECT m.hostname, m.host_id, m.component_key, c.name AS component, c.kind,
        m.effective_status AS status, m.basis, m.run_state, m.confidence, m.freshness,
        m.first_seen, m.last_seen, m.facts_collected_at, m.catalog_version,
-       m.override_action, m.override_by, m.override_reason, m.override_expires, m.evidence
+       m.override_action, m.override_by, m.override_reason, m.override_expires, m.evidence,
+       m.override_approved_by, m.override_recorded_by, m.override_source
   FROM v_host_component_map m
   LEFT JOIN component_catalog c ON c.component_key = m.component_key
  WHERE m.effective_status IN ('confirmed', 'detected', 'unverified');

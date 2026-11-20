@@ -18,10 +18,17 @@
 # Run AFTER "AAC - Gather Facts". AAP Job Template: "AAC - Discover Host Components".
 # Credentials: Ansible Vault. EE: AAC Compliance EE (community.postgresql). Inventory: localhost.
 #
-# Variables (survey or extra vars):
+# Survey variables (the job template takes no other variables at launch):
 #   component_stale_after_days       facts older than this are "no newer facts" (default 7)
 #   component_override_soon_days     "expiring soon" window for overrides (default 14)
-#   component_override_entries       overrides; default is ansible/vars/component_overrides.yml
+# Site settings (site_config.yml):
+#   component_override_max_days      longest an override may run (default 90)
+#   component_override_entries       overrides, instead of ansible/vars/component_overrides.yml
+#   component_catalog_file, component_overrides_file   must stay inside the project checkout
+#
+# The job holds the database credential. It refuses to run when the database
+# host is not the pg_host that ansible/vars/site_config.yml names, or when the
+# catalog or override file is outside the project checkout.
 
 - name: Discover technology components from stored host facts
   hosts: localhost
@@ -31,11 +38,13 @@
   vars:
     component_stale_after_days: 7
     component_override_soon_days: 14
+    component_override_max_days: 90
+    component_catalog_file: "{{ playbook_dir }}/../vars/component_catalog.yml"
+    component_overrides_file: "{{ playbook_dir }}/../vars/component_overrides.yml"
     cd_pg_host: "{{ aac_result_pg_host | default(pg_host | default('', true), true) }}"
     cd_pg_port: "{{ compliance_db_port | default(pg_port | default(5432)) }}"
     cd_pg_db: "{{ pg_db | default('compliance') }}"
     cd_pg_user: "{{ pg_user | default('postgres') }}"
-    cd_files: "{{ playbook_dir }}/../files"
 
   tasks:
     - name: Load optional local config
@@ -50,9 +59,48 @@
         - files: ["{{ playbook_dir }}/../vars/vault_secrets.yml"]
           skip: true
 
-    - name: Load the shipped operator overrides file
+    - name: Check the tuning values are within bounds
+      ansible.builtin.assert:
+        that:
+          - component_stale_after_days | int >= 1
+          - component_stale_after_days | int <= 365
+          - component_override_soon_days | int >= 1
+          - component_override_soon_days | int <= 90
+          - component_override_max_days | int >= 1
+          - component_override_max_days | int <= 365
+        fail_msg: >-
+          component_stale_after_days must be 1 to 365, component_override_soon_days 1 to 90
+          and component_override_max_days 1 to 365.
+        quiet: true
+
+    # Before any file outside the fixed paths is read and before any database
+    # connection: the target database and the input files must be the site's own.
+    - name: Check the database host and the input file locations
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/../../scripts/component_discovery.py"
+          - check-launch
+          - --pg-host
+          - "{{ cd_pg_host }}"
+          - --site-config
+          - "{{ playbook_dir }}/../vars/site_config.yml"
+          - --catalog
+          - "{{ component_catalog_file }}"
+          - --overrides
+          - "{{ component_overrides_file }}"
+      register: cd_guard
+      changed_when: false
+      failed_when: false
+
+    - name: Refuse a run aimed at another database or at files outside the checkout
+      ansible.builtin.fail:
+        msg: "Refused: {{ cd_guard.stderr | default('launch check failed', true) }}"
+      when: cd_guard.rc != 0
+
+    - name: Load the operator overrides file
       ansible.builtin.include_vars:
-        file: "{{ playbook_dir }}/../vars/component_overrides.yml"
+        file: "{{ component_overrides_file }}"
         name: cd_overrides_file
 
     - name: Require the database address and credential
@@ -73,7 +121,7 @@
         login_user: "{{ cd_pg_user }}"
         login_password: "{{ compliance_db_password }}"
         login_db: "{{ cd_pg_db }}"
-        path: "{{ cd_files }}/component_discovery_schema.sql"
+        path: "{{ playbook_dir }}/../files/component_discovery_schema.sql"
 
     - name: Read the stored facts that detection uses
       community.postgresql.postgresql_query:
@@ -82,7 +130,7 @@
         login_user: "{{ cd_pg_user }}"
         login_password: "{{ compliance_db_password }}"
         login_db: "{{ cd_pg_db }}"
-        query: "{{ lookup('ansible.builtin.file', cd_files + '/component_discovery_read_hosts.sql') }}"
+        query: "{{ lookup('ansible.builtin.file', playbook_dir + '/../files/component_discovery_read_hosts.sql') }}"
       register: cd_hosts
 
     - name: Read the stored component map and the not-recognised list
@@ -119,7 +167,12 @@
               facts_rows: "{{ cd_hosts.query_result | default([]) }}"
               existing_components: "{{ cd_existing.results[0].query_result | default([]) | map(attribute='r') | list }}"
               existing_unrecognised: "{{ cd_existing.results[1].query_result | default([]) | map(attribute='r') | list }}"
-              overrides: "{{ component_override_entries | default(cd_overrides_file.component_override_entries) }}"
+              overrides: "{{ component_override_entries | default(cd_overrides_file.component_override_entries | default([])) }}"
+              # Who launched the job and where the list came from are recorded
+              # beside each override; neither is taken from the entry itself.
+              override_source: "{{ 'variable' if component_override_entries is defined else 'file' }}"
+              launched_by: "{{ awx_user_name | default(tower_user_name | default('')) }}"
+              override_max_expiry_days: "{{ component_override_max_days | int }}"
 
         - name: Run detection (scripts/component_discovery.py)
           ansible.builtin.command:
@@ -130,7 +183,7 @@
               - --input
               - "{{ cd_work.path }}/input.json"
               - --catalog
-              - "{{ playbook_dir }}/../vars/component_catalog.yml"
+              - "{{ component_catalog_file }}"
               - --sql-out
               - "{{ cd_work.path }}/apply.sql"
               - --summary-out
@@ -186,6 +239,7 @@
                 client_tools_only: "{{ cd_summary.client_tools_only }}"
                 overrides_in_force: "{{ cd_summary.overrides_in_force }}"
                 overrides_expiring_soon: "{{ cd_summary.overrides_expiring_soon }}"
+                overrides_on_privileged_components: "{{ cd_summary.overrides_on_privileged_components }}"
       always:
         - name: Remove the work directory
           ansible.builtin.file:

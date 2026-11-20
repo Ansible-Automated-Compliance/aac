@@ -168,6 +168,31 @@ def test_single_signal_kind_is_medium_and_package_only_is_installed():
     assert (det["confidence"], det["run_state"]) == ("medium", "installed")
 
 
+def _listening(*lines):
+    host = cd.normalise_host({"host_id": "h", "facts": {"network": {"listening_ports": list(lines)}}})
+    return {u["item"]: u["detail"] for u in cd.detect_host(host, CATALOG)["unrecognised"]}
+
+
+def test_base_listener_needs_name_port_and_scope_not_the_name_alone():
+    ok = _listening('udp UNCONN 0 0 127.0.0.1:323 0.0.0.0:* users:(("chronyd",pid=7,fd=5))',
+                    'udp UNCONN 0 0 [::1]:323 [::]:* users:(("chronyd",pid=7,fd=6))',
+                    'tcp LISTEN 0 4096 127.0.0.53%lo:53 0.0.0.0:* users:(("systemd-resolve",pid=3,fd=14))')
+    assert ok == {}
+    # a process named like a base daemon on an unexpected port is reported
+    odd = _listening('tcp LISTEN 0 128 0.0.0.0:4444 0.0.0.0:* users:(("chronyd",pid=666,fd=3))')
+    assert odd["tcp/4444"]["processes"] == ["chronyd"]
+    # right port, wrong protocol; right port, wrong bind scope
+    assert "tcp/323" in _listening('tcp LISTEN 0 128 127.0.0.1:323 0.0.0.0:* users:(("chronyd",pid=1,fd=3))')
+    assert "udp/323" in _listening('udp UNCONN 0 0 0.0.0.0:323 0.0.0.0:* users:(("chronyd",pid=1,fd=3))')
+    assert "tcp/9090" in _listening('tcp LISTEN 0 4096 *:9090 *:* users:(("systemd",pid=1,fd=62))')
+
+
+def test_base_listener_entries_must_name_a_port():
+    bad = copy.deepcopy(CATALOG)
+    bad["base_os"]["listeners"] = ["chronyd", {"process": "cupsd", "proto": "tcp"}]
+    assert sum("base_os listener" in e for e in cd.validate_catalog(bad)) == 2
+
+
 def test_sysv_service_names_are_read_as_units():
     units = {"ssh": {"state": "running", "status": "enabled", "source": "sysv"},
              "ssh.service": {"state": "running", "status": "enabled", "source": "systemd"},
@@ -335,6 +360,126 @@ def test_confirm_and_reclassify():
     assert [o["component"] for o in two["summary"]["overrides_expiring_soon"]] == ["hashicorp_vault"]
 
 
+def test_override_beyond_the_maximum_expiry_window_is_refused():
+    far = dict(GOOD, expires="2027-03-01")                       # 102 days after RUN2
+    _, errs = cd.validate_overrides([far], CATALOG, now=RUN2)
+    assert "more than 90 days away" in errs[0]
+    good, errs = cd.validate_overrides([far], CATALOG, now=RUN2, max_expiry_days=120)
+    assert errs == [] and len(good) == 1
+    plan = cd.build_plan({"now": RUN2, "hosts": _latest("round1"), "overrides": [far]}, CATALOG)
+    assert plan["ok"] is False and plan["payload"] is None
+    plan = cd.build_plan({"now": RUN2, "hosts": _latest("round1"), "overrides": [far],
+                          "override_max_expiry_days": 120}, CATALOG)
+    assert plan["ok"] is True
+
+
+PRIV = {"host": "controller01.example.com", "component": "aap_controller", "action": "exclude",
+        "who": "A. Operator", "why": "decommissioned, awaiting rebuild", "expires": "2026-12-31"}
+
+
+@pytest.mark.parametrize("action,extra", [("exclude", {}), ("reclassify", {"reclassify_to": "awx"})])
+def test_hiding_a_privileged_component_needs_a_second_person(action, extra):
+    entry = dict(PRIV, action=action, **extra)
+    _, errs = cd.validate_overrides([entry], CATALOG, now=RUN2)
+    assert "needs an approver" in errs[0]
+    _, errs = cd.validate_overrides([dict(entry, approver=" a. operator ")], CATALOG, now=RUN2)
+    assert "different person" in errs[0]
+    good, errs = cd.validate_overrides([dict(entry, approver="B. Reviewer")], CATALOG, now=RUN2)
+    assert errs == [] and good[0]["approved_by"] == "B. Reviewer" and good[0]["privileged"] is True
+
+
+def test_confirm_and_unprivileged_overrides_need_no_approver():
+    entries = [dict(PRIV, action="confirm"), dict(GOOD)]         # postgresql carries no capability hint
+    good, errs = cd.validate_overrides(entries, CATALOG, now=RUN2)
+    assert errs == [] and len(good) == 2
+
+
+def test_approved_override_on_a_privileged_component_stays_visible():
+    _, two = _two_runs([dict(PRIV, approver="B. Reviewer")])
+    s = two["summary"]
+    assert "aap_controller" not in {c["component"] for c in s["components_per_host"]["controller01.example.com"]}
+    shown = s["overrides_on_privileged_components"]
+    assert [(o["component"], o["who"], o["approver"]) for o in shown] == [
+        ("aap_controller", "A. Operator", "B. Reviewer")]
+    assert shown == s["overrides_in_force"]
+    assert "[privileged component]" in cd.format_summary(s)
+    assert _row(two, "controller01.example.com", "aap_controller")["status"] == "detected"
+
+
+def test_launching_account_and_source_are_recorded_apart_from_the_declared_requester():
+    entry = dict(GOOD, recorded_by="someone else", source="file")     # not taken from the entry
+    plan = cd.build_plan({"now": RUN2, "hosts": _latest("round1"), "overrides": [entry],
+                          "launched_by": "jdoe", "override_source": "variable"}, CATALOG)
+    stored = plan["payload"]["overrides"][0]
+    assert (stored["requested_by"], stored["recorded_by"], stored["source"]) == ("A. Operator", "jdoe", "variable")
+    shown = plan["summary"]["overrides_in_force"][0]
+    assert (shown["who"], shown["recorded_by"], shown["source"]) == ("A. Operator", "jdoe", "variable")
+    sql = cd.persist_sql(plan["payload"])
+    assert "recorded_by" in sql and "approved_by" in sql and "source" in sql
+    plain = cd.build_plan({"now": RUN2, "hosts": _latest("round1"), "overrides": [GOOD]}, CATALOG)
+    assert plain["payload"]["overrides"][0]["recorded_by"] == ""      # no launching account known
+    assert plain["payload"]["overrides"][0]["source"] == "file"
+
+
+# ── Launch guard ─────────────────────────────────────────────────────────────
+
+def _site(tmp_path, text):
+    path = tmp_path / "site_config.yml"
+    path.write_text(text)
+    return path
+
+
+def _paths():
+    return {"catalog": _root / "ansible" / "vars" / "component_catalog.yml",
+            "overrides": _root / "ansible" / "vars" / "component_overrides.yml"}
+
+
+def test_launch_is_refused_when_the_database_host_is_not_the_site_value(tmp_path):
+    site = _site(tmp_path, 'aac_host: "db.example.com"\npg_host: "{{ aac_host }}"\n')
+    assert cd.check_launch("db.example.com", site, _paths()) == []
+    assert cd.check_launch("DB.example.com ", site, _paths()) == []
+    problems = cd.check_launch("elsewhere.example.net", site, _paths())
+    assert len(problems) == 1 and "not the configured site value" in problems[0]
+
+
+def test_launch_is_refused_when_the_site_value_cannot_be_established(tmp_path):
+    assert "does not exist" in cd.check_launch("db.example.com", tmp_path / "missing.yml", _paths())[0]
+    assert "sets no pg_host" in cd.check_launch("db.example.com", _site(tmp_path, "other: 1\n"), _paths())[0]
+    expr = _site(tmp_path, 'pg_host: "{{ lookup(\'env\', \'DB\') }}"\n')
+    assert "cannot be checked" in cd.check_launch("db.example.com", expr, _paths())[0]
+
+
+def test_launch_is_refused_for_files_outside_the_project_checkout(tmp_path):
+    site = _site(tmp_path, 'pg_host: "db.example.com"\n')
+    outside = tmp_path / "catalog.yml"
+    outside.write_text("catalog_version: x\n")
+    problems = cd.check_launch("db.example.com", site, dict(_paths(), catalog=outside))
+    assert problems == [f"catalog file {str(outside)!r} is outside the project checkout"]
+    sneaky = _root / "ansible" / "vars" / ".." / ".." / ".." / outside.name
+    assert "outside the project checkout" in cd.check_launch(
+        "db.example.com", site, dict(_paths(), overrides=sneaky))[0]
+    link = _root / "tests" / "fixtures" / "_cd_link_test.yml"
+    try:
+        link.symlink_to(outside)                                  # inside by name, outside by target
+        assert "outside the project checkout" in cd.check_launch(
+            "db.example.com", site, dict(_paths(), overrides=link))[0]
+    finally:
+        link.unlink(missing_ok=True)
+
+
+def test_seeded_job_template_takes_no_variables_at_launch():
+    base = _root / "install" / "existing-aap" / "extended" / "playbooks"
+    tasks = yaml.safe_load((base / "automation_execution" / "templates" / "discover_host_components.yml").read_text())
+    jt = next(t["ansible.controller.job_template"] for t in tasks if "ansible.controller.job_template" in t)
+    assert jt["ask_variables_on_launch"] is False and jt["survey_enabled"] is True
+    assert "extra_vars" not in jt
+    spec = yaml.safe_load((base / "vars" / "discover_components_survey.yml").read_text())
+    fields = spec["aac_discover_components_survey_spec"]["spec"]
+    assert {f["variable"] for f in fields} == {"component_stale_after_days", "component_override_soon_days"}
+    for f in fields:
+        assert f["type"] == "integer" and isinstance(f["min"], int) and isinstance(f["max"], int)
+
+
 # ── Summary and SQL ──────────────────────────────────────────────────────────
 
 def test_summary_counts():
@@ -364,8 +509,9 @@ def test_schema_sql_is_additive_and_idempotent():
     statements = [s.strip() for s in re.split(r";[ \t]*\n", code) if s.strip()]
     assert statements
     for stmt in statements:
-        assert re.match(r"CREATE (TABLE|INDEX) IF NOT EXISTS |CREATE OR REPLACE VIEW ", stmt), stmt[:60]
-    assert not re.search(r"\b(DROP|DELETE|TRUNCATE|ALTER)\b", code)
+        assert re.match(r"CREATE (TABLE|INDEX) IF NOT EXISTS |CREATE OR REPLACE VIEW "
+                        r"|ALTER TABLE component_overrides ADD COLUMN IF NOT EXISTS ", stmt), stmt[:60]
+    assert not re.search(r"\b(DROP|DELETE|TRUNCATE)\b", code)
     for view in ("v_host_components_current", "v_components_not_assessed",
                  "v_host_unrecognised", "v_privileged_services"):
         assert f"CREATE OR REPLACE VIEW {view} " in code

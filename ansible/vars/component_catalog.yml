@@ -44,7 +44,7 @@
 #               never identifies it alone
 # A port signal is always supporting, whatever role is written.
 
-catalog_version: "2026.11.1"
+catalog_version: "2026.11.2"
 
 kinds:
   - automation_controller
@@ -597,7 +597,7 @@ components:
       - {kind: port, match: 8181}
 
 # ── Base operating system allowlist ──────────────────────────────────────────
-# Units and listening processes that ship with the supported operating systems.
+# Units and listening sockets that ship with the supported operating systems.
 # They are left out of the "running, not recognised" list so that the list
 # shows what the catalog does not explain, not what every host runs.
 # Patterns are shell-style and compared without regard to case.
@@ -676,16 +676,24 @@ base_os:
     - "bluetooth.service"
     - "cups.service"
     - "cups-browsed.service"
-  listener_processes:
-    - systemd
-    - systemd-resolve
-    - systemd-network
-    - systemd-timesyn
-    - chronyd
-    - rpcbind
-    - rpc.statd
-    - rsyslogd
-    - dhclient
-    - NetworkManager
-    - avahi-daemon
-    - cupsd
+  # A base listener is allowlisted only when the process name AND the protocol
+  # and port match, and the bind scope too where one is given (`loopback`).
+  # The same process name on any other socket is reported as not recognised,
+  # so naming a process after a base daemon does not hide its socket.
+  listeners:
+    - {process: systemd, proto: tcp, port: 111}
+    - {process: systemd, proto: udp, port: 111}
+    - {process: rpcbind, proto: tcp, port: 111}
+    - {process: rpcbind, proto: udp, port: 111}
+    - {process: systemd-resolve, proto: tcp, port: 53, scope: loopback}
+    - {process: systemd-resolve, proto: udp, port: 53, scope: loopback}
+    - {process: systemd-resolve, proto: tcp, port: 5355}
+    - {process: systemd-resolve, proto: udp, port: 5355}
+    - {process: systemd-network, proto: udp, port: 68}
+    - {process: systemd-network, proto: udp, port: 546}
+    - {process: NetworkManager, proto: udp, port: 68}
+    - {process: NetworkManager, proto: udp, port: 546}
+    - {process: dhclient, proto: udp, port: 68}
+    - {process: chronyd, proto: udp, port: 323, scope: loopback}
+    - {process: avahi-daemon, proto: udp, port: 5353}
+    - {process: cupsd, proto: tcp, port: 631, scope: loopback}

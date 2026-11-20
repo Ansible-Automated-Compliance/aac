@@ -1,6 +1,6 @@
 # Component discovery: which technology runs on which host
 
-**Version:** v1.0
+**Version:** v1.1
 **Authors:** Tim Coulter, Claude (Anthropic)
 
 AAC already stores per-host facts (`host_facts`) and turns coarse signals such as the operating system and the cloud provider into enabled policy bundles. Component discovery adds the missing record: which technology components (a database server, a Kubernetes control plane, an automation controller) run on which host.
@@ -25,13 +25,26 @@ Operator overrides are a third, separate record (`component_overrides`). The vie
 | Runs on | `localhost`, against the compliance database |
 | Run after | `AAC - Gather Facts` |
 | Detection logic | `scripts/component_discovery.py` (tested by `tests/test_component_discovery.py`) |
-| Schema | `ansible/files/component_discovery_schema.sql`, applied on every run; `CREATE ... IF NOT EXISTS` and `CREATE OR REPLACE VIEW` only |
+| Schema | `ansible/files/component_discovery_schema.sql`, applied on every run; `CREATE ... IF NOT EXISTS`, `CREATE OR REPLACE VIEW` and `ADD COLUMN IF NOT EXISTS` on its own tables only |
 
-| Variable | Default | Meaning |
-|---|---|---|
-| `component_stale_after_days` | `7` | A detection whose facts are older than this is labelled "no newer facts" |
-| `component_override_soon_days` | `14` | Window for "overrides expiring soon" in the summary |
-| `component_override_entries` | contents of `ansible/vars/component_overrides.yml` | Operator overrides |
+| Variable | Set where | Default | Meaning |
+|---|---|---|---|
+| `component_stale_after_days` | Survey, 1 to 365 | `7` | A detection whose facts are older than this is labelled "no newer facts" |
+| `component_override_soon_days` | Survey, 1 to 90 | `14` | Window for "overrides expiring soon" in the summary |
+| `component_override_max_days` | `site_config.yml` | `90` | The longest an override may run, counted from the run that reads it |
+| `component_override_entries` | `site_config.yml` | contents of `ansible/vars/component_overrides.yml` | Operator overrides |
+| `component_catalog_file`, `component_overrides_file` | `site_config.yml` | the shipped files | Must stay inside the project checkout |
+
+### Launch rules
+
+The job holds the database credential, so what a launcher can change is limited.
+
+| Rule | Effect |
+|---|---|
+| The seeded job template has `ask_variables_on_launch: false` | A launcher can set the two survey fields above, each a bounded integer, and nothing else |
+| The database host must be the `pg_host` that `ansible/vars/site_config.yml` names | The playbook reads the value from the file itself (following `"{{ aac_host }}"` inside the file) and refuses to run when the host it was given differs, when the file is missing, or when the value cannot be checked |
+| The catalog and override files must be inside the project checkout | A path that resolves outside it, directly, through `..` or through a symbolic link, is refused before the file is read |
+| Tuning values must be within bounds | The playbook checks the same ranges as the survey |
 
 The job prints a summary and publishes it with `set_stats` under `component_discovery`: components per host, components detected with no collector, counts of running services and ports that were not recognised, entries with no newer facts, entries no longer present, privileged services, client tools found without the server, overrides in force and overrides expiring soon.
 
@@ -82,7 +95,7 @@ A port that matches a catalog entry with nothing else is listed under "running, 
 | `privileged` | Capability hints, each true or false: `act` (can act on other systems), `map` (holds a map of the estate), `rank` (reveals which systems matter most) |
 | `signals` | List of `{kind, match, role, strength}`; `match` is a shell-style pattern, compared without regard to case |
 
-The catalog also carries `base_os`: service units and listening processes that ship with the supported operating systems. They are left out of "running, not recognised".
+The catalog also carries `base_os`: service units and listening sockets that ship with the supported operating systems. They are left out of "running, not recognised". A base listener is an entry of process name, protocol and port, with a bind scope (`loopback`) where one applies, for example `chronyd` on `udp/323` on loopback. All of them must match. A process that carries the name of a base daemon but listens anywhere else is reported as not recognised.
 
 To add a component: add an entry, bump `catalog_version`, run `python3 scripts/component_discovery.py check-catalog` and `python3 -m pytest -q tests/test_component_discovery.py`. Use package, unit and process names taken from the vendor's documentation or from a host that runs the product.
 
@@ -140,14 +153,24 @@ Overrides are entered in `ansible/vars/component_overrides.yml` (shipped empty) 
 | `reclassify_to` | With `reclassify` | Catalog key to report instead |
 | `who` | Yes | The person who asked for the override |
 | `why` | Yes | The reason |
-| `expires` | Yes | `YYYY-MM-DD` |
+| `expires` | Yes | `YYYY-MM-DD`, no further away than `component_override_max_days` (90 by default) |
+| `approver` | For `exclude` or `reclassify` of a privileged component | A second person, different from `who` |
+
+Two more values are stored with every override and are not taken from the entry:
+
+| Stored column | Source |
+|---|---|
+| `recorded_by` | The account that launched the job (`awx_user_name` / `tower_user_name`), when the job runs in the automation controller. It is kept apart from `requested_by`, which is only what the entry declares |
+| `source` | `file` when the list came from the overrides file, `variable` when it came from `component_override_entries` |
 
 Rules:
 
 - An entry without `who`, `why` or `expires` is refused. The job stops before it writes anything and names the entry.
+- An entry whose expiry is further away than `component_override_max_days` is refused.
+- An `exclude` or `reclassify` of a component with a capability hint (`act`, `map` or `rank`) is refused unless it names an `approver` who is not the requester. Once accepted it stays visible: the summary lists it under overrides in force and under `overrides_on_privileged_components`, and the full map keeps the detection with `basis` `override`.
 - An override past its expiry stops applying by itself. The views compare `expires_at` with the current time, so no job has to run for it to lapse. Its record stays in the table.
 - Removing an entry from the list sets `withdrawn_at` on its record at the next run.
-- The map shows an override as an override: `basis` is `override`, with the action, who, why and expiry beside it. `detection_status`, `confidence` and `evidence` keep what detection found.
+- The map shows an override as an override: `basis` is `override`, with the action, who asked, who approved, who recorded it, its source, why and expiry beside it. `detection_status`, `confidence` and `evidence` keep what detection found.
 
 ## Views for an auditor
 
