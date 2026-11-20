@@ -1,0 +1,44 @@
+---
+# Operator overrides for the per-host component map — shipped empty.
+#
+# Detection ("AAC - Discover Host Components") builds the map from stored facts.
+# An entry here changes what the map REPORTS for one host and one component; it
+# never changes what detection found, and the map shows it as an override.
+# Reference: docs/reference/COMPONENT_DISCOVERY.md
+#
+# Every entry MUST carry all of:
+#   host       host_id or hostname as stored in host_facts
+#   component  a key from ansible/vars/component_catalog.yml
+#   action     exclude     the detection is wrong for this host; leave it out
+#              confirm     the component is there, whatever detection found
+#              reclassify  report it as another component (needs reclassify_to)
+#   who        the person who asked for the override
+#   why        the reason
+#   expires    YYYY-MM-DD; the override stops applying on that date by itself.
+#              No further away than component_override_max_days (default 90).
+# and, to exclude or reclassify a component the catalog marks as privileged
+# (act / map / rank):
+#   approver   the automation controller USERNAME of a second person on the
+#              site's approver list (component_override_approvers in
+#              site_config.yml). It must not be the account that launches the
+#              job. With no approvers configured, or outside the automation
+#              controller, it is refused. `who` is free text and is recorded
+#              as a claim.
+# One entry per host and component.
+#
+# An entry that breaks these rules is refused and the job stops before it
+# writes anything. The account that launched the job is recorded beside each
+# override (recorded_by), apart from the `who` the entry declares. Records are
+# append-only: changing an entry withdraws its old record and adds a new one. Removing an entry from this list withdraws the override; its
+# record stays in component_overrides. Supply the list here or as the extra
+# variable component_override_entries.
+#
+# Example:
+#   - host: db01.example.com
+#     component: postgresql
+#     action: exclude
+#     who: A. Operator
+#     why: Client libraries only; the server package is a build dependency.
+#     expires: 2027-01-31
+
+component_override_entries: []

@@ -1,0 +1,699 @@
+---
+# Component detection catalog — which signals in stored host facts identify
+# which technology component.
+#
+# Read by scripts/component_discovery.py (run by
+# ansible/playbooks/discover_host_components.yml). This file ships with the
+# product and is maintained here; the per-host component map is built from
+# discovery and lives in the database. Reference: docs/reference/COMPONENT_DISCOVERY.md
+#
+# Bump catalog_version on every change to this file. Each row of the component
+# map records the catalog_version that identified it.
+#
+# Entry fields
+#   key          stable identifier (lower case, digits, underscore)
+#   name         display name
+#   kind         one of the values in `kinds` below
+#   collector    name of the collector that gathers this component's own facts,
+#                or "none yet"
+#   loader_keys  framework_catalog.yml loader keys whose policies assess it
+#   privileged   capability hints, each true or false:
+#                  act   can act on other systems
+#                  map   holds a map of the estate
+#                  rank  reveals which systems matter most
+#   signals      list of {kind, match, role, strength}
+#
+# Signal kinds, where each is read from the stored facts, and its strength
+#   package          packages.installed (name)                 strong, shows "installed"
+#   service          services.all + services.enabled_at_boot   strong when running or enabled
+#                    (a unit that is present but neither running nor enabled is supporting only)
+#   process          processes.processes_raw (command name) and the process
+#                    named on each listening socket               medium
+#   container_image  containers.running[].image                   medium, or strong when the
+#                    entry sets `strength: strong`
+#   port             network.listening_ports                      weak, supporting only
+#
+# `match` is a shell-style pattern (fnmatch), compared without regard to case.
+# Process names are compared on their first 15 characters, because that is all
+# the kernel keeps in the command name.
+#
+# role (default: server)
+#   server      can identify the component
+#   client      a client tool; recorded, never identifies the server component
+#   supporting  recorded as evidence when the component is otherwise detected;
+#               never identifies it alone
+# A port signal is always supporting, whatever role is written.
+
+catalog_version: "2026.11.2"
+
+kinds:
+  - automation_controller
+  - automation_node
+  - container_orchestrator
+  - container_runtime
+  - database
+  - web_server
+  - remote_access
+  - identity_server
+  - systems_management
+  - backup_server
+  - backup_agent
+  - secrets_manager
+  - monitoring
+  - policy_engine
+
+components:
+
+  # ── Automation ─────────────────────────────────────────────────────────────
+  - key: aap_controller
+    name: Ansible Automation Platform controller
+    kind: automation_controller
+    collector: none yet
+    loader_keys: []
+    privileged: {act: true, map: true, rank: true}
+    signals:
+      - {kind: package, match: automation-controller}
+      - {kind: package, match: automation-controller-server}
+      - {kind: package, match: ansible-tower}
+      - {kind: package, match: ansible-tower-server}
+      - {kind: service, match: automation-controller.service}
+      - {kind: service, match: "automation-controller-*.service"}
+      - {kind: service, match: ansible-tower.service}
+      - {kind: service, match: supervisord.service, role: supporting}
+      - {kind: container_image, match: "*ansible-automation-platform*/controller-rhel*", strength: strong}
+      - {kind: package, match: automation-controller-cli, role: client}
+
+  - key: awx
+    name: AWX
+    kind: automation_controller
+    collector: none yet
+    loader_keys: []
+    privileged: {act: true, map: true, rank: true}
+    signals:
+      - {kind: container_image, match: "*quay.io/ansible/awx:*", strength: strong}
+      - {kind: container_image, match: "*quay.io/ansible/awx", strength: strong}
+      - {kind: container_image, match: "*ansible/awx_web*", strength: strong}
+      - {kind: container_image, match: "*ansible/awx_task*", strength: strong}
+      - {kind: container_image, match: "*quay.io/ansible/awx-operator*"}
+      - {kind: port, match: 8052}
+
+  - key: receptor
+    name: Receptor (automation mesh node)
+    kind: automation_node
+    collector: none yet
+    loader_keys: []
+    privileged: {act: true, map: false, rank: false}
+    signals:
+      - {kind: package, match: receptor}
+      - {kind: service, match: receptor.service}
+      - {kind: process, match: receptor}
+      - {kind: port, match: 27199}
+
+  # ── Kubernetes and OpenShift ───────────────────────────────────────────────
+  - key: kubernetes_control_plane
+    name: Kubernetes control plane
+    kind: container_orchestrator
+    collector: none yet
+    loader_keys: [cis_kubernetes]
+    privileged: {act: true, map: true, rank: true}
+    signals:
+      - {kind: process, match: kube-apiserver}
+      - {kind: process, match: kube-controller-manager}
+      - {kind: process, match: kube-scheduler}
+      - {kind: service, match: kube-apiserver.service}
+      - {kind: container_image, match: "*kube-apiserver*", strength: strong}
+      - {kind: process, match: etcd, role: supporting}
+      - {kind: port, match: 6443}
+      - {kind: port, match: 2379}
+      - {kind: package, match: kubectl, role: client}
+      - {kind: package, match: kubernetes-client, role: client}
+      - {kind: package, match: kubeadm, role: client}
+
+  - key: kubelet
+    name: Kubernetes node (kubelet)
+    kind: container_orchestrator
+    collector: none yet
+    loader_keys: [cis_kubernetes]
+    privileged: {act: false, map: false, rank: false}
+    signals:
+      - {kind: package, match: kubelet}
+      - {kind: service, match: kubelet.service}
+      - {kind: process, match: kubelet}
+      - {kind: port, match: 10250}
+
+  - key: k3s
+    name: K3s
+    kind: container_orchestrator
+    collector: none yet
+    loader_keys: [cis_kubernetes]
+    privileged: {act: true, map: true, rank: true}
+    signals:
+      - {kind: service, match: k3s.service}
+      - {kind: service, match: k3s-agent.service}
+      - {kind: process, match: k3s-server}
+      - {kind: process, match: k3s-agent}
+      - {kind: package, match: k3s-selinux, role: supporting}
+      - {kind: port, match: 6443}
+
+  - key: rke2
+    name: RKE2
+    kind: container_orchestrator
+    collector: none yet
+    loader_keys: [cis_kubernetes]
+    privileged: {act: true, map: true, rank: true}
+    signals:
+      - {kind: package, match: rke2-server}
+      - {kind: package, match: rke2-agent}
+      - {kind: service, match: rke2-server.service}
+      - {kind: service, match: rke2-agent.service}
+      - {kind: package, match: rke2-common, role: supporting}
+      - {kind: port, match: 9345}
+      - {kind: port, match: 6443}
+
+  - key: openshift_node
+    name: OpenShift node
+    kind: container_orchestrator
+    collector: none yet
+    loader_keys: [cis_openshift]
+    privileged: {act: false, map: false, rank: false}
+    signals:
+      - {kind: package, match: openshift-hyperkube}
+      - {kind: service, match: "machine-config-daemon-*.service", role: supporting}
+      - {kind: port, match: 10250}
+      - {kind: package, match: openshift-clients, role: client}
+
+  - key: microshift
+    name: MicroShift
+    kind: container_orchestrator
+    collector: none yet
+    loader_keys: [cis_openshift]
+    privileged: {act: true, map: true, rank: true}
+    signals:
+      - {kind: package, match: microshift}
+      - {kind: service, match: microshift.service}
+      - {kind: process, match: microshift}
+      - {kind: port, match: 6443}
+
+  - key: openshift_local
+    name: OpenShift Local (CRC)
+    kind: container_orchestrator
+    collector: none yet
+    loader_keys: [cis_openshift]
+    privileged: {act: true, map: true, rank: true}
+    signals:
+      - {kind: process, match: crc}
+      - {kind: process, match: crcd}
+
+  # ── Container runtimes ─────────────────────────────────────────────────────
+  - key: podman
+    name: Podman
+    kind: container_runtime
+    collector: none yet
+    loader_keys: [cis_containers]
+    privileged: {act: false, map: false, rank: false}
+    signals:
+      - {kind: package, match: podman}
+      - {kind: service, match: podman.service}
+      - {kind: process, match: conmon, role: supporting}
+
+  - key: containerd
+    name: containerd
+    kind: container_runtime
+    collector: none yet
+    loader_keys: [cis_containers]
+    privileged: {act: false, map: false, rank: false}
+    signals:
+      - {kind: package, match: containerd}
+      - {kind: package, match: containerd.io}
+      - {kind: service, match: containerd.service}
+      - {kind: process, match: containerd}
+
+  - key: cri_o
+    name: CRI-O
+    kind: container_runtime
+    collector: none yet
+    loader_keys: [cis_containers]
+    privileged: {act: false, map: false, rank: false}
+    signals:
+      - {kind: package, match: cri-o}
+      - {kind: service, match: crio.service}
+      - {kind: process, match: crio}
+
+  - key: docker
+    name: Docker Engine
+    kind: container_runtime
+    collector: none yet
+    loader_keys: [cis_docker]
+    privileged: {act: false, map: false, rank: false}
+    signals:
+      - {kind: package, match: docker-ce}
+      - {kind: package, match: docker.io}
+      - {kind: package, match: moby-engine}
+      - {kind: package, match: docker}
+      - {kind: service, match: docker.service}
+      - {kind: process, match: dockerd}
+      - {kind: package, match: docker-ce-cli, role: client}
+
+  # ── Databases ──────────────────────────────────────────────────────────────
+  - key: postgresql
+    name: PostgreSQL server
+    kind: database
+    collector: none yet
+    loader_keys: [cis_postgresql]
+    privileged: {act: false, map: false, rank: false}
+    signals:
+      - {kind: package, match: postgresql-server}
+      - {kind: package, match: "postgresql[0-9]*-server"}
+      - {kind: package, match: "postgresql-[0-9]*"}
+      - {kind: service, match: postgresql.service}
+      - {kind: service, match: "postgresql-[0-9]*.service"}
+      - {kind: service, match: "postgresql@*.service"}
+      - {kind: process, match: postgres}
+      - {kind: process, match: postmaster}
+      - {kind: container_image, match: "*postgresql-[0-9]*"}
+      - {kind: container_image, match: "*/postgres:*"}
+      - {kind: port, match: 5432}
+      - {kind: package, match: postgresql, role: client}
+      - {kind: package, match: "postgresql-client*", role: client}
+
+  - key: mysql_mariadb
+    name: MySQL / MariaDB server
+    kind: database
+    collector: none yet
+    loader_keys: [cis_mysql]
+    privileged: {act: false, map: false, rank: false}
+    signals:
+      - {kind: package, match: mysql-server}
+      - {kind: package, match: "mysql-server-[0-9]*"}
+      - {kind: package, match: mysql-community-server}
+      - {kind: package, match: mariadb-server}
+      - {kind: service, match: mysqld.service}
+      - {kind: service, match: mysql.service}
+      - {kind: service, match: mariadb.service}
+      - {kind: process, match: mysqld}
+      - {kind: process, match: mariadbd}
+      - {kind: port, match: 3306}
+      - {kind: package, match: mysql, role: client}
+      - {kind: package, match: mariadb, role: client}
+      - {kind: package, match: mysql-community-client, role: client}
+      - {kind: package, match: "mariadb-client*", role: client}
+      - {kind: package, match: "mysql-client*", role: client}
+
+  - key: oracle_database
+    name: Oracle Database
+    kind: database
+    collector: none yet
+    loader_keys: [cis_oracle]
+    privileged: {act: false, map: false, rank: false}
+    signals:
+      - {kind: package, match: "oracle-database-ee-*"}
+      - {kind: package, match: "oracle-database-xe-*"}
+      - {kind: package, match: "oracle-database-free-*"}
+      - {kind: service, match: "oracle-xe-*.service"}
+      - {kind: service, match: "oracle-free-*.service"}
+      - {kind: service, match: "oracledb_*.service"}
+      - {kind: process, match: tnslsnr}
+      - {kind: process, match: "ora_pmon_*"}
+      - {kind: package, match: "oracle-database-preinstall-*", role: supporting}
+      - {kind: port, match: 1521}
+      - {kind: package, match: "oracle-instantclient*", role: client}
+
+  # ── Web servers ────────────────────────────────────────────────────────────
+  - key: apache_httpd
+    name: Apache HTTP Server
+    kind: web_server
+    collector: none yet
+    loader_keys: [cis_apache]
+    privileged: {act: false, map: false, rank: false}
+    signals:
+      - {kind: package, match: httpd}
+      - {kind: package, match: apache2}
+      - {kind: service, match: httpd.service}
+      - {kind: service, match: apache2.service}
+      - {kind: process, match: httpd}
+      - {kind: process, match: apache2}
+      - {kind: port, match: 80}
+      - {kind: port, match: 443}
+
+  - key: nginx
+    name: nginx
+    kind: web_server
+    collector: none yet
+    loader_keys: [cis_nginx]
+    privileged: {act: false, map: false, rank: false}
+    signals:
+      - {kind: package, match: nginx}
+      - {kind: package, match: nginx-core}
+      - {kind: service, match: nginx.service}
+      - {kind: process, match: nginx}
+      - {kind: port, match: 80}
+      - {kind: port, match: 443}
+
+  # ── Remote access ──────────────────────────────────────────────────────────
+  - key: openssh_server
+    name: OpenSSH server
+    kind: remote_access
+    collector: aac_facts_collector
+    loader_keys: []
+    privileged: {act: false, map: false, rank: false}
+    signals:
+      - {kind: package, match: openssh-server}
+      - {kind: service, match: sshd.service}
+      - {kind: service, match: ssh.service}
+      - {kind: process, match: sshd}
+      - {kind: port, match: 22}
+      - {kind: package, match: openssh-clients, role: client}
+      - {kind: package, match: openssh-client, role: client}
+
+  # ── Identity ───────────────────────────────────────────────────────────────
+  - key: freeipa_server
+    name: Identity Management (IdM / FreeIPA) server
+    kind: identity_server
+    collector: none yet
+    loader_keys: []
+    privileged: {act: true, map: true, rank: true}
+    signals:
+      - {kind: package, match: ipa-server}
+      - {kind: package, match: freeipa-server}
+      - {kind: service, match: ipa.service}
+      - {kind: service, match: "dirsrv@*.service", role: supporting}
+      - {kind: service, match: krb5kdc.service, role: supporting}
+      - {kind: port, match: 389}
+      - {kind: port, match: 636}
+      - {kind: port, match: 88}
+      - {kind: package, match: ipa-client, role: client}
+      - {kind: package, match: freeipa-client, role: client}
+
+  - key: samba_ad_dc
+    name: Samba Active Directory domain controller
+    kind: identity_server
+    collector: none yet
+    loader_keys: []
+    privileged: {act: true, map: true, rank: true}
+    signals:
+      - {kind: package, match: samba-dc}
+      - {kind: package, match: samba-ad-dc}
+      - {kind: service, match: samba.service}
+      - {kind: service, match: samba-ad-dc.service}
+      - {kind: port, match: 389}
+      - {kind: port, match: 88}
+      - {kind: package, match: samba-client, role: client}
+      - {kind: package, match: smbclient, role: client}
+
+  # ── Systems management ─────────────────────────────────────────────────────
+  - key: satellite
+    name: Red Hat Satellite (Foreman / Katello) server
+    kind: systems_management
+    collector: none yet
+    loader_keys: []
+    privileged: {act: true, map: true, rank: true}
+    signals:
+      - {kind: package, match: satellite}
+      - {kind: package, match: katello}
+      - {kind: package, match: foreman}
+      - {kind: service, match: foreman.service}
+      - {kind: package, match: satellite-installer, role: supporting}
+      - {kind: package, match: katello-host-tools, role: client}
+      - {kind: package, match: "katello-ca-consumer-*", role: client}
+
+  - key: satellite_capsule
+    name: Red Hat Satellite Capsule (Foreman smart proxy)
+    kind: systems_management
+    collector: none yet
+    loader_keys: []
+    privileged: {act: true, map: false, rank: false}
+    signals:
+      - {kind: package, match: satellite-capsule}
+      - {kind: package, match: foreman-proxy}
+      - {kind: service, match: foreman-proxy.service}
+      - {kind: port, match: 9090}
+
+  # ── Backup ─────────────────────────────────────────────────────────────────
+  - key: bacula_director
+    name: Bacula Director (backup server)
+    kind: backup_server
+    collector: none yet
+    loader_keys: []
+    privileged: {act: true, map: true, rank: true}
+    signals:
+      - {kind: package, match: bacula-director}
+      - {kind: service, match: bacula-dir.service}
+      - {kind: service, match: bacula-director.service}
+      - {kind: process, match: bacula-dir}
+      - {kind: port, match: 9101}
+
+  - key: bacula_client
+    name: Bacula File Daemon (backup agent)
+    kind: backup_agent
+    collector: none yet
+    loader_keys: []
+    privileged: {act: false, map: false, rank: false}
+    signals:
+      - {kind: package, match: bacula-client}
+      - {kind: package, match: bacula-fd}
+      - {kind: service, match: bacula-fd.service}
+      - {kind: process, match: bacula-fd}
+      - {kind: port, match: 9102}
+
+  - key: bareos_director
+    name: Bareos Director (backup server)
+    kind: backup_server
+    collector: none yet
+    loader_keys: []
+    privileged: {act: true, map: true, rank: true}
+    signals:
+      - {kind: package, match: bareos-director}
+      - {kind: service, match: bareos-dir.service}
+      - {kind: service, match: bareos-director.service}
+      - {kind: process, match: bareos-dir}
+      - {kind: port, match: 9101}
+
+  - key: bareos_client
+    name: Bareos File Daemon (backup agent)
+    kind: backup_agent
+    collector: none yet
+    loader_keys: []
+    privileged: {act: false, map: false, rank: false}
+    signals:
+      - {kind: package, match: bareos-filedaemon}
+      - {kind: service, match: bareos-fd.service}
+      - {kind: service, match: bareos-filedaemon.service}
+      - {kind: process, match: bareos-fd}
+      - {kind: port, match: 9102}
+
+  - key: veeam_agent
+    name: Veeam Agent for Linux (backup agent)
+    kind: backup_agent
+    collector: none yet
+    loader_keys: []
+    privileged: {act: false, map: false, rank: false}
+    signals:
+      - {kind: package, match: veeam}
+      - {kind: service, match: veeamservice.service}
+      - {kind: process, match: veeamservice}
+
+  - key: netbackup_server
+    name: Veritas NetBackup server
+    kind: backup_server
+    collector: none yet
+    loader_keys: []
+    privileged: {act: true, map: true, rank: true}
+    signals:
+      - {kind: package, match: VRTSnetbp}
+      - {kind: process, match: bpdbm}
+      - {kind: port, match: 13724}
+      - {kind: port, match: 1556}
+
+  - key: netbackup_client
+    name: Veritas NetBackup client (backup agent)
+    kind: backup_agent
+    collector: none yet
+    loader_keys: []
+    privileged: {act: false, map: false, rank: false}
+    signals:
+      - {kind: package, match: VRTSnbclt}
+      - {kind: process, match: bpcd, role: supporting}
+      - {kind: port, match: 13724}
+      - {kind: port, match: 1556}
+
+  - key: commvault_agent
+    name: Commvault (backup agent or MediaAgent)
+    kind: backup_agent
+    collector: none yet
+    loader_keys: []
+    privileged: {act: false, map: false, rank: false}
+    signals:
+      - {kind: service, match: commvault.service}
+      - {kind: service, match: "commvault.Instance*.service"}
+      - {kind: process, match: cvd}
+      - {kind: port, match: 8400}
+
+  - key: spectrum_protect_client
+    name: IBM Storage Protect (Spectrum Protect) client
+    kind: backup_agent
+    collector: none yet
+    loader_keys: []
+    privileged: {act: false, map: false, rank: false}
+    signals:
+      - {kind: package, match: TIVsm-BA}
+      - {kind: service, match: dsmcad.service}
+      - {kind: process, match: dsmcad}
+      - {kind: package, match: TIVsm-API64, role: supporting}
+
+  - key: rubrik_agent
+    name: Rubrik Backup Service (backup agent)
+    kind: backup_agent
+    collector: none yet
+    loader_keys: []
+    privileged: {act: false, map: false, rank: false}
+    signals:
+      - {kind: package, match: rubrik-agent}
+      - {kind: service, match: rubrikagents.service}
+      - {kind: port, match: 12800}
+      - {kind: port, match: 12801}
+
+  # ── Secrets, monitoring, policy ────────────────────────────────────────────
+  - key: hashicorp_vault
+    name: HashiCorp Vault server
+    kind: secrets_manager
+    collector: none yet
+    loader_keys: []
+    privileged: {act: true, map: false, rank: true}
+    signals:
+      # The vault package ships one binary that is both client and server, so
+      # the package alone does not identify a server.
+      - {kind: service, match: vault.service}
+      - {kind: process, match: vault}
+      - {kind: container_image, match: "*hashicorp/vault*"}
+      - {kind: package, match: vault, role: supporting}
+      - {kind: port, match: 8200}
+
+  - key: grafana
+    name: Grafana
+    kind: monitoring
+    collector: none yet
+    loader_keys: []
+    privileged: {act: false, map: true, rank: false}
+    signals:
+      - {kind: package, match: grafana}
+      - {kind: package, match: grafana-enterprise}
+      - {kind: service, match: grafana-server.service}
+      - {kind: process, match: grafana}
+      - {kind: process, match: grafana-server}
+      - {kind: container_image, match: "*grafana/grafana*"}
+      - {kind: port, match: 3000}
+
+  - key: opa
+    name: Open Policy Agent
+    kind: policy_engine
+    collector: none yet
+    loader_keys: []
+    privileged: {act: false, map: false, rank: false}
+    signals:
+      - {kind: service, match: opa.service}
+      - {kind: service, match: "opa-*.service"}
+      - {kind: process, match: opa}
+      - {kind: container_image, match: "*openpolicyagent/opa*", strength: strong}
+      - {kind: port, match: 8181}
+
+# ── Base operating system allowlist ──────────────────────────────────────────
+# Units and listening sockets that ship with the supported operating systems.
+# They are left out of the "running, not recognised" list so that the list
+# shows what the catalog does not explain, not what every host runs.
+# Patterns are shell-style and compared without regard to case.
+base_os:
+  service_units:
+    - "systemd-*.service"
+    - "user@*.service"
+    - "user-runtime-dir@*.service"
+    - "getty@*.service"
+    - "serial-getty@*.service"
+    - "dbus.service"
+    - "dbus-broker.service"
+    - "polkit.service"
+    - "NetworkManager*.service"
+    - "networkd-dispatcher.service"
+    - "wpa_supplicant.service"
+    - "ModemManager.service"
+    - "firewalld.service"
+    - "nftables.service"
+    - "ufw.service"
+    - "chronyd.service"
+    - "chrony.service"
+    - "crond.service"
+    - "cron.service"
+    - "atd.service"
+    - "auditd.service"
+    - "rsyslog.service"
+    - "tuned.service"
+    - "tuned-ppd.service"
+    - "irqbalance.service"
+    - "smartd.service"
+    - "mcelog.service"
+    - "udisks2.service"
+    - "upower.service"
+    - "multipathd.service"
+    - "lvm2-*.service"
+    - "libstoragemgmt.service"
+    - "rhsmcertd.service"
+    - "rhsm.service"
+    - "insights-client*.service"
+    - "sssd.service"
+    - "sssd-*.service"
+    - "gssproxy.service"
+    - "rpcbind.service"
+    - "qemu-guest-agent.service"
+    - "vmtoolsd.service"
+    - "vgauthd.service"
+    - "acpid.service"
+    - "apparmor.service"
+    - "apport.service"
+    - "kmod.service"
+    - "procps.service"
+    - "udev.service"
+    - "plymouth*.service"
+    - "snapd.service"
+    - "unattended-upgrades.service"
+    - "packagekit.service"
+    - "fwupd.service"
+    - "bolt.service"
+    - "kdump.service"
+    - "cloud-init*.service"
+    - "cloud-config.service"
+    - "cloud-final.service"
+    - "amazon-ssm-agent.service"
+    - "snap.amazon-ssm-agent.amazon-ssm-agent.service"
+    - "hibinit-agent.service"
+    - "gdm.service"
+    - "accounts-daemon.service"
+    - "colord.service"
+    - "rtkit-daemon.service"
+    - "switcheroo-control.service"
+    - "alsa-state.service"
+    - "low-memory-monitor.service"
+    - "power-profiles-daemon.service"
+    - "avahi-daemon.service"
+    - "bluetooth.service"
+    - "cups.service"
+    - "cups-browsed.service"
+  # A base listener is allowlisted only when the process name AND the protocol
+  # and port match, and the bind scope too where one is given (`loopback`).
+  # The same process name on any other socket is reported as not recognised,
+  # so naming a process after a base daemon does not hide its socket.
+  listeners:
+    - {process: systemd, proto: tcp, port: 111}
+    - {process: systemd, proto: udp, port: 111}
+    - {process: rpcbind, proto: tcp, port: 111}
+    - {process: rpcbind, proto: udp, port: 111}
+    - {process: systemd-resolve, proto: tcp, port: 53, scope: loopback}
+    - {process: systemd-resolve, proto: udp, port: 53, scope: loopback}
+    - {process: systemd-resolve, proto: tcp, port: 5355}
+    - {process: systemd-resolve, proto: udp, port: 5355}
+    - {process: systemd-network, proto: udp, port: 68}
+    - {process: systemd-network, proto: udp, port: 546}
+    - {process: NetworkManager, proto: udp, port: 68}
+    - {process: NetworkManager, proto: udp, port: 546}
+    - {process: dhclient, proto: udp, port: 68}
+    - {process: chronyd, proto: udp, port: 323, scope: loopback}
+    - {process: avahi-daemon, proto: udp, port: 5353}
+    - {process: cupsd, proto: tcp, port: 631, scope: loopback}
