@@ -263,6 +263,45 @@
       when: (item.status | default(-1)) == 200 and (item.json.result.total_controls is defined)
       register: result_inserts
 
+    # ── Step 4b: Per-control state (passes as well as fails) ─────────────────
+    # For a policy whose report carries control_results. The function is the
+    # only write path (docs/reference/PER_CONTROL_RESULTS.md); it is skipped
+    # where the tables are not installed yet.
+    - name: Check that the per-control tables are installed
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port | default(5433) }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: "SELECT to_regprocedure('control_state_record(bigint,text,text,jsonb)') IS NOT NULL AS present"
+      register: control_state_present
+
+    - name: Record per-control state for each stored result
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port | default(5433) }}"
+        login_user: "{{ aac_evidence_writer_user | default(pg_user, true) }}"
+        login_password: >-
+          {{ compliance_writer_password
+             if (aac_evidence_writer_user | default('', true) | length > 0)
+             else (pg_password) }}
+        login_db: "{{ pg_db }}"
+        query: "SELECT * FROM control_state_record(%s::bigint, %s, %s, %s::jsonb)"
+        positional_args:
+          - "{{ item.query_result[0].id }}"
+          - "{{ item.item.item.m.hostname }}"
+          - "{{ item.item.item.m.policy_name }}"
+          - "{{ item.item.json.result.control_results | to_json }}"
+      loop: "{{ result_inserts.results }}"
+      loop_control:
+        label: "{{ item.item.item.m.hostname }} × {{ item.item.item.m.policy_name }}"
+      when:
+        - control_state_present.query_result[0].present | bool
+        - item is not skipped
+        - item.query_result is defined
+        - item.item.json.result.control_results | default([], true) | length > 0
+
     # ── Step 5: Upsert remediation_status ─────────────────────────────────────
     # Status transition rules (enforced in SQL CASE):
     #   accepted_risk → unchanged (human decision, sticky)

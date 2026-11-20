@@ -729,3 +729,15 @@
     login_password: "{{ aac_db_password }}"
     login_db: "{{ pg_db }}"
     path: "{{ role_path }}/../../files/patch_change_schema.sql"
+
+# Per-control results: control_state (one row per host, framework and control),
+# control_state_history (append-only status changes), two views and the
+# control_state_record() write function. docs/reference/PER_CONTROL_RESULTS.md.
+- name: Create per-control state schema (control_state, control_state_history, views, control_state_record)
+  community.postgresql.postgresql_script:
+    login_host: "{{ pg_host }}"
+    login_port: "{{ pg_port | default(5432) }}"
+    login_user: "{{ pg_user }}"
+    login_password: "{{ aac_db_password }}"
+    login_db: "{{ pg_db }}"
+    path: "{{ role_path }}/../../files/control_state_schema.sql"

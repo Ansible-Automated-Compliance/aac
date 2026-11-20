@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Added — per-control results: every control's status, passes included
+
+- New tables `control_state` (one row per host, framework and control: current status, since when, last result) and `control_state_history` (append-only, one row per change of status), the views `control_state_current` and `control_state_summary`, and the database function `control_state_record()`, which is the only write path (`ansible/files/control_state_schema.sql`, created by the `aac_compliance_db` role). The evidence writer role gets execute on the function and no update right on any table.
+- `aac_store_results` takes `aac_result_control_results` (the report's `control_results`) and records it in one statement after the summary row. CIS RHEL 9, CIS RHEL 8, CIS Windows Server 2022, CIS Microsoft 365 v7 and Evaluate Stored Facts pass it. A control that drops out of a later report is marked `not_reported`; it does not keep its last status.
+- **Existing installs:** re-run the database role or apply `ansible/files/control_state_schema.sql` to get the tables. Until then assessments store the summary row as before and say the per-control results were not recorded. No existing table or column changes. Reference: `docs/reference/PER_CONTROL_RESULTS.md`.
+
 ### Added — CIS M365 v7: opt-in shape capture (`m365_shape_capture`)
 
 - `m365_shape_capture: true` (default `false`) makes the `m365_assessment` role record, after collection, the shape of every collected fact and nothing else: JSON types, list lengths, field-name unions and field types, and distinct values only for an allowlist of closed configuration enums, booleans and numeric settings (`aac.m365.m365_fact_shape`). Names, addresses, domains, ids, mailbox data and free text are never recorded. Output: `<m365_shape_capture_dir>/m365_fact_shape_<UTC>.json`, the job artifact `m365_fact_shape` (`set_stats`) and the job output. One real run with it on settles the collector shapes that could not be confirmed without a tenant (enum serialisation, `AllowedDomains`, `RecipientTags`, `AssignedRoles`, `SetSCL`, `transferMethods`, Graph beta fields).

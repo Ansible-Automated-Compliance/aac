@@ -22,6 +22,12 @@ aac_result_hostname:          ""     # hostname column (nullable, but set where 
 aac_result_framework:         ""     # framework NOT NULL — required; falls back to metadata.framework
 aac_result_compliant:         false  # boolean compliant flag
 aac_result_metadata:          {}     # free-form JSONB (hostname, assessment_time, etc.)
+# The report's control_results list (one object per recommendation: id, status,
+# basis, in_scope, profile), from a policy module that returns it. When given,
+# each control's status is kept in control_state and every change in
+# control_state_history (docs/reference/PER_CONTROL_RESULTS.md). Empty: nothing
+# is written.
+aac_result_control_results:   []
 
 # ── DB connection (inherit from site_config vars; topology-agnostic) ─────────
 # Defaults match the AAP 2.7 / CRC in-cluster compliance-db Service. Callers

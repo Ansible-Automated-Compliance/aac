@@ -207,7 +207,8 @@
             GRANT SELECT ON SEQUENCES TO {{ aac_db_writer_user }};
           REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON ALL TABLES IN SCHEMA public FROM {{ aac_db_writer_user }};
           GRANT INSERT ON compliance_results, compliance_certifications TO {{ aac_db_writer_user }};
-          GRANT USAGE ON SEQUENCE compliance_results_id_seq, compliance_results_chain_seq TO {{ aac_db_writer_user }}
+          GRANT USAGE ON SEQUENCE compliance_results_id_seq, compliance_results_chain_seq TO {{ aac_db_writer_user }};
+          GRANT EXECUTE ON FUNCTION control_state_record(bigint, text, text, jsonb) TO {{ aac_db_writer_user }}
 
     - name: Prove the writer's effective privileges (has_table_privilege covers PUBLIC and inherited grants)
       community.postgresql.postgresql_query:

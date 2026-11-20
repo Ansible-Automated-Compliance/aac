@@ -225,6 +225,8 @@
           assessment_time:      "{{ ansible_date_time.iso8601 }}"
           overall_compliance:   "{{ compliance_result.summary.overall_compliance | default('unknown') }}"
         aac_result_opa_server: "{{ opa_server_url }}"
+        # Every control's result, passes included (control_state tables).
+        aac_result_control_results: "{{ compliance_result.control_results | default([]) }}"
         # CAA opt-in — host-scoped, matches CIS RHEL 9 pattern.
         aac_caa_enabled: true
         aac_result_caa_framework_version: "v2.0.0"
