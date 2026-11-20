@@ -1160,6 +1160,46 @@ def format_summary(summary) -> str:
     return "\n".join(lines)
 
 
+# ── Crossing Ansible ─────────────────────────────────────────────────────────
+# Unit names, process names, container names and host names in stored facts
+# come from the managed hosts. A string such as "{{ lookup('pipe','id') }}"
+# must never reach Ansible as something it could template on the controller.
+# So host-originated data crosses Ansible only as base64 that this script alone
+# decodes, and whatever this script hands back to Ansible (the printed summary
+# and the set_stats data) has its template delimiters broken apart. The tables
+# keep every value exactly as the host reported it.
+
+B64_INPUT_KEYS = {"facts_rows_b64": "facts_rows", "existing_components_b64": "existing_components",
+                  "existing_unrecognised_b64": "existing_unrecognised",
+                  "existing_overrides_b64": "existing_overrides", "overrides_b64": "overrides"}
+
+
+def decode_input(data) -> dict:
+    """Replace every `<name>_b64` value with the JSON it encodes."""
+    out = {k: v for k, v in data.items() if k not in B64_INPUT_KEYS}
+    for key, name in B64_INPUT_KEYS.items():
+        if data.get(key) not in (None, ""):
+            out[name] = json.loads(base64.b64decode(data[key]).decode("utf-8"))
+    return out
+
+
+def defang(text) -> str:
+    """Break Jinja delimiters apart: `{{` `{%` `{#` and their closing forms."""
+    text = re.sub(r"\{(?=[{%#])", "{ ", str(text))
+    return re.sub(r"(?<=[}%#])\}", " }", text)
+
+
+def safe_for_ansible(value):
+    """A copy of `value` in which no string or mapping key holds a template delimiter."""
+    if isinstance(value, str):
+        return defang(value)
+    if isinstance(value, dict):
+        return {defang(k) if isinstance(k, str) else k: safe_for_ansible(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [safe_for_ansible(v) for v in value]
+    return value
+
+
 # ── Launch guard ─────────────────────────────────────────────────────────────
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -1253,7 +1293,7 @@ def main(argv=None) -> int:
         problems = check_launch(args.pg_host, args.site_config,
                                 {"catalog": args.catalog, "overrides": args.overrides})
         for line in problems:
-            print(line, file=sys.stderr)
+            print(defang(line), file=sys.stderr)
         return 4 if problems else 0
 
     try:
@@ -1266,20 +1306,26 @@ def main(argv=None) -> int:
         return 0
 
     with open(args.input, encoding="utf-8") as fh:
-        data = json.load(fh)
+        data = decode_input(json.load(fh))
     result = build_plan(data, catalog)
     if not result["ok"]:
         print("Refused operator overrides (nothing was written):", file=sys.stderr)
         for e in result["override_errors"]:
-            print(f"  {e}", file=sys.stderr)
+            print(defang(f"  {e}"), file=sys.stderr)
         return 3
+    # The SQL carries every value verbatim, inside base64. Everything Ansible
+    # reads back (the summary file and this script's output) is defanged.
     Path(args.sql_out).write_text(persist_sql(result["payload"]), encoding="utf-8")
-    out = dict(result["summary"])
-    out["text"] = format_summary(result["summary"])
+    out = safe_for_ansible(result["summary"])
+    out["text"] = format_summary(out)
     Path(args.summary_out).write_text(json.dumps(out, indent=2, sort_keys=True), encoding="utf-8")
     print(out["text"])
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except Exception as exc:  # noqa: BLE001 - the message returns to Ansible, so it is defanged
+        print(defang(f"component_discovery.py failed: {type(exc).__name__}: {exc}"), file=sys.stderr)
+        sys.exit(1)

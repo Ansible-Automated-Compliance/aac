@@ -1,10 +1,17 @@
 -- component_discovery_read_hosts.sql — the stored facts that component detection reads.
 --
--- One row per host from host_facts_latest, trimmed to the names detection
--- matches on: unit name, state and enablement; installed package names;
--- process names; listening sockets; running user-level units; running
--- container images. Package versions and every other fact domain stay in the
--- database. Read-only. Run by ansible/playbooks/discover_host_components.yml.
+-- One JSON document for all hosts in host_facts_latest, trimmed to the names
+-- detection matches on: unit name, state and enablement; installed package
+-- names; process names (the first 100 lines and the distinct command names);
+-- listening sockets; running user-level units; running container images.
+-- Package versions and every other fact domain stay in the database.
+-- Read-only. Run by ansible/playbooks/discover_host_components.yml.
+--
+-- The result is ONE base64 value (`blob`). These names come from the managed
+-- hosts, so they must not pass through Ansible as text it could template; only
+-- scripts/component_discovery.py decodes the blob.
+SELECT encode(convert_to(COALESCE(jsonb_agg(to_jsonb(t)), '[]'::jsonb)::text, 'UTF8'), 'base64') AS blob
+  FROM (
 SELECT hf.id AS facts_id, hf.host_id, hf.hostname,
        to_char(hf.collected_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"+00:00"') AS collected_at,
        jsonb_build_object(
@@ -25,3 +32,4 @@ SELECT hf.id AS facts_id, hf.host_id, hf.hostname,
          'containers', hf.facts->'containers') AS facts
   FROM host_facts_latest hf
  ORDER BY hf.host_id
+) t
