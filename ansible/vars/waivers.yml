@@ -20,6 +20,30 @@
 #   approver    who signed off — a person, not a team alias
 #   expires     YYYY-MM-DD (before year 2262); entries without one never match
 #
+# An entry MAY carry:
+#   mitigation    what reduces the risk while the gap is open
+#   evidence_ref  where the approval and the mitigation evidence live (a change
+#                 record, a ticket, a document id)
+#
+# waiver_settings (below) lets the site make the policy enforce its own rules.
+# A waiver that matches a finding but breaks a rule is refused: the finding
+# stays a violation and the stored result lists the refused waiver with the
+# reason. Needs a policy library that includes the waiver settings (rego
+# library after 2026-11-19); an older library ignores the settings.
+#   required_fields       fields every entry must fill, for example
+#                         [reason, approver, mitigation]
+#   max_ttl_days          longest time to live: a waiver may not expire further
+#                         ahead than this many days
+#   expiring_within_days  waivers this close to expiry are listed with the
+#                         stored result (default 14)
+#
 # See examples/waivers_example.yml for filled-in samples.
 
 waiver_entries: []
+
+# No site rules by default (behaviour as before). A reasonable starting point:
+#   waiver_settings:
+#     required_fields: [reason, approver, mitigation]
+#     max_ttl_days: 180
+#     expiring_within_days: 14
+waiver_settings: {}
