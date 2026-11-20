@@ -374,36 +374,156 @@ def test_override_beyond_the_maximum_expiry_window_is_refused():
 
 
 PRIV = {"host": "controller01.example.com", "component": "aap_controller", "action": "exclude",
-        "who": "A. Operator", "why": "decommissioned, awaiting rebuild", "expires": "2026-12-31"}
+        "who": "A. Operator", "approver": "B. Reviewer", "why": "decommissioned, awaiting rebuild",
+        "expires": "2026-12-31"}
+APPROVERS = ["B. Reviewer", "C. Second"]
+
+
+def _check(entry, approvers=APPROVERS, recorded_by="jdoe", existing=()):
+    return cd.validate_overrides([entry], CATALOG, now=RUN2, approvers=approvers,
+                                 recorded_by=recorded_by, existing=existing)
 
 
 @pytest.mark.parametrize("action,extra", [("exclude", {}), ("reclassify", {"reclassify_to": "awx"})])
-def test_hiding_a_privileged_component_needs_a_second_person(action, extra):
+def test_hiding_a_privileged_component_needs_a_listed_approver(action, extra):
     entry = dict(PRIV, action=action, **extra)
-    _, errs = cd.validate_overrides([entry], CATALOG, now=RUN2)
-    assert "needs an approver" in errs[0]
-    _, errs = cd.validate_overrides([dict(entry, approver=" a. operator ")], CATALOG, now=RUN2)
-    assert "different person" in errs[0]
-    good, errs = cd.validate_overrides([dict(entry, approver="B. Reviewer")], CATALOG, now=RUN2)
+    good, errs = _check(entry)
     assert errs == [] and good[0]["approved_by"] == "B. Reviewer" and good[0]["privileged"] is True
+    assert "needs an approver" in _check(dict(entry, approver=""))[1][0]
+    assert "not on the site's approver list" in _check(dict(entry, approver="Z. Nobody"))[1][0]
+
+
+def test_with_no_approvers_configured_every_privileged_override_is_refused():
+    _, errs = _check(PRIV, approvers=[])
+    assert "no approvers are configured" in errs[0] and "component_override_approvers" in errs[0]
+    plan = cd.build_plan({"now": RUN2, "hosts": _latest("round1"), "overrides": [PRIV],
+                          "launched_by": "jdoe"}, CATALOG)
+    assert plan["ok"] is False and plan["payload"] is None
+
+
+def test_recorder_equal_to_approver_is_refused():
+    _, errs = _check(PRIV, recorded_by="B. Reviewer")
+    assert "the approver is the account that launched the job" in errs[0]
+
+
+def test_privileged_override_outside_the_controller_is_refused():
+    _, errs = _check(PRIV, recorded_by="")
+    assert "launched from the automation controller" in errs[0]
+
+
+@pytest.mark.parametrize("same", ["a. operator", " A.OPERATOR ", "A  Operator", "a_operator"])
+def test_names_differing_by_case_spacing_or_punctuation_are_one_person(same):
+    assert cd.norm_name(same) == cd.norm_name("A. Operator")
+    # requester and approver
+    _, errs = _check(dict(PRIV, approver=same), approvers=["A. Operator"])
+    assert "different person from who asked" in errs[0]
+    # launching account and approver
+    _, errs = _check(dict(PRIV, who="D. Other", approver="A. Operator"), approvers=["a operator"],
+                     recorded_by=same)
+    assert "the approver is the account that launched the job" in errs[0]
+    # approver list lookup uses the same normalisation
+    good, errs = _check(dict(PRIV, who="D. Other", approver=same), approvers=["A. Operator"])
+    assert errs == [] and len(good) == 1
 
 
 def test_confirm_and_unprivileged_overrides_need_no_approver():
-    entries = [dict(PRIV, action="confirm"), dict(GOOD)]         # postgresql carries no capability hint
+    entries = [dict(PRIV, action="confirm", approver=""), dict(GOOD)]   # postgresql has no capability hint
     good, errs = cd.validate_overrides(entries, CATALOG, now=RUN2)
     assert errs == [] and len(good) == 2
 
 
 def test_approved_override_on_a_privileged_component_stays_visible():
-    _, two = _two_runs([dict(PRIV, approver="B. Reviewer")])
+    one = cd.build_plan({"now": RUN1, "hosts": _latest("round1")}, CATALOG)
+    two = cd.build_plan({"now": RUN2, "hosts": _latest("round1", "round2"),
+                         "existing_components": one["payload"]["components"],
+                         "overrides": [PRIV], "approvers": APPROVERS, "launched_by": "jdoe"}, CATALOG)
     s = two["summary"]
     assert "aap_controller" not in {c["component"] for c in s["components_per_host"]["controller01.example.com"]}
     shown = s["overrides_on_privileged_components"]
-    assert [(o["component"], o["who"], o["approver"]) for o in shown] == [
-        ("aap_controller", "A. Operator", "B. Reviewer")]
+    assert [(o["component"], o["who"], o["approver"], o["recorded_by"]) for o in shown] == [
+        ("aap_controller", "A. Operator", "B. Reviewer", "jdoe")]
     assert shown == s["overrides_in_force"]
     assert "[privileged component]" in cd.format_summary(s)
     assert _row(two, "controller01.example.com", "aap_controller")["status"] == "detected"
+
+
+def test_approver_list_is_read_from_the_site_file_not_from_a_variable(tmp_path):
+    site = tmp_path / "site_config.yml"
+    site.write_text("component_override_approvers: []\n")
+    data = {"now": RUN2, "hosts": _latest("round1"), "overrides": [PRIV], "launched_by": "jdoe",
+            "approvers": APPROVERS, "site_config_file": str(site)}
+    assert cd.build_plan(data, CATALOG)["ok"] is False          # the file wins over the passed list
+    site.write_text('component_override_approvers: ["B. Reviewer"]\n')
+    assert cd.build_plan(data, CATALOG)["ok"] is True
+    shipped = yaml.safe_load((_root / "ansible" / "vars" / "site_config.yml.example").read_text())
+    assert shipped["component_override_approvers"] == []        # shipped empty
+
+
+# ── The override record is append-only ───────────────────────────────────────
+
+def _stored(plan, start_id=1):
+    """What component_overrides would hold after this plan's inserts."""
+    return [dict(o, id=start_id + n, withdrawn_at=None) for n, o in enumerate(plan["payload"]["overrides"])]
+
+
+def _plan(entries, existing=(), launched_by="jdoe"):
+    return cd.build_plan({"now": RUN2, "hosts": _latest("round1"), "overrides": entries,
+                          "approvers": APPROVERS, "launched_by": launched_by,
+                          "existing_overrides": list(existing)}, CATALOG)
+
+
+def test_unchanged_override_is_not_rewritten_and_keeps_its_first_recorder():
+    first = _plan([PRIV], launched_by="jdoe")
+    rows = _stored(first)
+    assert [(r["recorded_by"], r["approved_by"]) for r in rows] == [("jdoe", "B. Reviewer")]
+    again = _plan([PRIV], existing=rows, launched_by="")        # e.g. a scheduled run, no launching user
+    assert again["ok"] is True
+    assert again["payload"]["overrides"] == [] and again["payload"]["override_withdrawals"] == []
+    assert again["summary"]["overrides_in_force"][0]["recorded_by"] == "jdoe"
+
+
+def test_changed_approver_withdraws_the_old_row_and_inserts_a_new_one_with_attribution():
+    rows = _stored(_plan([PRIV], launched_by="jdoe"), start_id=7)
+    changed = _plan([dict(PRIV, approver="C. Second")], existing=rows, launched_by="asmith")
+    assert changed["ok"] is True
+    assert changed["payload"]["override_withdrawals"] == [
+        {"id": 7, "withdrawn_by": "asmith", "withdrawn_reason": "replaced by a changed entry"}]
+    new = changed["payload"]["overrides"]
+    assert [(o["approved_by"], o["recorded_by"], o["source"]) for o in new] == [("C. Second", "asmith", "file")]
+    events = [(e["event"], e["detail"].get("approved_by"), e["detail"].get("withdrawn_by"),
+               e["detail"].get("recorded_by")) for e in changed["payload"]["history"]
+              if e["event"].startswith("override_")]
+    assert events == [("override_withdrawn", "B. Reviewer", "asmith", "jdoe"),
+                      ("override_recorded", "C. Second", None, "asmith")]
+    # the changed entry is checked against the account that launched THIS run
+    refused = _plan([dict(PRIV, approver="C. Second")], existing=rows, launched_by="c second")
+    assert "launched the job" in refused["override_errors"][0]
+
+
+@pytest.mark.parametrize("change", [{"why": "another reason"}, {"expires": "2026-12-20"}])
+def test_any_changed_field_is_a_withdrawal_plus_a_new_row(change):
+    rows = _stored(_plan([GOOD], launched_by="jdoe"))
+    changed = _plan([dict(GOOD, **change)], existing=rows, launched_by="asmith")
+    assert len(changed["payload"]["override_withdrawals"]) == 1
+    assert [o["recorded_by"] for o in changed["payload"]["overrides"]] == ["asmith"]
+
+
+def test_entry_removed_from_the_list_is_withdrawn_with_attribution():
+    rows = _stored(_plan([GOOD], launched_by="jdoe"))
+    gone = _plan([], existing=rows, launched_by="asmith")
+    assert gone["payload"]["override_withdrawals"] == [
+        {"id": 1, "withdrawn_by": "asmith", "withdrawn_reason": "removed from the list"}]
+    assert gone["payload"]["overrides"] == []
+
+
+def test_override_sql_never_updates_a_row_in_place():
+    sql = cd.PERSIST_SQL
+    block = sql[sql.index("UPDATE component_overrides"):sql.index("COMMIT;")]
+    assert "ON CONFLICT" not in block
+    update = block[:block.index("INSERT INTO component_overrides")]
+    assert set(re.findall(r"(\w+) = ", update.split(" FROM ")[0])) == {
+        "withdrawn_at", "withdrawn_by", "withdrawn_reason"}
+    assert "component_overrides_append_only" in SCHEMA_SQL
 
 
 def test_launching_account_and_source_are_recorded_apart_from_the_declared_requester():
@@ -506,12 +626,17 @@ def test_persist_sql_never_deletes_and_carries_data_as_base64():
 
 def test_schema_sql_is_additive_and_idempotent():
     code = re.sub(r"--[^\n]*", "", SCHEMA_SQL)
+    code = re.sub(r"\$cd\$.*?\$cd\$", "$body$", code, flags=re.S)      # the trigger function body
     statements = [s.strip() for s in re.split(r";[ \t]*\n", code) if s.strip()]
     assert statements
+    allowed = (r"CREATE (TABLE|INDEX) IF NOT EXISTS |CREATE OR REPLACE (VIEW|FUNCTION|TRIGGER) "
+               r"|ALTER TABLE component_overrides ADD COLUMN IF NOT EXISTS ")
     for stmt in statements:
-        assert re.match(r"CREATE (TABLE|INDEX) IF NOT EXISTS |CREATE OR REPLACE VIEW "
-                        r"|ALTER TABLE component_overrides ADD COLUMN IF NOT EXISTS ", stmt), stmt[:60]
-    assert not re.search(r"\b(DROP|DELETE|TRUNCATE)\b", code)
+        assert re.match(allowed, stmt), stmt[:60]
+    # the only mentions of DELETE / TRUNCATE are the triggers that forbid them
+    for stmt in statements:
+        if not stmt.startswith("CREATE OR REPLACE TRIGGER component_overrides_append_only"):
+            assert not re.search(r"\b(DROP|DELETE|TRUNCATE)\b", stmt), stmt[:60]
     for view in ("v_host_components_current", "v_components_not_assessed",
                  "v_host_unrecognised", "v_privileged_services"):
         assert f"CREATE OR REPLACE VIEW {view} " in code

@@ -237,3 +237,11 @@ aap_vault_credential_name: "Ansible Vault"
 aap_ssh_credential_name: "Compliance SSH Credential"
 aap_aws_credential_name: "AWS Compliance Lab"
 aap_scm_credential_name: "GitHub SCM"
+
+# ─── Component discovery (docs/reference/COMPONENT_DISCOVERY.md) ──────────────
+# People who may approve an override that excludes or reclassifies a privileged
+# component. Shipped empty: with no names here every such override is refused.
+# Read from this file only; it cannot be set at launch.
+component_override_approvers: []
+# Longest an operator override may run, in days.
+component_override_max_days: 90

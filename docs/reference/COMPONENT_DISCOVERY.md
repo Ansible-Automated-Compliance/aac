@@ -1,6 +1,6 @@
 # Component discovery: which technology runs on which host
 
-**Version:** v1.1
+**Version:** v1.2
 **Authors:** Tim Coulter, Claude (Anthropic)
 
 AAC already stores per-host facts (`host_facts`) and turns coarse signals such as the operating system and the cloud provider into enabled policy bundles. Component discovery adds the missing record: which technology components (a database server, a Kubernetes control plane, an automation controller) run on which host.
@@ -32,6 +32,7 @@ Operator overrides are a third, separate record (`component_overrides`). The vie
 | `component_stale_after_days` | Survey, 1 to 365 | `7` | A detection whose facts are older than this is labelled "no newer facts" |
 | `component_override_soon_days` | Survey, 1 to 90 | `14` | Window for "overrides expiring soon" in the summary |
 | `component_override_max_days` | `site_config.yml` | `90` | The longest an override may run, counted from the run that reads it |
+| `component_override_approvers` | `site_config.yml` only (read from the file, never from a variable) | empty | People who may approve an override that hides a privileged component. With an empty list every such override is refused |
 | `component_override_entries` | `site_config.yml` | contents of `ansible/vars/component_overrides.yml` | Operator overrides |
 | `component_catalog_file`, `component_overrides_file` | `site_config.yml` | the shipped files | Must stay inside the project checkout |
 
@@ -129,7 +130,7 @@ Rows are never deleted.
 | The newer facts row did not collect the relevant domains (a failed or partial collection), or the host has no row in `host_facts_latest` | `not_seen`, reason `no_newer_facts`, with the missing domains in `not_seen_detail` | Still in the current list, status `unverified` |
 | Same facts row, but the catalog no longer matches | `not_seen`, reason `catalog_changed` | Not in the current list |
 
-`host_component_history` records each transition: `first_detected`, `not_seen`, `detected_again`, `confidence_changed`.
+`host_component_history` records each transition: `first_detected`, `not_seen`, `detected_again`, `confidence_changed`, and for overrides `override_recorded` and `override_withdrawn`.
 
 ### Other tables
 
@@ -154,7 +155,7 @@ Overrides are entered in `ansible/vars/component_overrides.yml` (shipped empty) 
 | `who` | Yes | The person who asked for the override |
 | `why` | Yes | The reason |
 | `expires` | Yes | `YYYY-MM-DD`, no further away than `component_override_max_days` (90 by default) |
-| `approver` | For `exclude` or `reclassify` of a privileged component | A second person, different from `who` |
+| `approver` | For `exclude` or `reclassify` of a privileged component | A second person; see "Overrides on privileged components" |
 
 Two more values are stored with every override and are not taken from the entry:
 
@@ -167,10 +168,25 @@ Rules:
 
 - An entry without `who`, `why` or `expires` is refused. The job stops before it writes anything and names the entry.
 - An entry whose expiry is further away than `component_override_max_days` is refused.
-- An `exclude` or `reclassify` of a component with a capability hint (`act`, `map` or `rank`) is refused unless it names an `approver` who is not the requester. Once accepted it stays visible: the summary lists it under overrides in force and under `overrides_on_privileged_components`, and the full map keeps the detection with `basis` `override`.
+- An `exclude` or `reclassify` of a component with a capability hint (`act`, `map` or `rank`) needs a second person (next section). Once accepted it stays visible: the summary lists it under overrides in force and under `overrides_on_privileged_components`, and the full map keeps the detection with `basis` `override`.
 - An override past its expiry stops applying by itself. The views compare `expires_at` with the current time, so no job has to run for it to lapse. Its record stays in the table.
-- Removing an entry from the list sets `withdrawn_at` on its record at the next run.
+- Removing an entry from the list withdraws its record at the next run (`withdrawn_at`, `withdrawn_by`, `withdrawn_reason`).
+- The override table is append-only. A row is never updated in place. A change to the approver, the reason, the expiry or any other field withdraws the old row and inserts a new one that carries the `recorded_by` and `source` of the run that made the change. Both steps are written to `host_component_history` (`override_withdrawn`, `override_recorded`). A database trigger rejects any other update, and any delete or truncate, of `component_overrides`.
+- An entry that is identical to a live row was checked when it was recorded. It keeps that row's `recorded_by`, so a scheduled run does not rewrite or re-attribute it.
 - The map shows an override as an override: `basis` is `override`, with the action, who asked, who approved, who recorded it, its source, why and expiry beside it. `detection_status`, `confidence` and `evidence` keep what detection found.
+
+### Overrides on privileged components
+
+Hiding or renaming a privileged component is accepted only when all of these hold. Names are reduced to lower-case letters and digits before every comparison, so `A. Operator`, `a operator` and `A.OPERATOR` are one person.
+
+| Check | Based on |
+|---|---|
+| The `approver` is on the site's approver list | `component_override_approvers` in `ansible/vars/site_config.yml`, read from the file. The entry's author cannot add a name at launch |
+| The account that launched the job is known | `awx_user_name` / `tower_user_name`, set by the automation controller. A run outside the controller, or a scheduled run recording a new entry, has no launching account and the entry is refused |
+| The launching account is not the approver | The stored `recorded_by` against `approver` |
+| The approver is not the declared requester | `approver` against `who` |
+
+This is a recorded control, not cryptographic proof. It establishes which controller account launched the job that recorded the override and that the named approver is someone the site allows. It does not prove that the approver agreed: a person who can edit the overrides list and launch the job can still name an approver who was never asked. The record makes that visible afterwards. The stronger option is a separate approval job that the approver launches under their own controller account, so that approval is an act by a second account and not a field in the requester's entry. That job is not built.
 
 ## Views for an auditor
 
@@ -197,4 +213,5 @@ Rules:
 ## Not in this step
 
 - No second-stage collectors are launched for detected components.
+- No separate approval job. Approval of an override on a privileged component is a named, listed approver plus the recorded launching account, not an action by the approver's own account.
 - `enroll_discovered_frameworks.yml` is unchanged and does not read the component map.

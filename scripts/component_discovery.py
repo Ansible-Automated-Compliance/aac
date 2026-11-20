@@ -624,31 +624,59 @@ def _still_running(host, kind, item) -> bool:
 # ── Operator overrides ───────────────────────────────────────────────────────
 
 DEFAULT_MAX_EXPIRY_DAYS = 90
+_OVERRIDE_FIELDS = ("host", "component_key", "action", "reclassify_to", "requested_by", "reason", "approved_by")
 
 
 def is_privileged(comp) -> bool:
     return any((comp.get("privileged") or {}).get(c) for c in CAPABILITIES)
 
 
+def norm_name(name) -> str:
+    """A person's or account's name reduced to letters and digits, lower case.
+
+    Used for every identity comparison, so "A. Operator", "a operator" and
+    " A.OPERATOR " are one person.
+    """
+    return re.sub(r"[\W_]+", "", str(name or "").casefold())
+
+
+def _same_override(row, entry) -> bool:
+    """True when a stored row and an accepted entry say exactly the same thing."""
+    return (all(str(row.get(f) or "") == str(entry.get(f) or "") for f in _OVERRIDE_FIELDS)
+            and parse_ts(row.get("expires_at")) == parse_ts(entry.get("expires_at")))
+
+
 def validate_overrides(entries, catalog, now=None, max_expiry_days=DEFAULT_MAX_EXPIRY_DAYS,
-                       recorded_by="", source="file") -> tuple[list[dict], list[str]]:
+                       recorded_by="", source="file", approvers=(), existing=()) -> tuple[list[dict], list[str]]:
     """Return (accepted overrides, refusals).
 
     An entry is refused unless it names host, component, a known action, who
     asked for it, why, and an expiry date no further away than
-    `max_expiry_days`. Hiding or renaming a component the catalog marks as
-    privileged (exclude / reclassify) also needs an `approver` who is not the
-    requester. Nothing is applied from a refused entry; the playbook stops
-    before it writes anything.
+    `max_expiry_days`. Nothing is applied from a refused entry; the playbook
+    stops before it writes anything.
 
-    `who` is what the entry declares. `recorded_by` is the account that
-    launched the job and `source` is where the list came from; both are stored
-    beside the declared requester and are not taken from the entry.
+    Hiding or renaming a component the catalog marks as privileged (exclude /
+    reclassify) needs a second person, and the check does not rest on what the
+    entry says about itself alone:
+      - the `approver` must be on the site's approver list (`approvers`);
+      - the account that launched the job (`recorded_by`, supplied by the
+        automation controller, not by the entry) must be known and must not be
+        the approver;
+      - the approver must not be the declared requester.
+    Names are compared with norm_name(). This is a recorded control: it shows
+    who launched the job and whom the entry names. It is not proof that the
+    approver agreed.
+
+    `existing` holds the live rows of component_overrides. An entry that is
+    identical to a live row was checked when it was recorded and keeps that
+    row's recorded_by and source.
     """
     keys = {c["key"] for c in catalog["components"]}
     by_key = {c["key"]: c for c in catalog["components"]}
     now = parse_ts(now) or datetime.now(timezone.utc)
     max_expiry_days = int(max_expiry_days)
+    listed = {norm_name(a) for a in (approvers or []) if norm_name(a)}
+    launched_by = str(recorded_by or "").strip()
     good, errs = [], []
     if entries in (None, ""):
         return good, errs
@@ -679,11 +707,6 @@ def validate_overrides(entries, catalog, now=None, max_expiry_days=DEFAULT_MAX_E
         if expires and expires > now + timedelta(days=max_expiry_days):
             problems.append(f"expires {vals['expires']} is more than {max_expiry_days} days away "
                             "(the longest an override may run)")
-        if vals["action"] in ("exclude", "reclassify") and is_privileged(by_key.get(vals["component"], {})):
-            if not vals["approver"]:
-                problems.append(f"{vals['action']} of a privileged component needs an approver")
-            elif vals["approver"].casefold() == vals["who"].casefold():
-                problems.append("the approver must be a different person from who asked")
         if vals["action"] == "reclassify":
             if vals["reclassify_to"] not in keys:
                 problems.append("reclassify needs reclassify_to, a component key in the catalog")
@@ -691,16 +714,75 @@ def validate_overrides(entries, catalog, now=None, max_expiry_days=DEFAULT_MAX_E
                 problems.append("reclassify_to is the same component")
         elif vals["reclassify_to"]:
             problems.append("reclassify_to is only valid with action reclassify")
+
+        entry = {"host": vals["host"], "component_key": vals["component"], "action": vals["action"],
+                 "reclassify_to": vals["reclassify_to"], "requested_by": vals["who"],
+                 "reason": vals["why"], "expires_at": iso(expires) if expires else None,
+                 "approved_by": vals["approver"]}
+        stored = next((r for r in existing or [] if expires and _same_override(r, entry)), None)
+        recorder = str((stored or {}).get("recorded_by") or "").strip() if stored else launched_by
+        privileged = is_privileged(by_key.get(vals["component"], {}))
+        if vals["action"] in ("exclude", "reclassify") and privileged:
+            what = f"{vals['action']} of a privileged component"
+            if not listed:
+                problems.append(f"{what} is refused: no approvers are configured. Set "
+                                "component_override_approvers (a list of names) in ansible/vars/site_config.yml")
+            elif not vals["approver"]:
+                problems.append(f"{what} needs an approver")
+            elif norm_name(vals["approver"]) not in listed:
+                problems.append(f"approver {vals['approver']!r} is not on the site's approver list "
+                                "(component_override_approvers)")
+            if not recorder:
+                problems.append(f"{what} must be recorded by a job launched from the automation "
+                                "controller, so that the launching account is known")
+            elif vals["approver"] and norm_name(recorder) == norm_name(vals["approver"]):
+                problems.append(f"the approver is the account that launched the job ({recorder})")
+            if vals["approver"] and norm_name(vals["approver"]) == norm_name(vals["who"]):
+                problems.append("the approver must be a different person from who asked")
         if problems:
             errs.append(f"{where}: " + "; ".join(problems))
             continue
-        good.append({"host": vals["host"], "component_key": vals["component"], "action": vals["action"],
-                     "reclassify_to": vals["reclassify_to"], "requested_by": vals["who"],
-                     "reason": vals["why"], "expires_at": iso(expires),
-                     "approved_by": vals["approver"], "recorded_by": str(recorded_by or "").strip(),
-                     "source": str(source or "file"),
-                     "privileged": is_privileged(by_key[vals["component"]])})
+        entry.update({"recorded_by": recorder, "source": (stored or {}).get("source") or str(source or "file"),
+                      "privileged": privileged, "stored_id": (stored or {}).get("id")})
+        good.append(entry)
     return good, errs
+
+
+def reconcile_overrides(existing, accepted, recorded_by="") -> dict:
+    """Changes to component_overrides for this run. Rows are never updated in place.
+
+    A live row with no identical entry is withdrawn (withdrawn_at, withdrawn_by,
+    withdrawn_reason). An entry with no identical live row is inserted as a new
+    row carrying this run's recorded_by and source. A changed approver, reason
+    or expiry is therefore a withdrawal plus a new row, each attributed to the
+    run that made it.
+    """
+    who = str(recorded_by or "").strip()
+    kept = {o["stored_id"] for o in accepted if o.get("stored_id") is not None}
+    insert = [o for o in accepted if o.get("stored_id") is None]
+    withdraw, events = [], []
+    slot = lambda o: (o["host"], o["component_key"], o["action"])  # noqa: E731
+    replaced = {slot(o) for o in insert}
+    for row in existing or []:
+        if row.get("id") in kept:
+            continue
+        reason = "replaced by a changed entry" if slot(row) in replaced else "removed from the list"
+        withdraw.append({"id": row["id"], "withdrawn_by": who, "withdrawn_reason": reason})
+        events.append({"host_id": row["host"], "component_key": row["component_key"],
+                       "event": "override_withdrawn", "from_status": None, "to_status": None,
+                       "detail": {"override_id": row["id"], "action": row["action"], "why": reason,
+                                  "withdrawn_by": who or None, "requested_by": row.get("requested_by"),
+                                  "approved_by": row.get("approved_by") or None,
+                                  "recorded_by": row.get("recorded_by") or None}})
+    for o in insert:
+        events.append({"host_id": o["host"], "component_key": o["component_key"],
+                       "event": "override_recorded", "from_status": None, "to_status": None,
+                       "detail": {"action": o["action"], "requested_by": o["requested_by"],
+                                  "approved_by": o["approved_by"] or None, "recorded_by": o["recorded_by"] or None,
+                                  "source": o["source"], "expires_at": o["expires_at"], "reason": o["reason"],
+                                  "replaces_changed_entry": slot(o) in {slot(r) for r in existing or []
+                                                                         if r.get("id") not in kept}}})
+    return {"insert": insert, "withdraw": withdraw, "events": events}
 
 
 def overrides_in_force(overrides, now) -> list[dict]:
@@ -761,10 +843,17 @@ def build_plan(data, catalog=None) -> dict:
     version = catalog["catalog_version"]
     by_key = {c["key"]: c for c in catalog["components"]}
 
+    existing_overrides = [r for r in data.get("existing_overrides") or [] if not r.get("withdrawn_at")]
+    if data.get("site_config_file"):
+        # Read from the file itself so that a launch variable cannot add an approver.
+        approvers = configured_approvers(data["site_config_file"])
+    else:
+        approvers = data.get("approvers") or []
     overrides, refusals = validate_overrides(
         data.get("overrides"), catalog, now=now,
         max_expiry_days=data.get("override_max_expiry_days", DEFAULT_MAX_EXPIRY_DAYS),
-        recorded_by=data.get("launched_by", ""), source=data.get("override_source", "file"))
+        recorded_by=data.get("launched_by", ""), source=data.get("override_source", "file"),
+        approvers=approvers, existing=existing_overrides)
     if refusals:
         return {"ok": False, "override_errors": refusals, "summary": {}, "payload": None}
 
@@ -783,6 +872,8 @@ def build_plan(data, catalog=None) -> dict:
                                 "tools": sorted({e["value"] for e in c["evidence"]})})
 
     rows, events = reconcile(data.get("existing_components") or [], hosts, detections, version, now)
+    override_changes = reconcile_overrides(existing_overrides, overrides, data.get("launched_by", ""))
+    events = events + override_changes["events"]
     unrec_rows = reconcile_unrecognised(data.get("existing_unrecognised") or [], hosts, unrec, now)
 
     # The full map after this run = rows written now + stored rows left untouched.
@@ -856,6 +947,8 @@ def build_plan(data, catalog=None) -> dict:
         "overrides_expiring_soon": [brief(o) for o in soon],
         "overrides_expired": [brief(o) for o in overrides if o not in live],
         "overrides_on_privileged_components": [brief(o) for o in live if o["privileged"]],
+        "overrides_recorded": len(override_changes["insert"]),
+        "overrides_withdrawn": len(override_changes["withdraw"]),
         "history_events": len(events),
     }
     payload = {
@@ -863,7 +956,8 @@ def build_plan(data, catalog=None) -> dict:
                 "run_at": iso(now), "hosts_evaluated": len(detections),
                 "summary": {k: v for k, v in summary.items() if k != "components_per_host"}},
         "catalog": catalog_rows(catalog), "components": rows, "history": events,
-        "unrecognised": unrec_rows, "overrides": overrides,
+        "unrecognised": unrec_rows,
+        "overrides": override_changes["insert"], "override_withdrawals": override_changes["withdraw"],
     }
     return {"ok": True, "override_errors": [], "summary": summary, "payload": payload}
 
@@ -939,23 +1033,21 @@ ON CONFLICT (host_id, item_kind, item) DO UPDATE SET
        facts_collected_at = EXCLUDED.facts_collected_at, not_seen_since = EXCLUDED.not_seen_since,
        not_seen_reason = EXCLUDED.not_seen_reason, last_run_id = EXCLUDED.last_run_id, updated_at = now();
 
+-- component_overrides is append-only. A row is never changed in place: an entry
+-- that left the list or changed is withdrawn here, and the changed entry is
+-- inserted below as a new row attributed to this run.
+UPDATE component_overrides o
+   SET withdrawn_at = now(), withdrawn_by = NULLIF(x->>'withdrawn_by', ''),
+       withdrawn_reason = x->>'withdrawn_reason'
+  FROM _cd_payload, jsonb_array_elements(p->'override_withdrawals') x
+ WHERE o.id = (x->>'id')::bigint AND o.withdrawn_at IS NULL;
+
 INSERT INTO component_overrides (host, component_key, action, reclassify_to, requested_by, reason,
        expires_at, approved_by, recorded_by, source)
 SELECT x->>'host', x->>'component_key', x->>'action', COALESCE(x->>'reclassify_to', ''),
        x->>'requested_by', x->>'reason', (x->>'expires_at')::{_TS},
        NULLIF(x->>'approved_by', ''), NULLIF(x->>'recorded_by', ''), COALESCE(x->>'source', 'file')
-  FROM _cd_payload, jsonb_array_elements(p->'overrides') x
--- recorded_by and source keep the values of the run that first recorded the entry.
-ON CONFLICT (host, component_key, action, reclassify_to, requested_by, expires_at) DO UPDATE SET
-       reason = EXCLUDED.reason, approved_by = EXCLUDED.approved_by, withdrawn_at = NULL;
-
-UPDATE component_overrides o SET withdrawn_at = now()
- WHERE o.withdrawn_at IS NULL
-   AND NOT EXISTS (
-       SELECT 1 FROM _cd_payload, jsonb_array_elements(p->'overrides') x
-        WHERE x->>'host' = o.host AND x->>'component_key' = o.component_key AND x->>'action' = o.action
-          AND COALESCE(x->>'reclassify_to', '') = o.reclassify_to AND x->>'requested_by' = o.requested_by
-          AND (x->>'expires_at')::{_TS} = o.expires_at);
+  FROM _cd_payload, jsonb_array_elements(p->'overrides') x;
 COMMIT;
 """
 
@@ -1043,6 +1135,19 @@ def configured_db_host(site_config_path):
     if "{{" in value:
         return None, f"pg_host in {path.name} is an expression that cannot be checked: {value}"
     return value, ""
+
+
+def configured_approvers(site_config_path) -> list[str]:
+    """component_override_approvers from the site configuration file ([] when unset)."""
+    path = Path(site_config_path)
+    if not path.is_file():
+        return []
+    try:
+        site = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except yaml.YAMLError:
+        return []
+    names = site.get("component_override_approvers") if isinstance(site, dict) else None
+    return [str(n) for n in names if str(n).strip()] if isinstance(names, list) else []
 
 
 def check_launch(pg_host, site_config_path, paths, root=PROJECT_ROOT) -> list[str]:

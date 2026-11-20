@@ -1,8 +1,9 @@
 -- component_discovery_schema.sql — which technology components run on which host.
 --
 -- Applied by ansible/playbooks/discover_host_components.yml. Additive and safe to
--- re-run: every statement is CREATE ... IF NOT EXISTS, CREATE OR REPLACE VIEW or
--- ALTER TABLE ... ADD COLUMN IF NOT EXISTS on a table this file owns. Nothing
+-- re-run: every statement is CREATE ... IF NOT EXISTS, CREATE OR REPLACE (view,
+-- function, trigger) or ALTER TABLE ... ADD COLUMN IF NOT EXISTS on a table this
+-- file owns. CREATE OR REPLACE TRIGGER needs PostgreSQL 14 or later. Nothing
 -- here drops an object or touches a table of another feature, and nothing in
 -- the product deletes rows from these tables.
 --
@@ -108,8 +109,7 @@ CREATE TABLE IF NOT EXISTS component_overrides (
     reason        TEXT NOT NULL CHECK (btrim(reason) <> ''),
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
     expires_at    TIMESTAMPTZ NOT NULL,
-    withdrawn_at  TIMESTAMPTZ,                    -- set when the entry leaves the operator's file
-    UNIQUE (host, component_key, action, reclassify_to, requested_by, expires_at)
+    withdrawn_at  TIMESTAMPTZ                     -- set when the entry leaves the list or changes
 );
 -- requested_by is what the entry declares. recorded_by is the account that
 -- launched the job that recorded it, source is where the list came from
@@ -118,6 +118,39 @@ CREATE TABLE IF NOT EXISTS component_overrides (
 ALTER TABLE component_overrides ADD COLUMN IF NOT EXISTS approved_by TEXT;
 ALTER TABLE component_overrides ADD COLUMN IF NOT EXISTS recorded_by TEXT;
 ALTER TABLE component_overrides ADD COLUMN IF NOT EXISTS source      TEXT NOT NULL DEFAULT 'file';
+ALTER TABLE component_overrides ADD COLUMN IF NOT EXISTS withdrawn_by     TEXT;
+ALTER TABLE component_overrides ADD COLUMN IF NOT EXISTS withdrawn_reason TEXT;
+CREATE INDEX IF NOT EXISTS idx_component_overrides_live
+    ON component_overrides (host, component_key) WHERE withdrawn_at IS NULL;
+
+-- component_overrides is append-only. A row can be withdrawn once (withdrawn_at,
+-- withdrawn_by, withdrawn_reason) and is otherwise never changed or removed: a
+-- changed approver, reason or expiry is a withdrawal plus a new row, each
+-- attributed to the run that made it.
+CREATE OR REPLACE FUNCTION component_overrides_append_only() RETURNS trigger
+LANGUAGE plpgsql AS $cd$
+BEGIN
+    IF TG_OP <> 'UPDATE' THEN
+        RAISE EXCEPTION 'component_overrides is append-only: % is not allowed', TG_OP;
+    END IF;
+    IF OLD.withdrawn_at IS NOT NULL THEN
+        RAISE EXCEPTION 'component_overrides row % is withdrawn and cannot be changed', OLD.id;
+    END IF;
+    IF NEW.withdrawn_at IS NULL
+       OR (to_jsonb(NEW) - 'withdrawn_at' - 'withdrawn_by' - 'withdrawn_reason')
+          IS DISTINCT FROM
+          (to_jsonb(OLD) - 'withdrawn_at' - 'withdrawn_by' - 'withdrawn_reason') THEN
+        RAISE EXCEPTION 'component_overrides is append-only: row % can only be withdrawn', OLD.id;
+    END IF;
+    RETURN NEW;
+END
+$cd$;
+CREATE OR REPLACE TRIGGER component_overrides_append_only_row
+    BEFORE UPDATE OR DELETE ON component_overrides
+    FOR EACH ROW EXECUTE FUNCTION component_overrides_append_only();
+CREATE OR REPLACE TRIGGER component_overrides_append_only_truncate
+    BEFORE TRUNCATE ON component_overrides
+    FOR EACH STATEMENT EXECUTE FUNCTION component_overrides_append_only();
 
 -- ── Views ────────────────────────────────────────────────────────────────────
 
@@ -130,7 +163,7 @@ SELECT o.id, o.host, o.component_key, o.action, NULLIF(o.reclassify_to, '') AS r
             WHEN o.expires_at <= now()      THEN 'expired'
             ELSE 'in_force' END                                  AS state,
        (o.expires_at::date - now()::date)                        AS days_to_expiry,
-       o.approved_by, o.recorded_by, o.source
+       o.approved_by, o.recorded_by, o.source, o.withdrawn_by, o.withdrawn_reason
   FROM component_overrides o;
 
 -- The whole map: every stored row with the override in force (if any) beside

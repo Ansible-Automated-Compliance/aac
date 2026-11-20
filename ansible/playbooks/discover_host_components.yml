@@ -23,6 +23,8 @@
 #   component_override_soon_days     "expiring soon" window for overrides (default 14)
 # Site settings (site_config.yml):
 #   component_override_max_days      longest an override may run (default 90)
+#   component_override_approvers     people who may approve hiding a privileged component
+#                                    (read from site_config.yml only; empty means none can)
 #   component_override_entries       overrides, instead of ansible/vars/component_overrides.yml
 #   component_catalog_file, component_overrides_file   must stay inside the project checkout
 #
@@ -133,7 +135,7 @@
         query: "{{ lookup('ansible.builtin.file', playbook_dir + '/../files/component_discovery_read_hosts.sql') }}"
       register: cd_hosts
 
-    - name: Read the stored component map and the not-recognised list
+    - name: Read the stored component map, the not-recognised list and the overrides
       community.postgresql.postgresql_query:
         login_host: "{{ cd_pg_host }}"
         login_port: "{{ cd_pg_port }}"
@@ -144,6 +146,7 @@
       loop:
         - host_components
         - host_unrecognised
+        - component_overrides
       register: cd_existing
 
     - name: Create a private work directory
@@ -173,6 +176,9 @@
               override_source: "{{ 'variable' if component_override_entries is defined else 'file' }}"
               launched_by: "{{ awx_user_name | default(tower_user_name | default('')) }}"
               override_max_expiry_days: "{{ component_override_max_days | int }}"
+              existing_overrides: "{{ cd_existing.results[2].query_result | default([]) | map(attribute='r') | list }}"
+              # The approver list is read from this file by the script, not from a variable.
+              site_config_file: "{{ playbook_dir }}/../vars/site_config.yml"
 
         - name: Run detection (scripts/component_discovery.py)
           ansible.builtin.command:
