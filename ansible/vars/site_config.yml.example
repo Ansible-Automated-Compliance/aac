@@ -229,6 +229,14 @@ smart_meter_water_url: "http://{{ aac_host }}:8087"
 git_repo_url: "https://github.com/YOUR_ORG/YOUR_REPO.git"
 git_branch: "main"
 aap_project_name: "Compliance Automation"
+# Credential rotation (rotation_update_vault.yml) commits the re-encrypted
+# vault and pushes it to git_repo_url, which must be this site's own PRIVATE
+# repository; the playbook refuses the public upstream. Set these when they
+# differ from the defaults:
+# aac_vault_repo_url: "https://github.com/YOUR_ORG/YOUR_PRIVATE_REPO.git"   # default: git_repo_url
+# aac_vault_repo_branch: "main"
+# aac_controller_project_id: 11        # the controller project that holds the vault file
+# aac_controller_project_dir: "/home/<aap user>/aap/controller/data/projects/_11__compliance_automation"
 
 # ─── AAP Object Names (used for name-based lookups in seed playbooks) ─────────
 aap_inventory_name: "Compliance Infrastructure"

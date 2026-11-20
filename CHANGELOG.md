@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Fixed — credential rotation pushed the vault to the public repository; install fixes
+
+- **`rotation_update_vault.yml` pushed the re-encrypted vault to the public upstream repository**, with the token inside the URL, and synced controller project 11 whatever the install's project was. The target is now `git_repo_url` (or `aac_vault_repo_url`) from `site_config.yml` and the play stops before touching a credential when that is empty, a placeholder, not https, or the public upstream. The token travels as an HTTP header set through the environment. New optional settings: `aac_vault_repo_url`, `aac_vault_repo_branch`, `aac_controller_project_id`, `aac_controller_project_dir`.
+- `setup_eda_drift_detection.yml` creates the EDA project from the site's `git_repo_url` and `git_branch` when they are set, so rulebooks come from the same repository as the controller project. Default unchanged.
+- Extended install: the Grafana container no longer sets `GF_INSTALL_PLUGINS=grafana-postgresql-datasource` (Quadlet, OpenShift manifest, bootstrap playbook, two guides). That data source is built into the Red Hat Grafana image (checked on 10.2.6); the setting only made Grafana try to reach grafana.com at start, which fails or stalls on a host without internet access.
+- Extended install: `aac_compliance_ee.yml` passed a `readme` option the `execution_environment` module does not have, so the bootstrap task failed. The block is removed and the image is the new `aac_compliance_ee_image` in `playbooks/vars/defaults.yml`; bootstrap stops with a message while it is still `PLACEHOLDER`.
+
 ### Added — CIS M365 v7: opt-in shape capture (`m365_shape_capture`)
 
 - `m365_shape_capture: true` (default `false`) makes the `m365_assessment` role record, after collection, the shape of every collected fact and nothing else: JSON types, list lengths, field-name unions and field types, and distinct values only for an allowlist of closed configuration enums, booleans and numeric settings (`aac.m365.m365_fact_shape`). Names, addresses, domains, ids, mailbox data and free text are never recorded. Output: `<m365_shape_capture_dir>/m365_fact_shape_<UTC>.json`, the job artifact `m365_fact_shape` (`set_stats`) and the job output. One real run with it on settles the collector shapes that could not be confirmed without a tenant (enum serialisation, `AllowedDomains`, `RecipientTags`, `AssignedRoles`, `SetSCL`, `transferMethods`, Graph beta fields).
