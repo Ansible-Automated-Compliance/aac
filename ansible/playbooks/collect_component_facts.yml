@@ -1,0 +1,300 @@
+---
+# collect_component_facts.yml — layered fact gathering, driven by discovery
+#
+# Layers: 0 base host facts ("AAC - Gather Facts") -> 1 detection ("AAC - Discover
+# Host Components") -> 2 component facts, host side -> 3 component facts, service
+# side -> 4 what is inside a component, fed back to detection, to a bounded depth.
+#
+# This playbook is the dispatcher for layers 2 to 4. It reads the per-host
+# component map, selects the collectors the catalog names for the components
+# that were detected, runs each ONLY where its component was detected, and
+# stores every outcome: facts collected, or "detected, not assessed" with the
+# reason. It names no component. Adding one is a catalog entry
+# (ansible/vars/component_catalog.yml) and a collector file
+# (ansible/tasks/component_collectors/<key>_<layer>.py), nothing here.
+#
+#   contract   docs/reference/COMPONENT_COLLECTOR_CONTRACT.md
+#   reference  docs/reference/LAYERED_FACT_GATHERING.md
+#   logic      scripts/layered_collection.py
+#   schema     ansible/files/layered_collection_schema.sql
+#
+# Run AFTER "AAC - Discover Host Components". AAP Job Template: "AAC - Collect Component Facts".
+# Credentials: Compliance SSH Credential, Ansible Vault, the compliance database; plus, for the
+# service side of a component, the credential type its catalog entry names.
+# Inventory: the compliance inventory, with no limit: hosts are chosen from the map.
+#
+# Survey variables (the job template takes no other variables at launch):
+#   layered_cost      cheap (cheap collectors only, for a nightly run) | all (weekly)
+#   layered_layers    host | service | all
+# Site settings (site_config.yml):
+#   layered_max_depth       passes, 1 to 5 (default 3)
+#   layered_max_facts_kb    size cap per collector result, 16 to 4096 (default 512)
+#   layered_become          privilege escalation on managed hosts (default true)
+#   component_catalog_file, layered_collectors_dir   must stay inside the project checkout
+#
+# The job holds the database credential and connects to managed hosts. It
+# refuses to run when the database host is not the pg_host that
+# ansible/vars/site_config.yml names, or when the catalog or the collectors
+# directory is outside the project checkout. It only ever connects to hosts
+# that are in its inventory.
+
+- name: Layered collection | read the component map and plan the run
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    layered_cost: all
+    layered_layers: all
+    layered_max_depth: 3
+    layered_max_facts_kb: 512
+    layered_become: true
+    component_catalog_file: "{{ playbook_dir }}/../vars/component_catalog.yml"
+    layered_collectors_dir: "{{ playbook_dir }}/../tasks/component_collectors"
+    lc_pg_host: "{{ aac_result_pg_host | default(pg_host | default('', true), true) }}"
+    lc_pg_port: "{{ compliance_db_port | default(pg_port | default(5432)) }}"
+    lc_pg_db: "{{ pg_db | default('compliance') }}"
+    lc_pg_user: "{{ pg_user | default('postgres') }}"
+
+  tasks:
+    - name: Load optional local config
+      ansible.builtin.include_vars: "{{ item }}"
+      with_first_found:
+        - files: ["{{ playbook_dir }}/../vars/site_config.yml"]
+          skip: true
+
+    - name: Load optional local secrets
+      ansible.builtin.include_vars: "{{ item }}"
+      with_first_found:
+        - files: ["{{ playbook_dir }}/../vars/vault_secrets.yml"]
+          skip: true
+
+    - name: Check the run settings are within bounds
+      ansible.builtin.assert:
+        that:
+          - layered_cost in ['cheap', 'all']
+          - layered_layers in ['host', 'service', 'all']
+          - layered_max_depth | int >= 1
+          - layered_max_depth | int <= 5
+          - layered_max_facts_kb | int >= 16
+          - layered_max_facts_kb | int <= 4096
+        fail_msg: >-
+          layered_cost must be cheap or all, layered_layers host, service or all,
+          layered_max_depth 1 to 5 and layered_max_facts_kb 16 to 4096.
+        quiet: true
+
+    # Before any file outside the fixed paths is read and before any connection.
+    - name: Check the database host and the input locations
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/../../scripts/layered_collection.py"
+          - check-launch
+          - --pg-host
+          - "{{ lc_pg_host }}"
+          - --site-config
+          - "{{ playbook_dir }}/../vars/site_config.yml"
+          - --catalog
+          - "{{ component_catalog_file }}"
+          - --collectors-dir
+          - "{{ layered_collectors_dir }}"
+      register: lc_guard
+      changed_when: false
+      failed_when: false
+
+    - name: Refuse a run aimed at another database or at files outside the checkout
+      ansible.builtin.fail:
+        msg: "Refused: {{ lc_guard.stderr | default('launch check failed', true) }}"
+      when: lc_guard.rc != 0
+
+    - name: Require the database address and credential
+      ansible.builtin.assert:
+        that:
+          - lc_pg_host | length > 0
+          - compliance_db_password is defined
+          - compliance_db_password | length > 0
+        fail_msg: >-
+          pg_host and compliance_db_password must be set (site_config.yml and
+          vault_secrets.yml, or extra vars). There is deliberately no default.
+        quiet: true
+
+    - name: Ensure the layered collection schema exists (additive, safe to re-run)
+      community.postgresql.postgresql_script:
+        login_host: "{{ lc_pg_host }}"
+        login_port: "{{ lc_pg_port }}"
+        login_user: "{{ lc_pg_user }}"
+        login_password: "{{ compliance_db_password }}"
+        login_db: "{{ lc_pg_db }}"
+        path: "{{ playbook_dir }}/../files/layered_collection_schema.sql"
+
+    - name: Read the component map and the known service instances
+      community.postgresql.postgresql_query:
+        login_host: "{{ lc_pg_host }}"
+        login_port: "{{ lc_pg_port }}"
+        login_user: "{{ lc_pg_user }}"
+        login_password: "{{ compliance_db_password }}"
+        login_db: "{{ lc_pg_db }}"
+        query: "{{ lookup('ansible.builtin.file', playbook_dir + '/../files/layered_collection_read_map.sql') }}"
+      register: lc_map
+
+    - name: Create a private work directory
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: aac_layered_collection_
+      register: lc_workdir
+
+    - name: Keep what every pass needs
+      ansible.builtin.set_fact:
+        lc_work: "{{ lc_workdir.path }}"
+        lc_script: "{{ playbook_dir }}/../../scripts/layered_collection.py"
+        lc_catalog_file: "{{ component_catalog_file }}"
+        lc_collectors_dir: "{{ layered_collectors_dir }}"
+        lc_guard_file: "{{ playbook_dir }}/../files/component_collector_guard.py"
+        lc_become: "{{ layered_become | bool }}"
+        # The inventory as it stands before any host is selected.
+        lc_inventory_hosts: "{{ groups['all'] | default([]) | list }}"
+        lc_db:
+          host: "{{ lc_pg_host }}"
+          port: "{{ lc_pg_port }}"
+          user: "{{ lc_pg_user }}"
+          name: "{{ lc_pg_db }}"
+
+    - name: Write the planning input (file, not stdin)
+      ansible.builtin.copy:
+        content: "{{ lc_input | to_json }}"
+        dest: "{{ lc_work }}/input.json"
+        mode: "0600"
+      vars:
+        lc_input:
+          job_id: "{{ tower_job_id | default(awx_job_id | default('')) }}"
+          cost: "{{ layered_cost }}"
+          layers: "{{ layered_layers }}"
+          max_depth: "{{ layered_max_depth | int }}"
+          max_facts_bytes: "{{ (layered_max_facts_kb | int) * 1024 }}"
+          inventory_hosts: "{{ lc_inventory_hosts }}"
+          # One base64 value, decoded by the script: names stored in the
+          # database are never templated here.
+          map_b64: "{{ lc_map.query_result[0].map_b64 }}"
+
+    # Fail closed: a catalog that does not satisfy the contract (exit 2) or a
+    # setting out of range (exit 3) stops the job before any host is contacted.
+    - name: Plan the run (scripts/layered_collection.py)
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ lc_script }}"
+          - begin
+          - --input
+          - "{{ lc_work }}/input.json"
+          - --state
+          - "{{ lc_work }}/state.json"
+          - --catalog
+          - "{{ lc_catalog_file }}"
+          - --collectors-dir
+          - "{{ lc_collectors_dir }}"
+      changed_when: false
+
+# An AAP workflow has no loop, so the passes are written out. Five is the hard
+# ceiling; layered_max_depth (default 3) decides how many do any work.
+- name: Layered collection | pass 1
+  ansible.builtin.import_playbook: layered_collection_pass.yml
+  vars:
+    lc_pass: 1
+
+- name: Layered collection | pass 2
+  ansible.builtin.import_playbook: layered_collection_pass.yml
+  vars:
+    lc_pass: 2
+
+- name: Layered collection | pass 3
+  ansible.builtin.import_playbook: layered_collection_pass.yml
+  vars:
+    lc_pass: 3
+
+- name: Layered collection | pass 4
+  ansible.builtin.import_playbook: layered_collection_pass.yml
+  vars:
+    lc_pass: 4
+
+- name: Layered collection | pass 5
+  ansible.builtin.import_playbook: layered_collection_pass.yml
+  vars:
+    lc_pass: 5
+
+- name: Layered collection | store every outcome and report coverage
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  tasks:
+    - name: Load optional local secrets
+      ansible.builtin.include_vars: "{{ item }}"
+      with_first_found:
+        - files: ["{{ playbook_dir }}/../vars/vault_secrets.yml"]
+          skip: true
+
+    - name: Store and report
+      block:
+        # Fail closed: the script stops if any detected component has no
+        # recorded outcome, and then nothing is written.
+        - name: Close the run (scripts/layered_collection.py)
+          ansible.builtin.command:
+            argv:
+              - python3
+              - "{{ lc_script }}"
+              - finish
+              - --state
+              - "{{ lc_work }}/state.json"
+              - --sql-out
+              - "{{ lc_work }}/apply.sql"
+              - --summary-out
+              - "{{ lc_work }}/summary.json"
+              - --catalog
+              - "{{ lc_catalog_file }}"
+              - --collectors-dir
+              - "{{ lc_collectors_dir }}"
+          changed_when: false
+
+        - name: Store component facts, children and the run (inserts and updates only, one transaction)
+          community.postgresql.postgresql_script:
+            login_host: "{{ lc_db.host }}"
+            login_port: "{{ lc_db.port }}"
+            login_user: "{{ lc_db.user }}"
+            login_password: "{{ compliance_db_password }}"
+            login_db: "{{ lc_db.name }}"
+            path: "{{ lc_work }}/apply.sql"
+
+        - name: Read the run summary
+          ansible.builtin.slurp:
+            src: "{{ lc_work }}/summary.json"
+          register: lc_summary_raw
+
+        - name: Parse the run summary
+          ansible.builtin.set_fact:
+            lc_summary: "{{ lc_summary_raw.content | b64decode | from_json }}"
+
+        - name: Coverage
+          ansible.builtin.debug:
+            msg: "{{ lc_summary.text.split('\n') }}"
+
+        - name: Publish result via set_stats
+          ansible.builtin.set_stats:
+            data:
+              layered_collection:
+                catalog_version: "{{ lc_summary.catalog_version }}"
+                contract_version: "{{ lc_summary.contract_version }}"
+                passes_run: "{{ lc_summary.passes_run }}"
+                components_detected: "{{ lc_summary.components_detected }}"
+                collected: "{{ lc_summary.collected }}"
+                not_assessed: "{{ lc_summary.not_assessed }}"
+                not_assessed_by_reason: "{{ lc_summary.not_assessed_by_reason }}"
+                not_in_this_run: "{{ lc_summary.not_in_this_run }}"
+                children_inventoried: "{{ lc_summary.children_inventoried }}"
+                children_by_disposition: "{{ lc_summary.children_by_disposition }}"
+                instances: "{{ lc_summary.instances }}"
+                coverage: "{{ lc_summary.coverage }}"
+      always:
+        - name: Remove the work directory
+          ansible.builtin.file:
+            path: "{{ lc_work }}"
+            state: absent

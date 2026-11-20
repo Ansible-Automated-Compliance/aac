@@ -1,0 +1,9 @@
+# Stub collector for a MADE-UP component, used only by tests/test_layered_collection.py
+# and the local container run. "acme_queue" exists nowhere in the product: it is
+# added to a copy of the catalog by the test. The stub returns a fixed result.
+g.collected(
+    {"config": {"listen": "0.0.0.0:7777", "tls": "on"},
+     "files": [{"path": "/etc/acme/queue.conf", "mode": "640", "owner": "acme", "group": "acme"}]},
+    instance={"identity": "cluster/acme-prod", "name": "Acme queue (stub)"},
+    children=[{"kind": "container_image", "value": "quay.io/sclorg/postgresql-16-c9s:latest", "name": "acme-store"},
+              {"kind": "process", "value": "acme-worker", "name": "worker"}])

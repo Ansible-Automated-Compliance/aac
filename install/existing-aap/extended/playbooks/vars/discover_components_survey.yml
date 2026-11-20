@@ -1,0 +1,28 @@
+---
+# Survey for AAC_Discover_Host_Components. The template takes no other
+# variables at launch: the database host and the catalog and override files
+# come from the project checkout, not from the person launching the job.
+
+aac_discover_components_survey_spec:
+  name: Discover host components
+  description: >-
+    Detect technology components per host from facts already stored. Run after fact collection.
+  spec:
+    - question_name: Facts older than this many days are "no newer facts"
+      question_description: >-
+        A detection whose facts are older than this is labelled "no newer facts" (1 to 365).
+      variable: component_stale_after_days
+      type: integer
+      required: true
+      default: 7
+      min: 1
+      max: 365
+    - question_name: Report overrides that expire within this many days
+      question_description: >-
+        Window for "overrides expiring soon" in the summary (1 to 90).
+      variable: component_override_soon_days
+      type: integer
+      required: true
+      default: 14
+      min: 1
+      max: 90

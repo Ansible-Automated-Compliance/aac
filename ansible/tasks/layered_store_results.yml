@@ -1,0 +1,43 @@
+---
+# layered_store_results.yml — the one place collector results are taken in.
+#
+# Shared by every pass and both layers of ansible/playbooks/collect_component_facts.yml.
+# Runs on the controller. Gathers `lc_results` (ids and base64 only) from the
+# hosts that ran collectors and hands them to scripts/layered_collection.py record, which
+# checks each result against the contract, removes values that must not be
+# stored, applies the size cap, lists what was found inside each component and
+# queues the next pass. A selected collector with no result (host not
+# reachable) is recorded as not assessed. The database is written once, at the
+# end of the run, from what is recorded here.
+#
+#   in  lc_result_hosts   inventory names whose lc_results to take in
+#       lc_work           work directory, lc_script, lc_catalog_file, lc_collectors_dir
+
+- name: Layered collection | write the collector results (file, not stdin)
+  ansible.builtin.copy:
+    content: >-
+      {%- set out = {} -%}
+      {%- for h in lc_result_hosts -%}
+      {%- set _ = out.update({h: hostvars[h].lc_results | default([])}) -%}
+      {%- endfor -%}
+      {{ out | to_json }}
+    dest: "{{ lc_work }}/results.json"
+    mode: "0600"
+  no_log: true
+
+- name: Layered collection | check and record the results
+  ansible.builtin.command:
+    argv:
+      - python3
+      - "{{ lc_script }}"
+      - record
+      - --state
+      - "{{ lc_work }}/state.json"
+      - --results
+      - "{{ lc_work }}/results.json"
+      - --catalog
+      - "{{ lc_catalog_file }}"
+      - --collectors-dir
+      - "{{ lc_collectors_dir }}"
+  register: lc_recorded
+  changed_when: false
