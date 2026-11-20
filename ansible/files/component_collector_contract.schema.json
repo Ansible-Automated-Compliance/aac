@@ -26,7 +26,7 @@
       "additionalProperties": false,
       "properties": {
         "layer": {"enum": ["host", "service"]},
-        "file": {"type": "string", "pattern": "^(none yet|[a-z][a-z0-9_]*_(host|service)\\.yml)$"},
+        "file": {"type": "string", "pattern": "^(none yet|[a-z][a-z0-9_]*_(host|service)\\.py)$"},
         "version": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+$"},
         "cost": {"enum": ["cheap", "heavy"]},
         "access": {"type": "string", "minLength": 20, "maxLength": 600},
@@ -45,11 +45,11 @@
       }
     },
     "target": {
-      "description": "What a collector receives, as the variable lc_target.",
+      "description": "What a collector receives, as the Python value `target`. It reaches the host as one base64 value, never as Ansible variables.",
       "type": "object",
       "required": ["contract_version", "component_key", "layer", "layer_number", "instance_id", "parent",
                    "host", "reached_through", "depth", "max_depth", "credential_type", "credential_env",
-                   "locator", "max_facts_bytes", "collector"],
+                   "locator", "max_facts_bytes", "collector", "guard"],
       "additionalProperties": false,
       "properties": {
         "contract_version": {"const": "1"},
@@ -71,6 +71,14 @@
         "credential_env": {"type": "array", "maxItems": 10, "items": {"type": "string"}},
         "locator": {"type": "object"},
         "max_facts_bytes": {"type": "integer", "minimum": 1024},
+        "guard": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "binary_dirs": {"type": "array", "maxItems": 50, "items": {"type": "string", "pattern": "^/[A-Za-z0-9._*/-]+$"}},
+            "runtime_parents": {"type": "array", "maxItems": 50, "items": {"type": "string", "pattern": "^[A-Za-z0-9._-]{1,15}$|^[A-Za-z0-9._-]{16,40}$"}}
+          }
+        },
         "collector": {
           "type": "object",
           "required": ["file", "version", "cost"],
@@ -80,7 +88,7 @@
       }
     },
     "result": {
-      "description": "What a collector must set, as the fact lc_result.",
+      "description": "What a collector returns through g.collected() or g.not_collected(). The guard prints it as one base64 line; it is decoded only by scripts/layered_collection.py.",
       "type": "object",
       "required": ["status"],
       "additionalProperties": false,

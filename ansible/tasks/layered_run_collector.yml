@@ -3,33 +3,48 @@
 #
 # Shared by every pass and both layers of ansible/playbooks/collect_component_facts.yml.
 # It knows nothing about any component: the work item (`lc_item`) names the
-# collector file and carries the input the contract defines.
+# collector file and carries the collector input.
 #
-#   in   lc_item      {item_id, file, target}   from scripts/layered_collection.py select
-#        lc_collectors_dir                      the one directory collectors live in
-#   out  lc_results   list of {item_id, result, failed, error}, appended per item
+#   in   lc_item      {item_id, file, target_b64}   from scripts/layered_collection.py select
+#        lc_collectors_dir, lc_guard_file
+#   out  lc_results   list of {item_id, failed, error, result_b64}, appended per item
 #
-# A collector that fails, or that does not set lc_result, is recorded as
-# "detected, not assessed" with the reason. It never fails the job and never
-# leaves an empty result that looks fine. Only the name of the failed task is
-# kept as the error: nothing a host printed is copied into it.
+# The collector is a Python body that runs under the guard
+# (ansible/files/component_collector_guard.py) on the target. The guard, the
+# collector and its input all travel base64-encoded, and the result comes back
+# as one base64 line that only scripts/layered_collection.py decodes. So no
+# string a host returned is ever an Ansible variable as text: it cannot be
+# templated, on any Ansible version. Only a line of base64 characters is taken
+# from the output; anything else the run printed is ignored.
+#
+# A collector that fails or returns nothing is recorded as "detected, not
+# assessed" with the reason. It never fails the job.
 
 - name: Layered collection | run one collector under the contract
   block:
-    - name: Layered collection | set the collector input
-      ansible.builtin.set_fact:
-        lc_target: "{{ lc_item.target }}"
-        lc_result: {}
+    - name: Layered collection | run the collector under the guard
+      ansible.builtin.command:
+        argv:
+          - "{{ lc_python | default(ansible_python_interpreter | default('/usr/bin/python3')) }}"
+          - "-I"
+          - "-c"
+          - "import base64, os; exec(compile(base64.b64decode(os.environ['LC_GUARD_B64']), 'guard', 'exec'), {'__name__': '__main__'})"
+      environment:
+        LC_GUARD_B64: "{{ lookup('ansible.builtin.file', lc_guard_file) | b64encode }}"
+        LC_CODE_B64: "{{ lookup('ansible.builtin.file', lc_collectors_dir ~ '/' ~ lc_item.file) | b64encode }}"
+        LC_TARGET_B64: "{{ lc_item.target_b64 }}"
+      register: lc_run
+      changed_when: false
 
-    - name: Layered collection | run the collector
-      ansible.builtin.include_tasks: "{{ lc_collectors_dir }}/{{ lc_item.file }}"
-
-    - name: Layered collection | keep the collector result
+    - name: Layered collection | keep the collector result (base64 only)
       ansible.builtin.set_fact:
-        lc_results: "{{ lc_results | default([]) + [{'item_id': lc_item.item_id, 'result': lc_result, 'failed': false}] }}"
+        lc_results: >-
+          {{ lc_results | default([]) + [{'item_id': lc_item.item_id, 'failed': false,
+               'result_b64': ((lc_run.stdout_lines | select('match', '^LCRESULT:[A-Za-z0-9+/=]+$') | list
+                               + ['LCRESULT:']) | first)[9:]}] }}
   rescue:
     - name: Layered collection | keep the failure as a result
       ansible.builtin.set_fact:
         lc_results: >-
           {{ lc_results | default([]) + [{'item_id': lc_item.item_id, 'failed': true,
-                                         'error': 'task "' ~ (ansible_failed_task.name | default('unknown')) ~ '" failed'}] }}
+                                         'error': 'the collector run failed on the target'}] }}

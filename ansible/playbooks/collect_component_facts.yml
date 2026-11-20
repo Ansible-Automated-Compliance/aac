@@ -11,7 +11,7 @@
 # stores every outcome: facts collected, or "detected, not assessed" with the
 # reason. It names no component. Adding one is a catalog entry
 # (ansible/vars/component_catalog.yml) and a collector file
-# (ansible/tasks/component_collectors/<key>_<layer>.yml), nothing here.
+# (ansible/tasks/component_collectors/<key>_<layer>.py), nothing here.
 #
 #   contract   docs/reference/COMPONENT_COLLECTOR_CONTRACT.md
 #   reference  docs/reference/LAYERED_FACT_GATHERING.md
@@ -149,6 +149,7 @@
         lc_script: "{{ playbook_dir }}/../../scripts/layered_collection.py"
         lc_catalog_file: "{{ component_catalog_file }}"
         lc_collectors_dir: "{{ layered_collectors_dir }}"
+        lc_guard_file: "{{ playbook_dir }}/../files/component_collector_guard.py"
         lc_become: "{{ layered_become | bool }}"
         # The inventory as it stands before any host is selected.
         lc_inventory_hosts: "{{ groups['all'] | default([]) | list }}"
@@ -171,8 +172,9 @@
           max_depth: "{{ layered_max_depth | int }}"
           max_facts_bytes: "{{ (layered_max_facts_kb | int) * 1024 }}"
           inventory_hosts: "{{ lc_inventory_hosts }}"
-          components: "{{ lc_map.query_result[0].map.components }}"
-          known_instances: "{{ lc_map.query_result[0].map.known_instances }}"
+          # One base64 value, decoded by the script: names stored in the
+          # database are never templated here.
+          map_b64: "{{ lc_map.query_result[0].map_b64 }}"
 
     # Fail closed: a catalog that does not satisfy the contract (exit 2) or a
     # setting out of range (exit 3) stops the job before any host is contacted.

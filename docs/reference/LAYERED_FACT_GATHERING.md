@@ -1,6 +1,6 @@
 # Layered fact gathering
 
-**Version:** v1.0
+**Version:** v1.1
 **Authors:** Tim Coulter, Claude (Anthropic)
 
 Base host facts say what a host is. They do not say how the database server, the cluster or the web server on that host is configured. Layered fact gathering collects those facts, driven by what component discovery found: a collector runs only where its component was detected, and every detected component ends with a recorded outcome.
@@ -20,7 +20,7 @@ The model is generic. The dispatcher, the shared task files, the script and the 
 ## How to add a component
 
 1. Add one entry to `ansible/vars/component_catalog.yml` (signals, `collectors`, and `contains` and `assess` where they apply) and bump `catalog_version`.
-2. Add one collector file, `ansible/tasks/component_collectors/<key>_<layer>.yml`, that reads `lc_target` and sets `lc_result` as the contract says.
+2. Add one collector file, `ansible/tasks/component_collectors/<key>_<layer>.py`, that reads through the guard and returns its result as the contract says.
 
 Nothing else changes: no schema, no playbook, no script, no job template. `python3 scripts/layered_collection.py check-catalog` and `python3 -m pytest -q tests/test_layered_collection.py` confirm the entry and the file agree. The contract is `docs/reference/COMPONENT_COLLECTOR_CONTRACT.md`.
 
@@ -32,7 +32,7 @@ These are optional additions to a detection catalog entry. An entry without them
 |---|---|
 | `collectors` | At most one per layer. Each has the fields below |
 | `collectors[].layer` | `host` (layer 2) or `service` (layer 3) |
-| `collectors[].file` | `<key>_<layer>.yml`, or `none yet` when the collector is planned and not built. `none yet` is reported as not assessed for that layer |
+| `collectors[].file` | `<key>_<layer>.py`, or `none yet` when the collector is planned and not built. `none yet` is reported as not assessed for that layer |
 | `collectors[].version` | Stored with every fact row the collector produces |
 | `collectors[].cost` | `cheap` or `heavy` |
 | `collectors[].access` | The least-privilege, read-only access the collector needs |
@@ -49,7 +49,7 @@ These are optional additions to a detection catalog entry. An entry without them
 | Run after | `AAC - Discover Host Components` |
 | Inventory | The compliance inventory, with no limit. The playbook targets only hosts where a selected component was detected, and only hosts that are in the inventory |
 | Logic | `scripts/layered_collection.py` (tested by `tests/test_layered_collection.py`) |
-| Shared tasks | `ansible/tasks/layered_run_collector.yml` runs one collector under the contract. `ansible/tasks/layered_store_results.yml` takes the results in |
+| Shared tasks | `ansible/tasks/layered_run_collector.yml` runs one collector under the guard (`ansible/files/component_collector_guard.py`). `ansible/tasks/layered_store_results.yml` takes the results in |
 | Schema | `ansible/files/layered_collection_schema.sql`, applied on every run: `CREATE ... IF NOT EXISTS` and `CREATE OR REPLACE VIEW` on its own objects only |
 
 | Variable | Set where | Default | Meaning |
@@ -87,7 +87,7 @@ The job holds the database credential and connects to managed hosts, so what a l
 | The database host must be the `pg_host` that `ansible/vars/site_config.yml` names | Checked from the file before any connection, as in component discovery |
 | The catalog and the collectors directory must be inside the project checkout | A path outside it is refused before it is read |
 | Only inventory hosts are targeted | A host name stored in the database that is not in the job's inventory is recorded as not assessed. It never becomes a connection target |
-| Collector file names come from the validated catalog | The name must be `<key>_<layer>.yml` and the file must exist in the collectors directory |
+| Collector file names come from the validated catalog | The name must be `<key>_<layer>.py` and the file must exist in the collectors directory |
 
 ## Outcomes
 
@@ -99,7 +99,9 @@ Every detected component ends a run with one outcome per layer. The job stops wi
 | `detected, not assessed: no collector` | The catalog entry has no collector |
 | `detected, not assessed: no collector for the host side yet` or `... service side yet` | The catalog names the layer with `none yet` |
 | `detected, not assessed: service side not assessed: no credential of type '<type>' is attached to this job` | An environment variable of the credential type is empty |
-| `detected, not assessed: collector failed: task "<name>" failed` | A task of the collector failed. Only the task name is kept |
+| `detected, not assessed: collector failed: ...` | The collector run failed on the target, or the collector body raised an error. Only the kind of error is kept |
+| `detected, not assessed: process could not be verified: ...` | A process carries the expected name but its executable, account or parent did not pass verification |
+| `detected, not assessed: unsafe value` | A name that would become an Ansible variable carries a template delimiter |
 | `detected, not assessed: no result returned` | The host was not reachable, or the collector did not finish |
 | `detected, not assessed: collector result does not satisfy the contract` | With the first faults |
 | `detected, not assessed: facts are N bytes, over the size cap` | Nothing is stored |
@@ -133,7 +135,7 @@ Keyed by service instance. An instance, such as a cluster or a database server, 
 | `notes` | Statements from the collector and the framework, for example a redaction or a capped list |
 | `first_run_id`, `last_run_id` | Rows of `component_collection_runs` |
 
-A row is added when the outcome for its key (target, component, layer, parent) changes. A run that finds the same status, reason, facts and collector version only moves `last_confirmed_at`. Rows are never deleted or rewritten, so earlier facts stay readable.
+A row is added when the outcome for its key (target, component, layer, parent) changes. A run that finds the same status, reason, facts, notes and collector version only moves `last_confirmed_at`. Rows are never deleted or rewritten, so earlier facts stay readable.
 
 ### `component_children`
 
@@ -173,11 +175,11 @@ A row is added when the outcome for its key (target, component, layer, parent) c
 
 | Component | Layer | File | Cost | Collects |
 |---|---|---|---|---|
-| `kubernetes_control_plane` | 2 | `kubernetes_control_plane_host.yml` | cheap | Flags of the API server, controller manager, scheduler and etcd as started; mode and owner of the static pod manifests, the etcd data directory, the control plane kubeconfig files, the PKI tree and the CNI files; the audit policy; resource and provider names of the encryption configuration; the anonymous section of the authentication configuration; the image of each static pod, reported as found inside |
-| `kubelet` | 2 | `kubelet_host.yml` | cheap | Kubelet flags and configuration file; mode and owner of the kubelet unit file, kubeconfig, client CA file, configuration file and configuration directory; whether kube-proxy runs, its flags, its metrics bind address and the mode and owner of its kubeconfig |
-| `postgresql` | 2 | `postgresql_host.yml` | cheap | Settings in `postgresql.conf` and `postgresql.auto.conf`; rules in `pg_hba.conf`; mode and owner of the data directory and those files; server version; the account the postmaster runs as |
+| `kubernetes_control_plane` | 2 | `kubernetes_control_plane_host.py` | cheap | Flags of the API server, controller manager, scheduler and etcd as started; mode and owner of the static pod manifests, the etcd data directory, the control plane kubeconfig files, the PKI tree and the CNI files; the audit policy; resource and provider names of the encryption configuration; the anonymous section of the authentication configuration; the image of each static pod, reported as found inside |
+| `kubelet` | 2 | `kubelet_host.py` | cheap | Kubelet flags and an allowlist of the fields of its configuration file (the ones the CIS Kubernetes policy reads); mode and owner of the kubelet unit file, kubeconfig, client CA file, configuration file and configuration directory; whether kube-proxy runs, its flags, its metrics bind address and the mode and owner of its kubeconfig |
+| `postgresql` | 2 | `postgresql_host.py` | cheap | An allowlist of settings from `postgresql.conf` and `postgresql.auto.conf`, with the names (not the values) of every other setting present; rules in `pg_hba.conf`; mode and owner of the data directory and those files; server version; the account the postmaster runs as |
 
-None of them calls a service API. None reads a key file, the content of a kubeconfig, an encryption key or a password. Flag values and settings whose name marks a secret are replaced on the way out.
+None of them calls a service API. None reads a key file, the content of a kubeconfig, an encryption key or a password. Each reads only through verified processes and inside expected directories, as the service's own account (see the contract). Settings that can carry a password in their value, such as `primary_conninfo`, `archive_command` and `restore_command`, are named and not stored.
 
 ### Kubernetes facts and the CIS Kubernetes policy
 
@@ -185,12 +187,12 @@ The two Kubernetes collectors use the field names of the input contract of the C
 
 | Policy input | Fed by |
 |---|---|
-| `api_server.flags`, `controller_manager.flags`, `scheduler.flags`, `etcd.flags` | `kubernetes_control_plane_host.yml` |
-| `api_server.audit_policy`, `api_server.encryption_config`, `api_server.authentication_config` | `kubernetes_control_plane_host.yml`, when the API server names the file and it is under `/etc/kubernetes` |
-| `files.manifests`, `files.etcd_data`, `files.control_plane_confs`, `files.pki`, `files.cni` | `kubernetes_control_plane_host.yml` |
-| `kubelet.flags`, `kubelet.config` | `kubelet_host.yml` |
-| `kube_proxy.running`, `kube_proxy.flags`, `kube_proxy.config` | `kubelet_host.yml` |
-| `files.kubelet_service`, `files.kubelet_kubeconfig`, `files.kubelet_client_ca`, `files.kubelet_config_yaml`, `files.kubelet_config_dir`, `files.kube_proxy_kubeconfig` | `kubelet_host.yml` |
+| `api_server.flags`, `controller_manager.flags`, `scheduler.flags`, `etcd.flags` | `kubernetes_control_plane_host.py` |
+| `api_server.audit_policy`, `api_server.encryption_config`, `api_server.authentication_config` | `kubernetes_control_plane_host.py`, when the API server names the file and it is under `/etc/kubernetes` |
+| `files.manifests`, `files.etcd_data`, `files.control_plane_confs`, `files.pki`, `files.cni` | `kubernetes_control_plane_host.py` |
+| `kubelet.flags`, `kubelet.config` | `kubelet_host.py` |
+| `kube_proxy.running`, `kube_proxy.flags`, `kube_proxy.config` | `kubelet_host.py` |
+| `files.kubelet_service`, `files.kubelet_kubeconfig`, `files.kubelet_client_ca`, `files.kubelet_config_yaml`, `files.kubelet_config_dir`, `files.kube_proxy_kubeconfig` | `kubelet_host.py` |
 | `etcd.member_count` | Not fed (optional in the policy) |
 | `service_accounts.default`, `network_policies.namespaces_without_policy`, `secrets.env_var_usage_count`, `cluster.namespace_resources`, `collection_status.*` | Not fed: these need the cluster API (service side, not built) |
 | `attest.*` | Not fed: attestations by a person |
@@ -219,8 +221,10 @@ Only image names and container names are stored. Container command lines, enviro
 | The Kubernetes collectors do not return a cluster identity | Each control plane node is its own instance until the service-side collector supplies the cluster identifier |
 | Flags written as `--name value` (two arguments) are read as a flag set to `true` | Kubernetes components are started with `--name=value` by kubeadm and by the distributions checked. A component started the other way would be misread |
 | The static pod manifest directory is taken as `/etc/kubernetes/manifests` | A kubelet with another `staticPodPath` has no manifest file facts |
-| Files named by API server flags are read only under `/etc/kubernetes` | A file elsewhere is listed in `collection.files_not_read` |
-| `postgresql_host.yml` reads the first postmaster it finds | Others are counted in `notes`. Files named by `include` directives are not read, and the result says so |
+| Files named by flags are read only inside expected directories (`/etc/kubernetes`, `/var/lib/kubelet`, `/var/lib/kube-proxy`, the PostgreSQL data and configuration directories) | A file elsewhere is not read, and the result says so |
+| A process in a rootless container is not verified | Its component is reported as not assessed: process could not be verified |
+| A managed host needs Python 3.6 or later for the host side | It already needs Python for fact collection |
+| `postgresql_host.py` reads the first postmaster it finds | Others are counted in `notes`. Files named by `include` directives are not read, and the result says so |
 | The component map is read in one query and results pass through the controller's memory | Suitable for estates of hundreds of hosts |
 | Results are stored once, at the end of the run | A job that is cancelled stores nothing from that run |
 | Rootless containers are read only for users with a runtime directory | See `docs/reference/COMPONENT_DISCOVERY.md` |

@@ -41,6 +41,7 @@ GENERIC_FILES = [
     "ansible/files/layered_collection_schema.sql",
     "ansible/files/layered_collection_read_map.sql",
     "ansible/files/component_collector_contract.schema.json",
+    "ansible/files/component_collector_guard.py",
     "scripts/layered_collection.py",
 ]
 
@@ -49,9 +50,9 @@ ACME = {
     "loader_keys": [], "privileged": {"act": False, "map": False, "rank": False},
     "assess": True, "contains": ["postgresql"],
     "collectors": [
-        {"layer": "host", "file": "acme_queue_host.yml", "version": "0.1", "cost": "cheap",
+        {"layer": "host", "file": "acme_queue_host.py", "version": "0.1", "cost": "cheap",
          "access": "Read access to /etc/acme over the connection already in use. Writes nothing."},
-        {"layer": "service", "file": "acme_queue_service.yml", "version": "0.1", "cost": "heavy",
+        {"layer": "service", "file": "acme_queue_service.py", "version": "0.1", "cost": "heavy",
          "credential": {"type": "Acme Queue Read-Only", "env": ["ACME_QUEUE_URL", "ACME_QUEUE_TOKEN"]},
          "access": "A token with the read-only role on the queue API. No write scope."},
     ],
@@ -69,10 +70,9 @@ def _begin(components, catalog=CATALOG, hosts=None, **kw):
     return lc.begin(dict({"now": NOW, "inventory_hosts": hosts, "components": components}, **kw), catalog)
 
 
-def _stub_result(path):
-    """What a stub collector sets: its one set_fact, read without running Ansible."""
-    tasks = yaml.safe_load(pathlib.Path(path).read_text())
-    return tasks[0]["ansible.builtin.set_fact"]["lc_result"]
+def _stub_result(path, target=None):
+    """Run a stub collector the way a host does: under the guard."""
+    return lc.guard.run(pathlib.Path(path).read_text(), target or {"reached_through": ["a", "b"]})
 
 
 def _answer(selection, result_for):
@@ -100,7 +100,7 @@ def test_shipped_catalog_satisfies_the_contract():
 def test_every_shipped_collector_file_is_named_by_the_catalog_and_the_reverse():
     named = {col["file"] for c in CATALOG["components"] for col in c.get("collectors") or []
              if col["file"] != lc.NO_COLLECTOR}
-    assert named == {p.name for p in SHIPPED_DIR.glob("*.yml")}
+    assert named == {p.name for p in SHIPPED_DIR.glob("*.py")}
     assert named, "at least one collector ships"
 
 
@@ -113,7 +113,7 @@ def test_every_collector_documents_its_access_and_cost():
 
 
 @pytest.mark.parametrize("change, fault", [
-    (lambda c: c["collectors"][0].update(file="other_name_host.yml"), "must be named"),
+    (lambda c: c["collectors"][0].update(file="other_name_host.py"), "must be named"),
     (lambda c: c["collectors"][0].update(cost="free"), "not one of"),
     (lambda c: c["collectors"][0].pop("access"), "access is required"),
     (lambda c: c["collectors"][1].pop("credential"), "must name its credential type"),
@@ -135,7 +135,7 @@ def test_collector_file_must_exist(tmp_path):
     cat = copy.deepcopy(CATALOG)
     cat["components"].append(copy.deepcopy(ACME))
     errs = lc.validate_layering(cat, SHIPPED_DIR)       # the stub is not in the shipped directory
-    assert any("acme_queue_host.yml does not exist" in e for e in errs)
+    assert any("acme_queue_host.py does not exist" in e for e in errs)
 
 
 @pytest.mark.parametrize("result, fault", [
@@ -172,7 +172,7 @@ def test_collector_runs_only_where_its_component_was_detected():
                    hosts=["db01", "web01", "idle01", "empty01"])
     sel = lc.select(state, 1, "host")
     assert set(sel["by_host"]) == {"db01"}
-    assert [i["file"] for i in sel["by_host"]["db01"]] == ["postgresql_host.yml"]
+    assert [i["file"] for i in sel["by_host"]["db01"]] == ["postgresql_host.py"]
     target = sel["items"][0]["target"]
     assert lc.validate(target, "target") == []
     assert target["layer_number"] == 2 and target["parent"] == {"kind": "host", "id": "db01"}
@@ -205,7 +205,7 @@ def test_cost_and_layer_filters_leave_no_false_gap():
     assert lc.select(state, 1, "host")["items"] == []
     done = lc.finish(state, CATALOG)
     skipped = done["summary"]["not_in_this_run"]
-    assert skipped and skipped[0]["collector"] == "postgresql_host.yml" and "not part of this run" in skipped[0]["why"]
+    assert skipped and skipped[0]["collector"] == "postgresql_host.py" and "not part of this run" in skipped[0]["why"]
     assert not [r for r in done["payload"]["facts"] if r["layer"] == 2]      # no row that would hide older facts
 
 
@@ -220,7 +220,7 @@ def test_dry_run_reports_selection_without_results():
     plan = lc.dry_run({"now": NOW, "inventory_hosts": ["db01"],
                        "components": _components(("db01", "postgresql"), ("db01", "openssh_server"))}, CATALOG, env={})
     assert plan["would_run"] == [{"host": "db01", "component": "postgresql", "layer": 2,
-                                  "collector": "postgresql_host.yml", "cost": "cheap"}]
+                                  "collector": "postgresql_host.py", "cost": "cheap"}]
     assert {(n["component"], n["reason"]) for n in plan["not_assessed"]} >= {("openssh_server", "no collector")}
 
 
@@ -239,7 +239,7 @@ def test_collected_result_is_stored_with_layer_parent_collector_and_size():
                    "instance": {"identity": "host/db01/port/5432"}})
     assert row["status"] == "collected" and row["instance_id"] == "postgresql:host/db01/port/5432"
     assert (row["layer"], row["parent_kind"], row["parent_id"], row["depth"]) == (2, "host", "db01", 1)
-    assert row["collector"] == "postgresql_host.yml" and row["collector_version"] == "1.0" and row["cost"] == "cheap"
+    assert row["collector"] == "postgresql_host.py" and row["collector_version"] == "1.0" and row["cost"] == "cheap"
     assert row["facts_bytes"] == len(json.dumps(row["facts"], sort_keys=True, separators=(",", ":")))
     assert row["catalog_version"] == CATALOG["catalog_version"] and len(row["facts_sha256"]) == 64
 
@@ -319,7 +319,7 @@ def test_finish_fails_closed_when_a_detected_component_has_no_outcome():
 def _collectors_dir(tmp_path):
     d = tmp_path / "collectors"
     d.mkdir(exist_ok=True)
-    for p in list(SHIPPED_DIR.glob("*.yml")) + list(STUBS.glob("acme_queue_*.yml")):
+    for p in list(SHIPPED_DIR.glob("*.py")) + list(STUBS.glob("acme_queue_*.py")):
         shutil.copy(p, d / p.name)
     return d
 
@@ -354,8 +354,8 @@ def test_made_up_component_flows_from_detection_to_coverage(tmp_path):
     acme_items = [i for i in sel["items"] if i["target"]["component_key"] == "acme_queue"]
     assert {i["target"]["host"] for i in acme_items} == {"q01.example.com", "q02.example.com"}
     assert all((cdir / i["file"]).is_file() for i in sel["items"])
-    stub = _stub_result(cdir / "acme_queue_host.yml")
-    lc.record(state, catalog, _answer(sel, lambda it: _ok(stub) if it["file"] == "acme_queue_host.yml"
+    stub = _stub_result(cdir / "acme_queue_host.py")
+    lc.record(state, catalog, _answer(sel, lambda it: _ok(stub) if it["file"] == "acme_queue_host.py"
                                       else {"failed": True, "error": "not part of this test"}))
 
     # Storage: one instance, reached through two hosts, one layer-2 row per host.
@@ -390,7 +390,7 @@ def test_made_up_component_flows_from_detection_to_coverage(tmp_path):
     # Pass 2: the recognised child gets its collector, on the host it was found through.
     sel2 = lc.select(state, 2, "host")
     assert {(i["target"]["host"], i["file"], i["target"]["depth"]) for i in sel2["items"]} == {
-        ("q01.example.com", "postgresql_host.yml", 2), ("q02.example.com", "postgresql_host.yml", 2)}
+        ("q01.example.com", "postgresql_host.py", 2), ("q02.example.com", "postgresql_host.py", 2)}
     assert sel2["items"][0]["target"]["parent"] == {"kind": "instance", "id": "acme_queue:cluster/acme-prod"}
     lc.record(state, catalog, _answer(sel2, lambda it: _ok({"status": "collected", "facts": {"version": "16"}})))
 
@@ -441,7 +441,8 @@ def test_dispatcher_and_shared_tasks_name_no_component():
         for col in c.get("collectors") or []:
             words.add(col["file"].rsplit(".", 1)[0])
             words.add((col.get("credential") or {}).get("type", ""))
-    words |= {"kubernetes", "kubelet", "kube", "etcd", "postgres", "postmaster", "pg_hba"}
+    words |= {"kubernetes", "kubelet", "kube", "etcd", "postgres", "postmaster", "pg_hba", "pgsql", "conmon",
+              "containerd-shim", "rancher"}
     words.discard("")
     words.discard(lc.NO_COLLECTOR)
     for rel in GENERIC_FILES:
@@ -457,6 +458,10 @@ def test_dispatcher_and_shared_tasks_name_no_component():
 
 def test_dispatcher_runs_collectors_only_through_the_shared_tasks_file():
     text = (_root / "ansible/playbooks/layered_collection_pass.yml").read_text()
+    runner = (_root / "ansible/tasks/layered_run_collector.yml").read_text()
+    # One way to run a collector: under the guard, base64 in, one base64 line out.
+    assert runner.count("ansible.builtin.command") == 1 and "LC_GUARD_B64" in runner and "LC_TARGET_B64" in runner
+    assert "'^LCRESULT:[A-Za-z0-9+/=]+$'" in runner and "shell" not in runner
     assert text.count("../tasks/layered_run_collector.yml") == 2
     assert text.count("../tasks/layered_store_results.yml") == 2
     assert "component_collectors" not in text
@@ -483,3 +488,278 @@ def test_launch_guard_refuses_other_database_and_outside_paths(tmp_path):
     assert lc.check_launch("db.example.com", site, inside, SHIPPED_DIR) == []
     assert any("not the configured" in p for p in lc.check_launch("evil.example.com", site, inside, SHIPPED_DIR))
     assert any("outside the project" in p for p in lc.check_launch("db.example.com", site, inside, tmp_path))
+
+
+# ── Security: secrets, hostile strings, process verification, path confinement ──
+
+g = lc.guard
+EVIL = "{{ lookup('pipe','id') }} {{ 31337*3 }} {% raw %}x{% endraw %} {# c #}"
+
+
+@pytest.mark.parametrize("text, secret", [
+    ("primary_conninfo = 'host=p user=rep password=s3cr3tPW sslmode=require'", "s3cr3tPW"),
+    ("primary_conninfo = 'host=p password=\"quoted s3cr3tPW\"'", "s3cr3tPW"),
+    ("restore_command = 'wal-fetch --url https://backup:s3cr3tPW@store.example.com/wal %f %p'", "s3cr3tPW"),
+    ("archive_command = 'PGPASSWORD=s3cr3tPW rsync %p archive:/wal/%f'", "s3cr3tPW"),
+    ("ssl_passphrase_command = 'echo s3cr3tPW'", None),
+    ("ldapbindpasswd=s3cr3tPW ldapserver=ldap.example.com", "s3cr3tPW"),
+    ("radiussecrets=\"s3cr3tPW\"", "s3cr3tPW"),
+    ("--initial-cluster-token=s3cr3tPW", "s3cr3tPW"),
+    ("Authorization: Bearer s3cr3tPWs3cr3tPW", "s3cr3tPWs3cr3tPW"),
+    ("jwt eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJzM2NyM3RQVyJ9.c2lnbmF0dXJl", "eyJzdWIiOiJzM2NyM3RQVyJ9"),
+    ("aws_access_key_id AKIAIOSFODNN7EXAMPLE", "AKIAIOSFODNN7EXAMPLE"),
+    ("aws_secret_access_key = wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY", "wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY"),
+    ("api_key: s3cr3tPW", "s3cr3tPW"),
+    ("-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXk\n-----END OPENSSH PRIVATE KEY-----", "b3BlbnNzaC1rZXk"),
+])
+def test_secret_shapes_are_replaced_on_the_host_and_again_in_the_store(text, secret):
+    if secret is not None:
+        assert secret not in g.scrub_text(text), g.scrub_text(text)
+        assert secret not in json.dumps(g.scrub({"k": [text]}))
+    # the shared store path, whatever the collector did
+    _, row = _one({"status": "collected", "facts": {"line": text, "nested": [{"v": text}]},
+                   "children": [{"kind": "process", "value": "x", "detail": {"cmd": text}}]})
+    blob = json.dumps(row)
+    if "PRIVATE KEY" in text:
+        assert row["status"] == "not_collected" and "private key" in row["reason"]
+    elif secret is not None:
+        assert secret not in blob and row["status"] == "collected"
+        assert any("redacted" in n for n in row["notes"])
+
+
+@pytest.mark.parametrize("text", [
+    "password_encryption = scram-sha-256", "--token-auth-file=/etc/kubernetes/tokens.csv",
+    "ssl_key_file = 'server.key'", "--service-account-key-file=/etc/kubernetes/pki/sa.pub",
+    "--enable-bootstrap-token-auth=true", "https://registry.example.com:5000/v2/",
+    "--use-service-account-credentials=true", "--service-account-private-key-file=/etc/kubernetes/pki/sa.key",
+])
+def test_settings_that_only_look_like_secrets_are_kept(text):
+    assert g.scrub_text(text) == text
+
+
+def test_hostile_strings_survive_verbatim_and_are_never_templated(tmp_path):
+    """A unit, container or file name is chosen by whoever runs the workload.
+    It must reach storage as written and never be an Ansible variable as text."""
+    catalog, cdir = _acme_catalog(tmp_path)
+    comps = _components(("q01", "acme_queue"), evidence=[{"kind": "service", "value": EVIL}])
+    state = _begin(comps, catalog, layers="host")
+    sel = lc.select(state, 1, "host")
+    seen_by_ansible = json.dumps(lc.for_ansible(sel))
+    assert not lc.has_template_marks(json.loads(seen_by_ansible)) and "lookup" not in seen_by_ansible
+    # ... yet the collector still receives the evidence, inside the base64 input
+    target = json.loads(__import__("base64").b64decode(sel["items"][0]["target_b64"]))
+    assert target["locator"]["evidence"][0]["value"] == EVIL
+
+    hostile = {"status": "collected", "facts": {"unit": EVIL, EVIL: "as a key"},
+               "children": [{"kind": "container_image", "value": "quay.io/sclorg/postgresql-16-c9s:latest", "name": EVIL},
+                            {"kind": "service", "value": EVIL}]}
+    blob = __import__("base64").b64encode(json.dumps(hostile).encode()).decode()
+    lc.record(state, catalog, {"q01": [{"item_id": sel["items"][0]["item_id"], "failed": False, "result_b64": blob}]})
+    row = _rows(state, component_key="acme_queue", layer=2)[0]
+    assert row["status"] == "collected" and row["facts"]["unit"] == EVIL and row["facts"][EVIL] == "as a key"
+    kids = {c["child_kind"]: c for c in state["children"]}
+    assert kids["container_image"]["child_name"] == EVIL and kids["service"]["child_value"] == EVIL   # verbatim
+
+    # The recognised child is queued for pass 2: what Ansible sees of it is still clean.
+    sel2 = lc.select(state, 2, "host")
+    assert sel2["items"] and not lc.has_template_marks(lc.for_ansible(sel2))
+    assert not lc.has_template_marks(sel2["items"][0]["target"]["instance_id"])
+    lc.record(state, catalog, {})
+    done = lc.finish(state, catalog)
+    assert not lc.has_template_marks(lc.display_safe(done["summary"]))  # what the job prints
+    assert "lookup" not in lc.persist_sql(done["payload"])              # SQL carries base64 only
+    assert EVIL in json.dumps(done["payload"])                          # storage keeps it as written
+
+
+def test_only_a_base64_line_is_accepted_as_a_result():
+    state = _begin(_components(("db01", "postgresql")))
+    sel = lc.select(state, 1, "host")
+    lc.record(state, CATALOG, {"db01": [{"item_id": sel["items"][0]["item_id"], "failed": False,
+                                         "result_b64": "{{ not base64 }}"}]})
+    assert "no readable result" in _rows(state, layer=2)[0]["reason"]
+
+
+def test_a_name_that_would_become_an_ansible_variable_is_refused():
+    host = "db{{ 7*7 }}"
+    state = _begin(_components((host, "postgresql")), hosts=[host])
+    assert lc.select(state, 1, "host")["by_host"] == {}
+    assert "unsafe value" in _rows(state, layer=2)[0]["reason"]
+
+
+@pytest.mark.parametrize("code, fault", [
+    ("import os\n", "import is not allowed"),
+    ("x = open('/etc/shadow').read()\n", "open is not allowed"),
+    ("x = g._confine('/etc/shadow', ['/'], None)\n", "attribute _confine"),
+    ("x = g.read.__globals__\n", "attribute __globals__"),
+    ("p = '/proc/1/cmdline'\n", "does not read /proc"),
+    ("x = '{{ evil }}'\n", "contains '{{'"),
+    ("x = __builtins__\n", "__builtins__ is not allowed"),
+])
+def test_collector_body_rules(code, fault):
+    assert any(fault in f for f in g.check_code(code)), g.check_code(code)
+    res = g.run(code, {})
+    assert res["status"] == "not_collected" and "collector refused" in res["reason"]
+
+
+def test_every_shipped_collector_reaches_the_host_only_through_the_guard():
+    """Fails when a collector reads a path or a process by itself instead of through the guard."""
+    for path in sorted(SHIPPED_DIR.glob("*.py")) + sorted(STUBS.glob("*.py")):
+        assert g.check_code(path.read_text()) == [], path.name
+    assert not list(SHIPPED_DIR.glob("*.yml")), "collectors are guard-run Python bodies, not task files"
+
+
+# A made-up process tree, so that verification is tested without root and on any platform.
+
+def _fake_proc(tmp_path, monkeypatch, pid=4242, comm="postgres", exe="/bin/sleep", uid=None, ppid=1,
+               args=("postgres", "-D", "/data"), cwd=None, deleted=False):
+    import os
+    proc = tmp_path / "proc"
+    for d in ("self/ns", f"{pid}/ns", "1/ns"):
+        (proc / d).mkdir(parents=True, exist_ok=True)
+    for owner in ("self", str(pid), "1"):
+        link = proc / owner / "ns" / "mnt"
+        if not link.is_symlink():
+            link.symlink_to("mnt:[4026531840]")
+    uid = os.getuid() if uid is None else uid
+    (proc / str(pid) / "comm").write_text(comm + "\n")
+    (proc / str(pid) / "status").write_text(f"Name:\t{comm}\nPPid:\t{ppid}\nUid:\t{uid}\t{uid}\t{uid}\t{uid}\n"
+                                            f"Gid:\t{os.getgid()}\t{os.getgid()}\t{os.getgid()}\t{os.getgid()}\n")
+    (proc / str(pid) / "cmdline").write_bytes(b"\0".join(a.encode() for a in args) + b"\0")
+    (proc / str(pid) / "exe").symlink_to(exe + (" (deleted)" if deleted else ""))
+    (proc / str(pid) / "cwd").symlink_to(str(cwd or tmp_path))
+    (proc / "1" / "comm").write_text("systemd\n")
+    monkeypatch.setattr(g, "PROC", str(proc))
+    return proc
+
+
+def _me():
+    import os
+    import pwd
+    return pwd.getpwuid(os.getuid()).pw_name
+
+
+def test_a_process_name_alone_is_not_trusted(tmp_path, monkeypatch):
+    """Any local user can call a process `postgres`. It must not be collected through."""
+    spoof = tmp_path / "postgres"
+    spoof.write_text("#!/bin/sh\nsleep 1\n")
+    _fake_proc(tmp_path, monkeypatch, exe=str(spoof))
+    guard = g.Guard({})
+    assert guard.processes("postgres", accounts=[_me()]) == []
+    assert "not in a system path" in guard.rejected[0]["why"]
+    guard.unverified("postmaster")
+    assert guard.finish()["reason"].startswith("process could not be verified: a postgres process is running but")
+
+
+@pytest.mark.parametrize("kw, why", [
+    ({"exe": "/bin/sleep", "comm": "postgres"}, "its executable is sleep, not postgres"),
+    ({"exe": "/bin/sleep", "comm": "sleep", "deleted": True}, "deleted or replaced"),
+    ({"exe": "/bin/sleep", "comm": "sleep", "ppid": 77}, "its parent cannot be read"),
+])
+def test_process_verification_faults(tmp_path, monkeypatch, kw, why):
+    _fake_proc(tmp_path, monkeypatch, **kw)
+    guard = g.Guard({})
+    assert guard.processes(kw["comm"], accounts=[_me()]) == []
+    assert why in guard.rejected[0]["why"], guard.rejected
+
+
+def test_process_must_run_as_the_expected_account(tmp_path, monkeypatch):
+    _fake_proc(tmp_path, monkeypatch, comm="sleep")
+    as_root = g.Guard({})
+    assert as_root.processes("sleep", accounts="root") == [] and "not as root" in as_root.rejected[0]["why"]
+    other = g.Guard({})
+    assert other.processes("sleep", accounts=["no_such_account"]) == []
+    ok = g.Guard({})
+    found = ok.processes("sleep", accounts=[_me()])
+    assert len(found) == 1 and found[0].args == ["postgres", "-D", "/data"] and ok.rejected == []
+
+
+def test_binary_must_be_root_owned_and_not_replaceable(tmp_path):
+    mine = tmp_path / "bin"
+    mine.write_text("x")
+    assert "not owned by root" in g._root_owned_chain(str(mine))
+    import os
+    assert g._root_owned_chain(os.path.realpath("/bin/sleep")) == ""
+
+
+def test_paths_are_resolved_before_they_are_confined(tmp_path, monkeypatch):
+    import os
+    data = tmp_path / "data"
+    data.mkdir()
+    (data / "postgresql.conf").write_text("port = 5433\nprimary_conninfo = 'password=s3cr3tPW'\n")
+    outside = tmp_path / "outside.txt"
+    outside.write_text("root only\n")
+    (data / "link.conf").symlink_to(outside)
+    proc = g.Proc(1, "postgres", os.getuid(), os.getgid(), "/usr/bin/postgres", [], str(data), False)
+    guard = g.Guard({})
+    text = guard.read(str(data / "postgresql.conf"), [str(data)], proc)
+    assert "port = 5433" in text and "s3cr3tPW" not in text
+    assert guard.read(str(data / "link.conf"), [str(data)], proc) is None             # symlink out
+    assert guard.read(str(data / ".." / "outside.txt"), [str(data)], proc) is None     # dot-dot out
+    assert guard.read(str(outside), [str(data)], proc) is None
+    assert guard.read("relative/path", [str(data)], proc) is None
+    assert guard.read(str(data), [str(data)], proc) is None                           # not a regular file
+    assert guard.read(str(data / "postgresql.conf"), ["/"], proc) is None             # "/" is never an allowed directory
+    assert [e["path"] for e in guard.stat([str(data / "link.conf"), str(outside)], [str(data)])] == []
+    assert len([n for n in guard.notes if n.startswith("not read")]) >= 5
+    with pytest.raises(ValueError):
+        guard.read(str(data / "postgresql.conf"), [str(data)], None)                  # no verified process, no read
+
+
+def test_postgresql_collector_stores_an_allowlist_and_no_secret(tmp_path, monkeypatch):
+    """The shipped collector, run under the guard against a made-up server."""
+    data = tmp_path / "pgdata"
+    data.mkdir()
+    (data / "PG_VERSION").write_text("16\n")
+    (data / "postgresql.conf").write_text(
+        "listen_addresses = '*'   # all\nport = 5433\nssl = on\npassword_encryption = scram-sha-256\n"
+        "primary_conninfo = 'host=p user=rep password=s3cr3tPW'\n"
+        "archive_command = 'push https://u:s3cr3tPW@store.example.com/%f'\n"
+        "ssl_passphrase_command = 'echo s3cr3tPW'\nlog_line_prefix = '" + EVIL.replace("'", "''") + "'\n")
+    (data / "postgresql.auto.conf").write_text("restore_command = 'PGPASSWORD=s3cr3tPW fetch %f'\nlog_connections = on\n")
+    (data / "pg_hba.conf").write_text("local all all peer\nhost all all 10.0.0.0/8 ldap ldapserver=l ldapbindpasswd=s3cr3tPW\n")
+    binary = tmp_path / "postgres"
+    binary.write_text("x")
+    _fake_proc(tmp_path, monkeypatch, exe=str(binary), cwd=data)
+    monkeypatch.setattr(g, "_host_binary_fault", lambda pid, extra=(): (str(binary), ""))   # verification is tested above
+    code = (SHIPPED_DIR / "postgresql_host.py").read_text().replace('["postgres", "enterprisedb"]', repr([_me()]))
+    res = g.run(code, {"host": "db01", "collector": {"file": "postgresql_host.py"}})
+    assert res["status"] == "collected", res
+    assert lc.validate(res, "result") == []
+    f = res["facts"]
+    assert f["settings"] == {"listen_addresses": "*", "port": "5433", "ssl": "on", "password_encryption": "scram-sha-256",
+                             "log_line_prefix": EVIL, "log_connections": "on"}
+    assert {"primary_conninfo", "archive_command", "restore_command", "ssl_passphrase_command"} <= set(f["settings_not_stored"])
+    assert "s3cr3tPW" not in json.dumps(res)
+    assert f["hba_rules"][1]["method"] == "ldap" and "ldapbindpasswd=<redacted>" in f["hba_rules"][1]["options"]
+    assert res["instance"]["identity"] == "host/db01/port/5433"
+    assert {e["path"] for e in f["files"]} >= {str(data.resolve()), str((data / "pg_hba.conf").resolve())}
+
+
+def test_postgresql_collector_refuses_a_spoofed_process(tmp_path, monkeypatch):
+    """The reported attack: a user-owned process named postgres pointing root at another file."""
+    spoof = tmp_path / "postgres"
+    spoof.write_text("x")
+    _fake_proc(tmp_path, monkeypatch, exe=str(spoof), args=("postgres", "-c", "config_file=/etc/shadow"))
+    res = g.run((SHIPPED_DIR / "postgresql_host.py").read_text(), {"host": "db01"})
+    assert res["status"] == "not_collected" and res["reason"].startswith("process could not be verified")
+
+
+def test_kubelet_collector_refuses_a_non_root_process_named_kubelet(tmp_path, monkeypatch):
+    _fake_proc(tmp_path, monkeypatch, comm="kubelet", exe="/bin/sleep",
+               args=("kubelet", "--config=/etc/shadow", "--kubeconfig=/etc/shadow"))
+    res = g.run((SHIPPED_DIR / "kubelet_host.py").read_text(), {"host": "n1"})
+    assert res["status"] == "not_collected" and res["reason"].startswith("process could not be verified")
+
+
+def test_small_yaml_reader_matches_pyyaml_on_the_documents_collectors_read():
+    docs = [
+        "apiVersion: audit.k8s.io/v1\nkind: Policy\nrules:\n- level: Metadata\n  resources:\n  - group: \"\"\n"
+        "    resources: [\"secrets\", \"configmaps\"]\n- level: RequestResponse\n  verbs: [\"create\", \"delete\"]\n",
+        "kind: EncryptionConfiguration\nresources:\n- resources: [\"secrets\"]\n  providers:\n  - aescbc:\n      keys:\n"
+        "      - name: key1\n        secret: <redacted>\n  - identity: {}\n",
+        "authentication:\n  anonymous:\n    enabled: false\n  x509:\n    clientCAFile: /etc/kubernetes/pki/ca.crt\n"
+        "authorization:\n  mode: Webhook\nreadOnlyPort: 0\ntlsCipherSuites: [A, B]\nclusterDNS:\n- 10.96.0.10\n",
+    ]
+    for doc in docs:
+        assert g.mini_yaml(doc) == yaml.safe_load(doc)
+    assert g.mini_yaml("a: |\n  block\n") is None        # outside the subset: not parsed, never guessed

@@ -43,6 +43,12 @@ cd = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(cd)
 
 PROJECT_ROOT = _HERE.parent
+# The host-side guard: the same secret patterns and code rules are applied here.
+_gspec = importlib.util.spec_from_file_location(
+    "component_collector_guard", _HERE.parent / "ansible" / "files" / "component_collector_guard.py")
+guard = importlib.util.module_from_spec(_gspec)
+_gspec.loader.exec_module(guard)
+
 DEFAULT_CATALOG = cd.DEFAULT_CATALOG
 DEFAULT_COLLECTORS_DIR = PROJECT_ROOT / "ansible" / "tasks" / "component_collectors"
 SCHEMA_FILE = PROJECT_ROOT / "ansible" / "files" / "component_collector_contract.schema.json"
@@ -56,11 +62,33 @@ MAX_CHILDREN = 2000
 NO_COLLECTOR = "none yet"
 REDACTED = "<redacted>"
 
-# Names whose string value is never stored, whatever collector returned it.
-_SECRET_KEYS = {"password", "passwd", "passphrase", "token", "secret", "bearer_token", "bearertoken",
-                "api_key", "apikey", "private_key", "privatekey", "client_key_data", "client-key-data",
-                "client_secret", "access_key", "secret_key", "secret_access_key", "id_token", "refresh_token"}
-_PRIVATE_KEY = re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----")
+_SECRET_KEYS = guard.SECRET_KEYS
+_PRIVATE_KEY = guard.PRIVATE_KEY
+_JINJA_MARKS = ("{{", "{%", "{#")
+_ID_UNSAFE = re.compile(r"[^A-Za-z0-9._:/@-]")
+
+
+def has_template_marks(value) -> bool:
+    """True when any string in the value carries a template delimiter."""
+    if isinstance(value, dict):
+        return any(has_template_marks(k) or has_template_marks(v) for k, v in value.items())
+    if isinstance(value, list):
+        return any(has_template_marks(v) for v in value)
+    return isinstance(value, str) and any(m in value for m in _JINJA_MARKS)
+
+
+def display_safe(value):
+    """A copy for job output: template delimiters are broken apart so that
+    printing a stored string can never evaluate it. Storage keeps the original."""
+    if isinstance(value, dict):
+        return {display_safe(k): display_safe(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [display_safe(v) for v in value]
+    if isinstance(value, str):
+        for m in _JINJA_MARKS:
+            value = value.replace(m, m[0] + " " + m[1])
+        return value
+    return value
 
 
 # ── The contract schema and a validator for the subset of JSON Schema it uses ─
@@ -173,10 +201,14 @@ def validate_layering(catalog, collectors_dir=None) -> list[str]:
             if layer == "host" and "credential" in col:
                 errs.append(f"{where}: a host-side collector uses the connection already in use; no credential")
             if fname and fname != NO_COLLECTOR:
-                if fname != f"{key}_{layer}.yml":
-                    errs.append(f"{where}: collector file must be named {key}_{layer}.yml")
+                if fname != f"{key}_{layer}.py":
+                    errs.append(f"{where}: collector file must be named {key}_{layer}.py")
                 elif not (cdir / fname).is_file():
                     errs.append(f"{where}: collector file {fname} does not exist in {cdir.name}/")
+                else:
+                    # A collector reaches a host only through the guard.
+                    for fault in guard.check_code((cdir / fname).read_text(encoding="utf-8")):
+                        errs.append(f"{where}: collector {fname}: {fault}")
                 if "version" not in col:
                     errs.append(f"{where}: collector {fname} needs a version")
     return errs
@@ -289,6 +321,12 @@ def begin(data, catalog) -> dict:
     v_host_components_current], known_instances: [{host, component_key,
     instance_id}] from earlier runs}
     """
+    if data.get("map_b64"):
+        # The component map as the database returned it, base64 so that names
+        # stored there never pass through a template.
+        stored = json.loads(base64.b64decode(data["map_b64"]).decode("utf-8"))
+        data = dict(data, components=stored.get("components") or [],
+                    known_instances=stored.get("known_instances") or [])
     depth = int(data.get("max_depth", DEFAULT_MAX_DEPTH))
     if not 1 <= depth <= HARD_MAX_DEPTH:
         raise ValueError(f"max_depth must be 1 to {HARD_MAX_DEPTH}")
@@ -304,6 +342,8 @@ def begin(data, catalog) -> dict:
         "instances": {f"{k['host']}|{k['component_key']}": k["instance_id"]
                       for k in data.get("known_instances") or []},
         "passes_run": 0, "seq": 0, "detected": [],
+        "guard": {k: list(v) for k, v in (catalog.get("collector_guard") or {}).items()
+                  if k in ("binary_dirs", "runtime_parents")},
     }
     by_key = {c["key"]: c for c in catalog["components"]}
     seen = set()
@@ -330,6 +370,7 @@ def _target(state, entry, reached, credential_ok=True) -> dict:
     col = entry["collector"]
     cred = col.get("credential") or {}
     state["seq"] += 1
+    item_id = f"i{state['seq']}"
     target = {
         "contract_version": CONTRACT_VERSION, "component_key": entry["component_key"],
         "layer": entry["layer"], "layer_number": LAYER_NUMBER[entry["layer"]],
@@ -340,13 +381,17 @@ def _target(state, entry, reached, credential_ok=True) -> dict:
         "credential_type": cred.get("type", ""), "credential_env": list(cred.get("env") or []),
         "locator": entry.get("locator") or {}, "max_facts_bytes": state["settings"]["max_facts_bytes"],
         "collector": {"file": col["file"], "version": col.get("version", "0.0"), "cost": col["cost"]},
+        "guard": state.get("guard") or {},
     }
     errs = validate(target, "target")
     if errs:  # a framework fault, never a collector's: stop.
         raise ValueError("collector input does not satisfy the contract: " + "; ".join(errs))
-    item_id = f"i{state['seq']}"
     state["awaiting"][item_id] = {"entry": entry, "target": target}
-    return {"item_id": item_id, "file": col["file"], "target": target}
+    # What Ansible sees of an item: an id, a file name from the validated
+    # catalog, and the collector input as one base64 value. No string that a
+    # host or a database row supplied is ever an Ansible variable as text.
+    blob = base64.b64encode(json.dumps(target, sort_keys=True).encode("utf-8")).decode("ascii")
+    return {"item_id": item_id, "file": col["file"], "target_b64": blob, "target": target}
 
 
 def select(state, pass_no, layer, env=None) -> dict:
@@ -383,6 +428,19 @@ def select(state, pass_no, layer, env=None) -> dict:
                                reached=g["hosts"], depth=e["depth"], col=e["collector"])
                 continue
             items.append(_target(state, e, g["hosts"]))
+    safe = []
+    for it in items:
+        host = it["target"]["host"] or "localhost"
+        # The only strings that become Ansible variables as text. Refuse rather than escape.
+        if has_template_marks([host, it["file"], it["item_id"]]) or not re.fullmatch(r"[A-Za-z0-9+/=]+", it["target_b64"]):
+            held = state["awaiting"].pop(it["item_id"])
+            e, t = held["entry"], held["target"]
+            _not_collected(state, "unsafe value: a name that would become an Ansible variable carries a template "
+                           "delimiter", instance_id=t["instance_id"], key=e["component_key"], layer=e["layer"],
+                           parent=t["parent"], reached=t["reached_through"], depth=e["depth"], col=e["collector"])
+            continue
+        safe.append(it)
+    items = safe
     if items:
         state["passes_run"] = max(state["passes_run"], pass_no)
     by_host: dict[str, list] = {}
@@ -391,10 +449,23 @@ def select(state, pass_no, layer, env=None) -> dict:
     return {"items": items, "by_host": by_host}
 
 
+def for_ansible(selection) -> dict:
+    """The selection as the playbook receives it: ids, file names and base64 only."""
+    return {"by_host": {h: [{"item_id": i["item_id"], "file": i["file"], "target_b64": i["target_b64"]}
+                            for i in items] for h, items in selection["by_host"].items()},
+            "count": len(selection["items"])}
+
+
 # ── Results ──────────────────────────────────────────────────────────────────
 
 def scrub(value, notes, path="facts"):
-    """Remove values that must never be stored. Returns (clean value, private key found)."""
+    """Remove values that must never be stored, whatever collector returned them.
+
+    Returns (clean value, private key found). Values of fields named like a
+    secret and secret-shaped text inside any string (password=..., user:pass@
+    in a URL, bearer and JWT-like tokens, cloud access keys) are replaced; the
+    patterns are the host-side guard's, applied a second time here.
+    """
     if isinstance(value, dict):
         out, found = {}, False
         for k, v in value.items():
@@ -412,8 +483,13 @@ def scrub(value, notes, path="facts"):
             out.append(c)
             found = found or f
         return out, found
-    if isinstance(value, str) and _PRIVATE_KEY.search(value):
-        return REDACTED, True
+    if isinstance(value, str):
+        if _PRIVATE_KEY.search(value):
+            return REDACTED, True
+        clean = guard.scrub_text(value)
+        if clean != value:
+            notes.append(f"redacted a secret-shaped value in {path}")
+        return clean, False
     return value, False
 
 
@@ -445,7 +521,9 @@ def _children(state, catalog, entry, target, iid, children, notes):
         seen.add(ident)
         comp = recognise(ch, parent_comp, catalog)
         label = ch.get("name") or ch["value"]
-        child_iid = f"{comp['key']}:in/{iid}/{via + '/' if via else ''}{label}"[:600] if comp else None
+        # The label is a name a host supplied: only identifier characters go into an identity.
+        child_iid = f"{comp['key']}:in/{iid}/{via + '/' if via else ''}{_ID_UNSAFE.sub('_', label)}"[:600] \
+            if comp else None
         runnable = comp and any(c["file"] != NO_COLLECTOR for c in comp.get("collectors") or [])
         if comp is None:
             disposition = "not_recognised"
@@ -481,8 +559,10 @@ def _children(state, catalog, entry, target, iid, children, notes):
 def record(state, catalog, results) -> dict:
     """Collector results of one pass and layer -> fact rows, children and the next queue.
 
-    results: {host: [{item_id, result, failed, error}]}. An item that was
-    selected and has no result is recorded as not collected.
+    results: {host: [{item_id, result_b64, failed, error}]}: the result is the
+    guard's one base64 line, decoded here and nowhere else. (`result`, a plain
+    object, is accepted from tests.) An item that was selected and has no
+    result is recorded as not collected.
     """
     got = {}
     for host, entries in (results or {}).items():
@@ -503,7 +583,13 @@ def record(state, catalog, results) -> dict:
             reason = ("collector failed: " + str(r.get("error") or "no detail"))[:300]
         else:
             res = r.get("result")
-            errs = validate(res, "result", "result")
+            if "result_b64" in r:
+                try:
+                    res = json.loads(base64.b64decode(str(r["result_b64"]), validate=True).decode("utf-8"))
+                except (ValueError, UnicodeDecodeError):
+                    res = None
+            errs = validate(res, "result", "result") if res is not None else \
+                ["the collector returned no readable result"]
             if not errs and res["status"] == "not_collected" and not str(res.get("reason", "")).strip():
                 errs = ["result: not_collected needs a reason"]
             if errs:
@@ -513,9 +599,12 @@ def record(state, catalog, results) -> dict:
                 if res.get("instance"):
                     iid = f"{entry['component_key']}:{res['instance']['identity']}"
                 if res["status"] == "not_collected":
-                    reason = res["reason"]
+                    reason = guard.scrub_text(res["reason"])
                 else:
                     facts, key_found = scrub(res.get("facts") or {}, notes)
+                    kids, kids_key = scrub(res.get("children") or [], notes, "children")
+                    key_found = key_found or kids_key
+                    notes = [guard.scrub_text(n) for n in dict.fromkeys(notes)][:50]
                     size = len(json.dumps(facts, sort_keys=True, separators=(",", ":")).encode("utf-8"))
                     if key_found:
                         reason = "collector returned private key material: nothing stored"
@@ -526,7 +615,7 @@ def record(state, catalog, results) -> dict:
                     else:
                         if entry["layer"] == "host" and entry["depth"] == 1:
                             state["instances"][f"{entry['host']}|{entry['component_key']}"] = iid
-                        _children(state, catalog, entry, target, iid, res.get("children") or [], notes)
+                        _children(state, catalog, entry, target, iid, kids, notes)
                         state["rows"].append(_row(state, instance_id=iid, status="collected", facts=facts,
                                                   notes=notes, **common))
                         counts["collected"] += 1
@@ -681,7 +770,7 @@ UPDATE component_facts f
        last_run_id = currval(pg_get_serial_sequence('component_collection_runs', 'id'))
   FROM _lc_facts n
  WHERE f.id = n.latest_id AND f.status = n.status AND f.reason = n.reason
-   AND f.facts_sha256 = n.facts_sha256 AND f.instance_id = n.instance_id
+   AND f.facts_sha256 = n.facts_sha256 AND f.instance_id = n.instance_id AND f.notes = n.notes
    AND f.collector_version IS NOT DISTINCT FROM n.collector_version;
 
 INSERT INTO component_facts (instance_id, {_KEY}, reached_through, depth, status, reason, collector, collector_version,
@@ -695,7 +784,7 @@ SELECT n.instance_id, n.target_id, n.component_key, n.layer, n.parent_kind, n.pa
   FROM _lc_facts n
  WHERE NOT EXISTS (SELECT 1 FROM component_facts f
                     WHERE f.id = n.latest_id AND f.status = n.status AND f.reason = n.reason
-                      AND f.facts_sha256 = n.facts_sha256 AND f.instance_id = n.instance_id
+                      AND f.facts_sha256 = n.facts_sha256 AND f.instance_id = n.instance_id AND f.notes = n.notes
                       AND f.collector_version IS NOT DISTINCT FROM n.collector_version);
 
 INSERT INTO component_children (parent_instance_id, parent_component_key, parent_layer, via_host, child_kind,
@@ -825,7 +914,7 @@ def main(argv=None) -> int:
             state = _load(args.state)
             out = select(state, args.pass_no, args.layer)
             _dump(args.state, state)
-            _dump(args.out, out)
+            _dump(args.out, for_ansible(out))
             print(f"pass {args.pass_no}, {args.layer} side: {len(out['items'])} collectors on "
                   f"{len(out['by_host'])} targets")
         elif args.cmd == "record":
@@ -836,8 +925,9 @@ def main(argv=None) -> int:
         elif args.cmd == "finish":
             done = finish(_load(args.state), catalog)
             Path(args.sql_out).write_text(persist_sql(done["payload"]), encoding="utf-8")
-            out = dict(done["summary"])
-            out["text"] = format_summary(done["summary"])
+            # The summary is printed and published by the playbook: display copy only.
+            out = display_safe(dict(done["summary"]))
+            out["text"] = format_summary(out)
             _dump(args.summary_out, out)
             print(out["text"])
     except (ValueError, RuntimeError, KeyError) as exc:

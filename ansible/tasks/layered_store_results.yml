@@ -2,8 +2,8 @@
 # layered_store_results.yml — the one place collector results are taken in.
 #
 # Shared by every pass and both layers of ansible/playbooks/collect_component_facts.yml.
-# Runs on the controller. Gathers `lc_results` from the hosts that ran
-# collectors and hands them to scripts/layered_collection.py record, which
+# Runs on the controller. Gathers `lc_results` (ids and base64 only) from the
+# hosts that ran collectors and hands them to scripts/layered_collection.py record, which
 # checks each result against the contract, removes values that must not be
 # stored, applies the size cap, lists what was found inside each component and
 # queues the next pass. A selected collector with no result (host not

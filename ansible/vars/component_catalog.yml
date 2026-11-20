@@ -34,7 +34,7 @@
 #                  layer       host (layer 2, over the connection already in use, only
 #                              on hosts where the component was detected) or service
 #                              (layer 3, the service's own API, once per instance)
-#                  file        <key>_<layer>.yml in ansible/tasks/component_collectors/,
+#                  file        <key>_<layer>.py in ansible/tasks/component_collectors/,
 #                              or "none yet"
 #                  version     collector version, stored with every fact row
 #                  cost        cheap or heavy (a schedule can run cheap collectors
@@ -68,6 +68,26 @@
 # A port signal is always supporting, whatever role is written.
 
 catalog_version: "2026.11.3"
+
+# What the collector guard (ansible/files/component_collector_guard.py) accepts
+# when it verifies a process before a collector may read anything through it.
+#   binary_dirs      directories, beside the standard system paths, where a
+#                    trusted service binary may live (shell-style patterns)
+#   runtime_parents  command names of container runtime monitors. A process in
+#                    a container counts only when one of these, running as root
+#                    from a root-owned binary, started it
+collector_guard:
+  binary_dirs:
+    - "/usr/pgsql-*/bin"
+    - "/usr/lib/postgresql/*/bin"
+    - "/var/lib/rancher/*/data/*/bin"
+  runtime_parents:
+    - conmon
+    - conmonrs
+    - containerd-shim
+    - containerd-shim-runc-v1
+    - containerd-shim-runc-v2
+    - docker-containerd-shim
 
 kinds:
   - automation_controller
@@ -143,7 +163,7 @@ components:
     contains: [etcd]
     collectors:
       - layer: host
-        file: kubernetes_control_plane_host.yml
+        file: kubernetes_control_plane_host.py
         version: "1.0"
         cost: cheap
         access: >-
@@ -183,7 +203,7 @@ components:
     privileged: {act: false, map: false, rank: false}
     collectors:
       - layer: host
-        file: kubelet_host.yml
+        file: kubelet_host.py
         version: "1.0"
         cost: cheap
         access: >-
@@ -334,7 +354,7 @@ components:
     privileged: {act: false, map: false, rank: false}
     collectors:
       - layer: host
-        file: postgresql_host.yml
+        file: postgresql_host.py
         version: "1.0"
         cost: cheap
         access: >-

@@ -35,6 +35,8 @@
 
     # Only hosts that were in the inventory when the job started are targeted:
     # a name stored in the database can never add a new connection target.
+    # Each item is an id, a file name from the validated catalog and one
+    # base64 value; the selection refuses any name with a template delimiter.
     - name: Target only the hosts where a selected component was detected
       ansible.builtin.add_host:
         name: "{{ item.key }}"
@@ -53,6 +55,7 @@
   ignore_unreachable: true
   vars:
     lc_collectors_dir: "{{ hostvars['localhost'].lc_collectors_dir }}"
+    lc_guard_file: "{{ hostvars['localhost'].lc_guard_file }}"
   tasks:
     - name: Start with no results
       ansible.builtin.set_fact:
@@ -96,10 +99,12 @@
 
     - name: Run each selected collector
       ansible.builtin.include_tasks: ../tasks/layered_run_collector.yml
-      loop: "{{ (lc_items_raw.content | b64decode | from_json)['items'] }}"
+      loop: "{{ (lc_items_raw.content | b64decode | from_json).by_host.localhost | default([]) }}"
       loop_control:
         loop_var: lc_item
         label: "{{ lc_item.file }}"
+      vars:
+        lc_python: "{{ ansible_playbook_python }}"
 
     - name: Store the service-side results
       ansible.builtin.include_tasks: ../tasks/layered_store_results.yml
