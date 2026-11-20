@@ -1,0 +1,95 @@
+---
+# cis_linux_profile_attest.yml -- validate the operator's CIS profile and
+# attestations for a Linux benchmark and build the input fields the policy
+# reads for them. The same checks as cis_rhel9_profile_attest.yml, with the
+# benchmark passed in, so each Linux benchmark does not carry its own copy.
+#
+# Used by cis_ubuntu_22_04_assessment.yml and
+# cis_amazon_linux_2023_assessment.yml; the result goes to the mapper
+# (../tasks/cis_linux_build_opa_input.yml) as cis_selection.
+#
+# Input:
+#   cis_linux_name           benchmark name for messages, e.g. "CIS Ubuntu 22.04"
+#   cis_linux_policy_subdir  directory under policies/benchmarks/cis, e.g.
+#                            ubuntu_22_04
+#   cis_linux_profile        the profile the operator chose (default
+#                            level1_server)
+#   cis_linux_attestations   mapping of attestation name to true / false, or to
+#                            {attested: true, attested_by, attested_on,
+#                            evidence_ref}. A survey text field holding YAML or
+#                            JSON is parsed. Default: none (every Manual
+#                            recommendation then fails as not attested).
+#   cis_linux_policy_dir     the policy directory to read the vocabulary from
+#                            (default: this project's policies submodule)
+# Output:  cis_linux_selection  {profile, attest: {name: bool},
+#                                attestation_records: [...]}
+#
+# The allowed profiles (profiles := {...}) and attestation names (every
+# input.attest.<name>) are read from the policy files themselves, so a library
+# bump cannot leave a stale list here. An unknown profile, an unknown
+# attestation name or a value that is not a boolean fails the play: the policy
+# would otherwise fall back to level1_server, or read the string "true" as not
+# attested, without saying so.
+
+- name: Read the {{ cis_linux_name }} profile and attestation names from the policy
+  vars:
+    _cis_linux_dir: "{{ cis_linux_policy_dir | default(playbook_dir ~ '/../../policies/benchmarks/cis/' ~ cis_linux_policy_subdir, true) }}"
+  ansible.builtin.set_fact:
+    _cis_linux_vocab: >-
+      {%- set txt = [] -%}
+      {%- for f in query('ansible.builtin.fileglob', _cis_linux_dir ~ '/*.rego') -%}{%- set _ = txt.append(lookup('ansible.builtin.file', f)) -%}{%- endfor -%}
+      {%- set all = txt | join('\n') -%}
+      {%- set pdef = all | regex_findall('(?m)^profiles := [{].*$') | first | default('') -%}
+      {{ {'dir': _cis_linux_dir, 'files': (txt | length),
+          'profiles': (pdef | regex_findall('"(level[0-9]_[a-z]+)"[ ]*:') | unique | sort),
+          'attest': (all | regex_findall('input[.]attest[.]([a-z0-9_]+)') | unique | sort)} }}
+
+- name: Validate the {{ cis_linux_name }} profile and attestations
+  vars:
+    _profile: "{{ cis_linux_profile | default('level1_server', true) | string | trim }}"
+    _att_in: "{{ cis_linux_attestations | default({}, true) }}"
+    _att: "{{ ((_att_in | from_yaml) if (_att_in is string) else _att_in) | default({}, true) }}"
+  ansible.builtin.set_fact:
+    _cis_linux_selection_errors: >-
+      {%- set e = [] -%}
+      {%- set needed = (_profile != 'level1_server') or (_att | length) > 0 -%}
+      {%- if needed and ((_cis_linux_vocab.profiles | length) == 0 or (_cis_linux_vocab.attest | length) == 0) -%}
+        {%- set _ = e.append('could not read the ' ~ cis_linux_name ~ ' profiles and attestation names from ' ~ _cis_linux_vocab.dir ~ ' (' ~ _cis_linux_vocab.files ~ ' policy files): is the policies submodule checked out? Set cis_linux_policy_dir otherwise.') -%}
+      {%- elif _profile not in _cis_linux_vocab.profiles and _profile != 'level1_server' -%}
+        {%- set _ = e.append('unknown profile ' ~ (_profile | to_json) ~ '; allowed: ' ~ (_cis_linux_vocab.profiles | join(', '))) -%}
+      {%- endif -%}
+      {%- if _att is not mapping -%}
+        {%- set _ = e.append('the attestations must be a mapping of attestation name to true/false, got ' ~ (_att | to_json | truncate(200))) -%}
+      {%- else -%}
+        {%- for k, v in _att.items() -%}
+          {%- if (_cis_linux_vocab.attest | length) > 0 and (k | string) not in _cis_linux_vocab.attest -%}
+            {%- set _ = e.append('unknown attestation ' ~ (k | to_json) ~ ': the policy reads ' ~ (_cis_linux_vocab.attest | join(', '))) -%}
+          {%- endif -%}
+          {%- set val = v.get('attested') if (v is mapping) else v -%}
+          {%- if val is not boolean -%}
+            {%- set _ = e.append('attestation ' ~ (k | to_json) ~ ' must be true or false (a boolean, not ' ~ (val | to_json) ~ ')') -%}
+          {%- endif -%}
+        {%- endfor -%}
+      {%- endif -%}
+      {{ e }}
+    cis_linux_selection: >-
+      {%- set a = {} -%}{%- set r = [] -%}
+      {%- if _att is mapping -%}
+        {%- for k, v in _att.items() -%}
+          {%- set val = v.get('attested') if (v is mapping) else v -%}
+          {%- if val is boolean -%}
+            {%- set _ = a.update({(k | string): val}) -%}
+            {%- set rec = {'name': (k | string), 'attested': val} -%}
+            {%- if v is mapping -%}
+              {%- for f in ['attested_by', 'attested_on', 'evidence_ref'] if (v.get(f) is not none) -%}{%- set _ = rec.update({f: (v.get(f) | string)}) -%}{%- endfor -%}
+            {%- endif -%}
+            {%- set _ = r.append(rec) -%}
+          {%- endif -%}
+        {%- endfor -%}
+      {%- endif -%}
+      {{ {'profile': _profile, 'attest': a, 'attestation_records': r} }}
+
+- name: Refuse an unknown {{ cis_linux_name }} profile or attestation
+  ansible.builtin.fail:
+    msg: "{{ _cis_linux_selection_errors | join(' | ') }}"
+  when: _cis_linux_selection_errors | length > 0
