@@ -1422,6 +1422,215 @@
         {%- set _ = o.update({'auditd': {'privileged_commands': pc}}) -%}
       {%- endif -%}
       {{ o }}
+    # ── Debian / Ubuntu supplement (deb block): the CIS Ubuntu field names ──
+    # Emitted only from a valid deb block that reports family|deb, so an RPM
+    # host's input is unchanged. Text fields follow the PAM precedent above: a
+    # file that exists with no active line, or does not exist, is collected as
+    # a comment saying so (the check then reads "not met"); a tag that was
+    # capped (truncated|<tag>) or never probed is no field (evidence missing).
+    # passwd_content / group_content are rebuilt as name:pw:uid:gid::home:shell
+    # and name:pw:gid:members with the password field classed (x, empty or *)
+    # and no GECOS text; here they replace the "+ entries" text of the same
+    # name that the user/group section carries for the RPM-family modules.
+    # sysctl / sysctl_persisted repeat the kernel-parameter block under the
+    # names the Ubuntu modules read; ssh.config_files repeats the sshd_config
+    # and drop-in modes of the permissions block.
+    _deb_raw: "{{ _cf.deb_raw | default('') }}"
+    _deb_kv: >-
+      {%- set d = {'_dup': [], '_unsafe': [], '_trunc': [], '_missing': []} -%}{%- set seen = {} -%}
+      {%- set lines = _deb_raw | trim | split('\n') -%}
+      {%- set marked = ((lines | select('equalto', 'end:ok') | list | length) == 1) and ((lines | last) == 'end:ok') -%}
+      {%- for line in lines if marked and line != 'end:ok' -%}
+        {%- set p = line.split('|') -%}
+        {%- if (p | length) >= 2 -%}
+          {%- set key = (p[0] ~ '|' ~ p[1]) if p[0] in ['pkg', 'unit', 'aa', 'mx', 'ihome', 'gdmconf'] else (p[0] if p[0] in ['family', 'pending_probe', 'ufw_probe', 'chrony_servers', 'chrony_pools', 'chrony_ps', 'sudo_tt', 'cy', 'aide_cron_probe', 'ihome_probe', 'mx_done', 'gdm_profile'] else '') -%}
+          {%- if key != '' -%}
+            {%- if key in seen -%}{%- set _ = d._dup.append(key) -%}{%- endif -%}
+            {%- set _ = seen.update({key: 1}) -%}
+          {%- endif -%}
+          {%- if p[0] == 'unsafe_name' -%}{%- set _ = d._unsafe.append(p[1]) -%}{%- endif -%}
+          {%- if p[0] == 'truncated' -%}{%- set _ = d._trunc.append(p[1]) -%}{%- endif -%}
+          {%- if p[0] == 'missing_cmd' -%}{%- set _ = d._missing.append(p[1]) -%}{%- endif -%}
+          {%- set _ = d.setdefault(p[0], []).append(p[1:]) -%}
+        {%- endif -%}
+      {%- endfor -%}
+      {{ d | combine({'_marked': marked}) }}
+    _ok_deb: "{{ (_deb_kv._marked | bool) and (_deb_kv._dup | length == 0) and (_deb_kv._missing | length == 0) }}"
+    _is_deb: "{{ (_ok_deb | bool) and (((_deb_kv.family | default([['']]))[-1][0] | trim) == 'deb') }}"
+    _deb: >-
+      {%- set o = {} -%}
+      {%- if (_is_deb | bool) -%}
+        {%- set tr = _deb_kv._trunc -%}
+        {%- set tx = {} -%}
+        {%- for p in _deb_kv.get('txt', []) if (p | length) >= 2 -%}{%- set _ = tx.setdefault(p[0], []).append(p[1:] | join('|')) -%}{%- endfor -%}
+        {%- set present = _deb_kv.get('file', []) | map('first') | map('trim') | list -%}
+        {%- set absent = _deb_kv.get('nofile', []) | map('first') | map('trim') | list -%}
+        {%- set texts = {} -%}
+        {%- for tag, path in [('pam_common_auth', '/etc/pam.d/common-auth'), ('pam_common_account', '/etc/pam.d/common-account'),
+                              ('pam_common_password', '/etc/pam.d/common-password'), ('pam_common_session', '/etc/pam.d/common-session'),
+                              ('pam_common_session_noninteractive', '/etc/pam.d/common-session-noninteractive'), ('pam_su', '/etc/pam.d/su'),
+                              ('pwquality', '/etc/security/pwquality.conf'), ('limits', '/etc/security/limits.conf'),
+                              ('apport_default', '/etc/default/apport'), ('ufw_default', '/etc/default/ufw'),
+                              ('profile', '/etc/profile'), ('root_init', '/root/.profile and /root/.bashrc')] if tag not in tr -%}
+          {%- if tag in tx -%}{%- set _ = texts.update({tag: tx[tag] | join('\n')}) -%}
+          {%- elif tag in present -%}{%- set _ = texts.update({tag: '# ' ~ path ~ ': no active settings'}) -%}
+          {%- elif tag in absent -%}{%- set _ = texts.update({tag: '# ' ~ path ~ ' not present'}) -%}{%- endif -%}
+        {%- endfor -%}
+        {#- packages and the units service_facts did not report -#}
+        {%- set pk = {} -%}
+        {%- for p in _deb_kv.get('pkg', []) if (p | length) == 2 -%}{%- set _ = pk.update({p[0]: (p[1] | trim) == 'yes'}) -%}{%- endfor -%}
+        {%- if (pk | length) > 0 -%}{%- set _ = o.update({'packages': pk}) -%}{%- endif -%}
+        {%- set units = {} -%}{%- set ustate = {} -%}
+        {%- for u in _deb_kv.get('unit', []) if (u | length) == 4 -%}
+          {%- set ls = u[1] | trim -%}{%- set as = u[2] | trim -%}{%- set fs = u[3] | trim -%}
+          {%- set _ = ustate.update({u[0]: {'active': as, 'file': (fs if fs != '' else ('not-found' if ls == 'not-found' else 'static'))}}) -%}
+          {%- if u[0] not in _svc -%}
+            {%- set _ = units.update({u[0]: {'name': u[0], 'source': 'systemctl',
+                  'state': ('running' if (as == 'active' and u[0].endswith('.service')) else as),
+                  'status': (fs if fs != '' else ('not-found' if ls == 'not-found' else 'static'))}}) -%}
+          {%- endif -%}
+        {%- endfor -%}
+        {%- if (units | length) > 0 -%}{%- set _ = o.update({'services': units}) -%}{%- endif -%}
+        {%- if ((_deb_kv.pending_probe | default([['']]))[-1][0] | trim) == 'yes' and 'pending' not in tr -%}
+          {%- set _ = o.update({'pending_updates': (_deb_kv.get('pending', []) | map('first') | map('trim') | list)}) -%}
+        {%- endif -%}
+        {#- PAM, limits, apport, ufw -#}
+        {%- set pam = {} -%}
+        {%- for tag, key in [('pam_common_auth', 'common_auth'), ('pam_common_account', 'common_account'), ('pam_common_password', 'common_password'),
+                             ('pam_common_session', 'common_session'), ('pam_common_session_noninteractive', 'common_session_noninteractive'),
+                             ('pam_su', 'su'), ('pwquality', 'pwquality_conf_raw'), ('profile', 'profile_d_raw')] if tag in texts -%}
+          {%- set _ = pam.update({key: texts[tag]}) -%}
+        {%- endfor -%}
+        {%- if (_ok_acc | bool) -%}{%- set _ = pam.update({'tmout_readonly': ('tmout_ro' in _acc_kv), 'tmout_exported': ('tmout_export' in _acc_kv)}) -%}{%- endif -%}
+        {%- if (pam | length) > 0 -%}{%- set _ = o.update({'pam': pam}) -%}{%- endif -%}
+        {%- if 'limits' in texts -%}{%- set _ = o.update({'limits': {'limits_raw': texts.limits}}) -%}{%- endif -%}
+        {%- if 'apport_default' in texts -%}{%- set _ = o.update({'apport': {'default_raw': texts.apport_default}}) -%}{%- endif -%}
+        {%- set ufw = {} -%}
+        {%- set up = (_deb_kv.ufw_probe | default([['']]))[-1][0] | trim -%}
+        {%- if up == 'yes' and 'ufw_status' not in tr and 'ufw_status' in tx -%}{%- set _ = ufw.update({'status_verbose': tx.ufw_status | join('\n')}) -%}
+        {%- elif up == 'absent' -%}{%- set _ = ufw.update({'status_verbose': '# ufw is not installed'}) -%}{%- endif -%}
+        {%- if 'ufw_default' in texts -%}{%- set _ = ufw.update({'default_raw': texts.ufw_default}) -%}{%- endif -%}
+        {%- if (ufw | length) > 0 -%}{%- set _ = o.update({'ufw': ufw}) -%}{%- endif -%}
+        {#- AppArmor and the grub linux lines -#}
+        {%- set aa = {} -%}
+        {%- for p in _deb_kv.get('aa', []) if (p | length) == 2 and ((p[1] | trim) is match('^\d+$')) -%}{%- set _ = aa.update({p[0]: (p[1] | trim | int)}) -%}{%- endfor -%}
+        {%- set am = {} -%}
+        {%- set prof = {} -%}
+        {%- for k in ['loaded', 'enforce', 'complain'] if k in aa -%}{%- set _ = prof.update({k: aa[k]}) -%}{%- endfor -%}
+        {%- if (prof | length) > 0 -%}{%- set _ = am.update({'profiles': prof}) -%}{%- endif -%}
+        {%- if 'unconfined' in aa -%}{%- set _ = am.update({'processes': {'unconfined': aa.unconfined}}) -%}{%- endif -%}
+        {%- if 'aa_grub_d' in tx and 'aa_grub_d' not in tr -%}{%- set _ = am.update({'grub_d_cfg_raw': tx.aa_grub_d | join('\n')}) -%}{%- endif -%}
+        {%- if (am | length) > 0 -%}{%- set _ = o.update({'apparmor': am}) -%}{%- endif -%}
+        {%- if 'grub_linux' in present and 'grub_linux' not in tr -%}{%- set _ = o.update({'boot_security': {'grub_cfg_linux_lines': tx.get('grub_linux', [])}}) -%}{%- endif -%}
+        {#- banners: whole text; motd fragments -#}
+        {%- set ini = {} -%}
+        {%- for tag in ['motd', 'issue', 'issue_net'] if tag not in tr -%}
+          {%- if tag in present -%}{%- set _ = ini.update({tag ~ '_exists': true, tag ~ '_content': (tx.get(tag, []) | join('\n'))}) -%}
+          {%- elif tag in absent -%}{%- set _ = ini.update({tag ~ '_exists': false}) -%}{%- endif -%}
+        {%- endfor -%}
+        {%- if 'mx_done' in _deb_kv and 'mx' not in tr -%}
+          {%- set mxl = {} -%}
+          {%- for p in _deb_kv.get('mxl', []) if (p | length) >= 2 -%}{%- set _ = mxl.setdefault(p[0], []).append(p[1:] | join('|')) -%}{%- endfor -%}
+          {%- set mx = [] -%}
+          {%- for p in _deb_kv.get('mx', []) if (p | length) >= 2 -%}{%- set _ = mx.append({'path': (p[1:] | join('|')), 'content': (mxl.get(p[0], []) | join('\n'))}) -%}{%- endfor -%}
+          {%- set _ = ini.update({'motd_extra_files': mx}) -%}
+        {%- endif -%}
+        {#- GDM (gdm3): absent is a fact; installed needs the dconf keys -#}
+        {%- if 'gdm3' in pk -%}
+          {%- set _ = ini.update({'gdm_installed': pk.gdm3}) -%}
+          {%- if pk.gdm3 and 'dconf' not in tr and 'dlock' not in tr and 'gdm_profile' in _deb_kv -%}
+            {%- set dv = {} -%}
+            {%- for p in _deb_kv.get('dconf', []) if (p | length) >= 2 -%}{%- set _ = dv.setdefault(p[0], []).append((p[1:] | join('|') | trim | lower).split() | last | default('')) -%}{%- endfor -%}
+            {%- set gc = {} -%}
+            {%- for p in _deb_kv.get('gdmconf', []) if (p | length) >= 2 -%}{%- set _ = gc.update({p[0]: (p[1:] | join('|') | trim | lower)}) -%}{%- endfor -%}
+            {%- set idl = dv.get('idle-delay', []) | select('match', '^\d+$') | map('int') | list -%}
+            {%- set lkd = dv.get('lock-delay', []) | select('match', '^\d+$') | map('int') | list -%}
+            {%- set _ = ini.update({
+                  'gdm_dconf_profile_exists': ((_deb_kv.gdm_profile[-1][0] | trim) == 'yes'),
+                  'gdm_dconf_locks': (_deb_kv.get('dlock', []) | map('join', '|') | map('trim') | list),
+                  'gdm_banner_configured': (dv.get('banner-message-enable', []) | length > 0) and (dv.get('banner-message-enable', []) | reject('equalto', 'true') | list | length == 0),
+                  'gdm_disable_user_list': (dv.get('disable-user-list', []) | length > 0) and (dv.get('disable-user-list', []) | reject('equalto', 'true') | list | length == 0),
+                  'gdm_lock_enabled': (dv.get('lock-enabled', []) | length > 0) and (dv.get('lock-enabled', []) | reject('equalto', 'true') | list | length == 0),
+                  'gdm_automount_disabled': (dv.get('automount', []) | length > 0) and (dv.get('automount', []) | reject('equalto', 'false') | list | length == 0),
+                  'gdm_automount_open_disabled': (dv.get('automount-open', []) | length > 0) and (dv.get('automount-open', []) | reject('equalto', 'false') | list | length == 0),
+                  'gdm_autorun_never_enabled': (dv.get('autorun-never', []) | length > 0) and (dv.get('autorun-never', []) | reject('equalto', 'true') | list | length == 0),
+                  'gdm_xdmcp_enabled': gc.get('xdmcp_enable', 'false') in ['true', '1', 'yes'],
+                  'gdm_idle_delay': (0 if ((idl | length) == 0 or 0 in idl) else (idl | max)),
+                  'gdm_lock_delay': ((lkd | max) if (lkd | length) > 0 else 0)}) -%}
+          {%- endif -%}
+        {%- endif -%}
+        {%- if (ini | length) > 0 -%}{%- set _ = o.update({'initial_setup': ini}) -%}{%- endif -%}
+        {#- chrony under /etc/chrony: no chrony package and no chrony.conf is
+            zero configured sources; otherwise only what the file shows -#}
+        {%- set ch = {} -%}
+        {%- for tag, key in [('chrony_servers', 'servers_configured'), ('chrony_pools', 'pools_configured')] -%}
+          {%- if tag in _deb_kv and ((_deb_kv[tag][-1][0] | trim) is match('^\d+$')) -%}{%- set _ = ch.update({key: (_deb_kv[tag][-1][0] | trim | int)}) -%}
+          {%- elif 'chrony_conf' in absent and pk.get('chrony', true) == false -%}{%- set _ = ch.update({key: 0}) -%}{%- endif -%}
+        {%- endfor -%}
+        {%- if 'chrony_ps' in _deb_kv and 'chrony_user' not in tr -%}{%- set _ = ch.update({'process_users': (_deb_kv.get('chrony_user', []) | map('join', '|') | map('trim') | list)}) -%}{%- endif -%}
+        {%- if (ch | length) > 0 -%}{%- set _ = o.update({'chronyd': ch}) -%}{%- endif -%}
+        {#- sudo timestamp default, /etc/cron.yearly, AIDE schedule -#}
+        {%- set tt = (_deb_kv.sudo_tt | default([['']]))[-1][0] | trim -%}
+        {%- if tt is match('^-?\d+(\.\d+)?$') -%}{%- set _ = o.update({'sudo': {'default_timestamp_timeout': ((tt | float | int) if ((tt | float) == (tt | float | int)) else (tt | float))}}) -%}{%- endif -%}
+        {%- set cy = (_deb_kv.cy | default([[]]))[-1] -%}
+        {%- if (cy | length) == 3 and (cy[0] is match('^[0-7]{4}$')) -%}{%- set _ = o.update({'cron': {'cron_yearly_mode': cy[0], 'cron_yearly_owner': cy[1], 'cron_yearly_group': (cy[2] | trim)}}) -%}{%- endif -%}
+        {%- set aide = {} -%}
+        {%- if 'aide_cron_probe' in _deb_kv and 'aide_cron' not in tr -%}
+          {%- set _ = aide.update({'cron_raw': ((tx.aide_cron | join('\n')) if 'aide_cron' in tx else '# no aide entry in the cron files only root can write')}) -%}
+        {%- endif -%}
+        {%- if 'aidecheck.service' in ustate and 'aidecheck.timer' in ustate -%}
+          {%- set _ = aide.update({'aidecheck': {'service_unit_file_state': ustate['aidecheck.service'].file, 'timer_unit_file_state': ustate['aidecheck.timer'].file,
+                                                 'timer_active_state': ustate['aidecheck.timer'].active}}) -%}
+        {%- endif -%}
+        {%- if (aide | length) > 0 -%}{%- set _ = o.update({'aide': aide}) -%}{%- endif -%}
+        {#- accounts: the passwd and group rows, interactive homes, dot files -#}
+        {%- set ug = {} -%}
+        {%- set cls = {'x': 'x', 'empty': '', 'other': '*'} -%}
+        {%- set pwl = _deb_kv.get('pwd', []) -%}
+        {%- if 'pwd' not in tr and (pwl | length) > 0 and (pwl | rejectattr('5', 'defined') | list | length) == 0 and (pwl | selectattr('6', 'defined') | list | length) == 0 -%}
+          {%- set rows = [] -%}
+          {%- for p in pwl -%}{%- set _ = rows.append(p[0] ~ ':' ~ cls.get(p[1], '*') ~ ':' ~ p[2] ~ ':' ~ p[3] ~ '::' ~ p[4] ~ ':' ~ p[5]) -%}{%- endfor -%}
+          {%- set _ = ug.update({'passwd_content': rows | join('\n')}) -%}
+        {%- endif -%}
+        {%- set grl = _deb_kv.get('grpd', []) -%}
+        {%- if 'grpd' not in tr and (grl | length) > 0 and (grl | rejectattr('3', 'defined') | list | length) == 0 and (grl | selectattr('4', 'defined') | list | length) == 0 -%}
+          {%- set rows = [] -%}
+          {%- for p in grl -%}{%- set _ = rows.append(p[0] ~ ':' ~ cls.get(p[1], '*') ~ ':' ~ p[2] ~ ':' ~ p[3]) -%}{%- endfor -%}
+          {%- set _ = ug.update({'group_content': rows | join('\n')}) -%}
+        {%- endif -%}
+        {%- if (_ok_acc | bool) and ((_acc_kv.uid_min | default([['']]))[-1][0] | trim) is match('^\d+$') -%}{%- set _ = ug.update({'uid_min': (_acc_kv.uid_min[-1][0] | trim | int)}) -%}{%- endif -%}
+        {%- if 'root_init' not in tr -%}
+          {%- if 'root_init' in present -%}{%- set _ = ug.update({'root_shell_init_exists': true, 'root_shell_init_raw': texts.root_init}) -%}
+          {%- elif 'root_init' in absent -%}{%- set _ = ug.update({'root_shell_init_exists': false}) -%}{%- endif -%}
+        {%- endif -%}
+        {%- if 'ihome_probe' in _deb_kv and 'ihome' not in tr -%}
+          {%- set homes = [] -%}
+          {%- for p in _deb_kv.get('ihome', []) if (p | length) >= 5 -%}
+            {%- set _ = homes.append({'user': p[0], 'exists': p[1] == 'yes', 'owner': p[2], 'mode': p[3], 'home': (p[4:] | join('|'))}) -%}
+          {%- endfor -%}
+          {%- set _ = ug.update({'interactive_homes': homes}) -%}
+          {%- if 'dotf' not in tr -%}
+            {%- set dots = [] -%}
+            {%- for p in _deb_kv.get('dotf', []) if (p | length) >= 6 -%}
+              {%- set _ = dots.append({'user': p[0], 'mode': p[1], 'owner': p[2], 'group': p[3], 'primary_group': p[4], 'path': (p[5:] | join('|'))}) -%}
+            {%- endfor -%}
+            {%- set _ = ug.update({'dotfiles': dots}) -%}
+          {%- endif -%}
+        {%- endif -%}
+        {%- if (ug | length) > 0 -%}{%- set _ = o.update({'user_group': ug}) -%}{%- endif -%}
+        {#- the same facts under the names the Ubuntu modules read -#}
+        {%- set sp = _v3_sysctl.get('sysctl_parameters', {}) -%}
+        {%- if (sp | length) > 0 -%}
+          {%- set run = {} -%}
+          {%- for a in sp.analysis -%}{%- set _ = run.update({a.parameter: a.current_value}) -%}{%- endfor -%}
+          {%- set _ = o.update({'sysctl': run, 'sysctl_persisted': sp.persisted}) -%}
+        {%- endif -%}
+        {%- set cfiles = [] -%}
+        {%- for f in (_v3_pf.get('ssh_config', []) + _v3_pf.get('ssh_dropin', [])) -%}{%- set _ = cfiles.append({'path': f.path, 'mode': f.mode, 'pw_name': f.owner, 'gr_name': f.group}) -%}{%- endfor -%}
+        {%- if (_v3_pf.get('ssh_config', []) | length) > 0 -%}{%- set _ = o.update({'ssh': {'config_files': cfiles}}) -%}{%- endif -%}
+      {%- endif -%}
+      {{ o }}
+
     # ── profile and attestations (CIS RHEL 9 only) ─────────────────────────
     # cis_selection is {profile, attest, attestation_records} as validated by
     # ../tasks/cis_rhel9_profile_attest.yml; a caller passes it only for a
@@ -1437,7 +1646,7 @@
                          _boot_security, _network, _user_group, _pam_extra, _auditd_extra, _svc_section,
                          _initial_extra, _cron_extra, _storage, _certificates, _authorized_keys,
                          _v3_kmod, _v3_sysctl, _v3_pkg, _v3_cfg, _v3_perms, _v3_acc, _v3_sweep, _integrity,
-                         _selection, recursive=True) }}
+                         _deb, _selection, recursive=True) }}
 
 - name: Append built input to the evaluation list (loop mode)
   set_fact:
