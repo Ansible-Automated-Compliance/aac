@@ -1,0 +1,193 @@
+---
+# discover_host_components.yml — which technology components run on which host
+#
+# Step 1 of component discovery: detection from facts ALREADY stored. Reads
+# host_facts_latest, matches it against the shipped detection catalog
+# (ansible/vars/component_catalog.yml) and writes the per-host component map.
+# It connects to no managed host and launches no collector.
+#
+#   catalog   ansible/vars/component_catalog.yml      what can be recognised
+#   map       host_components (+ history)             what was found, per host
+#   leftover  host_unrecognised                       running, not recognised
+#   overrides ansible/vars/component_overrides.yml    operator decisions, with expiry
+#
+# Nothing is deleted: a component that stops appearing is marked not seen, with
+# the reason. The detection logic is scripts/component_discovery.py.
+# Reference: docs/reference/COMPONENT_DISCOVERY.md
+#
+# Run AFTER "AAC - Gather Facts". AAP Job Template: "AAC - Discover Host Components".
+# Credentials: Ansible Vault. EE: AAC Compliance EE (community.postgresql). Inventory: localhost.
+#
+# Variables (survey or extra vars):
+#   component_stale_after_days       facts older than this are "no newer facts" (default 7)
+#   component_override_soon_days     "expiring soon" window for overrides (default 14)
+#   component_override_entries       overrides; default is ansible/vars/component_overrides.yml
+
+- name: Discover technology components from stored host facts
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    component_stale_after_days: 7
+    component_override_soon_days: 14
+    cd_pg_host: "{{ aac_result_pg_host | default(pg_host | default('', true), true) }}"
+    cd_pg_port: "{{ compliance_db_port | default(pg_port | default(5432)) }}"
+    cd_pg_db: "{{ pg_db | default('compliance') }}"
+    cd_pg_user: "{{ pg_user | default('postgres') }}"
+    cd_files: "{{ playbook_dir }}/../files"
+
+  tasks:
+    - name: Load optional local config
+      ansible.builtin.include_vars: "{{ item }}"
+      with_first_found:
+        - files: ["{{ playbook_dir }}/../vars/site_config.yml"]
+          skip: true
+
+    - name: Load optional local secrets
+      ansible.builtin.include_vars: "{{ item }}"
+      with_first_found:
+        - files: ["{{ playbook_dir }}/../vars/vault_secrets.yml"]
+          skip: true
+
+    - name: Load the shipped operator overrides file
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/../vars/component_overrides.yml"
+        name: cd_overrides_file
+
+    - name: Require the database address and credential
+      ansible.builtin.assert:
+        that:
+          - cd_pg_host | length > 0
+          - compliance_db_password is defined
+          - compliance_db_password | length > 0
+        fail_msg: >-
+          pg_host and compliance_db_password must be set (site_config.yml and
+          vault_secrets.yml, or extra vars). There is deliberately no default.
+        quiet: true
+
+    - name: Ensure the component discovery schema exists (additive, safe to re-run)
+      community.postgresql.postgresql_script:
+        login_host: "{{ cd_pg_host }}"
+        login_port: "{{ cd_pg_port }}"
+        login_user: "{{ cd_pg_user }}"
+        login_password: "{{ compliance_db_password }}"
+        login_db: "{{ cd_pg_db }}"
+        path: "{{ cd_files }}/component_discovery_schema.sql"
+
+    - name: Read the stored facts that detection uses
+      community.postgresql.postgresql_query:
+        login_host: "{{ cd_pg_host }}"
+        login_port: "{{ cd_pg_port }}"
+        login_user: "{{ cd_pg_user }}"
+        login_password: "{{ compliance_db_password }}"
+        login_db: "{{ cd_pg_db }}"
+        query: "{{ lookup('ansible.builtin.file', cd_files + '/component_discovery_read_hosts.sql') }}"
+      register: cd_hosts
+
+    - name: Read the stored component map and the not-recognised list
+      community.postgresql.postgresql_query:
+        login_host: "{{ cd_pg_host }}"
+        login_port: "{{ cd_pg_port }}"
+        login_user: "{{ cd_pg_user }}"
+        login_password: "{{ compliance_db_password }}"
+        login_db: "{{ cd_pg_db }}"
+        query: "SELECT to_jsonb(t) AS r FROM {{ item }} t"
+      loop:
+        - host_components
+        - host_unrecognised
+      register: cd_existing
+
+    - name: Create a private work directory
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: aac_component_discovery_
+      register: cd_work
+
+    - name: Detect, reconcile and store
+      block:
+        - name: Write the detection input (file, not stdin)
+          ansible.builtin.copy:
+            content: "{{ cd_input | to_json }}"
+            dest: "{{ cd_work.path }}/input.json"
+            mode: "0600"
+          vars:
+            cd_input:
+              stale_after_days: "{{ component_stale_after_days | int }}"
+              expiring_within_days: "{{ component_override_soon_days | int }}"
+              job_id: "{{ tower_job_id | default(awx_job_id | default('')) }}"
+              facts_rows: "{{ cd_hosts.query_result | default([]) }}"
+              existing_components: "{{ cd_existing.results[0].query_result | default([]) | map(attribute='r') | list }}"
+              existing_unrecognised: "{{ cd_existing.results[1].query_result | default([]) | map(attribute='r') | list }}"
+              overrides: "{{ component_override_entries | default(cd_overrides_file.component_override_entries) }}"
+
+        - name: Run detection (scripts/component_discovery.py)
+          ansible.builtin.command:
+            argv:
+              - python3
+              - "{{ playbook_dir }}/../../scripts/component_discovery.py"
+              - plan
+              - --input
+              - "{{ cd_work.path }}/input.json"
+              - --catalog
+              - "{{ playbook_dir }}/../vars/component_catalog.yml"
+              - --sql-out
+              - "{{ cd_work.path }}/apply.sql"
+              - --summary-out
+              - "{{ cd_work.path }}/summary.json"
+          register: cd_plan
+          changed_when: false
+          failed_when: false
+
+        # Fail closed: a refused override (exit 3) or a bad catalog (exit 2)
+        # stops the job here, before anything is written.
+        - name: Stop when detection refused its input
+          ansible.builtin.fail:
+            msg: "{{ cd_plan.stderr | default('component_discovery.py failed', true) }}"
+          when: cd_plan.rc != 0
+
+        - name: Store the component map (inserts and updates only, one transaction)
+          community.postgresql.postgresql_script:
+            login_host: "{{ cd_pg_host }}"
+            login_port: "{{ cd_pg_port }}"
+            login_user: "{{ cd_pg_user }}"
+            login_password: "{{ compliance_db_password }}"
+            login_db: "{{ cd_pg_db }}"
+            path: "{{ cd_work.path }}/apply.sql"
+
+        - name: Read the run summary
+          ansible.builtin.slurp:
+            src: "{{ cd_work.path }}/summary.json"
+          register: cd_summary_raw
+
+        - name: Parse the run summary
+          ansible.builtin.set_fact:
+            cd_summary: "{{ cd_summary_raw.content | b64decode | from_json }}"
+
+        - name: Report
+          ansible.builtin.debug:
+            msg: "{{ cd_summary.text.split('\n') }}"
+
+        - name: Publish result via set_stats
+          ansible.builtin.set_stats:
+            data:
+              component_discovery:
+                catalog_version: "{{ cd_summary.catalog_version }}"
+                hosts_evaluated: "{{ cd_summary.hosts_evaluated }}"
+                hosts_without_usable_facts: "{{ cd_summary.hosts_without_usable_facts }}"
+                components_current: "{{ cd_summary.components_current }}"
+                components_per_host: "{{ cd_summary.components_per_host }}"
+                detected_no_collector: "{{ cd_summary.detected_no_collector }}"
+                unrecognised_count: "{{ cd_summary.unrecognised_count }}"
+                unrecognised_per_host: "{{ cd_summary.unrecognised_per_host }}"
+                stale: "{{ cd_summary.stale }}"
+                not_seen: "{{ cd_summary.not_seen }}"
+                privileged_services: "{{ cd_summary.privileged_services }}"
+                client_tools_only: "{{ cd_summary.client_tools_only }}"
+                overrides_in_force: "{{ cd_summary.overrides_in_force }}"
+                overrides_expiring_soon: "{{ cd_summary.overrides_expiring_soon }}"
+      always:
+        - name: Remove the work directory
+          ansible.builtin.file:
+            path: "{{ cd_work.path }}"
+            state: absent

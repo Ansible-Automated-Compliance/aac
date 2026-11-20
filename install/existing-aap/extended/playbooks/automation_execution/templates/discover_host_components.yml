@@ -1,0 +1,22 @@
+---
+
+- name: Discover host components job template
+  ansible.controller.job_template:
+    name: "{{ aac_template_discover_components_name }}"
+    description: "{{ aac_template_discover_components_description }}"
+    organization: "{{ aac_organization }}"
+    state: present
+    inventory: "{{ aac_inventory_name }}"
+    limit: localhost
+    project: "{{ aap_project_name }}"
+    playbook: ansible/playbooks/discover_host_components.yml
+    job_type: run
+    execution_environment: "{{ aap_project_default_ee }}"
+    credentials:
+      - "{{ aac_cred_vault }}"
+      - "{{ aac_cred_postgresql }}"
+    ask_variables_on_launch: true
+    extra_vars:
+      pg_host: "{{ aac_host }}"
+      aac_result_pg_host: "{{ aac_host }}"
+      component_stale_after_days: 7
