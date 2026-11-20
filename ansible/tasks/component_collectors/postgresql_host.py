@@ -9,7 +9,9 @@
 # not on the list is named in `settings_not_stored` without its value:
 # connection strings and shell commands (primary_conninfo, archive_command,
 # restore_command, ...) can hold passwords. Files named by `include`
-# directives are not followed; the result says so.
+# directives are not followed; the result says so. Every verified postmaster on
+# the host is recorded under `servers`. A server in a container is not
+# collected in this version: the guard refuses a process in a container.
 
 KEEP = set("""
 listen_addresses port max_connections superuser_reserved_connections unix_socket_directories unix_socket_group
@@ -72,36 +74,39 @@ def hba_rules(text):
 
 
 mains = g.processes("postgres", "postmaster", accounts=ACCOUNTS)
-if not mains:
-    g.unverified("postmaster")
-else:
-    pm = mains[0]
+servers = []
+for pm in mains[:8]:
     data = pm.cwd
     under = [data] + CONFIG_DIRS
     version = g.read(data + "/PG_VERSION", [data], pm, 64)
     if version is None:
-        g.not_collected("a verified postmaster is running but its data directory could not be read")
-    else:
-        if len(mains) > 1:
-            g.notes.append("%d more postmaster process(es) on this host were not collected" % (len(mains) - 1))
-        conf = pm.arg_value("config_file=") or pm.arg_value("--config_file=") or pm.arg_value("--config-file=") \
-            or (data + "/postgresql.conf")
-        settings, not_stored, sources = {}, set(), []
-        for path in (conf, data + "/postgresql.auto.conf"):
-            text = g.read(path, under, pm)
-            if text is not None:
-                sources.append(path)
-                settings_of(text, settings, not_stored, g.notes)
-        hba = settings.get("hba_file") or (data + "/pg_hba.conf")
-        hba_text = g.read(hba, under, pm)
-        g.collected(
-            {"version": version.strip()[:16], "data_directory": data, "hba_file": hba,
-             "postmaster_user": pm.user, "in_container": pm.in_container,
-             "settings": settings, "settings_sources": sources,
-             "settings_not_stored": sorted(not_stored)[:300],
-             "hba_rules": hba_rules(hba_text) if hba_text is not None else [],
-             "hba_read": hba_text is not None,
-             "files": g.stat([data, conf, data + "/postgresql.auto.conf", hba], under, pm)},
-            instance={"identity": re.sub(r"[^A-Za-z0-9._:/@-]", "_",
-                                         "host/%s/port/%s" % (target["host"], settings.get("port", "5432")))[:200],
-                      "name": "PostgreSQL " + version.strip()[:16]})
+        g.notes.append("postmaster pid %d: its data directory could not be read" % pm.pid)
+        continue
+    conf = pm.arg_value("config_file=") or pm.arg_value("--config_file=") or pm.arg_value("--config-file=") \
+        or (data + "/postgresql.conf")
+    settings, not_stored, sources = {}, set(), []
+    for path in (conf, data + "/postgresql.auto.conf"):
+        text = g.read(path, under, pm)
+        if text is not None:
+            sources.append(path)
+            settings_of(text, settings, not_stored, g.notes)
+    hba = settings.get("hba_file") or (data + "/pg_hba.conf")
+    hba_text = g.read(hba, under, pm)
+    servers.append({"version": version.strip()[:16], "data_directory": data, "hba_file": hba,
+                    "postmaster_user": pm.user, "settings": settings, "settings_sources": sources,
+                    "settings_not_stored": sorted(not_stored)[:300],
+                    "hba_rules": hba_rules(hba_text) if hba_text is not None else [],
+                    "hba_read": hba_text is not None,
+                    "files": g.stat([data, conf, data + "/postgresql.auto.conf", hba], under)})
+if not mains:
+    g.unverified("postmaster")
+elif not servers:
+    g.not_collected("a verified postmaster is running but its data directory could not be read")
+else:
+    if len(mains) > 8:
+        g.notes.append("%d verified postmaster processes; the first 8 were collected" % len(mains))
+    first = servers[0]
+    g.collected({"servers": servers},
+                instance={"identity": re.sub(r"[^A-Za-z0-9._:/@-]", "_", "host/%s/port/%s"
+                                             % (target["host"], first["settings"].get("port", "5432")))[:200],
+                          "name": "PostgreSQL " + first["version"]})

@@ -29,6 +29,7 @@
         "file": {"type": "string", "pattern": "^(none yet|[a-z][a-z0-9_]*_(host|service)\\.py)$"},
         "version": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+$"},
         "cost": {"enum": ["cheap", "heavy"]},
+        "in_container": {"type": "boolean"},
         "access": {"type": "string", "minLength": 20, "maxLength": 600},
         "credential": {
           "type": "object",
@@ -75,8 +76,7 @@
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "binary_dirs": {"type": "array", "maxItems": 50, "items": {"type": "string", "pattern": "^/[A-Za-z0-9._*/-]+$"}},
-            "runtime_parents": {"type": "array", "maxItems": 50, "items": {"type": "string", "pattern": "^[A-Za-z0-9._-]{1,15}$|^[A-Za-z0-9._-]{16,40}$"}}
+            "binary_dirs": {"type": "array", "maxItems": 50, "items": {"type": "string", "pattern": "^/[A-Za-z0-9._*/-]+$"}}
           }
         },
         "collector": {

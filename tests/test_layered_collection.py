@@ -442,7 +442,7 @@ def test_dispatcher_and_shared_tasks_name_no_component():
             words.add(col["file"].rsplit(".", 1)[0])
             words.add((col.get("credential") or {}).get("type", ""))
     words |= {"kubernetes", "kubelet", "kube", "etcd", "postgres", "postmaster", "pg_hba", "pgsql", "conmon",
-              "containerd-shim", "rancher"}
+              "containerd-shim", "rancher", "static pod"}
     words.discard("")
     words.discard(lc.NO_COLLECTOR)
     for rel in GENERIC_FILES:
@@ -611,7 +611,7 @@ def test_every_shipped_collector_reaches_the_host_only_through_the_guard():
 # A made-up process tree, so that verification is tested without root and on any platform.
 
 def _fake_proc(tmp_path, monkeypatch, pid=4242, comm="postgres", exe="/bin/sleep", uid=None, ppid=1,
-               args=("postgres", "-D", "/data"), cwd=None, deleted=False):
+               args=("postgres", "-D", "/data"), cwd=None, deleted=False, mnt="mnt:[4026531840]"):
     import os
     proc = tmp_path / "proc"
     for d in ("self/ns", f"{pid}/ns", "1/ns"):
@@ -619,7 +619,7 @@ def _fake_proc(tmp_path, monkeypatch, pid=4242, comm="postgres", exe="/bin/sleep
     for owner in ("self", str(pid), "1"):
         link = proc / owner / "ns" / "mnt"
         if not link.is_symlink():
-            link.symlink_to("mnt:[4026531840]")
+            link.symlink_to(mnt if owner == str(pid) else "mnt:[4026531840]")
     uid = os.getuid() if uid is None else uid
     (proc / str(pid) / "comm").write_text(comm + "\n")
     (proc / str(pid) / "status").write_text(f"Name:\t{comm}\nPPid:\t{ppid}\nUid:\t{uid}\t{uid}\t{uid}\t{uid}\n"
@@ -653,7 +653,8 @@ def test_a_process_name_alone_is_not_trusted(tmp_path, monkeypatch):
 @pytest.mark.parametrize("kw, why", [
     ({"exe": "/bin/sleep", "comm": "postgres"}, "its executable is sleep, not postgres"),
     ({"exe": "/bin/sleep", "comm": "sleep", "deleted": True}, "deleted or replaced"),
-    ({"exe": "/bin/sleep", "comm": "sleep", "ppid": 77}, "its parent cannot be read"),
+    ({"exe": "/bin/sleep", "comm": "sleep", "ppid": 77}, "is not init"),
+    ({"exe": "/bin/sleep", "comm": "sleep", "mnt": "mnt:[4026539999]"}, "it runs in a container"),
 ])
 def test_process_verification_faults(tmp_path, monkeypatch, kw, why):
     _fake_proc(tmp_path, monkeypatch, **kw)
@@ -671,6 +672,30 @@ def test_process_must_run_as_the_expected_account(tmp_path, monkeypatch):
     ok = g.Guard({})
     found = ok.processes("sleep", accounts=[_me()])
     assert len(found) == 1 and found[0].args == ["postgres", "-D", "/data"] and ok.rejected == []
+    # Every process that carried the name is recorded with the decision, accepted or not.
+    assert ok.candidates[0]["accepted"] and ok.candidates[0]["why"].startswith("verified: ")
+    ok.collected({"a": 1})
+    assert any(n.startswith("process sleep (pid 4242): verified") for n in ok.finish()["notes"])
+    as_root.unverified("sleep")
+    assert any("refused: it runs as uid" in n for n in as_root.finish()["notes"])
+
+
+def test_every_verified_candidate_is_returned_never_only_the_lowest_pid(tmp_path, monkeypatch):
+    _fake_proc(tmp_path, monkeypatch, pid=4242, comm="sleep")
+    _fake_proc(tmp_path, monkeypatch, pid=5252, comm="sleep")
+    guard = g.Guard({})
+    assert [p.pid for p in guard.processes("sleep", accounts=[_me()])] == [4242, 5252]
+    assert [c["pid"] for c in guard.candidates] == [4242, 5252]
+
+
+def test_identity_is_resolved_on_the_host_and_a_service_is_never_root(tmp_path, monkeypatch):
+    """An account list never accepts uid 0, and nothing is read from the inspected process to decide."""
+    _fake_proc(tmp_path, monkeypatch, comm="sleep", uid=0)
+    guard = g.Guard({})
+    assert guard.processes("sleep", accounts=["root", _me()]) == []
+    assert "it runs as uid 0" in guard.rejected[0]["why"]
+    source = (_root / "ansible/files/component_collector_guard.py").read_text()
+    assert "/etc/passwd" not in source and "/root" not in source.replace("_root", "")
 
 
 def test_binary_must_be_root_owned_and_not_replaceable(tmp_path):
@@ -681,16 +706,19 @@ def test_binary_must_be_root_owned_and_not_replaceable(tmp_path):
     assert g._root_owned_chain(os.path.realpath("/bin/sleep")) == ""
 
 
-def test_paths_are_resolved_before_they_are_confined(tmp_path, monkeypatch):
+def _proc_for(path):
     import os
+    return g.Proc(1, "postgres", os.getuid(), os.getgid(), "/usr/bin/postgres", [], str(path))
+
+
+def test_paths_are_resolved_before_they_are_confined(tmp_path):
     data = tmp_path / "data"
     data.mkdir()
     (data / "postgresql.conf").write_text("port = 5433\nprimary_conninfo = 'password=s3cr3tPW'\n")
     outside = tmp_path / "outside.txt"
     outside.write_text("root only\n")
     (data / "link.conf").symlink_to(outside)
-    proc = g.Proc(1, "postgres", os.getuid(), os.getgid(), "/usr/bin/postgres", [], str(data), False)
-    guard = g.Guard({})
+    proc, guard = _proc_for(data), g.Guard({})
     text = guard.read(str(data / "postgresql.conf"), [str(data)], proc)
     assert "port = 5433" in text and "s3cr3tPW" not in text
     assert guard.read(str(data / "link.conf"), [str(data)], proc) is None             # symlink out
@@ -701,8 +729,75 @@ def test_paths_are_resolved_before_they_are_confined(tmp_path, monkeypatch):
     assert guard.read(str(data / "postgresql.conf"), ["/"], proc) is None             # "/" is never an allowed directory
     assert [e["path"] for e in guard.stat([str(data / "link.conf"), str(outside)], [str(data)])] == []
     assert len([n for n in guard.notes if n.startswith("not read")]) >= 5
-    with pytest.raises(ValueError):
-        guard.read(str(data / "postgresql.conf"), [str(data)], None)                  # no verified process, no read
+    # Without a verified process only a root-owned system file is read: this one is the test user's.
+    assert guard.read(str(data / "postgresql.conf"), [str(data)]) is None
+    listed = guard.stat([str(data) + "/*"], [str(data)])
+    assert {e["path"].rsplit("/", 1)[1] for e in listed} == {"postgresql.conf", "link.conf"}
+
+
+def test_a_component_swapped_for_a_symlink_between_check_and_use_is_refused(tmp_path, monkeypatch):
+    """The race: the path is accepted, then a directory on it becomes a link to somewhere else."""
+    import os
+    data, conf, elsewhere = tmp_path / "data", tmp_path / "data" / "conf.d", tmp_path / "elsewhere"
+    conf.mkdir(parents=True)
+    elsewhere.mkdir()
+    (conf / "a.conf").write_text("port = 5433\n")
+    (elsewhere / "a.conf").write_text("SECRET-OUTSIDE\n")
+    proc = _proc_for(data)
+    assert "5433" in g.Guard({}).read(str(conf / "a.conf"), [str(data)], proc)        # before the swap
+
+    def swap(path):
+        os.rename(conf, tmp_path / "moved")
+        os.symlink(elsewhere, conf)                                                  # same name, now a link
+
+    monkeypatch.setattr(g, "_between_check_and_use", swap)
+    guard = g.Guard({})
+    assert guard.read(str(conf / "a.conf"), [str(data)], proc) is None
+    assert any("reached through a link" in n for n in guard.notes)
+    # The same swap on the last component, and for stat.
+    monkeypatch.setattr(g, "_between_check_and_use", lambda path: None)
+    target = data / "b.conf"
+    target.write_text("ok\n")
+
+    def swap_file(path):
+        os.remove(target)
+        os.symlink(elsewhere / "a.conf", target)
+
+    monkeypatch.setattr(g, "_between_check_and_use", swap_file)
+    guard = g.Guard({})
+    assert guard.read(str(target), [str(data)], proc) is None
+    (data / "c").mkdir()
+    (data / "c" / "x").write_text("x")
+
+    def swap_dir(path):
+        os.rename(data / "c", tmp_path / "moved_c")
+        os.symlink(elsewhere, data / "c")
+
+    monkeypatch.setattr(g, "_between_check_and_use", swap_dir)
+    assert g.Guard({}).stat([str(data / "c") + "/*"], [str(data)]) == []
+
+
+def test_a_file_is_judged_by_the_descriptor_that_is_read(tmp_path, monkeypatch):
+    """A regular file replaced by a FIFO or a directory after the check is not read."""
+    import os
+    data = tmp_path / "data"
+    data.mkdir()
+    f = data / "a.conf"
+    f.write_text("x\n")
+
+    def swap(path):
+        os.remove(f)
+        os.mkfifo(f)
+
+    monkeypatch.setattr(g, "_between_check_and_use", swap)
+    guard = g.Guard({})
+    assert guard.read(str(f), [str(data)], _proc_for(data)) is None
+    assert any("not a regular file" in n for n in guard.notes)
+    big = data / "big.conf"
+    monkeypatch.setattr(g, "_between_check_and_use", lambda path: None)
+    big.write_text("y" * 5000)
+    guard = g.Guard({})
+    assert len(guard.read(str(big), [str(data)], _proc_for(data), 1000)) == 1000 and "read up to 1000" in guard.notes[0]
 
 
 def test_postgresql_collector_stores_an_allowlist_and_no_secret(tmp_path, monkeypatch):
@@ -725,7 +820,8 @@ def test_postgresql_collector_stores_an_allowlist_and_no_secret(tmp_path, monkey
     res = g.run(code, {"host": "db01", "collector": {"file": "postgresql_host.py"}})
     assert res["status"] == "collected", res
     assert lc.validate(res, "result") == []
-    f = res["facts"]
+    assert len(res["facts"]["servers"]) == 1
+    f = res["facts"]["servers"][0]
     assert f["settings"] == {"listen_addresses": "*", "port": "5433", "ssl": "on", "password_encryption": "scram-sha-256",
                              "log_line_prefix": EVIL, "log_connections": "on"}
     assert {"primary_conninfo", "archive_command", "restore_command", "ssl_passphrase_command"} <= set(f["settings_not_stored"])
@@ -742,6 +838,34 @@ def test_postgresql_collector_refuses_a_spoofed_process(tmp_path, monkeypatch):
     _fake_proc(tmp_path, monkeypatch, exe=str(spoof), args=("postgres", "-c", "config_file=/etc/shadow"))
     res = g.run((SHIPPED_DIR / "postgresql_host.py").read_text(), {"host": "db01"})
     assert res["status"] == "not_collected" and res["reason"].startswith("process could not be verified")
+
+
+def test_postgresql_in_a_container_is_refused_not_guessed(tmp_path, monkeypatch):
+    """Not collected in this version: a container's identity cannot be verified soundly."""
+    _fake_proc(tmp_path, monkeypatch, exe="/usr/bin/postgres", mnt="mnt:[4026539999]")
+    res = g.run((SHIPPED_DIR / "postgresql_host.py").read_text(), {"host": "db01"})
+    assert res["status"] == "not_collected" and "it runs in a container" in res["reason"]
+    assert any("refused: it runs in a container" in n for n in res["notes"])
+
+
+def test_in_container_collection_cannot_be_switched_on_yet(tmp_path):
+    cat = copy.deepcopy(CATALOG)
+    entry = copy.deepcopy(ACME)
+    entry["collectors"][0]["in_container"] = True
+    cat["components"].append(entry)
+    assert any("in_container: true is not supported" in e for e in lc.validate_layering(cat, _collectors_dir(tmp_path)))
+
+
+def test_flags_come_from_a_manifest_command_when_no_host_process_exists():
+    manifest = ("apiVersion: v1\nkind: Pod\nmetadata:\n  annotations:\n"
+                "    kubeadm.kubernetes.io/etcd.advertise-client-urls: https://192.0.2.10:2379\n  name: etcd\n"
+                "spec:\n  containers:\n  - command:\n    - etcd\n    - --data-dir=/var/lib/etcd\n"
+                "    - --client-cert-auth=true\n    - --initial-cluster-token=s3cr3tPW\n"
+                "    image: registry.k8s.io/etcd:3.5.15-0\n    name: etcd\n  hostNetwork: true\n")
+    doc = g.mini_yaml(g.scrub_text(manifest))
+    assert doc == yaml.safe_load(g.scrub_text(manifest))
+    flags = g.flags_of(doc["spec"]["containers"][0]["command"])
+    assert flags == {"data-dir": "/var/lib/etcd", "client-cert-auth": "true", "initial-cluster-token": g.REDACTED}
 
 
 def test_kubelet_collector_refuses_a_non_root_process_named_kubelet(tmp_path, monkeypatch):

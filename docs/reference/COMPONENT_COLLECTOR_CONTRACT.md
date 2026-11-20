@@ -1,6 +1,6 @@
 # Component collector contract
 
-**Version:** v1.1
+**Version:** v1.2
 **Authors:** Tim Coulter, Claude (Anthropic)
 
 A collector gathers the facts of one technology component on one layer. This page is the contract between a collector and the framework that runs it. The machine-checked parts are `ansible/files/component_collector_contract.schema.json` (contract version `1`: catalog entries, collector input, collector result) and the code rules in `ansible/files/component_collector_guard.py` (`check_code`). `scripts/layered_collection.py` applies both in the tests, in `check-catalog` and on every run; the guard applies the code rules again on the host before a collector starts.
@@ -23,15 +23,17 @@ A collector does not touch a host by itself. It is run by `ansible/files/compone
 
 | Call | What it does |
 |---|---|
-| `g.processes(*names, exe_names=None, accounts="root")` | The verified processes with one of these command names. A process that carries the name and fails a check is put in `g.rejected` with the reason and is not returned |
-| `proc.flags()`, `proc.args`, `proc.cwd`, `proc.user`, `proc.in_container` | What a verified process was started with. A flag whose name marks a secret has its value replaced |
-| `g.stat(paths, under, proc=None, tree=False)` | Mode, owner and group of each path that resolves under one of the `under` directories |
-| `g.read(path, under, proc)` | The text of one regular file, read as the verified process's own account, with secret-shaped values already replaced. `None`, with a note, when a rule below is not met |
+| `g.processes(*names, exe_names=None, accounts="root")` | Every verified main process with one of these command names, in pid order. Each process that carries a name is recorded in `g.candidates` with the decision and the reason; one that fails a check is never returned |
+| `g.seen(name)` | Whether any process carries the name, verified or not |
+| `proc.flags()`, `proc.args`, `proc.cwd`, `proc.user` | What a verified process was started with. A flag whose name marks a secret has its value replaced |
+| `g.flags_of(words)` | The same flag reading for a list of words from a trusted file |
+| `g.stat(paths, under, tree=False)` | Mode, owner and group of each path that resolves under one of the `under` directories |
+| `g.read(path, under, proc=None)` | The text of one regular file, with secret-shaped values already replaced. With a verified process it is read as that process's own account. Without one, only a root-owned system file is read. `None`, with a note, when a rule below is not met |
 | `g.parse_yaml(text)` | Parsed YAML: PyYAML when the host has it, otherwise a small reader for block mappings, lists and plain scalars. `None` when the text is outside that subset |
 | `g.env(name)` | Service side: the value of an environment variable, only for the names the catalog lists under `credential.env` |
 | `g.collected(facts, instance=None, children=None)` | The result when facts were gathered |
 | `g.not_collected(reason)`, `g.unverified(what)` | The result when they were not. `unverified` gives the standard reason for a missing or unverified process |
-| `g.notes` | Short statements a reader needs, for example that a list was capped |
+| `g.notes` | Short statements a reader needs, for example that a list was capped. The guard adds one line per process that carried an expected name: accepted or refused, and why |
 
 ### Code rules (checked by `check_code`)
 
@@ -47,27 +49,36 @@ A file that breaks a rule fails the tests and `check-catalog`, and is refused on
 
 ### Process verification
 
-A process name proves nothing: any local user can choose one. `g.processes()` returns a process only when all of these hold.
+A process name proves nothing: any local user can choose one. Three rules come first.
+
+1. **Identity never comes from the inspected process or from its container.** The expected accounts are named by the collector and resolved on the host. Nothing is read from a container's own files to decide who a process is.
+2. **Collection inside a container is opt-in per catalog entry** (`in_container` on the collector entry), and no entry can switch it on in this version: there is no sound way here yet to tie a container to an expected image or manifest, so a process in another mount namespace is refused.
+3. **Every candidate is recorded.** The guard returns every verified process, never only the first, and reports each process that carried the name with the decision and the reason. The collector states what several verified processes mean; it does not pick one silently.
+
+`g.processes()` returns a process only when all of these hold.
 
 | Check | Rule |
 |---|---|
+| Namespace | The process is in the host's mount namespace. A process in a container is refused |
 | Executable | `/proc/<pid>/exe` resolves to a file with one of the expected names, in a system path (`/usr/bin`, `/usr/sbin`, `/usr/libexec`, `/usr/lib`, `/usr/lib64`, `/usr/local/bin`, `/usr/local/sbin`, `/bin`, `/sbin`, `/opt`, plus `collector_guard.binary_dirs` in the catalog). The file and every directory above it are owned by root and not writable by group or others. A deleted or replaced executable is refused |
-| Account | The process runs under one user id, and it is root (`accounts="root"`) or one of the named service accounts. An account name is resolved on the host, or in the container's own `passwd` for a process in a container |
-| Parent | The parent is init, or a container runtime monitor named in `collector_guard.runtime_parents` that itself passes the executable check, or a process of the same service (a worker, which is then not the main process) |
-| Container | A process in another mount namespace counts only when a root-owned, verified container runtime monitor is among its ancestors. A process in a rootless container is not verified |
+| Account | The process runs under one user id. With `accounts="root"` it is 0. With a list of account names it is the host uid of one of those accounts, and never 0 |
+| Parent | The parent is init (pid 1). A process whose parent is a process of the same service is a worker and is left out |
 
-When a process carries the name and fails, the outcome is `not collected: process could not be verified: ...` with the first reason.
+When no process passes, the outcome is `not collected: process could not be verified: ...` with the first reason.
 
-### Path confinement
+### File access
+
+All file access is descriptor-based and confined.
 
 | Rule | Detail |
 |---|---|
-| Resolve first | Every path is resolved (`realpath`) before it is compared. `..` and symbolic links cannot leave an allowed directory |
-| Expected directories only | The path must sit under a directory the collector names in `under`: a literal directory, or the working directory of a verified process. `/` is never accepted |
-| Paths from a command line | A path taken from a flag or a setting is used only through `g.stat()` or `g.read()` with `under`, never by itself |
-| Ownership | `g.read()` returns a file only when it is a regular file owned by the verified process's account or by root |
-| Read as the service | `g.read()` reads in a child process that has dropped to the verified process's user and group. A root process is read as root; nothing else is |
-| Another process's root | A path inside a container is read through `/proc/<pid>/root` only for a verified process, and a symbolic link anywhere in such a path is refused |
+| Resolve, then compare | Every path is resolved (`realpath`) and must sit under a directory the collector names in `under`: a literal directory, or the working directory of a verified process. `/` is never accepted. `..` and symbolic links cannot leave an allowed directory |
+| Open by descriptor | The resolved path is then opened one component at a time, each relative to the descriptor of the one before, with no symbolic link followed at any step. A component that is swapped for a link between the comparison and the open makes the open fail, and the file is not read |
+| Judge the opened file | Type, owner and mode are read from the opened descriptor, and the data is read from that same descriptor. Regular files only, up to a size cap |
+| Paths from a command line | A path taken from a flag or a setting is used only through `g.stat()` or `g.read()` with `under` |
+| A service's file | `g.read(path, under, proc)` opens and reads in a child process that has dropped to the verified process's user and group, and returns the file only when it is owned by that account or by root |
+| A system file | `g.read(path, under)` with no process returns only a root-owned file that group and others cannot write, reached through directories with the same property |
+| Never as root for someone else | Root reads only root-owned system files and the files of a verified root process. Nothing is read as root on behalf of another account or of a container |
 
 ## What a collector receives
 
@@ -86,7 +97,7 @@ When a process carries the name and fails, the outcome is `not collected: proces
 | `locator` | How the component was found: the matched signals for a detection, or the entry the parent reported. These are strings a host supplied: data, never code |
 | `max_facts_bytes` | Size cap for the facts |
 | `collector` | `{file, version, cost}` from the catalog |
-| `guard` | `collector_guard` from the catalog |
+| `guard` | `collector_guard.binary_dirs` from the catalog |
 
 ## What a collector returns
 

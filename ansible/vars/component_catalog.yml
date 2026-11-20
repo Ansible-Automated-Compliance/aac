@@ -73,21 +73,13 @@ catalog_version: "2026.11.3"
 # when it verifies a process before a collector may read anything through it.
 #   binary_dirs      directories, beside the standard system paths, where a
 #                    trusted service binary may live (shell-style patterns)
-#   runtime_parents  command names of container runtime monitors. A process in
-#                    a container counts only when one of these, running as root
-#                    from a root-owned binary, started it
+# A process in a container is never accepted in this version: nothing here can
+# tie a container to an expected image, and identity is never read from inside it.
 collector_guard:
   binary_dirs:
     - "/usr/pgsql-*/bin"
     - "/usr/lib/postgresql/*/bin"
     - "/var/lib/rancher/*/data/*/bin"
-  runtime_parents:
-    - conmon
-    - conmonrs
-    - containerd-shim
-    - containerd-shim-runc-v1
-    - containerd-shim-runc-v2
-    - docker-containerd-shim
 
 kinds:
   - automation_controller

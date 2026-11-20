@@ -1,6 +1,6 @@
 # Layered fact gathering
 
-**Version:** v1.1
+**Version:** v1.2
 **Authors:** Tim Coulter, Claude (Anthropic)
 
 Base host facts say what a host is. They do not say how the database server, the cluster or the web server on that host is configured. Layered fact gathering collects those facts, driven by what component discovery found: a collector runs only where its component was detected, and every detected component ends with a recorded outcome.
@@ -35,6 +35,7 @@ These are optional additions to a detection catalog entry. An entry without them
 | `collectors[].file` | `<key>_<layer>.py`, or `none yet` when the collector is planned and not built. `none yet` is reported as not assessed for that layer |
 | `collectors[].version` | Stored with every fact row the collector produces |
 | `collectors[].cost` | `cheap` or `heavy` |
+| `collectors[].in_container` | Whether the collector may read through a process in a container. `false` by default, and `true` is refused in this version |
 | `collectors[].access` | The least-privilege, read-only access the collector needs |
 | `collectors[].credential` | Service side only: `{type, env}`. `type` is the credential type attached to the job template. `env` lists the environment variables that type injects |
 | `contains` | Catalog keys that can be found inside the component (`"*"` for any). What a collector reports is matched against the signals of these entries only |
@@ -175,11 +176,11 @@ A row is added when the outcome for its key (target, component, layer, parent) c
 
 | Component | Layer | File | Cost | Collects |
 |---|---|---|---|---|
-| `kubernetes_control_plane` | 2 | `kubernetes_control_plane_host.py` | cheap | Flags of the API server, controller manager, scheduler and etcd as started; mode and owner of the static pod manifests, the etcd data directory, the control plane kubeconfig files, the PKI tree and the CNI files; the audit policy; resource and provider names of the encryption configuration; the anonymous section of the authentication configuration; the image of each static pod, reported as found inside |
-| `kubelet` | 2 | `kubelet_host.py` | cheap | Kubelet flags and an allowlist of the fields of its configuration file (the ones the CIS Kubernetes policy reads); mode and owner of the kubelet unit file, kubeconfig, client CA file, configuration file and configuration directory; whether kube-proxy runs, its flags, its metrics bind address and the mode and owner of its kubeconfig |
-| `postgresql` | 2 | `postgresql_host.py` | cheap | An allowlist of settings from `postgresql.conf` and `postgresql.auto.conf`, with the names (not the values) of every other setting present; rules in `pg_hba.conf`; mode and owner of the data directory and those files; server version; the account the postmaster runs as |
+| `kubernetes_control_plane` | 2 | `kubernetes_control_plane_host.py` | cheap | Flags of the API server, controller manager, scheduler and etcd, from a verified host process or else from the `command` of the component's static pod manifest (`collection.flags_source` says which); mode and owner of the static pod manifests, the etcd data directory, the control plane kubeconfig files, the PKI tree and the CNI files; the audit policy; resource and provider names of the encryption configuration; the anonymous section of the authentication configuration; the image of each static pod, reported as found inside |
+| `kubelet` | 2 | `kubelet_host.py` | cheap | Kubelet flags and an allowlist of the fields of its configuration file (the ones the CIS Kubernetes policy reads); mode and owner of the kubelet unit file, kubeconfig, client CA file, configuration file and configuration directory; for a kube-proxy that runs as a verified host process, its flags, metrics bind address and the mode and owner of its kubeconfig |
+| `postgresql` | 2 | `postgresql_host.py` | cheap | For every verified postmaster on the host (`servers`): an allowlist of settings from `postgresql.conf` and `postgresql.auto.conf`, with the names (not the values) of every other setting present; rules in `pg_hba.conf`; mode and owner of the data directory and those files; server version; the account the postmaster runs as |
 
-None of them calls a service API. None reads a key file, the content of a kubeconfig, an encryption key or a password. Each reads only through verified processes and inside expected directories, as the service's own account (see the contract). Settings that can carry a password in their value, such as `primary_conninfo`, `archive_command` and `restore_command`, are named and not stored.
+None of them calls a service API. None reads a key file, the content of a kubeconfig, an encryption key or a password. Each reads only through verified host processes or root-owned system files, inside expected directories, by descriptor, and a service's files as the service's own account (see the contract). Settings that can carry a password in their value, such as `primary_conninfo`, `archive_command` and `restore_command`, are named and not stored.
 
 ### Kubernetes facts and the CIS Kubernetes policy
 
@@ -191,7 +192,7 @@ The two Kubernetes collectors use the field names of the input contract of the C
 | `api_server.audit_policy`, `api_server.encryption_config`, `api_server.authentication_config` | `kubernetes_control_plane_host.py`, when the API server names the file and it is under `/etc/kubernetes` |
 | `files.manifests`, `files.etcd_data`, `files.control_plane_confs`, `files.pki`, `files.cni` | `kubernetes_control_plane_host.py` |
 | `kubelet.flags`, `kubelet.config` | `kubelet_host.py` |
-| `kube_proxy.running`, `kube_proxy.flags`, `kube_proxy.config` | `kubelet_host.py` |
+| `kube_proxy.running`, `kube_proxy.flags`, `kube_proxy.config` | `kubelet_host.py`, when kube-proxy is a verified host process or is not running at all. Not fed when it runs in a container |
 | `files.kubelet_service`, `files.kubelet_kubeconfig`, `files.kubelet_client_ca`, `files.kubelet_config_yaml`, `files.kubelet_config_dir`, `files.kube_proxy_kubeconfig` | `kubelet_host.py` |
 | `etcd.member_count` | Not fed (optional in the policy) |
 | `service_accounts.default`, `network_policies.namespaces_without_policy`, `secrets.env_var_usage_count`, `cluster.namespace_resources`, `collection_status.*` | Not fed: these need the cluster API (service side, not built) |
@@ -217,20 +218,23 @@ Only image names and container names are stored. Container command lines, enviro
 
 | Limit | Effect |
 |---|---|
+| A process in a container is never read through | PostgreSQL running in a container is reported "not assessed: process could not be verified: it runs in a container". A kube-proxy that runs as a pod is not described, so its policy checks report evidence missing. Control plane flags come from the static pod manifests, not from the running containers |
+| Control plane flags from a manifest are what the kubelet is told to start | A component started by hand with other flags, outside the manifest directory, is not seen |
 | No service-side collector ships yet | Layer 3 is exercised by tests and by a stub. Components whose catalog entry names a service side with `none yet` are reported as not assessed for that layer |
 | The Kubernetes collectors do not return a cluster identity | Each control plane node is its own instance until the service-side collector supplies the cluster identifier |
 | Flags written as `--name value` (two arguments) are read as a flag set to `true` | Kubernetes components are started with `--name=value` by kubeadm and by the distributions checked. A component started the other way would be misread |
-| The static pod manifest directory is taken as `/etc/kubernetes/manifests` | A kubelet with another `staticPodPath` has no manifest file facts |
-| Files named by flags are read only inside expected directories (`/etc/kubernetes`, `/var/lib/kubelet`, `/var/lib/kube-proxy`, the PostgreSQL data and configuration directories) | A file elsewhere is not read, and the result says so |
-| A process in a rootless container is not verified | Its component is reported as not assessed: process could not be verified |
+| The static pod manifest directory is taken as `/etc/kubernetes/manifests` | A kubelet with another `staticPodPath` has no manifest facts |
+| Files are read only inside expected directories (`/etc/kubernetes`, `/var/lib/kubelet`, `/var/lib/kube-proxy`, the PostgreSQL data and configuration directories), and system files only when root-owned | A file elsewhere is not read, and the result says so |
+| A service process must have init as its parent | A server started from a shell or a supervisor other than init is reported as not verified |
+| Files named by PostgreSQL `include` directives are not read | The result says so |
 | A managed host needs Python 3.6 or later for the host side | It already needs Python for fact collection |
-| `postgresql_host.py` reads the first postmaster it finds | Others are counted in `notes`. Files named by `include` directives are not read, and the result says so |
 | The component map is read in one query and results pass through the controller's memory | Suitable for estates of hundreds of hosts |
 | Results are stored once, at the end of the run | A job that is cancelled stores nothing from that run |
 | Rootless containers are read only for users with a runtime directory | See `docs/reference/COMPONENT_DISCOVERY.md` |
 
 ## Next
 
+- Sound verification of a component that runs in a container (a static pod tied to its manifest, or an image reference from the runtime's own record on the host), so that containerised PostgreSQL and kube-proxy can be collected.
 - Service-side collector for the Kubernetes control plane (cluster API, read-only service account).
 - Service-side collector for the automation controller (its API, read-only token).
 - OpenShift collectors, host side and service side.

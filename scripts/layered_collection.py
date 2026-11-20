@@ -200,6 +200,10 @@ def validate_layering(catalog, collectors_dir=None) -> list[str]:
                 errs.append(f"{where}: the service-side collector must name its credential type")
             if layer == "host" and "credential" in col:
                 errs.append(f"{where}: a host-side collector uses the connection already in use; no credential")
+            if col.get("in_container"):
+                # Opt-in per entry, and no verification of a containerised process is sound yet.
+                errs.append(f"{where}: in_container: true is not supported in this version; "
+                            "a process in a container is refused")
             if fname and fname != NO_COLLECTOR:
                 if fname != f"{key}_{layer}.py":
                     errs.append(f"{where}: collector file must be named {key}_{layer}.py")
@@ -343,7 +347,7 @@ def begin(data, catalog) -> dict:
                       for k in data.get("known_instances") or []},
         "passes_run": 0, "seq": 0, "detected": [],
         "guard": {k: list(v) for k, v in (catalog.get("collector_guard") or {}).items()
-                  if k in ("binary_dirs", "runtime_parents")},
+                  if k == "binary_dirs"},
     }
     by_key = {c["key"]: c for c in catalog["components"]}
     seen = set()

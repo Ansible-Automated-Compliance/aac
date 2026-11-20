@@ -10,13 +10,16 @@ contract (docs/reference/COMPONENT_COLLECTOR_CONTRACT.md):
 
   processes()   a process counts only when it is verified: its executable is a
                 root-owned binary in a system path with the expected name, it
-                runs as the expected account, and its parent is init or a
-                verified container runtime. A process name alone proves nothing:
-                any local user can choose one.
+                runs as the expected account (resolved on the host), it is not
+                in a container, and its parent is init. A process name alone
+                proves nothing: any local user can choose one. Identity is
+                never taken from the inspected process or from its container.
   stat()/read() every path is resolved first and must sit under a directory the
-                collector names; files are read as the verified process's own
-                account, never as root; a file must be owned by that account or
-                by root.
+                collector names. It is then opened one component at a time,
+                each from the descriptor of the one before and never through a
+                symbolic link; type, owner and mode come from the opened
+                descriptor. A service's file is read as the service's own
+                account; a system file only when it is root-owned.
   scrub()       secret values are replaced before anything leaves the host.
   result        one line, base64. Nothing a host returned is ever placed in an
                 Ansible variable as text, so it cannot be templated.
@@ -36,9 +39,8 @@ import sys
 
 REDACTED = "<redacted>"
 PROC = "/proc"
-# Where a trusted service binary may live. The catalog can add directories and
-# names the container runtimes whose children count as started by a runtime
-# (`collector_guard` in the catalog, delivered in the collector input).
+# Where a trusted service binary may live. The catalog can add directories
+# (`collector_guard.binary_dirs`, delivered in the collector input).
 SYSTEM_DIRS = ("/usr/bin", "/usr/sbin", "/usr/local/bin", "/usr/local/sbin", "/usr/libexec", "/usr/lib",
                "/usr/lib64", "/bin", "/sbin", "/opt")
 INIT_NAMES = ("systemd", "init")
@@ -196,29 +198,34 @@ def parse_yaml(text):
 class Proc:
     """A process the guard has verified. Collectors receive nothing else."""
 
-    def __init__(self, pid, name, uid, gid, exe, args, cwd, in_container):
+    def __init__(self, pid, name, uid, gid, exe, args, cwd):
         self.pid, self.name, self.uid, self.gid = pid, name, uid, gid
-        self.exe, self.args, self.cwd, self.in_container = exe, args, cwd, in_container
+        self.exe, self.args, self.cwd = exe, args, cwd
         try:
             self.user = pwd.getpwuid(uid).pw_name
         except KeyError:
             self.user = str(uid)
 
     def flags(self):
-        """`--name=value` arguments as {name: value}; `--name` alone is "true"."""
-        out = {}
-        for a in self.args:
-            if a.startswith("--") and len(a) > 2:
-                name, _, value = a[2:].partition("=")
-                value = value if "=" in a else "true"
-                out[name] = REDACTED if scrub_text("%s=%s" % (name, value)) != "%s=%s" % (name, value) else value
-        return out
+        return flags_of(self.args)
 
     def arg_value(self, prefix):
         for a in self.args:
             if a.startswith(prefix):
                 return a[len(prefix):]
         return ""
+
+
+def flags_of(args):
+    """`--name=value` arguments as {name: value}; `--name` alone is "true".
+    A flag whose name marks a secret has its value replaced."""
+    out = {}
+    for a in args:
+        if isinstance(a, str) and a.startswith("--") and len(a) > 2:
+            name, _, value = a[2:].partition("=")
+            value = value if "=" in a else "true"
+            out[name] = REDACTED if scrub_text("%s=%s" % (name, value)) != "%s=%s" % (name, value) else value[:2000]
+    return out
 
 
 def _read_small(path, limit=65536):
@@ -256,7 +263,7 @@ def _in_system_dir(path, extra=()):
 
 
 def _host_binary_fault(pid, extra=()):
-    """Why the executable of a process in our own mount namespace cannot be trusted."""
+    """Why the executable of a process cannot be trusted ("" when it can)."""
     try:
         exe = os.readlink(PROC + "/%d/exe" % pid)
     except OSError:
@@ -273,55 +280,77 @@ def _same_mount_ns(pid):
     return os.readlink(PROC + "/%d/ns/mnt" % pid) == os.readlink(PROC + "/self/ns/mnt")
 
 
+# ── Descriptor-based file access ─────────────────────────────────────────────
+# A path is resolved and compared first, then the RESOLVED path is opened one
+# component at a time, each relative to the descriptor of the one before and
+# never through a symbolic link. Type, owner and mode are read from the opened
+# descriptor, and the data is read from that same descriptor. A component that
+# is swapped for a link between the check and the open makes the open fail.
+
+_DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+
+
+def _between_check_and_use(path):
+    """Test hook: runs after a path was accepted and before it is opened."""
+
+
+def _open_parent(real, root_owned_only=False):
+    """An fd for the directory that holds `real`, reached without following a link."""
+    parts = [p for p in real.split("/") if p]
+    fd = os.open("/", _DIR_FLAGS)
+    try:
+        for part in parts[:-1]:
+            nxt = os.open(part, _DIR_FLAGS, dir_fd=fd)
+            os.close(fd)
+            fd = nxt
+            if root_owned_only:
+                st = os.fstat(fd)
+                if st.st_uid != 0 or (st.st_mode & 0o022 and not st.st_mode & statmod.S_ISVTX):
+                    raise OSError("a directory on the way is not root-owned or is writable by others")
+    except OSError:
+        os.close(fd)
+        raise
+    return fd, (parts[-1] if parts else ".")
+
+
+def _confined(path, under):
+    """(resolved path, "") when `path` resolves under an allowed directory, else (None, why)."""
+    if not isinstance(path, str) or not path.startswith("/") or "\0" in path:
+        return None, "not an absolute path"
+    real = os.path.realpath(path)
+    allowed = [os.path.realpath(u) for u in under if isinstance(u, str) and u.startswith("/")]
+    if not any(real == a or real.startswith(a.rstrip("/") + "/") for a in allowed if a != "/"):
+        return None, "outside the expected directories"
+    return real, ""
+
+
+def _entry(logical, st):
+    try:
+        owner = pwd.getpwuid(st.st_uid).pw_name
+    except KeyError:
+        owner = str(st.st_uid)
+    try:
+        group = grp.getgrgid(st.st_gid).gr_name
+    except KeyError:
+        group = str(st.st_gid)
+    return {"path": logical, "mode": "%o" % statmod.S_IMODE(st.st_mode), "owner": owner, "group": group}
+
+
 class Guard:
     def __init__(self, target):
         self.target = target
-        self.rejected = []      # processes that carried an expected name and failed verification
+        self.candidates = []    # every process that carried an expected name, and what was decided
         self.notes = []
         self._result = None
         self._root = os.geteuid() == 0
         cfg = target.get("guard") or {}
-        self._runtimes = tuple(str(n)[:15] for n in cfg.get("runtime_parents") or [])   # comm keeps 15 characters
         self._dirs = tuple(str(d) for d in cfg.get("binary_dirs") or [] if str(d).startswith("/"))
 
+    @property
+    def rejected(self):
+        return [c for c in self.candidates if not c["accepted"]]
+
     # -- processes ------------------------------------------------------------
-    def _parent_fault(self, pid, ppid, names):
-        if ppid == 0:
-            return ""
-        try:
-            pcomm = _read_small(PROC + "/%d/comm" % ppid).decode().strip()
-            if pcomm in [n[:15] for n in names]:
-                return "child"      # a worker of the same service; never the main process
-            if ppid == 1:
-                return ""
-            if not _same_mount_ns(ppid):
-                return "its parent is in another namespace"
-        except OSError:
-            return "" if ppid == 1 else "its parent cannot be read"
-        if pcomm in self._runtimes or pcomm in INIT_NAMES:
-            _, fault = _host_binary_fault(ppid, self._dirs)
-            if not fault and os.stat(PROC + "/%d" % ppid).st_uid in (0, os.stat(PROC + "/%d" % pid).st_uid):
-                return ""
-            return "its parent %s could not be verified" % pcomm
-        return "its parent (%s) is neither init nor a container runtime" % pcomm
-
-    def _runtime_ancestor(self, pid):
-        """True when a root-owned, verified container runtime started this process."""
-        cur = pid
-        for _ in range(12):
-            try:
-                ppid = int(_status(cur)["PPid"][0])
-                if ppid <= 1:
-                    return False
-                comm = _read_small(PROC + "/%d/comm" % ppid).decode().strip()
-                if comm in self._runtimes and _same_mount_ns(ppid):
-                    _, fault = _host_binary_fault(ppid, self._dirs)
-                    return not fault and os.stat(PROC + "/%d" % ppid).st_uid == 0
-                cur = ppid
-            except (OSError, KeyError, ValueError):
-                return False
-        return False
-
     def _verify(self, pid, name, exe_names, accounts):
         st = _status(pid)
         uids, gids = set(st.get("Uid", [])), st.get("Gid", ["0"])
@@ -333,60 +362,53 @@ class Guard:
             exe_link = os.readlink(PROC + "/%d/exe" % pid)
         except OSError:
             return None, "its executable or namespace cannot be read (root is needed)"
+        if not same_ns:
+            # Identity is never taken from the inspected process or its container,
+            # and nothing in this version can tie a container to an expected image.
+            return None, "it runs in a container, and collection inside containers is not enabled"
         if exe_link.endswith(" (deleted)"):
             return None, "its executable was deleted or replaced"
         if not any(fnmatch.fnmatch(os.path.basename(exe_link), pat) for pat in exe_names):
             return None, "its executable is %s, not %s" % (os.path.basename(exe_link), " or ".join(exe_names))
-        root = "" if same_ns else PROC + "/%d/root" % pid
-        if same_ns:
-            exe, fault = _host_binary_fault(pid, self._dirs)
-            if fault:
-                return None, fault
-            wanted = {0} if accounts == "root" else set()
-            for a in ([] if accounts == "root" else accounts):
-                try:
-                    wanted.add(pwd.getpwnam(a).pw_uid)
-                except KeyError:
-                    pass
-            fault = self._parent_fault(pid, int(st["PPid"][0]), (name,) + tuple(exe_names))
-            if fault:
-                return None, fault
-        else:
-            exe = exe_link
-            if not self._runtime_ancestor(pid):
-                return None, "it is in a container that no verified, root-owned container runtime started"
-            wanted = {0} if accounts == "root" else self._container_uids(root, accounts)
+        exe, fault = _host_binary_fault(pid, self._dirs)
+        if fault:
+            return None, fault
+        # The expected accounts are resolved on the host, by name.
+        wanted = {0} if accounts == "root" else set()
+        for a in ([] if accounts == "root" else accounts):
+            try:
+                wanted.add(pwd.getpwnam(a).pw_uid)
+            except KeyError:
+                pass
+        if accounts != "root":
+            wanted.discard(0)
         if uid not in wanted:
             return None, "it runs as uid %d, not as %s" % (uid, "root" if accounts == "root" else "/".join(accounts))
+        ppid = int(st["PPid"][0])
+        if ppid > 0:
+            try:
+                pcomm = _read_small(PROC + "/%d/comm" % ppid).decode("utf-8", "replace").strip()
+            except OSError:
+                pcomm = None
+            if pcomm in [n[:15] for n in (name,) + tuple(exe_names)]:
+                return None, "child"            # a worker of the same service, not a main process
+            if ppid != 1:
+                return None, "its parent (%s) is not init" % (pcomm or "unreadable")
         try:
             raw = _read_small(PROC + "/%d/cmdline" % pid, 131072).split(b"\0")
             args = [a.decode("utf-8", "replace")[:2000] for a in raw if a][:MAX_ARGS]
             cwd = os.readlink(PROC + "/%d/cwd" % pid)
         except OSError:
             return None, "its command line or working directory cannot be read (root is needed)"
-        return Proc(pid, name, uid, gid, exe, args, cwd, not same_ns), ""
-
-    def _container_uids(self, root, accounts):
-        """The uids of the named accounts in a container's own passwd file."""
-        path = root + "/etc/passwd"
-        out = set()
-        try:
-            if statmod.S_ISLNK(os.lstat(path).st_mode) or statmod.S_ISLNK(os.lstat(root + "/etc").st_mode):
-                return out
-            for line in _read_small(path, 262144).decode("utf-8", "replace").splitlines():
-                f = line.split(":")
-                if len(f) > 2 and f[0] in accounts and f[2].isdigit():
-                    out.add(int(f[2]))
-        except OSError:
-            pass
-        return out
+        return Proc(pid, name, uid, gid, exe, args, cwd), ""
 
     def processes(self, *names, exe_names=None, accounts="root"):
-        """Verified processes with one of these command names, lowest pid first.
+        """Every verified main process with one of these command names, in pid order.
 
-        accounts: "root", or the account names the service is allowed to run as.
-        A process that carries the name and fails a check is listed in
-        `rejected` with the reason and is never returned.
+        accounts: "root", or the names of the accounts the service may run as,
+        resolved on this host. Every process that carries a name is recorded in
+        `candidates` with the decision and the reason; one that fails a check is
+        never returned. The collector decides what several verified processes mean.
         """
         exe_names = tuple(exe_names or names)
         found = []
@@ -403,120 +425,126 @@ class Guard:
                 proc, why = self._verify(pid, name, exe_names, accounts)
             except (OSError, KeyError, ValueError, IndexError):
                 proc, why = None, "it went away or cannot be read"
+            if why == "child":
+                continue
+            self.candidates.append({"name": name, "pid": pid, "accepted": proc is not None,
+                                    "why": "verified: %s, uid %d" % (proc.exe, proc.uid) if proc else why})
             if proc:
                 found.append(proc)
-            elif why != "child":
-                self.rejected.append({"name": name, "pid": pid, "why": why})
         return found
 
-    # -- paths ----------------------------------------------------------------
-    def _confine(self, path, under, proc):
-        """(path to open, logical path) when `path` resolves under an allowed directory, else (None, why)."""
-        if not isinstance(path, str) or not path.startswith("/") or "\0" in path:
-            return None, "not an absolute path"
-        root = PROC + "/%d/root" % proc.pid if (proc is not None and proc.in_container) else ""
-        if root:
-            logical = os.path.normpath(path)
-            cur = ""
-            for part in [p for p in logical.split("/") if p]:
-                cur += "/" + part
-                try:
-                    if statmod.S_ISLNK(os.lstat(root + cur).st_mode):
-                        return None, "a symbolic link in a container path is not followed"
-                except OSError:
-                    return None, "does not exist"
-            allowed = [os.path.normpath(u) for u in under]
-        else:
-            logical = os.path.realpath(path)
-            allowed = [os.path.realpath(u) for u in under]
-        if not any(logical == a or logical.startswith(a.rstrip("/") + "/") for a in allowed if a and a != "/"):
-            return None, "outside the expected directories"
-        return root + logical, logical
+    def seen(self, name):
+        """True when any process carries this name, verified or not."""
+        return any(c["name"] == name for c in self.candidates)
 
-    @staticmethod
-    def _entry(logical, st):
-        try:
-            owner = pwd.getpwuid(st.st_uid).pw_name
-        except KeyError:
-            owner = str(st.st_uid)
-        try:
-            group = grp.getgrgid(st.st_gid).gr_name
-        except KeyError:
-            group = str(st.st_gid)
-        return {"path": logical, "mode": "%o" % statmod.S_IMODE(st.st_mode), "owner": owner, "group": group}
-
-    def stat(self, paths, under, proc=None, tree=False, limit=2000):
+    # -- files ----------------------------------------------------------------
+    def stat(self, paths, under, tree=False, limit=2000):
         """Mode and owner of each path that exists and resolves under `under`.
-        A trailing `/*` lists a directory's entries; tree=True walks it."""
+        A trailing `/*` lists a directory's entries; tree=True walks it. Nothing
+        is opened through a symbolic link."""
         out, seen = [], set()
 
-        def add(candidate):
-            real, logical = self._confine(candidate, under, proc)
-            if real is None or logical in seen or len(out) >= limit:
-                return
+        def add_at(dir_fd, name, logical):
+            if logical in seen or len(out) >= limit:
+                return None
             try:
-                st = os.lstat(real) if (proc is not None and proc.in_container) else os.stat(real)
+                st = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+            except OSError:
+                return None
+            seen.add(logical)
+            out.append(_entry(logical, st))
+            return st
+
+        def walk(dir_fd, logical):
+            try:
+                names = sorted(os.listdir(dir_fd))
             except OSError:
                 return
-            seen.add(logical)
-            out.append(self._entry(logical, st))
+            for n in names:
+                st = add_at(dir_fd, n, logical.rstrip("/") + "/" + n)
+                if tree and st is not None and statmod.S_ISDIR(st.st_mode) and len(out) < limit:
+                    try:
+                        sub = os.open(n, _DIR_FLAGS, dir_fd=dir_fd)
+                    except OSError:
+                        continue
+                    try:
+                        walk(sub, logical.rstrip("/") + "/" + n)
+                    finally:
+                        os.close(sub)
 
         for path in paths:
             if not path:
                 continue
-            if path.endswith("/*") or tree:
-                base = path[:-2] if path.endswith("/*") else path
-                real, logical = self._confine(base, under, proc)
-                if real is None or not os.path.isdir(real):
-                    continue
-                if tree:
-                    add(base)
-                    for dirpath, dirnames, filenames in os.walk(real):
-                        for n in sorted(dirnames) + sorted(filenames):
-                            add(os.path.join(logical + dirpath[len(real):], n))
-                else:
-                    for n in sorted(os.listdir(real)):
-                        add(os.path.join(logical, n))
-            else:
-                add(path)
+            listing = path.endswith("/*")
+            real, _ = _confined(path[:-2] if listing else path, under)
+            if real is None:
+                continue
+            _between_check_and_use(real)
+            try:
+                parent, name = _open_parent(real)
+            except OSError:
+                continue
+            try:
+                if not listing:
+                    add_at(parent, name, real)
+                if listing or tree:
+                    try:
+                        fd = os.open(name, _DIR_FLAGS, dir_fd=parent)
+                    except OSError:
+                        continue
+                    try:
+                        walk(fd, real)
+                    finally:
+                        os.close(fd)
+            finally:
+                os.close(parent)
         if len(out) >= limit:
             self.notes.append("a file list was capped at %d entries" % limit)
         return out
 
-    def read(self, path, under, proc, max_bytes=MAX_READ):
-        """The text of one regular file, read as the verified process's account
-        (never as root unless the process is root). None, with a note, when the
-        path is outside `under`, is not owned by that account or root, or
-        cannot be read. Secret-shaped values are already replaced."""
-        if proc is None:
-            raise ValueError("read() needs the verified process the file belongs to")
-        real, logical = self._confine(path, under, proc)
+    def read(self, path, under, proc=None, max_bytes=MAX_READ):
+        """The text of one regular file, with secret-shaped values replaced.
+
+        With a verified process: read as that process's own account (after
+        dropping to it), and only a file owned by that account or by root.
+        Without one: only a root-owned file that others cannot write, reached
+        through root-owned directories (a system configuration file).
+        None, with a note, when any rule is not met.
+        """
+        real, why = _confined(path, under)
         if real is None:
-            self.notes.append("not read: %s (%s)" % (scrub_text(str(path))[:200], logical))
+            self.notes.append("not read: %s (%s)" % (scrub_text(str(path))[:200], why))
             return None
-        try:
-            st = os.lstat(real) if proc.in_container else os.stat(real)
-        except OSError:
-            self.notes.append("not read: %s (does not exist)" % logical[:200])
-            return None
-        if not statmod.S_ISREG(st.st_mode) or st.st_uid not in (0, proc.uid):
-            self.notes.append("not read: %s (not a regular file owned by the service account or root)" % logical[:200])
-            return None
+        _between_check_and_use(real)
+        owners = (0,) if proc is None else (0, proc.uid)
         r, w = os.pipe()
         child = os.fork()
         if child == 0:
+            code = 3
             try:
                 os.close(r)
-                if self._root and proc.uid != 0:
+                if proc is not None and self._root and proc.uid != 0:
                     os.setgroups([])
                     os.setgid(proc.gid)
                     os.setuid(proc.uid)
-                fd = os.open(real, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-                data = os.read(fd, max_bytes)
-                os.write(w, data)
-                os._exit(0)
+                parent, name = _open_parent(real, root_owned_only=proc is None)
+                fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
+                st = os.fstat(fd)               # the opened file itself, not the path
+                if not statmod.S_ISREG(st.st_mode) or st.st_uid not in owners \
+                        or (proc is None and st.st_mode & 0o022):
+                    code = 4
+                else:
+                    left = max_bytes
+                    while left > 0:
+                        buf = os.read(fd, min(65536, left))
+                        if not buf:
+                            break
+                        os.write(w, buf)
+                        left -= len(buf)
+                    code = 5 if st.st_size > max_bytes else 0
             except BaseException:
-                os._exit(3)
+                pass
+            os._exit(code)
         os.close(w)
         chunks = []
         while True:
@@ -525,18 +553,23 @@ class Guard:
                 break
             chunks.append(buf)
         os.close(r)
-        _, code = os.waitpid(child, 0)
-        if code != 0:
-            self.notes.append("not read: %s (not readable by the service account)" % logical[:200])
+        code = os.waitpid(child, 0)[1] >> 8
+        if code == 4:
+            self.notes.append("not read: %s (not a regular file owned by the expected account)" % real[:200])
             return None
-        if st.st_size > max_bytes:
-            self.notes.append("%s was read up to %d bytes" % (logical[:200], max_bytes))
+        if code not in (0, 5):
+            self.notes.append("not read: %s (missing, not readable by the service account, or reached "
+                              "through a link)" % real[:200])
+            return None
+        if code == 5:
+            self.notes.append("%s was read up to %d bytes" % (real[:200], max_bytes))
         return scrub_text(b"".join(chunks).decode("utf-8", "replace"))
 
     # -- helpers a collector may use -----------------------------------------
     scrub = staticmethod(scrub)
     scrub_text = staticmethod(scrub_text)
     parse_yaml = staticmethod(parse_yaml)
+    flags_of = staticmethod(flags_of)
 
     def env(self, name):
         """A credential value, service side only: only the names the catalog lists."""
@@ -554,7 +587,7 @@ class Guard:
         self._result = {"status": "not_collected", "reason": str(reason)[:300]}
 
     def unverified(self, what):
-        """The standard outcome when a process carried the name and failed verification."""
+        """The standard outcome when no process could be verified."""
         if self.rejected:
             first = self.rejected[0]
             self.not_collected(("process could not be verified: a %s process is running but %s"
@@ -564,7 +597,12 @@ class Guard:
 
     def finish(self):
         result = self._result or {"status": "not_collected", "reason": "the collector set no result"}
-        notes = [scrub_text(n)[:300] for n in self.notes][:50]
+        notes = list(self.notes)
+        # Every process that carried an expected name, and what was decided about it.
+        notes += ["process %s (pid %d): %s" % (c["name"], c["pid"],
+                                               c["why"] if c["accepted"] else "refused: " + c["why"])
+                  for c in self.candidates[:20]]
+        notes = [scrub_text(n)[:300] for n in notes][:50]
         if notes:
             result["notes"] = notes
         return scrub(result)
