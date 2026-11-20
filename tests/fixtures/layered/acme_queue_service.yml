@@ -1,0 +1,11 @@
+---
+# Stub service-side collector for the made-up "acme_queue" component (see
+# acme_queue_host.yml). Returns a fixed result.
+- name: Acme queue stub | return a fixed service-side result
+  ansible.builtin.set_fact:
+    lc_result:
+      status: collected
+      facts:
+        api:
+          version: "9.9"
+          members: 2

@@ -28,6 +28,54 @@
   changed_when: false
   failed_when: false
 
+# User-level units (`systemctl --user`) are where rootless containers and
+# per-user services run; `service_facts` lists system units only. Read for each
+# user that has a runtime directory. Root reads every user; any other account
+# reads its own. Read-only: `list-units` only.
+- name: List running user-level systemd units
+  ansible.builtin.shell: |
+    me="$(id -u)"
+    for d in /run/user/[0-9]*; do
+      [ -d "$d" ] || continue
+      uid="${d##*/}"
+      user="$(id -nu "$uid" 2>/dev/null)" || continue
+      [ -S "$d/systemd/private" ] || [ -S "$d/bus" ] || continue
+      if [ "$me" = "$uid" ]; then
+        out="$(cd / && XDG_RUNTIME_DIR="$d" timeout 15 systemctl --user list-units --type=service \
+               --state=running --no-legend --plain --no-pager 2>/dev/null)"; rc=$?
+      elif [ "$me" = 0 ] && command -v runuser >/dev/null 2>&1; then
+        out="$(cd / && timeout 15 runuser -u "$user" -- env XDG_RUNTIME_DIR="$d" systemctl --user list-units \
+               --type=service --state=running --no-legend --plain --no-pager 2>/dev/null)"; rc=$?
+      else
+        printf 'READ\t%s\tnot_readable\n' "$user"; continue
+      fi
+      if [ "$rc" = 0 ]; then printf 'READ\t%s\tok\n' "$user"; else printf 'READ\t%s\tfailed\n' "$user"; continue; fi
+      printf '%s\n' "$out" | awk -v u="$user" 'NF {print "UNIT\t" u "\t" $1}'
+    done
+    exit 0
+  args:
+    executable: /bin/bash
+  register: user_units_raw
+  changed_when: false
+  failed_when: false
+
+- name: Parse user-level units
+  ansible.builtin.set_fact:
+    aac_user_units: >-
+      {%- set out = [] -%}
+      {%- for l in (user_units_raw.stdout_lines | default([])) if l.startswith('UNIT\t') -%}
+      {%- set p = l.split('\t') -%}
+      {%- if p | length == 3 -%}{%- set _ = out.append({'user': p[1], 'unit': p[2], 'state': 'running'}) -%}{%- endif -%}
+      {%- endfor -%}
+      {{ out }}
+    aac_user_units_read: >-
+      {%- set out = [] -%}
+      {%- for l in (user_units_raw.stdout_lines | default([])) if l.startswith('READ\t') -%}
+      {%- set p = l.split('\t') -%}
+      {%- if p | length == 3 -%}{%- set _ = out.append({'user': p[1], 'result': p[2]}) -%}{%- endif -%}
+      {%- endfor -%}
+      {{ out }}
+
 - name: Set service facts
   set_fact:
     aac_services:
@@ -35,6 +83,10 @@
       enabled_at_boot: "{{ enabled_services_raw.stdout_lines | default([]) }}"
       risky_services:  "{{ risky_services_raw.stdout_lines | default([]) }}"
       service_manager: "{{ ansible_service_mgr | default('unknown') }}"
+      # New keys: running user-level units, which users were read, and whether the list was capped.
+      user_units:        "{{ aac_user_units[: aac_services_max_user_units | int] }}"
+      user_units_read:   "{{ aac_user_units_read }}"
+      user_units_capped: "{{ (aac_user_units | length) > (aac_services_max_user_units | int) }}"
       running_count: >-
         {{ (ansible_facts.services | default({}) | dict2items
             | selectattr('value.state', 'equalto', 'running') | list | length) }}

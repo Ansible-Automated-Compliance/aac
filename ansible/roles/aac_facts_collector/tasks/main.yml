@@ -65,6 +65,9 @@
 - include_tasks: linux_processes.yml
   when: aac_is_linux | bool and aac_collect_processes | bool
 
+- include_tasks: linux_containers.yml
+  when: aac_is_linux | bool and aac_collect_containers | bool
+
 - include_tasks: linux_certificates.yml
   when: aac_is_linux | bool and aac_collect_certificates | bool
 
@@ -121,6 +124,7 @@
       cron:           "{{ aac_cron | default({}) }}"
       processes:      "{{ aac_processes | default({}) }}"
       certificates:   "{{ aac_certificates | default({}) }}"
+      containers:     "{{ aac_containers | default({}) }}"
       # Raw strings for OPA policies that parse config text directly
       raw:
         sshd_config:      "{{ aac_ssh.raw_config | default('') }}"

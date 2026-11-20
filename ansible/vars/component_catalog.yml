@@ -23,6 +23,29 @@
 #                  rank  reveals which systems matter most
 #   signals      list of {kind, match, role, strength}
 #
+# Optional entry fields for layered collection (docs/reference/LAYERED_FACT_GATHERING.md;
+# checked against ansible/files/component_collector_contract.schema.json)
+#   assess       true (default) or false. false: the component is inventoried
+#                where it is found and no collector runs for it
+#   contains     catalog keys that can be found inside this component ("*" for any).
+#                What a collector reports as found inside is matched against the
+#                signals of these entries only
+#   collectors   at most one per layer:
+#                  layer       host (layer 2, over the connection already in use, only
+#                              on hosts where the component was detected) or service
+#                              (layer 3, the service's own API, once per instance)
+#                  file        <key>_<layer>.yml in ansible/tasks/component_collectors/,
+#                              or "none yet"
+#                  version     collector version, stored with every fact row
+#                  cost        cheap or heavy (a schedule can run cheap collectors
+#                              nightly and all of them weekly)
+#                  access      the least-privilege, read-only access the collector needs
+#                  credential  service side only: {type, env}. `type` is the credential
+#                              type an operator attaches to the job; `env` lists the
+#                              environment variables that type injects. When any is
+#                              empty the service side is recorded as not assessed
+#   `collector` (above) stays the name of the host-side collector for the step-1 views.
+#
 # Signal kinds, where each is read from the stored facts, and its strength
 #   package          packages.installed (name)                 strong, shows "installed"
 #   service          services.all + services.enabled_at_boot   strong when running or enabled
@@ -44,7 +67,7 @@
 #               never identifies it alone
 # A port signal is always supporting, whatever role is written.
 
-catalog_version: "2026.11.2"
+catalog_version: "2026.11.3"
 
 kinds:
   - automation_controller
@@ -113,9 +136,32 @@ components:
   - key: kubernetes_control_plane
     name: Kubernetes control plane
     kind: container_orchestrator
-    collector: none yet
+    collector: kubernetes_control_plane_host
     loader_keys: [cis_kubernetes]
     privileged: {act: true, map: true, rank: true}
+    assess: true
+    contains: [etcd]
+    collectors:
+      - layer: host
+        file: kubernetes_control_plane_host.yml
+        version: "1.0"
+        cost: cheap
+        access: >-
+          The SSH account already used for fact collection, with privilege escalation to
+          read root-owned files. Reads process command lines, file modes and owners under
+          /etc/kubernetes, /etc/cni/net.d and the etcd data directory, and the static pod
+          manifests and the audit, encryption and authentication configuration files the
+          API server names. Reads no key file, no kubeconfig content and no Secret. Writes nothing.
+      - layer: service
+        file: none yet
+        cost: heavy
+        credential:
+          type: AAC Kubernetes Read-Only
+          env: [K8S_AUTH_HOST, K8S_AUTH_API_KEY]
+        access: >-
+          A service account token bound to a ClusterRole with get and list only on
+          namespaces, service accounts, role bindings, network policies and workloads.
+          No access to Secret objects, no write verbs.
     signals:
       - {kind: process, match: kube-apiserver}
       - {kind: process, match: kube-controller-manager}
@@ -132,9 +178,20 @@ components:
   - key: kubelet
     name: Kubernetes node (kubelet)
     kind: container_orchestrator
-    collector: none yet
+    collector: kubelet_host
     loader_keys: [cis_kubernetes]
     privileged: {act: false, map: false, rank: false}
+    collectors:
+      - layer: host
+        file: kubelet_host.yml
+        version: "1.0"
+        cost: cheap
+        access: >-
+          The SSH account already used for fact collection, with privilege escalation to
+          read root-owned files. Reads the kubelet and kube-proxy command lines, the kubelet
+          configuration file, and the modes and owners of the kubelet unit file, kubeconfig,
+          client CA file and configuration directory. Reads no kubeconfig content and no key
+          file. Writes nothing.
     signals:
       - {kind: package, match: kubelet}
       - {kind: service, match: kubelet.service}
@@ -204,6 +261,20 @@ components:
       - {kind: process, match: crc}
       - {kind: process, match: crcd}
 
+  - key: etcd
+    name: etcd
+    kind: database
+    collector: none yet
+    loader_keys: []
+    privileged: {act: false, map: true, rank: false}
+    signals:
+      - {kind: package, match: etcd}
+      - {kind: service, match: etcd.service}
+      - {kind: container_image, match: "*/etcd:*"}
+      - {kind: container_image, match: "*/etcd"}
+      - {kind: process, match: etcd, role: supporting}
+      - {kind: port, match: 2379}
+
   # ── Container runtimes ─────────────────────────────────────────────────────
   - key: podman
     name: Podman
@@ -258,9 +329,28 @@ components:
   - key: postgresql
     name: PostgreSQL server
     kind: database
-    collector: none yet
+    collector: postgresql_host
     loader_keys: [cis_postgresql]
     privileged: {act: false, map: false, rank: false}
+    collectors:
+      - layer: host
+        file: postgresql_host.yml
+        version: "1.0"
+        cost: cheap
+        access: >-
+          The SSH account already used for fact collection, with privilege escalation to
+          read files owned by the database account. Reads the settings in postgresql.conf,
+          the rules in pg_hba.conf, and the modes and owners of the data directory and those
+          files. Opens no database session, reads no table and no password file. Writes nothing.
+      - layer: service
+        file: none yet
+        cost: cheap
+        credential:
+          type: AAC PostgreSQL Read-Only
+          env: [PGHOST, PGUSER, PGPASSWORD]
+        access: >-
+          A login role that is a member of pg_read_all_settings only: it can read the
+          effective settings and role attributes and no table data. No write privilege.
     signals:
       - {kind: package, match: postgresql-server}
       - {kind: package, match: "postgresql[0-9]*-server"}

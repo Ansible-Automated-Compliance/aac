@@ -629,7 +629,7 @@ def test_seeded_job_template_takes_no_variables_at_launch():
 def test_summary_counts():
     _, two = _two_runs()
     s = two["summary"]
-    assert s["hosts_evaluated"] == 8 and len(s["hosts_without_usable_facts"]) == 2
+    assert s["hosts_evaluated"] == 9 and len(s["hosts_without_usable_facts"]) == 2
     assert s["not_seen"] == [{"host": "web01.example.com", "component": "nginx",
                               "not_seen_since": "2026-11-18T02:00:00+00:00", "reason": cd.REASON_GONE}]
     assert s["stale_count"] == 4
@@ -677,3 +677,40 @@ def test_committed_files_carry_no_addresses():
         text = (_root / rel).read_text()
         for ip in re.findall(r"\b\d{1,3}(?:\.\d{1,3}){3}\b", text):
             assert ip.startswith(("0.0.0.0", "127.")), (rel, ip)
+
+
+# ── Layer 0 keys added for detection: command names, user units, containers ──
+
+def test_process_names_beyond_the_first_100_lines_are_read():
+    """processes_raw holds the first 100 lines; command_names holds every distinct name."""
+    row = copy.deepcopy(next(r for r in FIXTURE["round1"] if r["host_id"] == "jump01.example.com"))
+    assert "hashicorp_vault" not in _keys(cd.detect_host(cd.normalise_host(row), CATALOG))
+    row["facts"]["processes"]["command_names"].append("vault")
+    found = _keys(cd.detect_host(cd.normalise_host(row), CATALOG))
+    assert found["hashicorp_vault"]["signal_kinds"] == ["process"]
+
+
+def test_command_names_alone_count_as_the_process_domain():
+    row = {"host_id": "h", "facts": {"processes": {"command_names": ["etcd", "kube-apiserver"]}}}
+    host = cd.normalise_host(row)
+    assert "processes" in host["domains"] and "kube-apiserver" in host["processes"]
+
+
+def test_running_user_unit_identifies_a_component():
+    found = _keys(_detect("rootless01.example.com"))
+    assert found["opa"]["confidence"] == "high" and found["opa"]["run_state"] == "running"
+    ev = [e for e in found["opa"]["evidence"] if e["kind"] == "service"]
+    assert ev and "user unit (svcpolicy)" in ev[0]["detail"]
+
+
+def test_container_entries_carry_runtime_and_user_and_images_are_matched():
+    row = next(r for r in FIXTURE["round1"] if r["host_id"] == "k8s-cp01.example.com")
+    assert {"image", "name", "runtime", "user"} == set(row["facts"]["containers"]["running"][0])
+    found = _keys(_detect("k8s-cp01.example.com"))
+    assert "container_image" in found["kubernetes_control_plane"]["signal_kinds"]
+
+
+def test_host_without_a_container_list_has_no_container_domain():
+    row = copy.deepcopy(next(r for r in FIXTURE["round1"] if r["host_id"] == "jump01.example.com"))
+    row["facts"]["containers"] = {}
+    assert "containers" not in cd.normalise_host(row)["domains"]

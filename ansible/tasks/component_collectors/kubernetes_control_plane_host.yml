@@ -1,0 +1,170 @@
+---
+# kubernetes_control_plane_host.yml — Kubernetes control plane, host side (layer 2).
+#
+# Collector contract: docs/reference/COMPONENT_COLLECTOR_CONTRACT.md.
+# Receives lc_target, sets lc_result. Read-only. No cluster API call.
+#
+# Collects, for the control plane processes on this host: the flags each was
+# started with, the mode and owner of the static pod manifests, the etcd data
+# directory, the control plane kubeconfig files, the PKI tree and the CNI
+# configuration files, and three files the API server names (audit policy,
+# encryption provider configuration, authentication configuration).
+#
+# Not collected, on purpose: key files and kubeconfig contents (mode and owner
+# only); the keys inside the encryption provider configuration (resource and
+# provider names only); manifest contents (the image of each container only).
+# Field names follow the input contract of the CIS Kubernetes policy
+# (benchmarks/cis/kubernetes in the policy library).
+
+- name: Kubernetes control plane | read process flags
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: |
+      for name in kube-apiserver kube-controller-manager kube-scheduler etcd; do
+        short="$(printf '%.15s' "$name")"
+        for c in /proc/[0-9]*/comm; do
+          [ "$(cat "$c" 2>/dev/null)" = "$short" ] || continue
+          printf 'PROC\t%s\n' "$name"
+          tr '\0' '\n' < "${c%/comm}/cmdline" 2>/dev/null | head -n 400 \
+            | awk -v n="$name" '/^--/ {print "ARG\t" n "\t" substr($0, 1, 2000)}'
+          break
+        done
+      done
+      exit 0
+  register: k8scp_proc
+  changed_when: false
+
+- name: Kubernetes control plane | parse process flags
+  ansible.builtin.set_fact:
+    k8scp_found: >-
+      {{ k8scp_proc.stdout_lines | select('match', '^PROC\t') | map('regex_replace', '^PROC\t', '') | list }}
+    k8scp_flags: >-
+      {%- set out = {} -%}
+      {%- for l in k8scp_proc.stdout_lines if l.startswith('ARG\t') -%}
+      {%- set p = l.split('\t', 2) -%}
+      {%- set a = p[2][2:] -%}
+      {%- set k = a.split('=', 1)[0] -%}
+      {%- set v = a.split('=', 1)[1] if '=' in a else 'true' -%}
+      {%- set secret = (k is search('password|secret|token')) and not (k is search('(-file|-auth|-ttl|-dir|-path)$')) -%}
+      {%- set _ = out.update({p[1]: (out[p[1]] | default({})) | combine({k: ('<redacted>' if secret else v)})}) -%}
+      {%- endfor -%}
+      {{ out }}
+
+- name: Kubernetes control plane | read file modes and owners
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: |
+      st() { g="$1"; shift; for f in "$@"; do [ -e "$f" ] && stat --printf "FILE\t$g\t%n\t%a\t%U\t%G\n" "$f"; done; }
+      st manifests /etc/kubernetes/manifests/*.yaml /etc/kubernetes/manifests/*.yml \
+                   /etc/kubernetes/manifests/*.json /etc/kubernetes/manifests/*.manifest
+      st control_plane_confs /etc/kubernetes/admin.conf /etc/kubernetes/super-admin.conf \
+                             /etc/kubernetes/scheduler.conf /etc/kubernetes/controller-manager.conf
+      st etcd_data "${ETCD_DATA_DIR%/}"
+      if [ -d /etc/kubernetes/pki ]; then
+        find /etc/kubernetes/pki -xdev -printf 'FILE\tpki\t%p\t%m\t%u\t%g\n' 2>/dev/null | head -n 2000
+      fi
+      if [ -d /etc/cni/net.d ]; then
+        find /etc/cni/net.d -xdev -type f -printf 'FILE\tcni\t%p\t%m\t%u\t%g\n' 2>/dev/null | head -n 500
+      fi
+      for m in /etc/kubernetes/manifests/*.yaml /etc/kubernetes/manifests/*.yml; do
+        [ -f "$m" ] || continue
+        awk -v f="${m##*/}" '$1 == "image:" || ($1 == "-" && $2 == "image:") {print "IMAGE\t" f "\t" $NF}' "$m" | head -n 20
+      done
+      exit 0
+  environment:
+    # A value read from the host is passed as data, never written into the script.
+    ETCD_DATA_DIR: "{{ (k8scp_flags.etcd | default({}))['data-dir'] | default('/var/lib/etcd', true) }}"
+  register: k8scp_files
+  changed_when: false
+
+# Three files named by API server flags. Only paths under /etc/kubernetes are
+# read, each capped. The encryption provider configuration holds keys: it is
+# read with no_log, and only resource and provider names are kept below.
+- name: Kubernetes control plane | read the files the API server names
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: |
+      case "$CFG" in
+        /etc/kubernetes/*) ;;
+        *) echo outside; exit 0 ;;
+      esac
+      case "$CFG" in *..*) echo outside; exit 0 ;; esac
+      [ -f "$CFG" ] || { echo missing; exit 0; }
+      echo ok
+      head -c 262144 -- "$CFG" | base64 -w0
+  environment:
+    CFG: "{{ (k8scp_flags['kube-apiserver'] | default({}))[item] | default('') }}"
+  loop:
+    - audit-policy-file
+    - encryption-provider-config
+    - authentication-config
+  when: (k8scp_flags['kube-apiserver'] | default({}))[item] | default('') | length > 0
+  register: k8scp_cfg
+  changed_when: false
+  no_log: true
+
+- name: Kubernetes control plane | reduce those files to settings
+  ansible.builtin.set_fact:
+    k8scp_cfg_facts: >-
+      {%- set out = {'not_read': []} -%}
+      {%- for r in k8scp_cfg.results if not (r.skipped | default(false)) -%}
+      {%- set state = (r.stdout_lines | default(['failed']))[0] | default('failed') -%}
+      {%- if state != 'ok' or (r.stdout_lines | length) < 2 -%}
+      {%- set _ = out.not_read.append(r.item ~ ': ' ~ state) -%}
+      {%- else -%}
+      {%- set doc = r.stdout_lines[1] | b64decode | from_yaml -%}
+      {%- if doc is not mapping -%}
+      {%- set _ = out.not_read.append(r.item ~ ': not a YAML mapping') -%}
+      {%- elif r.item == 'audit-policy-file' -%}
+      {%- set _ = out.update({'audit_policy': {'apiVersion': doc.apiVersion | default(''), 'kind': doc.kind | default(''),
+                                                'rules': doc.rules | default([]), 'omitStages': doc.omitStages | default([])}}) -%}
+      {%- elif r.item == 'encryption-provider-config' -%}
+      {%- set res = [] -%}
+      {%- for e in doc.resources | default([]) if e is mapping -%}
+      {%- set names = [] -%}
+      {%- for p in e.providers | default([]) if p is mapping -%}{%- set _ = names.extend(p.keys() | list) -%}{%- endfor -%}
+      {%- set _ = res.append({'resources': e.resources | default([]), 'providers': names}) -%}
+      {%- endfor -%}
+      {%- set _ = out.update({'encryption_config': {'resources': res}}) -%}
+      {%- else -%}
+      {%- set anon = doc.anonymous | default({}) -%}
+      {%- set _ = out.update({'authentication_config': ({'anonymous': anon} if anon else {})}) -%}
+      {%- endif -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {{ out }}
+  no_log: true
+
+- name: Kubernetes control plane | assemble the result
+  ansible.builtin.set_fact:
+    lc_result: >-
+      {%- set files = {} -%}
+      {%- set children = [] -%}
+      {%- for l in k8scp_files.stdout_lines -%}
+      {%- set p = l.split('\t') -%}
+      {%- if p[0] == 'FILE' and p | length == 6 -%}
+      {%- set _ = files.update({p[1]: (files[p[1]] | default([])) + [{'path': p[2], 'mode': p[3], 'owner': p[4], 'group': p[5]}]}) -%}
+      {%- elif p[0] == 'IMAGE' and p | length == 3 -%}
+      {%- set _ = children.append({'kind': 'container_image', 'value': (p[2] | replace('"', '') | replace("'", ''))[:300],
+                                    'name': p[1] | regex_replace('\.(yaml|yml)$', ''),
+                                    'detail': {'source': 'static pod manifest'}}) -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {%- set facts = {'files': files,
+                       'collection': {'processes_found': k8scp_found, 'files_not_read': k8scp_cfg_facts.not_read,
+                                      'manifest_dir': '/etc/kubernetes/manifests'}} -%}
+      {%- for comp, field in [['kube-apiserver', 'api_server'], ['kube-controller-manager', 'controller_manager'],
+                               ['kube-scheduler', 'scheduler'], ['etcd', 'etcd']] if comp in k8scp_found -%}
+      {%- set _ = facts.update({field: {'flags': k8scp_flags[comp] | default({})}}) -%}
+      {%- endfor -%}
+      {%- if 'api_server' in facts -%}
+      {%- for k in ['audit_policy', 'encryption_config', 'authentication_config'] if k in k8scp_cfg_facts -%}
+      {%- set _ = facts.api_server.update({k: k8scp_cfg_facts[k]}) -%}
+      {%- endfor -%}
+      {%- endif -%}
+      {%- if k8scp_found | length == 0 and files | length == 0 -%}
+      {{ {'status': 'not_collected',
+          'reason': 'no control plane process and no file under /etc/kubernetes found on this host'} }}
+      {%- else -%}
+      {{ {'status': 'collected', 'facts': facts, 'children': children} }}
+      {%- endif -%}

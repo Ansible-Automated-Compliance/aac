@@ -1,0 +1,35 @@
+---
+# layered_run_collector.yml — run ONE collector under the collector contract.
+#
+# Shared by every pass and both layers of ansible/playbooks/collect_component_facts.yml.
+# It knows nothing about any component: the work item (`lc_item`) names the
+# collector file and carries the input the contract defines.
+#
+#   in   lc_item      {item_id, file, target}   from scripts/layered_collection.py select
+#        lc_collectors_dir                      the one directory collectors live in
+#   out  lc_results   list of {item_id, result, failed, error}, appended per item
+#
+# A collector that fails, or that does not set lc_result, is recorded as
+# "detected, not assessed" with the reason. It never fails the job and never
+# leaves an empty result that looks fine. Only the name of the failed task is
+# kept as the error: nothing a host printed is copied into it.
+
+- name: Layered collection | run one collector under the contract
+  block:
+    - name: Layered collection | set the collector input
+      ansible.builtin.set_fact:
+        lc_target: "{{ lc_item.target }}"
+        lc_result: {}
+
+    - name: Layered collection | run the collector
+      ansible.builtin.include_tasks: "{{ lc_collectors_dir }}/{{ lc_item.file }}"
+
+    - name: Layered collection | keep the collector result
+      ansible.builtin.set_fact:
+        lc_results: "{{ lc_results | default([]) + [{'item_id': lc_item.item_id, 'result': lc_result, 'failed': false}] }}"
+  rescue:
+    - name: Layered collection | keep the failure as a result
+      ansible.builtin.set_fact:
+        lc_results: >-
+          {{ lc_results | default([]) + [{'item_id': lc_item.item_id, 'failed': true,
+                                         'error': 'task "' ~ (ansible_failed_task.name | default('unknown')) ~ '" failed'}] }}

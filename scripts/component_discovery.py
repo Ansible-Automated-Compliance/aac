@@ -263,10 +263,22 @@ def normalise_host(row) -> dict:
             comm = line.split()[-1] if line.split() else ""
             if comm and not _PS_SKIP.match(comm):
                 processes.add(comm)
+    # The distinct command names of every process (collector key added after
+    # processes_raw, which holds the first 100 lines only).
+    names = (facts.get("processes") or {}).get("command_names")
+    if isinstance(names, list) and names:
+        domains.add("processes")
+        processes.update(str(n) for n in names if n and not _PS_SKIP.match(str(n)))
     for lsn in listeners:  # a process that holds a listening socket is running
         processes.update(lsn["processes"])
     if listeners:
         domains.add("processes")
+
+    # Running user-level units (`systemctl --user`), by unit name -> users.
+    user_units: dict[str, list[str]] = {}
+    for u in (facts.get("services") or {}).get("user_units") or []:
+        if isinstance(u, dict) and u.get("unit"):
+            user_units.setdefault(str(u["unit"]), []).append(str(u.get("user") or ""))
 
     images = []
     containers = facts.get("containers")
@@ -283,6 +295,7 @@ def normalise_host(row) -> dict:
         "collected_at": row.get("collected_at"),
         "services": services, "enabled": enabled, "packages": packages,
         "processes": processes, "listeners": listeners, "images": images,
+        "user_units": user_units,
         "domains": domains,
     }
 
@@ -318,6 +331,10 @@ def _signal_hits(sig, host) -> list[dict]:
                 # The unit file exists but the service is neither running nor
                 # enabled: it shows the software is present, nothing more.
                 hit(name, detail, "weak", hit_role="client" if role == "client" else "supporting")
+        for name in sorted(host.get("user_units") or {}):
+            if _match(pattern, name):
+                users = ",".join(sorted(set(host["user_units"][name])))
+                hit(name, f"running user unit ({users})", "strong", running=True)
     elif kind == "process":
         for comm in sorted(host["processes"]):
             if _match_comm(pattern, comm):

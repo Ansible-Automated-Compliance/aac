@@ -1,6 +1,6 @@
 # Component discovery: which technology runs on which host
 
-**Version:** v1.3
+**Version:** v1.4
 **Authors:** Tim Coulter, Claude (Anthropic)
 
 AAC already stores per-host facts (`host_facts`) and turns coarse signals such as the operating system and the cloud provider into enabled policy bundles. Component discovery adds the missing record: which technology components (a database server, a Kubernetes control plane, an automation controller) run on which host.
@@ -54,9 +54,9 @@ The job prints a summary and publishes it with `set_stats` under `component_disc
 | Signal kind | Read from the stored facts | Strength | Can identify a component alone |
 |---|---|---|---|
 | `package` | `packages.installed` (package name) | Strong for "installed" | Yes |
-| `service` | `services.all`, `services.enabled_at_boot` | Strong when the unit is running or enabled | Yes, when running or enabled. A unit file that is neither is supporting evidence only |
-| `process` | `processes.processes_raw` (command name) and the process named on each listening socket | Medium | Yes |
-| `container_image` | `containers.running[].image` | Medium, or strong where the catalog entry says so | Yes |
+| `service` | `services.all`, `services.enabled_at_boot`, and `services.user_units` (running user-level units) | Strong when the unit is running or enabled | Yes, when running or enabled. A unit file that is neither is supporting evidence only |
+| `process` | `processes.command_names` (the distinct command names of every process), `processes.processes_raw` (first 100 lines, older rows) and the process named on each listening socket | Medium | Yes |
+| `container_image` | `containers.running[].image` (Podman including rootless users, CRI, Docker) | Medium, or strong where the catalog entry says so | Yes |
 | `port` | `network.listening_ports` | Weak | Never |
 
 Each signal also has a role.
@@ -91,7 +91,8 @@ A port that matches a catalog entry with nothing else is listed under "running, 
 | `key` | Stable identifier (lower case, digits, underscore) |
 | `name` | Display name |
 | `kind` | One of the values in the catalog's `kinds` list |
-| `collector` | Name of the collector that gathers this component's own facts, or `none yet` |
+| `collector` | Name of the host-side collector that gathers this component's own facts, or `none yet` |
+| `collectors`, `contains`, `assess` | Optional, for layered collection: see `docs/reference/LAYERED_FACT_GATHERING.md` |
 | `loader_keys` | Loader keys from `ansible/vars/framework_catalog.yml` whose policies assess the component |
 | `privileged` | Capability hints, each true or false: `act` (can act on other systems), `map` (holds a map of the estate), `rank` (reveals which systems matter most) |
 | `signals` | List of `{kind, match, role, strength}`; `match` is a shell-style pattern, compared without regard to case |
@@ -213,15 +214,17 @@ This is a recorded control, not cryptographic proof. It establishes which contro
 
 | Limit | Effect |
 |---|---|
-| `processes.processes_raw` holds the first 100 processes and the command name only | On most hosts the list is kernel threads. In practice the process signal comes from the process named on each listening socket |
-| No shipped collector stores running container images | `container_image` signals match only when a collector writes `containers.running[].image`. A component that runs only as a container (AWX, a containerised controller, OPA under Podman) is not detected from today's facts |
-| `services.all` lists system units | Rootless containers managed by user units (`systemctl --user`) are not visible |
+| Facts rows stored before the collector gained `processes.command_names`, `services.user_units` and `containers.running` do not carry them | For those rows the process signal comes from the first 100 lines of `processes.processes_raw` and from the process named on each listening socket, and a component that runs only as a container is not detected. The next fact collection fills the new keys |
+| `processes.command_names` is capped (2000 distinct names by default) | `processes.command_names_capped` is true when the cap was reached |
+| User-level units and rootless containers are read for users that have a runtime directory, and rootless Podman only for users that already have Podman state | A user with no session and no lingering is not read. `services.user_units_read` and `containers.runtimes` list who was read and with what result |
+| Running user-level units identify components but are not part of "running, not recognised" | A user-level unit the catalog does not explain is not listed |
+| Only the image name and the container name are stored | A component cannot be told from a container's command line, labels or mounts |
 | A workload inside a cluster or a virtual machine is not part of the host's facts | The host shows the hypervisor or the cluster runtime, not what runs inside it |
 | Windows hosts and network devices store facts in a different shape | They are reported as "hosts without usable facts" and are not evaluated |
 | The read query returns unit, package and process names for every host in one result | Suitable for estates of hundreds of hosts; batching is needed beyond that |
 
 ## Not in this step
 
-- No second-stage collectors are launched for detected components.
+- Collectors for detected components are a separate job: see `docs/reference/LAYERED_FACT_GATHERING.md`.
 - No separate approval job. Approval of an override on a privileged component is a named, listed approver plus the recorded launching account, not an action by the approver's own account.
 - `enroll_discovered_frameworks.yml` is unchanged and does not read the component map.

@@ -1,9 +1,21 @@
 {
- "_comment": "Fixture host facts for tests/test_component_discovery.py. round2 holds the newer rows; a host absent from round2 has no newer facts. All names are examples.",
+ "_comment": "Fixture host facts for tests/test_component_discovery.py. round2 holds the newer rows; a host absent from round2 has no newer facts. All names are examples. The shape is what aac_facts_collector stores, including processes.command_names, services.user_units and containers.running[{image,name,runtime,user}].",
  "round1": [
   {
    "collected_at": "2026-10-01T02:00:00+00:00",
    "facts": {
+    "containers": {
+     "capped": false,
+     "count": 0,
+     "running": [],
+     "runtimes": [
+      {
+       "result": "ok",
+       "runtime": "podman",
+       "user": "root"
+      }
+     ]
+    },
     "host": {
      "distribution": "RedHat",
      "hostname": "controller01.example.com",
@@ -116,6 +128,18 @@
      "package_manager": "dnf"
     },
     "processes": {
+     "command_names": [
+      "chronyd",
+      "kthreadd",
+      "nginx",
+      "receptor",
+      "sshd",
+      "systemd"
+     ],
+     "command_names_capped": false,
+     "command_names_collected": true,
+     "command_names_total": 6,
+     "process_total": 66,
      "processes_raw": "      1       0 root      0.0  0.0 176236 18696 Ss     Oct 06 systemd\n      2       0 root      0.0  0.0      0     0 S      Oct 06 kthreadd"
     },
     "services": {
@@ -191,7 +215,10 @@
       "receptor.service",
       "sshd.service",
       "supervisord.service"
-     ]
+     ],
+     "user_units": [],
+     "user_units_capped": false,
+     "user_units_read": []
     }
    },
    "host_id": "controller01.example.com",
@@ -204,18 +231,33 @@
    "collected_at": "2026-10-01T02:00:00+00:00",
    "facts": {
     "containers": {
+     "capped": false,
+     "count": 3,
      "running": [
       {
        "image": "quay.io/ansible/awx:24.6.1",
-       "name": "awx-web"
+       "name": "awx-web",
+       "runtime": "podman",
+       "user": "root"
       },
       {
        "image": "quay.io/ansible/awx:24.6.1",
-       "name": "awx-task"
+       "name": "awx-task",
+       "runtime": "podman",
+       "user": "root"
       },
       {
        "image": "quay.io/sclorg/postgresql-15-c9s:latest",
-       "name": "awx-postgres"
+       "name": "awx-postgres",
+       "runtime": "podman",
+       "user": "root"
+      }
+     ],
+     "runtimes": [
+      {
+       "result": "ok",
+       "runtime": "podman",
+       "user": "root"
       }
      ]
     },
@@ -293,6 +335,18 @@
      "package_manager": "dnf"
     },
     "processes": {
+     "command_names": [
+      "chronyd",
+      "conmon",
+      "kthreadd",
+      "pasta.avx2",
+      "sshd",
+      "systemd"
+     ],
+     "command_names_capped": false,
+     "command_names_collected": true,
+     "command_names_total": 6,
+     "process_total": 66,
      "processes_raw": "      1       0 root      0.0  0.0 176236 18696 Ss     Oct 06 systemd\n      2       0 root      0.0  0.0      0     0 S      Oct 06 kthreadd"
     },
     "services": {
@@ -340,7 +394,10 @@
       "chronyd.service",
       "kdump.service",
       "sshd.service"
-     ]
+     ],
+     "user_units": [],
+     "user_units_capped": false,
+     "user_units_read": []
     }
    },
    "host_id": "awx01.example.com",
@@ -352,6 +409,49 @@
   {
    "collected_at": "2026-10-01T02:00:00+00:00",
    "facts": {
+    "containers": {
+     "capped": false,
+     "count": 5,
+     "running": [
+      {
+       "image": "registry.k8s.io/kube-apiserver:v1.31.2",
+       "name": "kube-apiserver",
+       "runtime": "cri",
+       "user": "root"
+      },
+      {
+       "image": "registry.k8s.io/kube-controller-manager:v1.31.2",
+       "name": "kube-controller-manager",
+       "runtime": "cri",
+       "user": "root"
+      },
+      {
+       "image": "registry.k8s.io/kube-scheduler:v1.31.2",
+       "name": "kube-scheduler",
+       "runtime": "cri",
+       "user": "root"
+      },
+      {
+       "image": "registry.k8s.io/etcd:3.5.15-0",
+       "name": "etcd",
+       "runtime": "cri",
+       "user": "root"
+      },
+      {
+       "image": "registry.k8s.io/coredns/coredns:v1.11.3",
+       "name": "coredns",
+       "runtime": "cri",
+       "user": "root"
+      }
+     ],
+     "runtimes": [
+      {
+       "result": "ok",
+       "runtime": "cri",
+       "user": "root"
+      }
+     ]
+    },
     "host": {
      "distribution": "RedHat",
      "hostname": "k8s-cp01.example.com",
@@ -457,6 +557,23 @@
      "package_manager": "dnf"
     },
     "processes": {
+     "command_names": [
+      "chronyd",
+      "containerd",
+      "containerd-shim",
+      "etcd",
+      "kthreadd",
+      "kube-apiserver",
+      "kube-controller",
+      "kube-scheduler",
+      "kubelet",
+      "sshd",
+      "systemd"
+     ],
+     "command_names_capped": false,
+     "command_names_collected": true,
+     "command_names_total": 11,
+     "process_total": 71,
      "processes_raw": "      1       0 root      0.0  0.0 176236 18696 Ss     Oct 06 systemd\n      2       0 root      0.0  0.0      0     0 S      Oct 06 kthreadd"
     },
     "services": {
@@ -518,7 +635,10 @@
       "kdump.service",
       "kubelet.service",
       "sshd.service"
-     ]
+     ],
+     "user_units": [],
+     "user_units_capped": false,
+     "user_units_read": []
     }
    },
    "host_id": "k8s-cp01.example.com",
@@ -530,6 +650,12 @@
   {
    "collected_at": "2026-10-01T02:00:00+00:00",
    "facts": {
+    "containers": {
+     "capped": false,
+     "count": 0,
+     "running": [],
+     "runtimes": []
+    },
     "host": {
      "distribution": "RedHat",
      "hostname": "jump01.example.com",
@@ -630,6 +756,16 @@
      "package_manager": "dnf"
     },
     "processes": {
+     "command_names": [
+      "chronyd",
+      "kthreadd",
+      "sshd",
+      "systemd"
+     ],
+     "command_names_capped": false,
+     "command_names_collected": true,
+     "command_names_total": 4,
+     "process_total": 64,
      "processes_raw": "      1       0 root      0.0  0.0 176236 18696 Ss     Oct 06 systemd\n      2       0 root      0.0  0.0      0     0 S      Oct 06 kthreadd"
     },
     "services": {
@@ -683,7 +819,10 @@
       "chronyd.service",
       "kdump.service",
       "sshd.service"
-     ]
+     ],
+     "user_units": [],
+     "user_units_capped": false,
+     "user_units_read": []
     }
    },
    "host_id": "jump01.example.com",
@@ -695,6 +834,12 @@
   {
    "collected_at": "2026-10-01T02:00:00+00:00",
    "facts": {
+    "containers": {
+     "capped": false,
+     "count": 0,
+     "running": [],
+     "runtimes": []
+    },
     "host": {
      "distribution": "RedHat",
      "hostname": "db01.example.com",
@@ -778,6 +923,17 @@
      "package_manager": "dnf"
     },
     "processes": {
+     "command_names": [
+      "chronyd",
+      "kthreadd",
+      "postgres",
+      "sshd",
+      "systemd"
+     ],
+     "command_names_capped": false,
+     "command_names_collected": true,
+     "command_names_total": 5,
+     "process_total": 65,
      "processes_raw": "      1       0 root      0.0  0.0 176236 18696 Ss     Oct 06 systemd\n      2       0 root      0.0  0.0      0     0 S      Oct 06 kthreadd"
     },
     "services": {
@@ -832,7 +988,10 @@
       "kdump.service",
       "postgresql.service",
       "sshd.service"
-     ]
+     ],
+     "user_units": [],
+     "user_units_capped": false,
+     "user_units_read": []
     }
    },
    "host_id": "db01.example.com",
@@ -844,6 +1003,12 @@
   {
    "collected_at": "2026-10-01T02:00:00+00:00",
    "facts": {
+    "containers": {
+     "capped": false,
+     "count": 0,
+     "running": [],
+     "runtimes": []
+    },
     "host": {
      "distribution": "RedHat",
      "hostname": "app01.example.com",
@@ -910,6 +1075,17 @@
      "package_manager": "dnf"
     },
     "processes": {
+     "command_names": [
+      "acme-agent",
+      "chronyd",
+      "kthreadd",
+      "sshd",
+      "systemd"
+     ],
+     "command_names_capped": false,
+     "command_names_collected": true,
+     "command_names_total": 5,
+     "process_total": 65,
      "processes_raw": "      1       0 root      0.0  0.0 176236 18696 Ss     Oct 06 systemd\n      2       0 root      0.0  0.0      0     0 S      Oct 06 kthreadd"
     },
     "services": {
@@ -964,7 +1140,10 @@
       "chronyd.service",
       "kdump.service",
       "sshd.service"
-     ]
+     ],
+     "user_units": [],
+     "user_units_capped": false,
+     "user_units_read": []
     }
    },
    "host_id": "app01.example.com",
@@ -976,6 +1155,12 @@
   {
    "collected_at": "2026-10-01T02:00:00+00:00",
    "facts": {
+    "containers": {
+     "capped": false,
+     "count": 0,
+     "running": [],
+     "runtimes": []
+    },
     "host": {
      "distribution": "RedHat",
      "hostname": "web01.example.com",
@@ -1051,6 +1236,17 @@
      "package_manager": "dnf"
     },
     "processes": {
+     "command_names": [
+      "chronyd",
+      "kthreadd",
+      "nginx",
+      "sshd",
+      "systemd"
+     ],
+     "command_names_capped": false,
+     "command_names_collected": true,
+     "command_names_total": 5,
+     "process_total": 65,
      "processes_raw": "      1       0 root      0.0  0.0 176236 18696 Ss     Oct 06 systemd\n      2       0 root      0.0  0.0      0     0 S      Oct 06 kthreadd"
     },
     "services": {
@@ -1105,7 +1301,10 @@
       "kdump.service",
       "nginx.service",
       "sshd.service"
-     ]
+     ],
+     "user_units": [],
+     "user_units_capped": false,
+     "user_units_read": []
     }
    },
    "host_id": "web01.example.com",
@@ -1117,6 +1316,12 @@
   {
    "collected_at": "2026-10-01T02:00:00+00:00",
    "facts": {
+    "containers": {
+     "capped": false,
+     "count": 0,
+     "running": [],
+     "runtimes": []
+    },
     "host": {
      "distribution": "RedHat",
      "hostname": "legacy01.example.com",
@@ -1200,6 +1405,17 @@
      "package_manager": "dnf"
     },
     "processes": {
+     "command_names": [
+      "chronyd",
+      "kthreadd",
+      "mariadbd",
+      "sshd",
+      "systemd"
+     ],
+     "command_names_capped": false,
+     "command_names_collected": true,
+     "command_names_total": 5,
+     "process_total": 65,
      "processes_raw": "      1       0 root      0.0  0.0 176236 18696 Ss     Oct 06 systemd\n      2       0 root      0.0  0.0      0     0 S      Oct 06 kthreadd"
     },
     "services": {
@@ -1254,7 +1470,10 @@
       "kdump.service",
       "mariadb.service",
       "sshd.service"
-     ]
+     ],
+     "user_units": [],
+     "user_units_capped": false,
+     "user_units_read": []
     }
    },
    "host_id": "legacy01.example.com",
@@ -1266,6 +1485,12 @@
   {
    "collected_at": "2026-10-01T02:00:00+00:00",
    "facts": {
+    "containers": {
+     "capped": false,
+     "count": 0,
+     "running": [],
+     "runtimes": []
+    },
     "host": {
      "distribution": "RedHat",
      "hostname": "partial01.example.com",
@@ -1340,6 +1565,17 @@
      "package_manager": "dnf"
     },
     "processes": {
+     "command_names": [
+      "chronyd",
+      "httpd",
+      "kthreadd",
+      "sshd",
+      "systemd"
+     ],
+     "command_names_capped": false,
+     "command_names_collected": true,
+     "command_names_total": 5,
+     "process_total": 65,
      "processes_raw": "      1       0 root      0.0  0.0 176236 18696 Ss     Oct 06 systemd\n      2       0 root      0.0  0.0      0     0 S      Oct 06 kthreadd"
     },
     "services": {
@@ -1394,7 +1630,10 @@
       "httpd.service",
       "kdump.service",
       "sshd.service"
-     ]
+     ],
+     "user_units": [],
+     "user_units_capped": false,
+     "user_units_read": []
     }
    },
    "host_id": "partial01.example.com",
@@ -1423,12 +1662,237 @@
    "os_distribution": "Microsoft Windows Server 2022 Datacenter",
    "os_family": "Windows",
    "os_version": "10.0"
+  },
+  {
+   "collected_at": "2026-10-01T02:00:00+00:00",
+   "facts": {
+    "containers": {
+     "capped": false,
+     "count": 1,
+     "running": [
+      {
+       "image": "quay.io/example/policy-agent:1.10",
+       "name": "opa",
+       "runtime": "podman",
+       "user": "svcpolicy"
+      }
+     ],
+     "runtimes": [
+      {
+       "result": "ok",
+       "runtime": "podman",
+       "user": "svcpolicy"
+      }
+     ]
+    },
+    "host": {
+     "distribution": "RedHat",
+     "hostname": "rootless01.example.com",
+     "os_family": "RedHat",
+     "version": "9.6"
+    },
+    "network": {
+     "listening_ports": [
+      "Netid State  Recv-Q Send-Q Local Address:Port Peer Address:PortProcess",
+      "tcp   LISTEN 0      128          0.0.0.0:22        0.0.0.0:*    users:((\"sshd\",pid=900,fd=3))",
+      "udp   UNCONN 0      0          127.0.0.1:323       0.0.0.0:*    users:((\"chronyd\",pid=700,fd=5))"
+     ]
+    },
+    "packages": {
+     "installed": {
+      "audit": [
+       {
+        "arch": "x86_64",
+        "name": "audit",
+        "release": "1.el9",
+        "source": "rpm",
+        "version": "1.0"
+       }
+      ],
+      "bash": [
+       {
+        "arch": "x86_64",
+        "name": "bash",
+        "release": "1.el9",
+        "source": "rpm",
+        "version": "1.0"
+       }
+      ],
+      "chrony": [
+       {
+        "arch": "x86_64",
+        "name": "chrony",
+        "release": "1.el9",
+        "source": "rpm",
+        "version": "1.0"
+       }
+      ],
+      "kubectl": [
+       {
+        "arch": "x86_64",
+        "name": "kubectl",
+        "release": "1.el9",
+        "source": "rpm",
+        "version": "1.0"
+       }
+      ],
+      "openshift-clients": [
+       {
+        "arch": "x86_64",
+        "name": "openshift-clients",
+        "release": "1.el9",
+        "source": "rpm",
+        "version": "1.0"
+       }
+      ],
+      "openssh-clients": [
+       {
+        "arch": "x86_64",
+        "name": "openssh-clients",
+        "release": "1.el9",
+        "source": "rpm",
+        "version": "1.0"
+       }
+      ],
+      "openssh-server": [
+       {
+        "arch": "x86_64",
+        "name": "openssh-server",
+        "release": "1.el9",
+        "source": "rpm",
+        "version": "1.0"
+       }
+      ],
+      "postgresql": [
+       {
+        "arch": "x86_64",
+        "name": "postgresql",
+        "release": "1.el9",
+        "source": "rpm",
+        "version": "1.0"
+       }
+      ],
+      "vault": [
+       {
+        "arch": "x86_64",
+        "name": "vault",
+        "release": "1.el9",
+        "source": "rpm",
+        "version": "1.0"
+       }
+      ]
+     },
+     "package_manager": "dnf"
+    },
+    "processes": {
+     "command_names": [
+      "chronyd",
+      "kthreadd",
+      "sshd",
+      "systemd"
+     ],
+     "command_names_capped": false,
+     "command_names_collected": true,
+     "command_names_total": 4,
+     "process_total": 64,
+     "processes_raw": "      1       0 root      0.0  0.0 176236 18696 Ss     Oct 06 systemd\n      2       0 root      0.0  0.0      0     0 S      Oct 06 kthreadd"
+    },
+    "services": {
+     "all": {
+      "NetworkManager.service": {
+       "name": "NetworkManager.service",
+       "source": "systemd",
+       "state": "running",
+       "status": "enabled"
+      },
+      "auditd.service": {
+       "name": "auditd.service",
+       "source": "systemd",
+       "state": "running",
+       "status": "enabled"
+      },
+      "chronyd.service": {
+       "name": "chronyd.service",
+       "source": "systemd",
+       "state": "running",
+       "status": "enabled"
+      },
+      "kdump.service": {
+       "name": "kdump.service",
+       "source": "systemd",
+       "state": "stopped",
+       "status": "enabled"
+      },
+      "sshd.service": {
+       "name": "sshd.service",
+       "source": "systemd",
+       "state": "running",
+       "status": "enabled"
+      },
+      "systemd-journald.service": {
+       "name": "systemd-journald.service",
+       "source": "systemd",
+       "state": "running",
+       "status": "static"
+      },
+      "vault.service": {
+       "name": "vault.service",
+       "source": "systemd",
+       "state": "stopped",
+       "status": "disabled"
+      }
+     },
+     "enabled_at_boot": [
+      "NetworkManager.service",
+      "auditd.service",
+      "chronyd.service",
+      "kdump.service",
+      "sshd.service"
+     ],
+     "user_units": [
+      {
+       "state": "running",
+       "unit": "opa.service",
+       "user": "svcpolicy"
+      },
+      {
+       "state": "running",
+       "unit": "dbus-broker.service",
+       "user": "svcpolicy"
+      }
+     ],
+     "user_units_capped": false,
+     "user_units_read": [
+      {
+       "result": "ok",
+       "user": "svcpolicy"
+      }
+     ]
+    }
+   },
+   "host_id": "rootless01.example.com",
+   "hostname": "rootless01.example.com",
+   "os_distribution": "RedHat",
+   "os_family": "RedHat",
+   "os_version": "9.6"
   }
  ],
  "round2": [
   {
    "collected_at": "2026-11-18T02:00:00+00:00",
    "facts": {
+    "containers": {
+     "capped": false,
+     "count": 0,
+     "running": [],
+     "runtimes": [
+      {
+       "result": "ok",
+       "runtime": "podman",
+       "user": "root"
+      }
+     ]
+    },
     "host": {
      "distribution": "RedHat",
      "hostname": "controller01.example.com",
@@ -1541,6 +2005,18 @@
      "package_manager": "dnf"
     },
     "processes": {
+     "command_names": [
+      "chronyd",
+      "kthreadd",
+      "nginx",
+      "receptor",
+      "sshd",
+      "systemd"
+     ],
+     "command_names_capped": false,
+     "command_names_collected": true,
+     "command_names_total": 6,
+     "process_total": 66,
      "processes_raw": "      1       0 root      0.0  0.0 176236 18696 Ss     Oct 06 systemd\n      2       0 root      0.0  0.0      0     0 S      Oct 06 kthreadd"
     },
     "services": {
@@ -1616,7 +2092,10 @@
       "receptor.service",
       "sshd.service",
       "supervisord.service"
-     ]
+     ],
+     "user_units": [],
+     "user_units_capped": false,
+     "user_units_read": []
     }
    },
    "host_id": "controller01.example.com",
@@ -1629,18 +2108,33 @@
    "collected_at": "2026-11-18T02:00:00+00:00",
    "facts": {
     "containers": {
+     "capped": false,
+     "count": 3,
      "running": [
       {
        "image": "quay.io/ansible/awx:24.6.1",
-       "name": "awx-web"
+       "name": "awx-web",
+       "runtime": "podman",
+       "user": "root"
       },
       {
        "image": "quay.io/ansible/awx:24.6.1",
-       "name": "awx-task"
+       "name": "awx-task",
+       "runtime": "podman",
+       "user": "root"
       },
       {
        "image": "quay.io/sclorg/postgresql-15-c9s:latest",
-       "name": "awx-postgres"
+       "name": "awx-postgres",
+       "runtime": "podman",
+       "user": "root"
+      }
+     ],
+     "runtimes": [
+      {
+       "result": "ok",
+       "runtime": "podman",
+       "user": "root"
       }
      ]
     },
@@ -1718,6 +2212,18 @@
      "package_manager": "dnf"
     },
     "processes": {
+     "command_names": [
+      "chronyd",
+      "conmon",
+      "kthreadd",
+      "pasta.avx2",
+      "sshd",
+      "systemd"
+     ],
+     "command_names_capped": false,
+     "command_names_collected": true,
+     "command_names_total": 6,
+     "process_total": 66,
      "processes_raw": "      1       0 root      0.0  0.0 176236 18696 Ss     Oct 06 systemd\n      2       0 root      0.0  0.0      0     0 S      Oct 06 kthreadd"
     },
     "services": {
@@ -1765,7 +2271,10 @@
       "chronyd.service",
       "kdump.service",
       "sshd.service"
-     ]
+     ],
+     "user_units": [],
+     "user_units_capped": false,
+     "user_units_read": []
     }
    },
    "host_id": "awx01.example.com",
@@ -1777,6 +2286,49 @@
   {
    "collected_at": "2026-11-18T02:00:00+00:00",
    "facts": {
+    "containers": {
+     "capped": false,
+     "count": 5,
+     "running": [
+      {
+       "image": "registry.k8s.io/kube-apiserver:v1.31.2",
+       "name": "kube-apiserver",
+       "runtime": "cri",
+       "user": "root"
+      },
+      {
+       "image": "registry.k8s.io/kube-controller-manager:v1.31.2",
+       "name": "kube-controller-manager",
+       "runtime": "cri",
+       "user": "root"
+      },
+      {
+       "image": "registry.k8s.io/kube-scheduler:v1.31.2",
+       "name": "kube-scheduler",
+       "runtime": "cri",
+       "user": "root"
+      },
+      {
+       "image": "registry.k8s.io/etcd:3.5.15-0",
+       "name": "etcd",
+       "runtime": "cri",
+       "user": "root"
+      },
+      {
+       "image": "registry.k8s.io/coredns/coredns:v1.11.3",
+       "name": "coredns",
+       "runtime": "cri",
+       "user": "root"
+      }
+     ],
+     "runtimes": [
+      {
+       "result": "ok",
+       "runtime": "cri",
+       "user": "root"
+      }
+     ]
+    },
     "host": {
      "distribution": "RedHat",
      "hostname": "k8s-cp01.example.com",
@@ -1882,6 +2434,23 @@
      "package_manager": "dnf"
     },
     "processes": {
+     "command_names": [
+      "chronyd",
+      "containerd",
+      "containerd-shim",
+      "etcd",
+      "kthreadd",
+      "kube-apiserver",
+      "kube-controller",
+      "kube-scheduler",
+      "kubelet",
+      "sshd",
+      "systemd"
+     ],
+     "command_names_capped": false,
+     "command_names_collected": true,
+     "command_names_total": 11,
+     "process_total": 71,
      "processes_raw": "      1       0 root      0.0  0.0 176236 18696 Ss     Oct 06 systemd\n      2       0 root      0.0  0.0      0     0 S      Oct 06 kthreadd"
     },
     "services": {
@@ -1943,7 +2512,10 @@
       "kdump.service",
       "kubelet.service",
       "sshd.service"
-     ]
+     ],
+     "user_units": [],
+     "user_units_capped": false,
+     "user_units_read": []
     }
    },
    "host_id": "k8s-cp01.example.com",
@@ -1955,6 +2527,12 @@
   {
    "collected_at": "2026-11-18T02:00:00+00:00",
    "facts": {
+    "containers": {
+     "capped": false,
+     "count": 0,
+     "running": [],
+     "runtimes": []
+    },
     "host": {
      "distribution": "RedHat",
      "hostname": "jump01.example.com",
@@ -2055,6 +2633,16 @@
      "package_manager": "dnf"
     },
     "processes": {
+     "command_names": [
+      "chronyd",
+      "kthreadd",
+      "sshd",
+      "systemd"
+     ],
+     "command_names_capped": false,
+     "command_names_collected": true,
+     "command_names_total": 4,
+     "process_total": 64,
      "processes_raw": "      1       0 root      0.0  0.0 176236 18696 Ss     Oct 06 systemd\n      2       0 root      0.0  0.0      0     0 S      Oct 06 kthreadd"
     },
     "services": {
@@ -2108,7 +2696,10 @@
       "chronyd.service",
       "kdump.service",
       "sshd.service"
-     ]
+     ],
+     "user_units": [],
+     "user_units_capped": false,
+     "user_units_read": []
     }
    },
    "host_id": "jump01.example.com",
@@ -2120,6 +2711,12 @@
   {
    "collected_at": "2026-11-18T02:00:00+00:00",
    "facts": {
+    "containers": {
+     "capped": false,
+     "count": 0,
+     "running": [],
+     "runtimes": []
+    },
     "host": {
      "distribution": "RedHat",
      "hostname": "db01.example.com",
@@ -2203,6 +2800,17 @@
      "package_manager": "dnf"
     },
     "processes": {
+     "command_names": [
+      "chronyd",
+      "kthreadd",
+      "postgres",
+      "sshd",
+      "systemd"
+     ],
+     "command_names_capped": false,
+     "command_names_collected": true,
+     "command_names_total": 5,
+     "process_total": 65,
      "processes_raw": "      1       0 root      0.0  0.0 176236 18696 Ss     Oct 06 systemd\n      2       0 root      0.0  0.0      0     0 S      Oct 06 kthreadd"
     },
     "services": {
@@ -2257,7 +2865,10 @@
       "kdump.service",
       "postgresql.service",
       "sshd.service"
-     ]
+     ],
+     "user_units": [],
+     "user_units_capped": false,
+     "user_units_read": []
     }
    },
    "host_id": "db01.example.com",
@@ -2269,6 +2880,12 @@
   {
    "collected_at": "2026-11-18T02:00:00+00:00",
    "facts": {
+    "containers": {
+     "capped": false,
+     "count": 0,
+     "running": [],
+     "runtimes": []
+    },
     "host": {
      "distribution": "RedHat",
      "hostname": "app01.example.com",
@@ -2335,6 +2952,17 @@
      "package_manager": "dnf"
     },
     "processes": {
+     "command_names": [
+      "acme-agent",
+      "chronyd",
+      "kthreadd",
+      "sshd",
+      "systemd"
+     ],
+     "command_names_capped": false,
+     "command_names_collected": true,
+     "command_names_total": 5,
+     "process_total": 65,
      "processes_raw": "      1       0 root      0.0  0.0 176236 18696 Ss     Oct 06 systemd\n      2       0 root      0.0  0.0      0     0 S      Oct 06 kthreadd"
     },
     "services": {
@@ -2389,7 +3017,10 @@
       "chronyd.service",
       "kdump.service",
       "sshd.service"
-     ]
+     ],
+     "user_units": [],
+     "user_units_capped": false,
+     "user_units_read": []
     }
    },
    "host_id": "app01.example.com",
@@ -2401,6 +3032,12 @@
   {
    "collected_at": "2026-11-18T02:00:00+00:00",
    "facts": {
+    "containers": {
+     "capped": false,
+     "count": 0,
+     "running": [],
+     "runtimes": []
+    },
     "host": {
      "distribution": "RedHat",
      "hostname": "web01.example.com",
@@ -2465,6 +3102,16 @@
      "package_manager": "dnf"
     },
     "processes": {
+     "command_names": [
+      "chronyd",
+      "kthreadd",
+      "sshd",
+      "systemd"
+     ],
+     "command_names_capped": false,
+     "command_names_collected": true,
+     "command_names_total": 4,
+     "process_total": 64,
      "processes_raw": "      1       0 root      0.0  0.0 176236 18696 Ss     Oct 06 systemd\n      2       0 root      0.0  0.0      0     0 S      Oct 06 kthreadd"
     },
     "services": {
@@ -2512,7 +3159,10 @@
       "chronyd.service",
       "kdump.service",
       "sshd.service"
-     ]
+     ],
+     "user_units": [],
+     "user_units_capped": false,
+     "user_units_read": []
     }
    },
    "host_id": "web01.example.com",
@@ -2537,6 +3187,219 @@
    },
    "host_id": "partial01.example.com",
    "hostname": "partial01.example.com",
+   "os_distribution": "RedHat",
+   "os_family": "RedHat",
+   "os_version": "9.6"
+  },
+  {
+   "collected_at": "2026-11-18T02:00:00+00:00",
+   "facts": {
+    "containers": {
+     "capped": false,
+     "count": 1,
+     "running": [
+      {
+       "image": "quay.io/example/policy-agent:1.10",
+       "name": "opa",
+       "runtime": "podman",
+       "user": "svcpolicy"
+      }
+     ],
+     "runtimes": [
+      {
+       "result": "ok",
+       "runtime": "podman",
+       "user": "svcpolicy"
+      }
+     ]
+    },
+    "host": {
+     "distribution": "RedHat",
+     "hostname": "rootless01.example.com",
+     "os_family": "RedHat",
+     "version": "9.6"
+    },
+    "network": {
+     "listening_ports": [
+      "Netid State  Recv-Q Send-Q Local Address:Port Peer Address:PortProcess",
+      "tcp   LISTEN 0      128          0.0.0.0:22        0.0.0.0:*    users:((\"sshd\",pid=900,fd=3))",
+      "udp   UNCONN 0      0          127.0.0.1:323       0.0.0.0:*    users:((\"chronyd\",pid=700,fd=5))"
+     ]
+    },
+    "packages": {
+     "installed": {
+      "audit": [
+       {
+        "arch": "x86_64",
+        "name": "audit",
+        "release": "1.el9",
+        "source": "rpm",
+        "version": "1.0"
+       }
+      ],
+      "bash": [
+       {
+        "arch": "x86_64",
+        "name": "bash",
+        "release": "1.el9",
+        "source": "rpm",
+        "version": "1.0"
+       }
+      ],
+      "chrony": [
+       {
+        "arch": "x86_64",
+        "name": "chrony",
+        "release": "1.el9",
+        "source": "rpm",
+        "version": "1.0"
+       }
+      ],
+      "kubectl": [
+       {
+        "arch": "x86_64",
+        "name": "kubectl",
+        "release": "1.el9",
+        "source": "rpm",
+        "version": "1.0"
+       }
+      ],
+      "openshift-clients": [
+       {
+        "arch": "x86_64",
+        "name": "openshift-clients",
+        "release": "1.el9",
+        "source": "rpm",
+        "version": "1.0"
+       }
+      ],
+      "openssh-clients": [
+       {
+        "arch": "x86_64",
+        "name": "openssh-clients",
+        "release": "1.el9",
+        "source": "rpm",
+        "version": "1.0"
+       }
+      ],
+      "openssh-server": [
+       {
+        "arch": "x86_64",
+        "name": "openssh-server",
+        "release": "1.el9",
+        "source": "rpm",
+        "version": "1.0"
+       }
+      ],
+      "postgresql": [
+       {
+        "arch": "x86_64",
+        "name": "postgresql",
+        "release": "1.el9",
+        "source": "rpm",
+        "version": "1.0"
+       }
+      ],
+      "vault": [
+       {
+        "arch": "x86_64",
+        "name": "vault",
+        "release": "1.el9",
+        "source": "rpm",
+        "version": "1.0"
+       }
+      ]
+     },
+     "package_manager": "dnf"
+    },
+    "processes": {
+     "command_names": [
+      "chronyd",
+      "kthreadd",
+      "sshd",
+      "systemd"
+     ],
+     "command_names_capped": false,
+     "command_names_collected": true,
+     "command_names_total": 4,
+     "process_total": 64,
+     "processes_raw": "      1       0 root      0.0  0.0 176236 18696 Ss     Oct 06 systemd\n      2       0 root      0.0  0.0      0     0 S      Oct 06 kthreadd"
+    },
+    "services": {
+     "all": {
+      "NetworkManager.service": {
+       "name": "NetworkManager.service",
+       "source": "systemd",
+       "state": "running",
+       "status": "enabled"
+      },
+      "auditd.service": {
+       "name": "auditd.service",
+       "source": "systemd",
+       "state": "running",
+       "status": "enabled"
+      },
+      "chronyd.service": {
+       "name": "chronyd.service",
+       "source": "systemd",
+       "state": "running",
+       "status": "enabled"
+      },
+      "kdump.service": {
+       "name": "kdump.service",
+       "source": "systemd",
+       "state": "stopped",
+       "status": "enabled"
+      },
+      "sshd.service": {
+       "name": "sshd.service",
+       "source": "systemd",
+       "state": "running",
+       "status": "enabled"
+      },
+      "systemd-journald.service": {
+       "name": "systemd-journald.service",
+       "source": "systemd",
+       "state": "running",
+       "status": "static"
+      },
+      "vault.service": {
+       "name": "vault.service",
+       "source": "systemd",
+       "state": "stopped",
+       "status": "disabled"
+      }
+     },
+     "enabled_at_boot": [
+      "NetworkManager.service",
+      "auditd.service",
+      "chronyd.service",
+      "kdump.service",
+      "sshd.service"
+     ],
+     "user_units": [
+      {
+       "state": "running",
+       "unit": "opa.service",
+       "user": "svcpolicy"
+      },
+      {
+       "state": "running",
+       "unit": "dbus-broker.service",
+       "user": "svcpolicy"
+      }
+     ],
+     "user_units_capped": false,
+     "user_units_read": [
+      {
+       "result": "ok",
+       "user": "svcpolicy"
+      }
+     ]
+    }
+   },
+   "host_id": "rootless01.example.com",
+   "hostname": "rootless01.example.com",
    "os_distribution": "RedHat",
    "os_family": "RedHat",
    "os_version": "9.6"

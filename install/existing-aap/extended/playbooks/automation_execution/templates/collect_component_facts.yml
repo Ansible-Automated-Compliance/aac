@@ -1,0 +1,30 @@
+---
+
+- name: Load collect-component-facts survey variable definitions
+  ansible.builtin.include_vars:
+    file: "{{ playbook_dir }}/../../vars/collect_component_facts_survey.yml"
+
+# No variables at launch and no limit: this template holds the database
+# credential and connects to managed hosts. The launcher gets two closed
+# choices; the hosts are chosen by the playbook from the component map, and
+# only from this inventory. Attach the credential a component's service side
+# needs (see its catalog entry) to this template; without it that side is
+# recorded as not assessed.
+- name: Collect component facts job template
+  ansible.controller.job_template:
+    name: "{{ aac_template_collect_component_facts_name }}"
+    description: "{{ aac_template_collect_component_facts_description }}"
+    organization: "{{ aac_organization }}"
+    state: present
+    inventory: "{{ aac_inventory_name }}"
+    project: "{{ aap_project_name }}"
+    playbook: ansible/playbooks/collect_component_facts.yml
+    job_type: run
+    execution_environment: "{{ aap_project_default_ee }}"
+    credentials:
+      - "{{ aac_cred_vault }}"
+      - "{{ aac_cred_postgresql }}"
+    ask_variables_on_launch: false
+    ask_limit_on_launch: false
+    survey_enabled: true
+    survey_spec: "{{ aac_collect_component_facts_survey_spec }}"

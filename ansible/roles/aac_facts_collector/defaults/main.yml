@@ -17,8 +17,15 @@ aac_collect_pam:          true
 aac_collect_cron:         true
 aac_collect_processes:    true
 aac_collect_certificates: true
+aac_collect_containers:   true   # running container images and names (podman, crictl, docker)
 aac_collect_aws_meta:     true   # auto-skipped if not on AWS
 aac_collect_app_deps:     true   # Java / Python / Node application dependencies
+
+# ── Caps on the lists that component detection reads ────────────────────────
+# Each list says when its cap was reached (`*_capped`).
+aac_processes_max_command_names: 2000   # distinct command names
+aac_services_max_user_units:     500    # running user-level systemd units
+aac_containers_max:              500    # running containers, all runtimes together
 
 # ── Application dependency collection bounds ─────────────────────────────────
 # Every probe is capped so collection cost stays predictable across a fleet.

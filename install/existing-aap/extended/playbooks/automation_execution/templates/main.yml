@@ -16,5 +16,6 @@
     - seed_framework_catalog.yml
     - enroll_discovered_frameworks.yml
     - discover_host_components.yml
+    - collect_component_facts.yml
     - load_opa_policies.yml
     - deploy_grafana_dashboard.yml

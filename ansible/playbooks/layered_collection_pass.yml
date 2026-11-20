@@ -1,0 +1,107 @@
+---
+# layered_collection_pass.yml — ONE pass of layered fact gathering.
+#
+# Imported a fixed number of times by collect_component_facts.yml (an AAP
+# workflow has no loop, so the passes are written out there). Not a job
+# template entry point. Pass N handles what is at depth N: pass 1 the
+# components detected on hosts, pass 2 what was found inside those, and so on.
+# A pass beyond the site's depth setting, or with nothing queued, selects
+# nothing and runs nothing.
+#
+# It holds no component names: what runs where comes from the catalog through
+# scripts/layered_collection.py, and each collector runs through
+# ansible/tasks/layered_run_collector.yml.
+
+- name: "Layered collection | select the host-side collectors of this pass"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Select host-side collectors
+      ansible.builtin.command:
+        argv: ["python3", "{{ lc_script }}", "select", "--state", "{{ lc_work }}/state.json",
+               "--pass", "{{ lc_pass }}", "--layer", "host", "--out", "{{ lc_work }}/items.json",
+               "--catalog", "{{ lc_catalog_file }}", "--collectors-dir", "{{ lc_collectors_dir }}"]
+      changed_when: false
+
+    - name: Read the selection
+      ansible.builtin.slurp:
+        src: "{{ lc_work }}/items.json"
+      register: lc_items_raw
+
+    - name: Parse the selection
+      ansible.builtin.set_fact:
+        lc_selected: "{{ (lc_items_raw.content | b64decode | from_json).by_host }}"
+
+    # Only hosts that were in the inventory when the job started are targeted:
+    # a name stored in the database can never add a new connection target.
+    - name: Target only the hosts where a selected component was detected
+      ansible.builtin.add_host:
+        name: "{{ item.key }}"
+        groups: "lc_pass_{{ lc_pass }}"
+        lc_items: "{{ item.value }}"
+      loop: "{{ lc_selected | dict2items }}"
+      loop_control:
+        label: "{{ item.key }}: {{ item.value | length }} collector(s)"
+      when: item.key in lc_inventory_hosts
+      changed_when: false
+
+- name: "Layered collection | run host-side collectors where the component was detected"
+  hosts: "lc_pass_{{ lc_pass | default(0) }}"
+  gather_facts: false
+  become: "{{ hostvars['localhost'].lc_become | bool }}"
+  ignore_unreachable: true
+  vars:
+    lc_collectors_dir: "{{ hostvars['localhost'].lc_collectors_dir }}"
+  tasks:
+    - name: Start with no results
+      ansible.builtin.set_fact:
+        lc_results: []
+
+    - name: Run each selected collector
+      ansible.builtin.include_tasks: ../tasks/layered_run_collector.yml
+      loop: "{{ lc_items }}"
+      loop_control:
+        loop_var: lc_item
+        label: "{{ lc_item.file }}"
+
+- name: "Layered collection | store host-side results, then the service side of this pass"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Store the host-side results
+      ansible.builtin.include_tasks: ../tasks/layered_store_results.yml
+      vars:
+        lc_result_hosts: "{{ lc_selected.keys() | list }}"
+
+    # Service side: once per service instance, from the controller, with the
+    # credential type the catalog names. Selection records "no credential"
+    # for an instance whose credential is not attached; that is not a failure.
+    - name: Select service-side collectors
+      ansible.builtin.command:
+        argv: ["python3", "{{ lc_script }}", "select", "--state", "{{ lc_work }}/state.json",
+               "--pass", "{{ lc_pass }}", "--layer", "service", "--out", "{{ lc_work }}/items.json",
+               "--catalog", "{{ lc_catalog_file }}", "--collectors-dir", "{{ lc_collectors_dir }}"]
+      changed_when: false
+
+    - name: Read the selection
+      ansible.builtin.slurp:
+        src: "{{ lc_work }}/items.json"
+      register: lc_items_raw
+
+    - name: Start with no results
+      ansible.builtin.set_fact:
+        lc_results: []
+
+    - name: Run each selected collector
+      ansible.builtin.include_tasks: ../tasks/layered_run_collector.yml
+      loop: "{{ (lc_items_raw.content | b64decode | from_json)['items'] }}"
+      loop_control:
+        loop_var: lc_item
+        label: "{{ lc_item.file }}"
+
+    - name: Store the service-side results
+      ansible.builtin.include_tasks: ../tasks/layered_store_results.yml
+      vars:
+        lc_result_hosts: ["localhost"]

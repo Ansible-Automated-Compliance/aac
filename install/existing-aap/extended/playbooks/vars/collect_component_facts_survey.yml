@@ -1,0 +1,32 @@
+---
+# Survey for AAC_Collect_Component_Facts. The template takes no other variables
+# at launch: the database host, the catalog, the collectors directory and the
+# depth come from the project checkout and site_config.yml, not from the person
+# launching the job. Both fields are closed choices.
+
+aac_collect_component_facts_survey_spec:
+  name: Collect component facts
+  description: >-
+    Run the collectors of the components detected on each host. Run after component discovery.
+  spec:
+    - question_name: Which collectors to run
+      question_description: >-
+        cheap runs the collectors marked cheap (for a nightly schedule); all also runs the heavy ones (weekly).
+      variable: layered_cost
+      type: multiplechoice
+      required: true
+      default: all
+      choices:
+        - cheap
+        - all
+    - question_name: Which side to collect
+      question_description: >-
+        host collects on the managed hosts, service through each service's own API, all does both.
+      variable: layered_layers
+      type: multiplechoice
+      required: true
+      default: all
+      choices:
+        - host
+        - service
+        - all

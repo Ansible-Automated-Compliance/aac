@@ -1,0 +1,103 @@
+---
+# linux_containers.yml — running containers: image name and container name only.
+#
+# Read-only. Podman (the calling account, and as root every user that already
+# has Podman state under its runtime directory), CRI (crictl) and Docker when
+# the command exists. No environment, no command line, no mounts and no labels
+# are read: those can hold secrets.
+#
+# A runtime that is not installed is left out. A runtime that is installed but
+# could not be read is listed in `runtimes` with result `failed`, so an empty
+# list from a failed query is not mistaken for "no containers".
+
+- name: List running containers (podman, docker)
+  ansible.builtin.shell: |
+    me="$(id -u)"
+    fmt={% raw %}'{{.Image}}\t{{.Names}}'{% endraw %}
+
+    list() {  # runtime user command...
+      rt="$1"; who="$2"; shift 2
+      if out="$(cd / && timeout 30 "$@" 2>/dev/null)"; then
+        printf 'READ\t%s\t%s\tok\n' "$rt" "$who"
+        printf '%s\n' "$out" | awk -F'\t' -v r="$rt" -v u="$who" 'NF >= 2 {print "C\t" r "\t" u "\t" $1 "\t" $2}'
+      else
+        printf 'READ\t%s\t%s\tfailed\n' "$rt" "$who"
+      fi
+    }
+    if command -v podman >/dev/null 2>&1; then
+      list podman "$(id -nu)" podman ps --format "$fmt"
+      if [ "$me" = 0 ] && command -v runuser >/dev/null 2>&1; then
+        for d in /run/user/[0-9]*; do
+          [ -d "$d" ] || continue
+          uid="${d##*/}"
+          [ "$uid" = 0 ] && continue
+          # Only users that already have Podman state: `podman ps` for a user
+          # who never ran Podman would create it, and this collector writes nothing.
+          [ -d "$d/libpod" ] || [ -d "$d/containers" ] || continue
+          user="$(id -nu "$uid" 2>/dev/null)" || continue
+          home="$(getent passwd "$uid" | cut -d: -f6)"
+          [ -n "$home" ] || continue
+          list podman "$user" runuser -u "$user" -- env HOME="$home" XDG_RUNTIME_DIR="$d" podman ps --format "$fmt"
+        done
+      fi
+    fi
+    if command -v docker >/dev/null 2>&1 && ! docker --version 2>/dev/null | grep -qi podman; then
+      list docker "$(id -nu)" docker ps --format "$fmt"
+    fi
+    exit 0
+  args:
+    executable: /bin/bash
+  register: containers_raw
+  changed_when: false
+  failed_when: false
+
+- name: Check for a CRI client
+  ansible.builtin.command: sh -c 'command -v crictl'
+  register: crictl_present
+  changed_when: false
+  failed_when: false
+
+- name: List running containers (CRI)
+  ansible.builtin.command: timeout 30 crictl ps -o json
+  register: crictl_raw
+  changed_when: false
+  failed_when: false
+  when: crictl_present.rc == 0
+
+- name: Parse running containers
+  ansible.builtin.set_fact:
+    aac_containers_found: >-
+      {%- set out = [] -%}
+      {%- for l in (containers_raw.stdout_lines | default([])) if l.startswith('C\t') -%}
+      {%- set p = l.split('\t') -%}
+      {%- if p | length == 5 -%}
+      {%- set _ = out.append({'runtime': p[1], 'user': p[2], 'image': p[3], 'name': p[4]}) -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {%- if crictl_present.rc == 0 and (crictl_raw.rc | default(1)) == 0 -%}
+      {%- for c in ((crictl_raw.stdout | default('{}', true) | from_json).containers | default([])) -%}
+      {%- set _ = out.append({'runtime': 'cri', 'user': 'root',
+                               'image': (c.image | default({})).userSpecifiedImage | default((c.image | default({})).image | default(''), true),
+                               'name': (c.metadata | default({})).name | default('')}) -%}
+      {%- endfor -%}
+      {%- endif -%}
+      {{ out }}
+    aac_containers_read: >-
+      {%- set out = [] -%}
+      {%- for l in (containers_raw.stdout_lines | default([])) if l.startswith('READ\t') -%}
+      {%- set p = l.split('\t') -%}
+      {%- if p | length == 4 -%}{%- set _ = out.append({'runtime': p[1], 'user': p[2], 'result': p[3]}) -%}{%- endif -%}
+      {%- endfor -%}
+      {%- if crictl_present.rc == 0 -%}
+      {%- set _ = out.append({'runtime': 'cri', 'user': 'root',
+                               'result': 'ok' if (crictl_raw.rc | default(1)) == 0 else 'failed'}) -%}
+      {%- endif -%}
+      {{ out }}
+
+- name: Set container facts
+  ansible.builtin.set_fact:
+    aac_containers:
+      running:  "{{ aac_containers_found[: aac_containers_max | int] }}"
+      count:    "{{ aac_containers_found | length }}"
+      capped:   "{{ (aac_containers_found | length) > (aac_containers_max | int) }}"
+      runtimes: "{{ aac_containers_read }}"
