@@ -42,10 +42,29 @@
 #   2. vendor_product — vendor AND product both match
 #   3. product        — product name matches only
 #
-# Version handling is FAIL-CLOSED. A component is reported when its installed
-# version is listed as affected, OR when the CVE carries no version data at all
-# (can't tell → report it). It is excluded only when the CVE states which
-# versions are affected and this host's version is demonstrably not among them.
+# VERSION HANDLING. The rule lives in ONE place, the database function
+# aac_cve_package_verdict (ansible/files/cve_cache_schema.sql), and is the same
+# one patch_assurance.yml uses:
+#
+#   * When the CVE carries a fixed build for the host's product stream
+#     (cve_fixed_builds), an rpm package is affected when its installed
+#     epoch:version-release is LOWER than that build, by rpm's own ordering
+#     (ansible/files/rpm_evr_functions.sql). Builds of another stream are never
+#     compared: an el8 fixed build says nothing about an el9 host.
+#   * A kernel is judged on the build the host is RUNNING. Fixed build
+#     installed but an older one booted is 'reboot_pending' and is still a
+#     work item.
+#   * With no fixed build, the old exact list applies and stays FAIL-CLOSED: a
+#     component is reported when its version is in affected_versions, or when
+#     the CVE carries no version data at all (cannot tell, so report it). It is
+#     left out only when the CVE lists versions and this one is not among them.
+#   * A host with no matching component is "not affected (not installed)". That
+#     is counted and printed, and it is not the same as 'unknown'.
+#
+# WHAT THE CACHE HOLDS. `source` on cve_events_received tells a real delivery
+# from the demo seed. When every CVE in scope is a demo-seed row the summary
+# says so, and the job artifact carries cve_cache_demo_only=true: "nothing
+# matched" then means "no real CVE was looked for".
 #
 # AAP Job Template: "AAC - Identify Affected Components (catalog match)"
 # Credentials: Ansible Vault
@@ -102,6 +121,48 @@
 
       no_log: true  # the assertion names a secret variable; keep its evaluation out of job output
     # -------------------------------------------------------------------------
+    # Schema — the matcher is a database function, so an install that has not
+    # re-run the database role since this change still gets it. All four files
+    # are idempotent (CREATE OR REPLACE / IF NOT EXISTS) and ORDER MATTERS:
+    # the verdict functions call the rpm functions and read installed_inventory.
+    # -------------------------------------------------------------------------
+    - name: Ensure the rpm version-comparison functions exist
+      community.postgresql.postgresql_script:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        path: "{{ playbook_dir }}/../files/rpm_evr_functions.sql"
+
+    - name: Ensure the inventory schema carries the package build columns
+      community.postgresql.postgresql_script:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        path: "{{ playbook_dir }}/../files/inventory_catalog_schema.sql"
+
+    - name: Ensure the CVE cache schema and the verdict functions exist
+      community.postgresql.postgresql_script:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        path: "{{ playbook_dir }}/../files/cve_cache_schema.sql"
+
+    - name: Ensure the patch worklist carries the verdict columns
+      community.postgresql.postgresql_script:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        path: "{{ playbook_dir }}/../files/patch_worklist_schema.sql"
+
+    # -------------------------------------------------------------------------
     # Guard rails — matching against stale or absent data manufactures false
     # confidence, which is worse than reporting nothing.
     # -------------------------------------------------------------------------
@@ -115,21 +176,50 @@
         query: |
           SELECT
             (SELECT count(*) FROM cve_events_received)                        AS cve_count,
+            (SELECT count(*) FROM cve_events_received
+              WHERE source = 'demo_seed')                                     AS cve_demo_count,
+            (SELECT count(*) FROM cve_events_received c
+              WHERE %(filter)s = ''
+                 OR c.cve_id = ANY(string_to_array(replace(%(filter)s, ' ', ''), ','))) AS scope_count,
+            (SELECT count(*) FROM cve_events_received c
+              WHERE c.source IS DISTINCT FROM 'demo_seed'
+                AND (%(filter)s = ''
+                     OR c.cve_id = ANY(string_to_array(replace(%(filter)s, ' ', ''), ',')))) AS scope_real_count,
+            (SELECT COALESCE(string_agg(w.id, ', ' ORDER BY w.id), '')
+               FROM unnest(string_to_array(replace(%(filter)s, ' ', ''), ',')) AS w(id)
+              WHERE w.id <> ''
+                AND NOT EXISTS (SELECT 1 FROM cve_events_received c
+                                 WHERE c.cve_id = w.id))                      AS cves_not_in_cache,
+            (SELECT count(DISTINCT cve_id) FROM cve_fixed_builds
+              WHERE base_os AND fixed_evr IS NOT NULL)                        AS cves_with_fixed_build,
+            (SELECT count(*) FROM installed_inventory
+              WHERE package_format = 'rpm' AND package_evr IS NOT NULL)       AS rpm_build_rows,
             (SELECT count(*) FROM installed_inventory)                        AS inventory_rows,
             (SELECT count(DISTINCT hostname) FROM installed_inventory)        AS hosts,
             (SELECT count(*) FROM inventory_catalog)                          AS catalog_products,
             (SELECT ROUND(EXTRACT(EPOCH FROM (now() - max(last_seen_at)))/3600)
                FROM installed_inventory)                                      AS inventory_age_hours
+        named_args:
+          filter: "{{ cve_filter }}"
       register: preflight
 
     - name: Set pre-flight facts
       ansible.builtin.set_fact:
         pf: "{{ preflight.query_result[0] }}"
 
+    # "Demo only" is judged on the CVEs this run looks at. An empty scope (a
+    # filter that names nothing in the cache) is handled just below.
+    - name: Decide whether this run looks only at demo-seed CVEs
+      ansible.builtin.set_fact:
+        cve_cache_demo_only: "{{ (pf.scope_count | int > 0) and (pf.scope_real_count | int == 0) }}"
+
     - name: Report what we are matching against
       ansible.builtin.debug:
         msg:
-          - "CVEs known locally      : {{ pf.cve_count }}"
+          - "CVEs known locally      : {{ pf.cve_count }} ({{ pf.cve_demo_count }} demo seed, {{ pf.cve_count | int - pf.cve_demo_count | int }} delivered)"
+          - "CVEs in this run        : {{ pf.scope_count }}{{ ' — ALL DEMO SEED' if cve_cache_demo_only | bool else '' }}"
+          - "CVEs with a fixed build : {{ pf.cves_with_fixed_build }}"
+          - "rpm rows with a build   : {{ pf.rpm_build_rows }}"
           - "Hosts observed          : {{ pf.hosts }}"
           - "Installed package rows  : {{ pf.inventory_rows }}"
           - "Catalog products        : {{ pf.catalog_products }}"
@@ -144,6 +234,46 @@
           set would report zero affected components, which reads as "you are clean"
           when it actually means "we never looked".
       when: pf.cve_count | int == 0
+
+    # A requested CVE that is not in the cache has NO verdict. Zero matches for
+    # it would read as "not affected" when nothing was compared.
+    - name: Stop when none of the requested CVEs is in the cache
+      ansible.builtin.fail:
+        msg: >-
+          None of the requested CVE ids ({{ cve_filter }}) is in cve_events_received, so there
+          is nothing to compare the inventory with. This is not a "not affected" result.
+          Deliver the CVE first: the portal bridge, the EDA CVE webhook, or — for Red Hat
+          products — the opt-in "AAC - Fetch Red Hat CVE Data" (fetch_redhat_cve_data.yml).
+      when:
+        - cve_filter | length > 0
+        - pf.scope_count | int == 0
+
+    - name: Say which requested CVEs are not in the cache
+      ansible.builtin.debug:
+        msg: >-
+          NOT IN THE CACHE, NO VERDICT: {{ pf.cves_not_in_cache }}. Nothing below says anything
+          about these ids. Deliver them and run again.
+      when: pf.cves_not_in_cache | length > 0
+
+    - name: Say when the cache holds only demo rows
+      ansible.builtin.debug:
+        msg: >-
+          THE CVE CACHE HOLDS ONLY DEMO ROWS for this run (source='demo_seed', synthetic
+          CVE-2026-9xxxx ids). Every result below is about invented vulnerabilities. A real
+          CVE is absent from the cache, which is different from "not installed" and from
+          "not affected". Deliver real CVEs before reading this as an exposure statement.
+      when: cve_cache_demo_only | bool
+
+    - name: Say when fixed builds cannot be compared because the catalog predates them
+      ansible.builtin.debug:
+        msg: >-
+          {{ pf.cves_with_fixed_build }} CVE(s) carry a fixed build, but no rpm row in
+          installed_inventory has its epoch:version-release yet. Re-run "AAC - Refresh
+          Inventory Catalog (patch intelligence)"; until then matching falls back to the
+          exact affected-version list.
+      when:
+        - pf.cves_with_fixed_build | int > 0
+        - pf.rpm_build_rows | int == 0
 
     - name: Stop when there is no inventory to match
       ansible.builtin.fail:
@@ -195,88 +325,42 @@
         query: |
           DELETE FROM patch_worklist
            WHERE host_resolution = 'catalog_match';
-          WITH scope AS (
-            -- Vendor remediation is LEFT JOINed: a CVE with no remediation row is
-            -- still reported (you are affected whether or not a fix exists), it
-            -- simply carries no fix version. That is the 'support' valley — and
-            -- it is a different problem from a fix you have not applied yet.
-            SELECT c.cve_id, c.severity, c.kev_member, c.vendor, c.product,
-                   c.affected_versions, c.affected_cpes
-              FROM cve_events_received c
-             WHERE %(filter)s = ''
-                OR c.cve_id = ANY(string_to_array(%(filter)s, ','))
-          ),
-          matched AS (
-            SELECT
-              c.cve_id,
-              c.severity,
-              COALESCE(c.kev_member, false)                       AS kev_member,
-              i.hostname,
-              i.os_family,
-              COALESCE(NULLIF(i.package_vendor, ''), c.vendor)    AS vendor,
-              i.package_name                                      AS product,
-              i.package_version                                   AS installed_version,
-              r.fix_version, r.fix_vendor, r.vendor_advisory_id, r.patch_url,
-              CASE
-                WHEN i.cpe IS NOT NULL AND c.affected_cpes IS NOT NULL
-                     AND i.cpe = ANY(c.affected_cpes)                    THEN 'cpe'
-                WHEN lower(COALESCE(i.package_vendor, '')) = lower(COALESCE(c.vendor, ''))
-                     AND lower(i.package_name) = lower(c.product)        THEN 'vendor_product'
-                ELSE 'product'
-              END                                                 AS match_kind,
-              CASE
-                WHEN c.affected_versions IS NULL
-                     OR cardinality(c.affected_versions) = 0            THEN 'unknown'
-                WHEN i.package_version = ANY(c.affected_versions)       THEN 'affected'
-                ELSE 'not_listed'
-              END                                                 AS version_verdict
-            FROM scope c
-            JOIN installed_inventory i
-              ON (i.cpe IS NOT NULL AND c.affected_cpes IS NOT NULL
-                  AND i.cpe = ANY(c.affected_cpes))
-              OR lower(i.package_name) = lower(c.product)
-            -- Exactly one remediation per matched component (see header): the
-            -- vendor that ships THIS installed package first, then the CVE's own
-            -- vendor, then the earliest published fix. LIMIT 1 is the guarantee.
-            LEFT JOIN LATERAL (
-              SELECT r.fix_version, r.vendor AS fix_vendor, r.vendor_advisory_id,
-                     r.patch_url, r.available_at
-                FROM cve_vendor_remediations r
-               WHERE r.cve_id = c.cve_id
-               ORDER BY (lower(r.vendor) = lower(COALESCE(NULLIF(i.package_vendor, ''), c.vendor, ''))) DESC,
-                        (lower(r.vendor) = lower(COALESCE(c.vendor, ''))) DESC,
-                        r.available_at ASC NULLS LAST,
-                        r.id ASC
-               LIMIT 1
-            ) r ON true
-          )
+          -- The match is aac_cve_host_verdicts() (cve_cache_schema.sql): CVE x
+          -- observed inventory, one verdict per matched component. A CVE with
+          -- no remediation and no fixed build is still reported (you are
+          -- affected whether or not a fix exists); it carries fix_match='none'.
           INSERT INTO patch_worklist (
             pulled_at, cve_id, severity, kev_member, hostname, os_family,
             vendor, product, installed_version,
-            fix_vendor, fixed_version, package_manager, install_command,
-            patch_source, host_resolution, fix_match
+            fix_vendor, fixed_version, package_manager, advisory_id,
+            patch_source, host_resolution, fix_match,
+            installed_evr, booted_evr, version_verdict, verdict_detail
           )
           SELECT
             now(), cve_id, severity, kev_member, hostname, os_family,
             vendor, product, installed_version,
-            fix_vendor, fix_version,
+            fix_vendor,
+            -- The fixed build of THIS host's stream when one is known, else the
+            -- vendor remediation's version.
+            COALESCE(fixed_evr, fix_version),
             CASE
               WHEN os_family ILIKE '%%debian%%' OR os_family ILIKE '%%ubuntu%%' THEN 'apt'
               WHEN os_family ILIKE '%%suse%%'                                   THEN 'zypper'
               WHEN os_family ILIKE '%%windows%%'                                THEN 'windows'
               ELSE 'dnf'
             END,
-            vendor_advisory_id,
+            advisory_id,
             'catalog_match',
             'catalog_match',
-            -- fix_match records HOW the fix was resolved. 'none' means no vendor
-            -- remediation exists for this CVE — you are affected and no fix is
+            -- fix_match records HOW the fix was resolved. 'none' means no fix is
+            -- known for this CVE on this host — you are affected and no fix is
             -- published. That is materially different from 'not yet applied'.
-            CASE WHEN fix_version IS NOT NULL AND fix_version <> ''
-                 THEN 'vendor_fix' ELSE 'none' END
-          FROM matched
-          WHERE version_verdict IN ('affected', 'unknown')
-             OR %(include_unaffected)s
+            CASE WHEN COALESCE(fixed_evr, fix_version, '') <> ''
+                 THEN 'vendor_fix' ELSE 'none' END,
+            installed_evr, booted_evr, verdict, detail
+          FROM aac_cve_host_verdicts(%(filter)s)
+          WHERE verdict IN ('affected', 'reboot_pending', 'unknown')
+             OR (%(include_unaffected)s AND verdict <> 'not_installed')
         named_args:
           filter: "{{ cve_filter }}"
           include_unaffected: "{{ include_unaffected_versions }}"
@@ -295,13 +379,54 @@
         query: |
           SELECT cve_id, severity, kev_member, product,
                  count(DISTINCT hostname)        AS hosts,
-                 count(DISTINCT installed_version) AS versions,
-                 string_agg(DISTINCT installed_version, ', ' ORDER BY installed_version) AS version_spread
+                 count(DISTINCT COALESCE(installed_evr, installed_version)) AS versions,
+                 string_agg(DISTINCT COALESCE(installed_evr, installed_version), ', '
+                            ORDER BY COALESCE(installed_evr, installed_version)) AS version_spread
             FROM patch_worklist
            WHERE host_resolution = 'catalog_match'
            GROUP BY 1,2,3,4
            ORDER BY kev_member DESC, hosts DESC
       register: summary
+
+    # Every host gets an answer for every CVE in scope, including the ones that
+    # are not work items: fixed, not affected, and not installed.
+    - name: Count hosts per CVE and verdict
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: |
+          SELECT cve_id,
+                 count(DISTINCT hostname) FILTER (WHERE verdict = 'affected')       AS affected,
+                 count(DISTINCT hostname) FILTER (WHERE verdict = 'reboot_pending') AS reboot_pending,
+                 count(DISTINCT hostname) FILTER (WHERE verdict = 'unknown')        AS unknown,
+                 count(DISTINCT hostname) FILTER (WHERE verdict = 'fixed')          AS fixed,
+                 count(DISTINCT hostname) FILTER (WHERE verdict IN ('not_affected', 'not_listed')) AS not_affected,
+                 count(DISTINCT hostname) FILTER (WHERE verdict = 'not_installed')  AS not_installed
+            FROM aac_cve_host_verdicts(%(filter)s)
+           GROUP BY cve_id
+           ORDER BY cve_id
+        named_args:
+          filter: "{{ cve_filter }}"
+      register: verdict_counts
+
+    - name: Read the reboot-pending and unknown rows
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: |
+          SELECT cve_id, hostname, product, version_verdict, verdict_detail
+            FROM patch_worklist
+           WHERE host_resolution = 'catalog_match'
+             AND version_verdict IN ('reboot_pending', 'unknown')
+           ORDER BY version_verdict, cve_id, hostname, product
+           LIMIT 200
+      register: attention_rows
 
     - name: Count the totals
       community.postgresql.postgresql_query:
@@ -315,7 +440,8 @@
                  count(DISTINCT hostname)       AS affected_hosts,
                  count(DISTINCT cve_id)         AS matched_cves,
                  count(DISTINCT product)        AS affected_components,
-                 count(*) FILTER (WHERE kev_member) AS kev_items
+                 count(*) FILTER (WHERE kev_member) AS kev_items,
+                 count(DISTINCT hostname) FILTER (WHERE version_verdict = 'reboot_pending') AS reboot_pending_hosts
             FROM patch_worklist
            WHERE host_resolution = 'catalog_match'
       register: totals
@@ -355,6 +481,12 @@
           has_vendor_fix: "{{ v.has_vendor_fix | default(false) | bool }}"
           kev_present:    "{{ v.kev_present | default(false) | bool }}"
           max_severity:   "{{ sev_map[v.sev_rank | default(0) | int] }}"
+          # Fixed build installed, older kernel still running: counted in
+          # affected_count, and a reboot (not an install) is what closes it.
+          reboot_pending_hosts: "{{ totals.query_result[0].reboot_pending_hosts | default(0) | int }}"
+          # true when every CVE this run looked at is a demo-seed row.
+          cve_cache_demo_only: "{{ cve_cache_demo_only | bool }}"
+          cves_not_in_cache: "{{ pf.cves_not_in_cache }}"
           # EOL exposure is resolved by the Refresh Support Status step, not here;
           # default false so the agent has a well-defined field either way.
           eol_exposed:    false
@@ -367,16 +499,28 @@
           - "──────────────────────────────────────────────────────────"
           - "AFFECTED SYSTEMS AND COMPONENTS (catalog-matched)"
           - "──────────────────────────────────────────────────────────"
-          - "CVEs matched to this estate : {{ t.matched_cves }} of {{ pf.cve_count }} known"
+          - "{{ 'CVE CACHE HOLDS ONLY DEMO ROWS — these results are about synthetic CVEs' if cve_cache_demo_only | bool else 'CVE cache: ' ~ pf.scope_real_count ~ ' delivered CVE(s) in this run' }}"
+          - "{{ 'NOT IN THE CACHE, NO VERDICT: ' ~ pf.cves_not_in_cache if pf.cves_not_in_cache | length > 0 else 'Every requested CVE is in the cache.' if cve_filter | length > 0 else 'No CVE filter: every cached CVE was matched.' }}"
+          - "CVEs matched to this estate : {{ t.matched_cves }} of {{ pf.scope_count }} in this run"
           - "Affected components         : {{ t.affected_components }}"
           - "Affected hosts              : {{ t.affected_hosts }} of {{ pf.hosts }} observed"
           - "Host x component work items : {{ t.work_items }}"
           - "KEV (actively exploited)    : {{ t.kev_items }}"
+          - "Fixed build installed, reboot pending : {{ t.reboot_pending_hosts }} host(s) (counted as affected)"
           - "──────────────────────────────────────────────────────────"
-          - "Fix versions are NOT resolved here — vendor remediation"
-          - "enrichment has not run. These rows say WHICH systems and"
-          - "components are affected, not what version fixes them."
+          - "fixed_version is the fixed build of the host's own product"
+          - "stream when the CVE carries one, else the vendor remediation's"
+          - "version, else empty (fix_match='none')."
           - "──────────────────────────────────────────────────────────"
+
+    - name: Hosts per CVE and verdict (not_installed means not affected, not installed)
+      ansible.builtin.debug:
+        var: verdict_counts.query_result
+
+    - name: Rows that need a reboot or could not be decided
+      ansible.builtin.debug:
+        var: attention_rows.query_result
+      when: attention_rows.query_result | length > 0
 
     - name: Per-CVE component and version spread
       ansible.builtin.debug:
@@ -385,7 +529,8 @@
     - name: Note when nothing matched
       ansible.builtin.debug:
         msg: >-
-          No components in this estate matched the {{ pf.cve_count }} known CVEs.
-          That is a legitimate result — but confirm the CVE store actually covers
-          the products you run before reporting it as "not affected".
+          No affected components in this estate for the {{ pf.scope_count }} CVE(s) in this run.
+          The per-CVE table above says why for each host: fixed, not affected, or not
+          installed. Confirm the CVE store covers the products you run before reporting
+          it as "not affected"{{ '; this run looked at DEMO-SEED CVEs only' if cve_cache_demo_only | bool else '' }}.
       when: totals.query_result[0].work_items | int == 0

@@ -1,0 +1,277 @@
+---
+# fetch_redhat_cve_data.yml — OPT-IN: fill the CVE cache for named CVE ids from
+# the Red Hat Security Data API
+#
+# Without a feed, cve_events_received holds only what the portal bridge or the
+# EDA CVE webhook delivered, or the synthetic demo seed. This playbook gives an
+# install with neither a way to ask about a REAL Red Hat CVE: for each id it
+# reads
+#
+#     https://access.redhat.com/hydra/rest/securitydata/cve/<CVE-ID>.json
+#
+# and writes
+#   cve_events_received  one row, source='redhat_security_data_api'
+#   cve_fixed_builds     one row per product and fixed build (`affected_release`:
+#                        product name, package name-epoch:version-release,
+#                        advisory) and one per stated position without a build
+#                        (`package_state`: Not affected, Will not fix, …)
+#
+# identify_affected_components.yml then compares each host's installed build
+# with the fixed build of its own product stream.
+#
+# WHAT LEAVES THE SITE. One unauthenticated HTTPS GET per CVE id. The CVE id in
+# the URL is the only thing sent: no hostnames, no inventory, no package list,
+# no credentials (~/.netrc is not read), no request body. The ids are validated
+# as CVE ids before any request is made.
+#
+# OPT-IN. Nothing runs this by default, and it refuses to run unless
+# confirm_redhat_cve_fetch=true. It is not scheduled and is not part of any
+# workflow. An air-gapped install simply never runs it.
+#
+# A row another source delivered for the same CVE id is left as it is; only the
+# fixed builds are added to it. Rows written here are replaced on the next run.
+#
+# Remove what this playbook wrote with:
+#   DELETE FROM cve_fixed_builds    WHERE source='redhat_security_data_api';
+#   DELETE FROM cve_events_received WHERE source='redhat_security_data_api';
+#
+# Not handled (see CHANGELOG): module-stream builds, container images, kernel
+# live patches (kpatch-patch) and layered products are stored or listed, not
+# matched against hosts.
+#
+# AAP Job Template: "AAC - Fetch Red Hat CVE Data"
+#   survey: cve_ids (comma-separated), confirm_redhat_cve_fetch
+# Credentials: Ansible Vault  ·  EE: AAC Compliance EE (community.postgresql)
+# Run before: "AAC - Identify Affected Components (catalog match)"
+
+- name: Fetch Red Hat CVE data into the CVE cache (opt-in)
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    pg_port: "{{ compliance_db_port | default(5432) }}"
+    pg_db: "compliance"
+    pg_user: "postgres"
+    pg_password: "{{ compliance_db_password }}"
+    redhat_cve_api_base: "https://access.redhat.com/hydra/rest/securitydata/cve"
+    redhat_cve_fetch_max: 50
+    redhat_cve_source: "redhat_security_data_api"
+
+  tasks:
+    # site_config.yml and vault_secrets.yml are gitignored and absent from AAP
+    # project checkouts (and from the sales.demos pack); load them when present,
+    # otherwise every value arrives as an extra var, survey answer or credential.
+    - name: Load optional local config
+      ansible.builtin.include_vars: "{{ item }}"
+      with_first_found:
+        - files:
+            - "{{ playbook_dir }}/../vars/site_config.yml"
+          skip: true
+
+    - name: Load optional local secrets
+      ansible.builtin.include_vars: "{{ item }}"
+      with_first_found:
+        - files:
+            - "{{ playbook_dir }}/../vars/vault_secrets.yml"
+          skip: true
+
+    - name: Refuse to contact the Red Hat API without an explicit confirmation
+      ansible.builtin.assert:
+        that:
+          - confirm_redhat_cve_fetch | default(false) | bool
+        fail_msg: >-
+          This playbook sends CVE ids to access.redhat.com. It runs only when
+          confirm_redhat_cve_fetch=true is set. Nothing was requested.
+        quiet: true
+
+    - name: Require the database connection to be configured
+      ansible.builtin.assert:
+        that:
+          - pg_host is defined
+          - pg_host | string | length > 0
+          - compliance_db_password is defined
+        fail_msg: >-
+          pg_host and compliance_db_password must be set — from ansible/vars/site_config.yml
+          and vault_secrets.yml on a workstation, or from extra_vars / a credential on AAP.
+        quiet: true
+      no_log: true  # the assertion names a secret variable; keep its evaluation out of job output
+
+    # aac_valid_cve_ids fails the play on anything that is not a CVE id, so
+    # nothing but a CVE id can reach the URL below.
+    - name: Validate the requested CVE ids
+      ansible.builtin.set_fact:
+        fetch_ids: "{{ cve_ids | default('') | aac_valid_cve_ids }}"
+
+    - name: Require between one and the maximum number of CVE ids
+      ansible.builtin.assert:
+        that:
+          - fetch_ids | length > 0
+          - fetch_ids | length <= redhat_cve_fetch_max | int
+        fail_msg: >-
+          cve_ids must name between 1 and {{ redhat_cve_fetch_max }} CVE ids
+          (comma-separated, for example CVE-2026-98432). Got {{ fetch_ids | length }}.
+        quiet: true
+
+    - name: Ensure the rpm version-comparison functions exist
+      community.postgresql.postgresql_script:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        path: "{{ playbook_dir }}/../files/rpm_evr_functions.sql"
+
+    - name: Ensure the CVE cache schema exists
+      community.postgresql.postgresql_script:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        path: "{{ playbook_dir }}/../files/cve_cache_schema.sql"
+
+    # The request. GET, no body, no credentials, no netrc. 404 is an answer
+    # ("Red Hat has no record of this id"), not an error.
+    - name: Read each CVE from the Red Hat Security Data API
+      ansible.builtin.uri:
+        url: "{{ redhat_cve_api_base }}/{{ item }}.json"
+        method: GET
+        return_content: true
+        status_code: [200, 404]
+        use_netrc: false
+        force_basic_auth: false
+        follow_redirects: safe
+        validate_certs: true
+        timeout: 30
+        headers:
+          Accept: application/json
+      loop: "{{ fetch_ids }}"
+      register: api
+      retries: 2
+      delay: 5
+      until: api.status in [200, 404]
+
+    - name: Parse the documents
+      ansible.builtin.set_fact:
+        fetched: >-
+          {{ api.results | selectattr('status', 'equalto', 200)
+             | map(attribute='json') | map('aac_redhat_cve_rows') | list }}
+        not_found: "{{ api.results | selectattr('status', 'equalto', 404) | map(attribute='item') | list }}"
+
+    - name: Flatten the fixed builds
+      ansible.builtin.set_fact:
+        fixed_build_rows: >-
+          {{ fixed_build_rows | default([])
+             + (item.fixed_builds | map('combine', {'cve_id': item.cve_id}) | list) }}
+      loop: "{{ fetched }}"
+      loop_control:
+        label: "{{ item.cve_id }}: {{ item.fixed_builds | length }} rows"
+
+    # A row from another source keeps its own fields (the WHERE on the update).
+    - name: Record the CVE
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: |
+          INSERT INTO cve_events_received
+            (cve_id, cvss_v3, severity, kev_member, published_at, vendor, product,
+             description, cve_references, source, received_at)
+          VALUES
+            (%(cve)s, NULLIF(%(cvss)s, '')::numeric, NULLIF(%(sev)s, ''), false,
+             NULLIF(%(pub)s, '')::timestamptz, %(vendor)s, NULLIF(%(product)s, ''),
+             NULLIF(%(descr)s, ''),
+             COALESCE(to_jsonb(string_to_array(NULLIF(%(refs)s, ''), E'\n')), '[]'::jsonb),
+             %(src)s, now())
+          ON CONFLICT (cve_id) DO UPDATE
+             SET cvss_v3        = EXCLUDED.cvss_v3,
+                 severity       = EXCLUDED.severity,
+                 published_at   = EXCLUDED.published_at,
+                 vendor         = EXCLUDED.vendor,
+                 product        = EXCLUDED.product,
+                 description    = EXCLUDED.description,
+                 cve_references = EXCLUDED.cve_references,
+                 received_at    = now()
+           WHERE cve_events_received.source = %(src)s
+        named_args:
+          cve: "{{ item.cve_id }}"
+          cvss: "{{ item.event.cvss_v3 | default('', true) | string }}"
+          sev: "{{ item.event.severity | default('', true) }}"
+          pub: "{{ item.event.published_at | default('', true) }}"
+          vendor: "{{ item.event.vendor }}"
+          product: "{{ item.event.product | default('', true) }}"
+          descr: "{{ item.event.description | default('', true) }}"
+          refs: "{{ item.event.references | join('\n') }}"
+          src: "{{ redhat_cve_source }}"
+      loop: "{{ fetched }}"
+      loop_control:
+        label: "{{ item.cve_id }}"
+
+    - name: Clear the fixed builds this source delivered earlier for these CVEs
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: "DELETE FROM cve_fixed_builds WHERE cve_id = %(cve)s AND source = %(src)s"
+        named_args:
+          cve: "{{ item.cve_id }}"
+          src: "{{ redhat_cve_source }}"
+      loop: "{{ fetched }}"
+      loop_control:
+        label: "{{ item.cve_id }}"
+
+    - name: Record the fixed builds and vendor states
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: |
+          INSERT INTO cve_fixed_builds
+            (cve_id, package_name, fixed_evr, fix_state, stream, dist_tag,
+             product_name, cpe, advisory_id, released_at, base_os, source)
+          VALUES
+            (%(cve)s, %(pkg)s, NULLIF(%(evr)s, ''), %(state)s, NULLIF(%(stream)s, ''),
+             NULLIF(%(tag)s, ''), %(prod)s, NULLIF(%(cpe)s, ''), NULLIF(%(adv)s, ''),
+             NULLIF(%(rel)s, '')::timestamptz, %(base)s::boolean, %(src)s)
+          ON CONFLICT DO NOTHING
+        named_args:
+          cve: "{{ item.cve_id }}"
+          pkg: "{{ item.package_name }}"
+          evr: "{{ item.fixed_evr | default('', true) }}"
+          state: "{{ item.fix_state }}"
+          stream: "{{ item.stream | default('', true) }}"
+          tag: "{{ item.dist_tag | default('', true) }}"
+          prod: "{{ item.product_name | default('', true) }}"
+          cpe: "{{ item.cpe | default('', true) }}"
+          adv: "{{ item.advisory_id | default('', true) }}"
+          rel: "{{ item.released_at | default('', true) }}"
+          base: "{{ 'true' if item.base_os else 'false' }}"
+          src: "{{ redhat_cve_source }}"
+      loop: "{{ fixed_build_rows | default([]) }}"
+      loop_control:
+        label: "{{ item.cve_id }} {{ item.package_name }} {{ item.fixed_evr | default(item.fix_state, true) }} ({{ item.stream | default('no stream', true) }})"
+
+    - name: Publish what was fetched
+      ansible.builtin.set_stats:
+        aggregate: false
+        per_host: false
+        data:
+          redhat_cves_fetched: "{{ fetched | map(attribute='cve_id') | list }}"
+          redhat_cves_not_found: "{{ not_found }}"
+
+    - name: Summary
+      ansible.builtin.debug:
+        msg:
+          - "Requested : {{ fetch_ids | join(', ') }}"
+          - "Recorded  : {{ fetched | map(attribute='cve_id') | join(', ') | default('none', true) }} (source={{ redhat_cve_source }})"
+          - "Not known to Red Hat (404, nothing recorded): {{ not_found | join(', ') | default('none', true) }}"
+          - "Fixed-build and state rows: {{ fixed_build_rows | default([]) | length }}, of which base OS and matched against hosts: {{ fixed_build_rows | default([]) | selectattr('base_os') | list | length }}"
+          - "Listed by Red Hat, not recorded (container images, entries with no version such as kpatch-patch): {{ fetched | map(attribute='skipped') | map('length') | sum }}"
+          - "Next: run 'AAC - Refresh Inventory Catalog (patch intelligence)' if it has not run since the upgrade, then 'AAC - Identify Affected Components (catalog match)' with cve_ids={{ fetched | map(attribute='cve_id') | join(',') }}"

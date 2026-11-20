@@ -91,6 +91,9 @@ files:
   # tables (docs/EVIDENCE_IMMUTABILITY.md); schema.yml applies it, so the
   # platform replay needs it in the pack.
   - ansible/files/evidence_append_only.sql
+  # rpm ordering (aac_evr_cmp …): schema.yml applies it first, and Identify
+  # Affected Components re-applies it with the three schema files below.
+  - ansible/files/rpm_evr_functions.sql
   - ansible/files/inventory_catalog_schema.sql
   - ansible/files/cve_cache_schema.sql
   - ansible/files/patch_worklist_schema.sql

@@ -93,7 +93,7 @@ The compliance history (PostgreSQL) means this is also **longitudinal** — you 
 
 ### 4.1 AAC side (per customer environment)
 - **`host_facts`** — nightly fact snapshots; `facts->'packages'->'installed'` (Linux: name→version/release/arch) and `facts->'packages'->'installed_raw'` (Windows: DisplayName/DisplayVersion/Publisher).
-- **`installed_inventory`** — per-host rows normalized from host_facts (`hostname, package_name, package_version, package_vendor, cpe, os_*, architecture, source`).
+- **`installed_inventory`** — per-host rows normalized from host_facts (`hostname, package_name, package_version, package_vendor, cpe, os_*, architecture, source`), plus the full build for rpm packages (`package_epoch`, `package_release`, `package_evr`, `installed_evrs`) and, for kernel image packages, the build the host is running (`booted_evr`). `package_version` is the rpm VERSION only; matching a CVE's fixed build uses `package_evr`.
 - **`manual_product_declarations`** — operator-declared products package_facts can't see (appliance firmware, network-OS versions, agents).
 - **`inventory_catalog`** (materialized view) — the normalized, host-count-aggregated catalog: `{vendor, product, version, cpe, host_count, source, first_seen_at, last_seen_at}`. Rebuilt by **`refresh_inventory_catalog.yml`**.
 - **AAC Portal Bridge** — read-only API (`/api/aac/v1/inventory_catalog`, `/whoami`, `/healthz`), token-auth'd, cursor-paginated. Holds no state; connects read-only.

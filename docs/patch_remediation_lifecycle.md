@@ -347,7 +347,7 @@ POST /api/portal/v1/tenants/{id}/remediations/{item}/outcomes
 
 | Level | Question answered | Status |
 |---|---|---|
-| **A0 — Version** | Is the fixed version actually installed? | ✅ Real comparison (installed ≥ fixed, RPM EVR-aware) — not a presence check |
+| **A0 — Version** | Is the fixed build installed and, for a kernel, running? | ✅ rpm epoch:version-release comparison in the database (`ansible/files/rpm_evr_functions.sql`, the same functions the catalog matcher uses). Fixed kernel build installed with an older one booted is the outcome `reboot_pending`, not a pass |
 | **A1 — Service** | Is the service running and listening? | ❌ |
 | **A2 — Functional** | Does it do its job? (health endpoint, query, synthetic transaction) | ❌ |
 | **A3 — Integration** | Does it work *in the estate* — through the LB, with dependants? | ❌ |

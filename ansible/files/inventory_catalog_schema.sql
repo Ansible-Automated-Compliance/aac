@@ -50,6 +50,31 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_inventory_identity
 ALTER TABLE installed_inventory ADD COLUMN IF NOT EXISTS purl TEXT;
 CREATE INDEX IF NOT EXISTS idx_inventory_purl ON installed_inventory (purl) WHERE purl IS NOT NULL;
 
+-- ── Full package build (epoch, version, release) and the booted kernel ────────
+-- package_version alone cannot answer "is this host patched": every RHEL 9
+-- kernel is version 5.14.0 and the fix lives in the release
+-- (5.14.0-687.64.1.el9_8). These columns are ADDITIVE. package_version keeps its
+-- meaning (the rpm VERSION, or the whole Debian version string) and every
+-- existing reader of it is unchanged.
+--
+--   package_format   'rpm' | 'deb' | NULL (Windows, pip, maven, npm)
+--   package_epoch    rpm epoch as text; NULL when the package has none
+--   package_release  rpm release, dist tag included (687.64.1.el9_8)
+--   package_evr      rpm: [epoch:]version-release of the NEWEST installed build
+--                    (rpm_evr_functions.sql, aac_evr / aac_evr_max);
+--                    deb: the Debian version string as dpkg reports it
+--   installed_evrs   every installed build of the package (a host keeps several
+--                    kernels); package_evr is the newest of these
+--   booted_evr       kernel image packages only: the build the host is RUNNING
+--                    (from `uname -r`). Differs from package_evr when a newer
+--                    kernel is installed and the host has not rebooted.
+ALTER TABLE installed_inventory ADD COLUMN IF NOT EXISTS package_format  VARCHAR(10);
+ALTER TABLE installed_inventory ADD COLUMN IF NOT EXISTS package_epoch   VARCHAR(20);
+ALTER TABLE installed_inventory ADD COLUMN IF NOT EXISTS package_release VARCHAR(150);
+ALTER TABLE installed_inventory ADD COLUMN IF NOT EXISTS package_evr     VARCHAR(255);
+ALTER TABLE installed_inventory ADD COLUMN IF NOT EXISTS installed_evrs  TEXT[];
+ALTER TABLE installed_inventory ADD COLUMN IF NOT EXISTS booted_evr      VARCHAR(255);
+
 CREATE INDEX IF NOT EXISTS idx_inventory_vendor_product ON installed_inventory (package_vendor, package_name);
 CREATE INDEX IF NOT EXISTS idx_inventory_cpe            ON installed_inventory (cpe) WHERE cpe IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_inventory_last_seen      ON installed_inventory (last_seen_at);

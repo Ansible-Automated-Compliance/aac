@@ -1,0 +1,64 @@
+{
+  "_comment": "Synthetic host_facts rows for tests/test_cve_matching.py. Host names are placeholders. packages.installed has the shape ansible.builtin.package_facts returns; host.kernel is `uname -r`.",
+  "hosts": [
+    {"hostname": "el9-vulnerable.example.com", "os_family": "RedHat", "os_distribution": "RedHat", "os_version": "9.8",
+     "kernel": "5.14.0-687.61.1.el9_8.x86_64",
+     "packages": {
+       "kernel": [{"name": "kernel", "version": "5.14.0", "release": "687.58.1.el9_8", "epoch": null, "arch": "x86_64", "source": "rpm"},
+                  {"name": "kernel", "version": "5.14.0", "release": "687.61.1.el9_8", "epoch": null, "arch": "x86_64", "source": "rpm"}],
+       "kernel-core": [{"name": "kernel-core", "version": "5.14.0", "release": "687.61.1.el9_8", "epoch": null, "arch": "x86_64", "source": "rpm"}],
+       "kernel-tools": [{"name": "kernel-tools", "version": "5.14.0", "release": "687.61.1.el9_8", "epoch": null, "arch": "x86_64", "source": "rpm"}],
+       "bash": [{"name": "bash", "version": "5.1.8", "release": "9.el9", "epoch": null, "arch": "x86_64", "source": "rpm"}],
+       "openssl": [{"name": "openssl", "version": "3.2.2", "release": "6.el9_5", "epoch": 1, "arch": "x86_64", "source": "rpm"}]}},
+    {"hostname": "el9-fixed.example.com", "os_family": "RedHat", "os_distribution": "RedHat", "os_version": "9.8",
+     "kernel": "5.14.0-687.64.1.el9_8.x86_64",
+     "packages": {
+       "kernel": [{"name": "kernel", "version": "5.14.0", "release": "687.64.1.el9_8", "epoch": null, "arch": "x86_64", "source": "rpm"},
+                  {"name": "kernel", "version": "5.14.0", "release": "687.61.1.el9_8", "epoch": null, "arch": "x86_64", "source": "rpm"}],
+       "bash": [{"name": "bash", "version": "5.1.8", "release": "9.el9", "epoch": null, "arch": "x86_64", "source": "rpm"}]}},
+    {"hostname": "el9-reboot-pending.example.com", "os_family": "RedHat", "os_distribution": "RedHat", "os_version": "9.8",
+     "kernel": "5.14.0-687.61.1.el9_8.x86_64",
+     "packages": {
+       "kernel": [{"name": "kernel", "version": "5.14.0", "release": "687.61.1.el9_8", "epoch": null, "arch": "x86_64", "source": "rpm"},
+                  {"name": "kernel", "version": "5.14.0", "release": "687.64.1.el9_8", "epoch": null, "arch": "x86_64", "source": "rpm"}],
+       "bash": [{"name": "bash", "version": "5.1.8", "release": "9.el9", "epoch": null, "arch": "x86_64", "source": "rpm"}]}},
+    {"hostname": "el8-vulnerable.example.com", "os_family": "RedHat", "os_distribution": "RedHat", "os_version": "8.10",
+     "kernel": "4.18.0-553.180.1.el8_10.x86_64",
+     "packages": {
+       "kernel": [{"name": "kernel", "version": "4.18.0", "release": "553.180.1.el8_10", "epoch": null, "arch": "x86_64", "source": "rpm"}],
+       "bash": [{"name": "bash", "version": "4.4.20", "release": "5.el8", "epoch": null, "arch": "x86_64", "source": "rpm"}]}},
+    {"hostname": "el8-fixed.example.com", "os_family": "RedHat", "os_distribution": "RedHat", "os_version": "8.10",
+     "kernel": "4.18.0-553.182.1.el8_10.x86_64",
+     "packages": {
+       "kernel": [{"name": "kernel", "version": "4.18.0", "release": "553.182.1.el8_10", "epoch": null, "arch": "x86_64", "source": "rpm"}]}},
+    {"hostname": "el9-eus-fixed.example.com", "os_family": "RedHat", "os_distribution": "RedHat", "os_version": "9.4",
+     "kernel": "5.14.0-427.161.1.el9_4.x86_64",
+     "packages": {
+       "kernel": [{"name": "kernel", "version": "5.14.0", "release": "427.161.1.el9_4", "epoch": null, "arch": "x86_64", "source": "rpm"}]}},
+    {"hostname": "el9-minimal.example.com", "os_family": "RedHat", "os_distribution": "RedHat", "os_version": "9.8",
+     "kernel": "5.14.0-687.61.1.el9_8.x86_64",
+     "packages": {
+       "kernel-core": [{"name": "kernel-core", "version": "5.14.0", "release": "687.61.1.el9_8", "epoch": null, "arch": "x86_64", "source": "rpm"}]}},
+    {"hostname": "el9-rt.example.com", "os_family": "RedHat", "os_distribution": "RedHat", "os_version": "9.8",
+     "kernel": "5.14.0-687.61.1.el9_8.x86_64+rt",
+     "packages": {
+       "kernel-rt": [{"name": "kernel-rt", "version": "5.14.0", "release": "687.61.1.el9_8", "epoch": null, "arch": "x86_64", "source": "rpm"}]}},
+    {"hostname": "el7-host.example.com", "os_family": "RedHat", "os_distribution": "RedHat", "os_version": "7.9",
+     "kernel": "3.10.0-1160.119.1.el7.x86_64",
+     "packages": {
+       "kernel": [{"name": "kernel", "version": "3.10.0", "release": "1160.119.1.el7", "epoch": null, "arch": "x86_64", "source": "rpm"}]}},
+    {"hostname": "fedora-host.example.com", "os_family": "RedHat", "os_distribution": "Fedora", "os_version": "42",
+     "kernel": "6.14.5-300.fc42.x86_64",
+     "packages": {
+       "kernel": [{"name": "kernel", "version": "6.14.5", "release": "300.fc42", "epoch": null, "arch": "x86_64", "source": "rpm"}]}},
+    {"hostname": "debian-host.example.com", "os_family": "Debian", "os_distribution": "Debian", "os_version": "12",
+     "kernel": "6.1.0-18-amd64",
+     "packages": {
+       "openssl": [{"name": "openssl", "version": "3.0.11-1~deb12u2", "arch": "amd64", "category": "utils", "origin": "Debian", "source": "apt"}],
+       "bash": [{"name": "bash", "version": "5.2.15-2+b2", "arch": "amd64", "category": "shells", "origin": "Debian", "source": "apt"}]}},
+    {"hostname": "container-host.example.com", "os_family": "RedHat", "os_distribution": "RedHat", "os_version": "9.8",
+     "kernel": "5.14.0-687.64.1.el9_8.x86_64",
+     "packages": {
+       "bash": [{"name": "bash", "version": "5.1.8", "release": "9.el9", "epoch": null, "arch": "x86_64", "source": "rpm"}]}}
+  ]
+}
