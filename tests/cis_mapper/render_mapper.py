@@ -306,6 +306,11 @@ def main():
     check_audit_rules(build, facts, opa_input)
     check_profile_attest(os.path.join(os.path.dirname(os.path.abspath(task_file)), 'cis_rhel9_profile_attest.yml'), build, facts)
 
+    # Debian / Ubuntu supplement, against the Ubuntu 22.04 fixture beside this one
+    ubuntu = os.path.join(os.path.dirname(os.path.abspath(fixture)), 'ubuntu2204_facts.fixture.json')
+    if os.path.exists(ubuntu):
+        deb_checks(build, facts, ubuntu)
+
 
 def check_world_writable(build, facts):
     """CIS 7.1.11: the policy treats world_writable.truncated as evidence
@@ -473,6 +478,81 @@ def check_profile_attest(task_file, build, facts):
     assert json.loads(json.dumps(o, default=str))['attest']['gpg_keys_reviewed'] is True, 'attestation not a JSON true'
     assert 'profile' not in render(build, facts) and 'attest' not in render(build, facts, {'cis_selection': {}}), 'selection added without cis_selection'
     print('profile/attest check: vocabulary from the policy, unknown values fail, booleans pass through')
+
+
+def deb_checks(build, rhel_facts, ubuntu_fixture):
+    """Debian / Ubuntu supplement (deb block, 2026-11-19): the CIS Ubuntu field
+    names are emitted only from a valid deb block that reports family|deb."""
+    deb_only = {'sysctl', 'sysctl_persisted', 'ufw', 'limits', 'apport', 'aide', 'pending_updates', 'apparmor'}
+    # an RPM host: no deb block, or one that says family|other, changes nothing
+    base = render(build, rhel_facts)
+    assert not deb_only & set(base), 'Debian-only sections on the RHEL fixture: %s' % sorted(deb_only & set(base))
+    other = copy.deepcopy(rhel_facts)
+    other['custom_facts']['deb_raw'] = 'family|other\nend:ok\n'
+    assert render(build, other) == base, 'a family|other deb block changed the RHEL input'
+
+    facts = json.load(open(ubuntu_fixture))
+    o = render(build, facts)
+    assert deb_only <= set(o), 'missing Debian sections: %s' % sorted(deb_only - set(o))
+    assert o['packages']['ufw'] is True and o['packages']['gdm3'] is False and o['initial_setup']['gdm_installed'] is False
+    assert o['user_group']['passwd_content'].split('\n')[0] == 'root:x:0:0::/root:/bin/bash', o['user_group']['passwd_content'][:60]
+    assert o['user_group']['group_content'].split('\n')[0] == 'root:x:0:' and o['user_group']['uid_min'] == 1000
+    assert 'pam_unix.so' in o['pam']['common_auth'] and o['pam']['tmout_readonly'] is False and o['pam']['tmout_exported'] is False
+    assert o['sysctl']['kernel.randomize_va_space'] == '2' and o['sysctl_persisted']['fs.suid_dumpable'] == 'unset'
+    assert o['ssh']['config_files'][0] == {'path': '/etc/ssh/sshd_config', 'mode': '0644', 'pw_name': 'root', 'gr_name': 'root'}
+    assert o['apparmor'] == {'profiles': {'loaded': 32, 'enforce': 30, 'complain': 2}, 'processes': {'unconfined': 0}}
+    assert o['boot_security']['grub_cfg_linux_lines'][0].lstrip().startswith('linux')
+    assert o['sudo']['default_timestamp_timeout'] == 15 and o['chronyd']['pools_configured'] == 4 and o['chronyd']['process_users'] == ['_chrony']
+    assert o['user_group']['interactive_homes'] == [{'user': 'root', 'exists': True, 'owner': 'root', 'mode': '0700', 'home': '/root'}]
+    assert {'user': 'root', 'mode': '0644', 'owner': 'root', 'group': 'root', 'primary_group': 'root', 'path': '/root/.bashrc'} in o['user_group']['dotfiles']
+    # an absent or all-comment file is collected as a comment naming it (not met, not missing)
+    assert o['limits']['limits_raw'].startswith('# ') and o['apport']['default_raw'] == '# /etc/default/apport not present'
+    assert o['aide']['cron_raw'].startswith('# no aide entry') and o['aide']['aidecheck']['timer_unit_file_state'] == 'not-found'
+    assert o['initial_setup']['issue_exists'] is True and 'Ubuntu' in o['initial_setup']['issue_content'] and o['initial_setup']['motd_exists'] is False
+    assert [f['path'] for f in o['initial_setup']['motd_extra_files']] == ['/etc/update-motd.d/00-header', '/etc/update-motd.d/10-help-text']
+    assert 'cron_yearly_mode' not in o['cron'], '/etc/cron.yearly is absent in the fixture: no mode may be reported'
+
+    def with_deb(fn):
+        f = copy.deepcopy(facts)
+        f['custom_facts']['deb_raw'] = fn(f['custom_facts']['deb_raw'])
+        return render(build, f)
+
+    # no end:ok, a forged second end:ok, or a duplicated singleton: not collected
+    for why, fn in (('without end:ok', lambda s: s.replace('end:ok', '')),
+                    ('with a forged end:ok', lambda s: s.replace('end:ok', 'end:ok\npkg|aide|yes\nend:ok')),
+                    ('with a duplicated package line', lambda s: s.replace('pkg|ufw|yes', 'pkg|ufw|no\npkg|ufw|yes')),
+                    ('with a missing command', lambda s: s.replace('family|deb', 'family|deb\nmissing_cmd|systemctl'))):
+        bad = with_deb(fn)
+        assert not (deb_only - {'apparmor'}) & set(bad) and 'ufw' not in bad.get('packages', {}) and bad['user_group']['passwd_content'] == '', \
+            'deb block %s was accepted' % why
+    # a capped list is no field (evidence missing); the rest of the block stands
+    t = with_deb(lambda s: s.replace('end:ok', 'truncated|dotf\ntruncated|pwd\nend:ok'))
+    assert 'dotfiles' not in t['user_group'] and t['user_group']['passwd_content'] == '' and 'interactive_homes' in t['user_group'] and 'ufw' in t
+    # hostile text is carried verbatim and never evaluated
+    h = with_deb(lambda s: s.replace('txt|issue|', 'txt|issue|' + EVIL + ' ', 1).replace('dotf|root|0644|root|root|root|/root/.bashrc', 'dotf|root|0644|root|root|root|/root/' + EVIL))
+    assert EVIL in h['initial_setup']['issue_content'] and any(d['path'] == '/root/' + EVIL for d in h['user_group']['dotfiles']), 'payload altered (deb)'
+    assert EVAL_MARK not in json.dumps(h, default=str), 'TEMPLATE EVALUATED — injection (deb)'
+    # the passwd password field is a class, never text: x, empty, or * for anything else
+    c = with_deb(lambda s: s.replace('pwd|daemon|x|', 'pwd|daemon|other|').replace('pwd|bin|x|', 'pwd|bin|empty|'))
+    rows = c['user_group']['passwd_content'].split('\n')
+    assert 'daemon:*:1:1::/usr/sbin:/usr/sbin/nologin' in rows and 'bin::2:2::/bin:/usr/sbin/nologin' in rows
+    # ufw not installed, and chrony neither installed nor configured, are facts
+    u = with_deb(lambda s: s.replace('ufw_probe|yes', 'ufw_probe|absent').replace('pkg|chrony|yes', 'pkg|chrony|no')
+                 .replace('chrony_servers|0', 'nofile|chrony_conf').replace('chrony_pools|4\n', ''))
+    assert u['ufw']['status_verbose'] == '# ufw is not installed' and u['chronyd']['servers_configured'] == 0 and u['chronyd']['pools_configured'] == 0
+    # a failed probe is no field
+    assert 'status_verbose' not in with_deb(lambda s: s.replace('ufw_probe|yes', 'ufw_probe|failed'))['ufw']
+    assert 'pending_updates' not in with_deb(lambda s: s.replace('pending_probe|yes', 'pending_probe|failed'))
+    # /etc/cron.yearly present; GDM installed with its dconf keys and locks
+    g = with_deb(lambda s: s.replace('absent|cron_yearly', 'cy|0700|root|root').replace('pkg|gdm3|no', 'pkg|gdm3|yes').replace(
+        'end:ok', 'gdm_profile|yes\ndconf|banner-message-enable|true\ndconf|idle-delay|uint32 900\ndconf|lock-delay|uint32 5\n'
+        'dconf|lock-enabled|true\ndlock|/org/gnome/desktop/session/idle-delay\ngdmconf|xdmcp_enable|true\nend:ok'))
+    i = g['initial_setup']
+    assert g['cron']['cron_yearly_mode'] == '0700' and g['cron']['cron_yearly_owner'] == 'root' and g['cron']['cron_yearly_group'] == 'root'
+    assert i['gdm_installed'] is True and i['gdm_dconf_profile_exists'] is True and i['gdm_banner_configured'] is True and i['gdm_lock_enabled'] is True
+    assert i['gdm_idle_delay'] == 900 and i['gdm_lock_delay'] == 5 and i['gdm_xdmcp_enabled'] is True and i['gdm_disable_user_list'] is False
+    assert i['gdm_dconf_locks'] == ['/org/gnome/desktop/session/idle-delay']
+    print('deb check: Ubuntu fields only from a valid family|deb block; RPM input unchanged; caps, probes and hostile text handled')
 
 
 if __name__ == '__main__':

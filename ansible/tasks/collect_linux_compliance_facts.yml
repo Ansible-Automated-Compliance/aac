@@ -1228,6 +1228,214 @@
   changed_when: false
   failed_when: false
 
+# ── Debian / Ubuntu supplement (2026-11-19) ─────────────────────────────────
+# The facts the CIS Ubuntu modules read that the blocks above collect only for
+# the RPM family, or not at all: dpkg package state and Debian unit names, the
+# PAM common-* stack, account files in the shape the policy parses, banner
+# text, AppArmor, ufw, GDM (gdm3), chrony under /etc/chrony, limits, apport,
+# pending updates and the sudo timestamp default. On a host the RPM database
+# manages, or without dpkg, the block prints family|other and nothing else, so
+# RHEL, Amazon Linux and the like receive exactly what they did before.
+# Line format (same rules as the blocks above):
+#   pkg|<name>|yes/no        unit|<name>|<LoadState>|<ActiveState>|<UnitFileState>
+#   file|<tag> nofile|<tag>  txt|<tag>|<line>   (active lines unless noted)
+#   pwd|<name>|x/empty/other|<uid>|<gid>|<home>|<shell>      (/etc/passwd; the
+#       password field is reported as a class, the GECOS field is not read)
+#   grpd|<name>|x/empty/other|<gid>|<members>               (/etc/group)
+#   ihome|<user>|yes/no|<owner>|<mode>|<home>   dotf|<user>|<mode>|<owner>|<group>|<primary group>|<path>
+#   aa|<loaded/enforce/complain/unconfined>|<count>   ufw_probe|yes/absent/failed
+#   chrony_servers|<n> chrony_pools|<n> chrony_user|<user> sudo_tt|<minutes>
+#   pending_probe|yes/failed  pending|<package>   cy|<mode>|<owner>|<group>
+#   mx|<n>|<path> mxl|<n>|<line> mx_done|<count>      (motd fragments)
+#   gdm_profile|yes/no dconf|<key>|<value> dlock|<line> gdmconf|<key>|<value>
+# No password hash leaves the host: /etc/passwd and /etc/group password fields
+# are classed, /etc/shadow is not read here, and of the cron files only the
+# lines that mention aide are printed.
+- name: Gather Debian-family package, unit, PAM, account, banner, AppArmor, ufw and GDM facts
+  shell: |
+    # ── common prologue (see EVIDENCE INTEGRITY above) ──
+    export LC_ALL=C
+    exec 3>&1
+    # watchdog: a block still running after 60 s is killed before end:ok
+    ( sleep 60; kill -TERM $$ ) >/dev/null 2>&1 3>&- &
+    wd=$!
+    # nm VALUE TAG: VALUE, or unsafe:<16 hex of its sha256> if it holds '|' or
+    # any byte outside printable ASCII (control chars, invalid UTF-8, ...)
+    nm() { case "$1" in *[![:print:]]*|*'|'*) echo "unsafe_name|$2" >&3; printf 'unsafe:%s' "$(printf '%s' "$1" | sha256sum | cut -c1-16)" ;; *) printf '%s' "$1" ;; esac; }
+    # need CMD...: print missing_cmd|CMD for each absent command (block then invalid)
+    need() { local r=0 c; for c in "$@"; do command -v "$c" >/dev/null 2>&1 || { echo "missing_cmd|$c"; r=1; }; done; return $r; }
+    # cap N TAG: pass N lines, then print truncated|TAG and stop (never a silent cap)
+    cap() { awk -v n="$1" -v t="$2" 'NR <= n {print; next} {print "truncated|" t; exit}'; }
+    if rpm -q rpm >/dev/null 2>&1 || ! command -v dpkg-query >/dev/null 2>&1; then
+      kill "$wd" 2>/dev/null; echo "family|other"; echo "end:ok"; exit 0
+    fi
+    echo "family|deb"
+    need systemctl stat find id
+    # clean: one text line can never carry a control byte into a tagged line
+    clean() { tr -c '[:print:]\t\n' '?'; }
+    # tx TAG FILE...: active lines of the files that exist, in the order given;
+    # file|TAG when at least one exists (even if every line is a comment)
+    tx() { local t=$1 f any=0; shift
+      for f in "$@"; do [ -f "$f" ] || continue; any=1
+        head -c 262144 -- "$f" | grep -vE '^[[:space:]]*(#|$)' | clean | sed "s/^/txt|$t|/"; done | cap 2000 "$t"
+      for f in "$@"; do [ -f "$f" ] && { echo "file|$t"; return; }; done; echo "nofile|$t"; }
+    # raw TAG FILE: every line of one file (banner text has no comment syntax)
+    raw() { if [ -f "$2" ]; then echo "file|$1"; head -c 65536 -- "$2" | clean | sed "s/^/txt|$1|/" | cap 500 "$1"; else echo "nofile|$1"; fi; }
+
+    # packages (dpkg) and units (systemctl), for the fixed lists the policy reads
+    for p in aide aide-common apache2 apparmor apparmor-utils apport at audispd-plugins auditd autofs avahi-daemon bind9 bluez chrony cron cups \
+             dnsmasq dovecot-imapd dovecot-pop3d ftp gdm3 isc-dhcp-server ldap-utils libpam-modules libpam-pwquality libpam-runtime \
+             nfs-kernel-server nftables iptables-persistent nginx nis openssh-server prelink rpcbind rsh-client rsync rsyslog samba slapd snmpd squid sudo sudo-ldap \
+             systemd-journal-remote systemd-timesyncd talk telnet tftpd-hpa tnftp ufw vsftpd xinetd xserver-common ypserv; do
+      if dpkg-query -W -f='${Status}' "$p" 2>/dev/null | grep -q 'install ok installed'; then echo "pkg|$p|yes"; else echo "pkg|$p|no"; fi
+    done
+    for u in apache2.service apache2.socket apport.service auditd.service autofs.service avahi-daemon.service avahi-daemon.socket bluetooth.service \
+             chrony.service cron.service cups.service cups.socket dnsmasq.service dovecot.service dovecot.socket isc-dhcp-server.service \
+             isc-dhcp-server6.service named.service nfs-server.service nginx.service rpcbind.service rpcbind.socket rsync.service slapd.service \
+             smbd.service snmpd.service squid.service systemd-journal-remote.service systemd-journal-remote.socket systemd-journal-upload.service \
+             systemd-timesyncd.service tftpd-hpa.service tmp.mount ufw.service vsftpd.service xinetd.service ypserv.service \
+             aidecheck.service aidecheck.timer; do
+      sh=$(systemctl show -p LoadState -p ActiveState -p UnitFileState "$u" 2>/dev/null) || { echo "unit_unknown|$u"; continue; }
+      ls=$(printf '%s\n' "$sh" | sed -n 's/^LoadState=//p'); as=$(printf '%s\n' "$sh" | sed -n 's/^ActiveState=//p'); fs=$(printf '%s\n' "$sh" | sed -n 's/^UnitFileState=//p')
+      echo "unit|$u|$(nm "$ls" unit)|$(nm "$as" unit)|$(nm "$fs" unit)"
+    done
+    # packages with an upgrade waiting, from the local apt cache (no network)
+    if command -v apt-get >/dev/null 2>&1 && pu=$(timeout 30 apt-get -s -o Debug::NoLocking=true dist-upgrade 2>/dev/null); then
+      echo "pending_probe|yes"
+      printf '%s\n' "$pu" | awk '$1 == "Inst" && $2 ~ /^[a-z0-9][a-z0-9.+-]*(:[a-z0-9-]+)?$/ {sub(/:.*/, "", $2); print "pending|" $2}' | cap 3000 pending
+    else echo "pending_probe|failed"; fi
+
+    # PAM stack, su, password quality, limits, apport, ufw defaults, login profile
+    tx pam_common_auth /etc/pam.d/common-auth
+    tx pam_common_account /etc/pam.d/common-account
+    tx pam_common_password /etc/pam.d/common-password
+    tx pam_common_session /etc/pam.d/common-session
+    tx pam_common_session_noninteractive /etc/pam.d/common-session-noninteractive
+    tx pam_su /etc/pam.d/su
+    tx pwquality /etc/security/pwquality.conf /etc/security/pwquality.conf.d/*.conf
+    tx limits /etc/security/limits.conf /etc/security/limits.d/*.conf
+    tx apport_default /etc/default/apport
+    tx ufw_default /etc/default/ufw
+    tx profile /etc/profile /etc/profile.d/*.sh /etc/bash.bashrc
+    tx root_init /root/.profile /root/.bashrc
+    tx aa_grub_d /etc/default/grub.d/apparmor.cfg
+    # the linux lines of grub.cfg (CIS 1.3.1.2); nothing else of the file
+    if [ -f /boot/grub/grub.cfg ]; then
+      echo "file|grub_linux"
+      head -c 4194304 /boot/grub/grub.cfg | grep -E '^[[:space:]]*linux' | clean | sed 's/^/txt|grub_linux|/' | cap 300 grub_linux
+    else echo "nofile|grub_linux"; fi
+    # banners, whole text; motd fragments as numbered files
+    raw motd /etc/motd
+    raw issue /etc/issue
+    raw issue_net /etc/issue.net
+    n=0
+    for f in /run/motd /usr/lib/motd /etc/motd.d/* /run/motd.d/* /usr/lib/motd.d/* /etc/update-motd.d/*; do
+      [ -f "$f" ] || continue
+      n=$((n + 1)); [ "$n" -gt 40 ] && { echo "truncated|mx"; break; }
+      echo "mx|$n|$(nm "$f" mx)"
+      head -c 65536 -- "$f" | clean | sed "s/^/mxl|$n|/" | cap 200 mx
+    done
+    echo "mx_done|$n"
+
+    # AppArmor: the counts aa-status reports (its exit status says only whether
+    # AppArmor is enabled; the counts are read from its text)
+    if command -v aa-status >/dev/null 2>&1; then
+      aa=$(timeout 20 aa-status 2>/dev/null | head -c 262144)
+      for kv in 'loaded:profiles are loaded' 'enforce:profiles are in enforce mode' 'complain:profiles are in complain mode' 'unconfined:processes are unconfined but have a profile defined'; do
+        c=$(printf '%s\n' "$aa" | sed -nE "s/^([0-9]+) ${kv#*:}\.?[[:space:]]*$/\1/p" | head -1)
+        [ -n "$c" ] && echo "aa|${kv%%:*}|$c"
+      done
+    else echo "noprobe|aa"; fi
+    # ufw: what the firewall itself reports
+    if command -v ufw >/dev/null 2>&1; then
+      if us=$(timeout 20 ufw status verbose 2>/dev/null); then echo "ufw_probe|yes"; printf '%s\n' "$us" | clean | sed 's/^/txt|ufw_status|/' | cap 500 ufw_status
+      else echo "ufw_probe|failed"; fi
+    else echo "ufw_probe|absent"; fi
+    # chrony (Debian paths): time sources configured, and who runs chronyd
+    if [ -f /etc/chrony/chrony.conf ]; then
+      cc=$(cat /etc/chrony/chrony.conf /etc/chrony/conf.d/*.conf /etc/chrony/sources.d/*.sources 2>/dev/null | head -c 1048576)
+      echo "chrony_servers|$(printf '%s\n' "$cc" | grep -cE '^[[:space:]]*server[[:space:]]+[^[:space:]]')"
+      echo "chrony_pools|$(printf '%s\n' "$cc" | grep -cE '^[[:space:]]*pool[[:space:]]+[^[:space:]]')"
+    else echo "nofile|chrony_conf"; fi
+    if command -v ps >/dev/null 2>&1; then
+      echo "chrony_ps|yes"
+      ps -C chronyd -o user:32= 2>/dev/null | awk '{print $1}' | sort -u | cap 20 chrony_user | while IFS= read -r l; do
+        if [ "$l" = "truncated|chrony_user" ]; then echo "$l"; else echo "chrony_user|$(nm "$l" chrony_user)"; fi; done
+    else echo "noprobe|chrony_ps"; fi
+    # sudo: the compiled-in authentication timestamp timeout (sudo -V, as root)
+    if command -v sudo >/dev/null 2>&1; then
+      tt=$(timeout 10 sudo -V 2>/dev/null | sed -nE 's/^Authentication timestamp timeout:[[:space:]]*(-?[0-9]+(\.[0-9]+)?)[[:space:]]+minutes.*$/\1/p' | head -1)
+      [ -n "$tt" ] && echo "sudo_tt|$tt"
+    fi
+    # /etc/cron.yearly (CIS 2.4.1.7)
+    if [ -e /etc/cron.yearly ]; then echo "cy|$(stat -c '%04a|%U|%G' /etc/cron.yearly 2>/dev/null)"; else echo "absent|cron_yearly"; fi
+    # AIDE schedule (CIS 6.3.2): the aide lines of cron files only root can
+    # write (a file another user owns or can write is not evidence)
+    echo "aide_cron_probe|yes"
+    for f in /etc/crontab /etc/cron.d/* /etc/cron.hourly/* /etc/cron.daily/* /etc/cron.weekly/* /etc/cron.monthly/* /var/spool/cron/crontabs/root; do
+      [ -f "$f" ] && [ ! -L "$f" ] || continue
+      [ "$(stat -c '%u' "$f" 2>/dev/null)" = 0 ] || continue
+      case "$(stat -c '%04a' "$f" 2>/dev/null)" in ??[0145][0145]) ;; *) continue ;; esac
+      head -c 262144 -- "$f" | grep -vE '^[[:space:]]*(#|$)' | grep -E '(^|[^[:alnum:]_])aide([^[:alnum:]_]|$)' | clean | sed 's/^/txt|aide_cron|/'
+    done | cap 200 aide_cron
+
+    # account files in the shape the policy parses
+    awk -F: '{l = $0; if (l ~ /[|]/) {print "unsafe_name|pwd"; gsub(/[|]/, "%7C")}
+      pw = ($2 == "x") ? "x" : (($2 == "") ? "empty" : "other"); print "pwd|" $1 "|" pw "|" $3 "|" $4 "|" $6 "|" $7}' /etc/passwd 2>/dev/null | clean | cap 5000 pwd
+    [ "${PIPESTATUS[0]}" -eq 0 ] || echo "truncated|pwd"
+    awk -F: '{l = $0; if (l ~ /[|]/) {print "unsafe_name|grpd"; gsub(/[|]/, "%7C")}
+      pw = ($2 == "x") ? "x" : (($2 == "") ? "empty" : "other"); print "grpd|" $1 "|" pw "|" $3 "|" $4}' /etc/group 2>/dev/null | clean | cap 5000 grpd
+    [ "${PIPESTATUS[0]}" -eq 0 ] || echo "truncated|grpd"
+    # interactive users (a shell listed in /etc/shells that is not nologin):
+    # their home directory and the dot files directly in it
+    if [ -f /etc/shells ]; then
+      echo "ihome_probe|yes"
+      dn=0
+      while IFS=: read -r u _ _ _ _ h s; do
+        [ -n "$u" ] || continue
+        case "$s" in */nologin|'') continue ;; esac
+        grep -qxF -- "$s" /etc/shells 2>/dev/null || continue
+        case "$u$h" in *[![:print:]]*|*'|'*) echo "truncated|ihome"; continue ;; esac
+        if [ -d "$h" ]; then
+          echo "ihome|$u|yes|$(stat -L -c '%U|%04a' "$h" 2>/dev/null)|$h"
+          pg=$(id -gn "$u" 2>/dev/null) || { echo "truncated|dotf"; continue; }
+          while IFS= read -r -d '' df; do
+            dn=$((dn + 1)); [ "$dn" -gt 3000 ] && { echo "truncated|dotf"; break; }
+            m=$(stat -c '%04a|%U|%G' "$df" 2>/dev/null) || continue
+            echo "dotf|$u|$m|$(nm "$pg" dotf)|$(nm "$df" dotf)"
+          done < <(find "$h" -xdev -maxdepth 1 -type f -name '.*' -print0 2>/dev/null)
+        else echo "ihome|$u|no|||$h"; fi
+      done < /etc/passwd
+    else echo "nofile|shells"; fi
+
+    # GDM (gdm3): only when the package is installed
+    if dpkg-query -W -f='${Status}' gdm3 2>/dev/null | grep -q 'install ok installed'; then
+      gp=no
+      for f in /etc/dconf/profile/*; do
+        [ -f "$f" ] || continue
+        if head -c 65536 -- "$f" | grep -qE '^[[:space:]]*user-db:' && head -c 65536 -- "$f" | grep -qE '^[[:space:]]*system-db:'; then gp=yes; fi
+      done
+      echo "gdm_profile|$gp"
+      for f in /etc/dconf/db/*.d/*; do
+        [ -f "$f" ] || continue
+        head -c 262144 -- "$f" | grep -E '^[[:space:]]*(banner-message-enable|disable-user-list|idle-delay|lock-delay|lock-enabled|automount|automount-open|autorun-never)[[:space:]]*=' \
+          | sed -E 's/^[[:space:]]*([a-z-]+)[[:space:]]*=[[:space:]]*/dconf|\1|/; s/[[:space:]]+$//' | clean | cap 200 dconf
+      done
+      for f in /etc/dconf/db/*.d/locks/*; do
+        [ -f "$f" ] || continue
+        head -c 65536 -- "$f" | grep -vE '^[[:space:]]*(#|$)' | sed -E 's/^[[:space:]]*/dlock|/; s/[[:space:]]+$//' | clean | cap 200 dlock
+      done
+      head -c 65536 -- /etc/gdm3/custom.conf 2>/dev/null | awk '/^[[:space:]]*\[/{s=$0; gsub(/[][[:space:]]/, "", s); next}
+        s=="xdmcp" && /^[[:space:]]*Enable[[:space:]]*=/{v=$0; sub(/^[^=]*=[[:space:]]*/, "", v); print "gdmconf|xdmcp_enable|" v}' | tr -d '\r|' | clean
+    fi
+    kill "$wd" 2>/dev/null; echo "end:ok"
+  timeout: 120
+  args:
+    executable: /bin/bash
+  register: deb_raw
+  changed_when: false
+  failed_when: false
+
 - name: Build combined facts payload
   set_fact:
     combined_facts:
@@ -1295,6 +1503,7 @@
         perms_raw: "{{ perms_raw.stdout | default('') }}"
         accounts_raw: "{{ accounts_raw.stdout | default('') }}"
         fs_sweep_raw: "{{ fs_sweep_raw.stdout | default('') }}"
+        deb_raw: "{{ deb_raw.stdout | default('') }}"
 
 - name: Compute facts checksum
   set_fact:

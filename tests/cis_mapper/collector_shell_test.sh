@@ -4,7 +4,8 @@
 # (podman) against hostile host states and assert none of them yields a pass.
 #
 # Usage: tests/cis_mapper/collector_shell_test.sh [python-with-pyyaml]
-# Needs podman and registry.access.redhat.com/ubi9/ubi. No host is touched.
+# Needs podman, registry.access.redhat.com/ubi9/ubi and (for the Debian
+# supplement) public.ecr.aws/ubuntu/ubuntu:22.04. No host is touched.
 set -euo pipefail
 root=$(git -C "$(dirname "$0")" rev-parse --show-toplevel)
 py=${1:-python3}
@@ -108,11 +109,35 @@ echo '##### adisk_order'; bash /s/auditd_ondisk_rules_raw.sh
 # (22) a rules file the collector cannot read: unreadable, never skipped
 chmod 600 /etc/audit/rules.d/10-b.rules; chmod 755 /etc/audit /etc/audit/rules.d
 echo '##### adisk_unreadable'; su alice -s /bin/bash -c 'bash /s/auditd_ondisk_rules_raw.sh'
+# (24) the Debian supplement on an RPM host: family|other and nothing else
+echo '##### deb_rpm_host'; bash /s/deb_raw.sh
+echo '##### end'
+EOF
+
+# ── Debian supplement (2026-11-19), in an Ubuntu 22.04 container ──
+cat > "$work/scenario_deb.sh" <<'EOF'
+set -u
+useradd -m -s /bin/bash alice
+# (25) a password field that is not "x" is reported as a class, never as text
+sed -i 's|^daemon:x:|daemon:$6$saltsalt$abcdefghijklmnop:|' /etc/passwd
+# (26) a dot file whose name carries a newline, a forged end:ok and a passing line
+su alice -c 'cd ~ && f=$(printf ".x\nend:ok\npkg|aide|yes"); : > "$f"'
+# (27) only cron files that root alone can write are evidence of an AIDE schedule
+mkdir -p /etc/cron.d
+echo '0 5 * * * root /usr/bin/aide --check' > /etc/cron.d/forged; chown alice /etc/cron.d/forged
+echo '0 5 * * * root /usr/bin/aide --check' > /etc/cron.d/forged2; chmod 664 /etc/cron.d/forged2
+echo '# 0 5 * * * root /usr/bin/aide --check' > /etc/cron.d/commented
+# (28) a banner line that looks like a tagged line stays text
+printf 'Authorized use only\nend:ok\npkg|ufw|yes\n' > /etc/issue
+echo '##### deb'; bash /s/deb_raw.sh
+echo '0 5 * * * root /usr/bin/aide --check' > /etc/cron.d/aide
+echo '##### deb_root_cron'; bash /s/deb_raw.sh
 echo '##### end'
 EOF
 
 out="$work/out.txt"
 podman run --rm -v "$work:/s:Z" registry.access.redhat.com/ubi9/ubi:latest bash /s/scenario.sh > "$out" 2>&1
+podman run --rm -v "$work:/s:Z" public.ecr.aws/ubuntu/ubuntu:22.04 bash /s/scenario_deb.sh >> "$out" 2>&1
 section() { awk -v s="##### $1" '$0 == s {on=1; next} /^##### / {on=0} on' "$out"; }
 fail=0
 check() { if eval "$2"; then echo "PASS  $1"; else echo "FAIL  $1"; fail=1; fi; }
@@ -173,4 +198,20 @@ check "audit on disk: augenrules order 9, 10, 99; .conf ignored; last line witho
   '[ "$(section adisk_order | sed -n "s/^file|//p" | tr "\n" " ")" = "9-a.rules 10-b.rules 99-z.rules " ] && section adisk_order | grep -q "^l|-e 2$" && ! section adisk_order | grep -q "shadow"'
 check "audit on disk: unreadable rules file -> unreadable, its lines absent" \
   'section adisk_unreadable | grep -q "^unreadable|/etc/audit/rules.d/10-b.rules$" && ! section adisk_unreadable | grep -q "^l|-w /etc/passwd"'
+check "deb: an RPM host prints family|other and end:ok only" \
+  '[ "$(section deb_rpm_host | tr "\n" " ")" = "family|other end:ok " ]'
+check "deb: no systemctl (plain container) -> missing_cmd|systemctl (block not collected)" \
+  'section deb | grep -q "^family|deb$" && section deb | grep -q "^missing_cmd|systemctl$"'
+check "deb: passwd password field classed, no hash text anywhere" \
+  'section deb | grep -q "^pwd|daemon|other|1|1|" && section deb | grep -q "^pwd|root|x|0|0|/root|/bin/bash$" && ! section deb | grep -q "saltsalt"'
+check "deb: newline dot file name -> placeholder, single end:ok as last line, no forged package line" \
+  'section deb | grep -q "^dotf|alice|0[0-7]*|alice|alice|alice|unsafe:[0-9a-f]\{16\}$" && [ "$(section deb | grep -c "^end:ok$")" -eq 1 ] && [ "$(section deb | tail -1)" = "end:ok" ] && [ "$(section deb | grep -c "^pkg|aide|")" -eq 1 ]'
+check "deb: interactive home listed with owner and mode" \
+  'section deb | grep -q "^ihome|alice|yes|alice|0[0-7]*|/home/alice$"'
+check "deb: banner lines that look like tags stay text" \
+  'section deb | grep -q "^txt|issue|end:ok$" && section deb | grep -q "^txt|issue|pkg|ufw|yes$" && section deb | grep -q "^pkg|ufw|no$"'
+check "deb: aide in a cron file another user owns or the group can write, or commented -> no aide line" \
+  'section deb | grep -q "^aide_cron_probe|yes$" && ! section deb | grep -q "^txt|aide_cron|"'
+check "deb: aide in a root-only cron file -> its line is collected" \
+  'section deb_root_cron | grep -q "^txt|aide_cron|0 5 \* \* \* root /usr/bin/aide --check$"'
 exit $fail

@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+### Fixed — CIS Ubuntu 22.04 and Amazon Linux 2023 assessments report on the host
+
+- Both playbooks ran their own small collectors, whose field names the rebuilt library modules do not read, so almost every control was stored as failed for lack of evidence. They now follow the CIS RHEL 9 assessment: the shared collector, the shared mapper, the gated `main/compliance_report`, with the profile, coverage and unassessed sections stored with the row. New survey variables `cis_ubuntu_22_04_profile` / `cis_ubuntu_22_04_attestations` and `cis_amazon_linux_2023_profile` / `cis_amazon_linux_2023_attestations`, validated by the new shared `ansible/tasks/cis_linux_profile_attest.yml`.
+- The shared collector gains a Debian-family block (`deb_raw`: dpkg package states, unit states, running and persisted sysctl, the PAM common files, account and group rows without password or comment fields, banners, ufw, AppArmor, AIDE, limits, apport, cron directory modes) and the mapper a section that is emitted only from that block. RPM hosts receive what they received before (the RHEL 9 test fixture renders byte for byte the same).
+- Measured on live hosts: Ubuntu 22.04 from 0 to 140 of 246 controls passed, with 1 control still lacking evidence (was every control); Amazon Linux 2023 from 13 to 102 of 179, with 5 lacking evidence (was 145). CIS RHEL 9 is unchanged at 151 of 263. Expect the stored Ubuntu and Amazon Linux percentages to rise.
+
+### Added — AAC - Assert Fresh Results: fail when an expected framework or host is stale
+
+- `ansible/playbooks/aac_assert_fresh_results.yml` checks each framework in `aac_freshness_frameworks` (optionally per host) and each host in `aac_freshness_fact_hosts` against its own age limit and fails the job when one is stale or has never produced a row. The daily health check only warns when nothing at all ran in 24 hours, so one busy framework hid another that had stopped. Read-only; nothing declared is a failure.
+
+### Fixed — found by running main nightly against a live AAP
+
+- **CIS Ubuntu 22.04 assessment passed green and stored nothing.** The playbook queried `cis_ubuntu_22_04/compliance_assessment`, which the rebuilt (v3.0.0) library module no longer has, took the empty answer as "policy not deployed" and ended successfully. It now queries `cis_ubuntu_22_04/main/compliance_report`, reads the flat report, records the benchmark version the policy reports, and fails when OPA returns no report. The Amazon Linux 2023 assessment fails the same way instead of printing a notice.
+- **Policy loader ran out of memory** (job pod killed, exit 137) on the full library: every registered result carried the whole file listing of its framework directory. It now loops over one small record per file; the job output is readable again.
+- **First policy load after an upgrade failed when the library had renamed files.** The old copy was still loaded under its old id, OPA refused the new file ("package annotation redeclared"), and the old copy was pruned only afterwards, so the framework stayed empty until the loader was run a second time. Files that failed are now retried after the prune.
+
 ### Added — CIS M365 v7: opt-in shape capture (`m365_shape_capture`)
 
 - `m365_shape_capture: true` (default `false`) makes the `m365_assessment` role record, after collection, the shape of every collected fact and nothing else: JSON types, list lengths, field-name unions and field types, and distinct values only for an allowlist of closed configuration enums, booleans and numeric settings (`aac.m365.m365_fact_shape`). Names, addresses, domains, ids, mailbox data and free text are never recorded. Output: `<m365_shape_capture_dir>/m365_fact_shape_<UTC>.json`, the job artifact `m365_fact_shape` (`set_stats`) and the job output. One real run with it on settles the collector shapes that could not be confirmed without a tenant (enum serialisation, `AllowedDomains`, `RecipientTags`, `AssignedRoles`, `SetSCL`, `transferMethods`, Graph beta fields).

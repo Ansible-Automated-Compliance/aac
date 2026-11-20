@@ -71,8 +71,48 @@ character, which any user can put in a file name) is printed by the collector as
 `unsafe:<sha256 prefix>` with its record intact: the harness checks that such a
 world-writable dotfile still reaches the policy and that the block stays valid.
 
+## Debian / Ubuntu supplement (2026-11-19)
+
+`fixtures/ubuntu2204_facts.fixture.json` is the collector's output from an
+Ubuntu 22.04 container (hostname, address and kernel replaced; the AppArmor
+counts and one grub `linux` line added by hand, since a container shows
+neither). `render_mapper.py` finds it beside the RHEL fixture and asserts that
+the CIS Ubuntu field names (`packages`, `sysctl` / `sysctl_persisted`, the PAM
+`common_*` texts, `user_group.passwd_content` and friends, `ufw`, `apparmor`,
+`limits`, `apport`, `aide`, `pending_updates`, `ssh.config_files`) come only
+from a valid `deb_raw` block that reports `family|deb`; that the RHEL fixture
+renders the same input with no block or with a `family|other` block; that a
+block without `end:ok`, with a forged one, a duplicated package line or a
+missing command is not collected; that a capped list or a failed probe is no
+field; that hostile text is carried verbatim; and that the passwd password
+field arrives as a class (`x`, empty or `*`), never as text.
+
+```bash
+$PY - <<'EOF'
+import json, sys, yaml
+sys.path.insert(0, 'tests/cis_mapper'); import render_mapper as rm
+build = next(t for t in yaml.safe_load(open('ansible/tasks/cis_linux_build_opa_input.yml')) if t.get('name', '').startswith('Build CIS Linux OPA input'))
+json.dump(rm.render(build, json.load(open('tests/cis_mapper/fixtures/ubuntu2204_facts.fixture.json'))), open('/tmp/ubuntu_input.json', 'w'), default=str)
+EOF
+opa eval -f pretty -d policies/benchmarks/cis/ubuntu_22_04/ -i /tmp/ubuntu_input.json \
+    'object.filter(data.cis_ubuntu_22_04.main.compliance_report, {"total_controls","passed_controls","failed_controls"})'
+```
+
+Expected at library `98c3291f` (level1_server): 246 controls, 117 passed, 129
+failed, of which 36 are evidence missing. Those 36 are what the container
+cannot show (no kernel module tree, no mounts, no `/boot/grub/grub.cfg` mode,
+no local filesystem to sweep) plus 2.4.1.7. On a real Ubuntu 22.04 host
+(2026-11-19) the same code gave 140 passed, 106 failed and one evidence missing:
+2.4.1.7, because `/etc/cron.yearly` does not exist on 22.04 and the module has
+no "absent" answer for it.
+
+The harness needs an Ansible whose `Templar` still returns native objects
+(ansible-core 2.15 to 2.18); under 2.19 and later `render()` gets a string back.
+
 `collector_shell_test.sh` runs the collector's supplement blocks themselves
-in a UBI 9 container (podman, `registry.access.redhat.com/ubi9/ubi`) against
+in a UBI 9 container (podman, `registry.access.redhat.com/ubi9/ubi`), and the
+Debian supplement in an Ubuntu 22.04 container
+(`public.ecr.aws/ubuntu/ubuntu:22.04`), against
 hostile host states and asserts that none of them yields a pass:
 - a missing `ssh-keygen`
 - an `authorized_keys` whose first line is not a key (this must not hide a

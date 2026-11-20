@@ -1,6 +1,24 @@
 ---
-# CIS Ubuntu 22.04 LTS Compliance Assessment Playbook
-# This playbook collects system facts and evaluates them against CIS Ubuntu 22.04 policies in OPA
+# CIS Ubuntu 22.04 Compliance Assessment using OPA
+#
+# Collects the full Linux compliance fact set with the shared collector, maps
+# it to the CIS input shape with the shared mapper (the same two files the
+# CIS RHEL 9 assessment uses), evaluates it at the gated
+# /main/compliance_report endpoint, and stores what OPA reports. Nothing is
+# scored in the playbook.
+#
+# History (2026-11-19): the previous version ran its own small collector whose
+# field names the rebuilt cis_ubuntu_22_04 module does not read, so every
+# section came back NOT ASSESSED and the stored result said nothing about the
+# host. The stored framework name stays cis_ubuntu_2204.
+#
+# Survey / extra_vars (validated by ../tasks/cis_linux_profile_attest.yml; an
+# unknown value fails the play):
+#   cis_ubuntu_22_04_profile       level1_server (default) or another profile the
+#                           policy defines
+#   cis_ubuntu_22_04_attestations  {<attestation name>: true} or {<name>: {attested: true,
+#                           attested_by, attested_on, evidence_ref}}; names are
+#                           the input.attest.<name> the policy reads
 
 - name: CIS Ubuntu 22.04 Compliance Assessment
   hosts: all
@@ -12,357 +30,215 @@
     - ../vars/site_config.yml
 
   vars:
-    opa_url: "{{ opa_server_url | default(opa_security_url) }}"
-    assessment_report_dir: "{{ playbook_dir }}/../../reports"
-    target_platform: "ubuntu_22_04"
-    compliance_framework: "cis"
+    opa_server_url: "{{ opa_security_url }}"
+    policy_package: "cis_ubuntu_22_04"
+    report_dir: "{{ playbook_dir }}/../../reports"
+    timestamp: "{{ ansible_date_time.iso8601_basic_short }}"
+    facts_schema_version: "2.0"
+    pg_db: "compliance"
+    pg_user: "postgres"
+    pg_password: "{{ compliance_db_password | mandatory }}"
 
-  pre_tasks:
+  tasks:
     - name: Verify this is Ubuntu 22.04
-      assert:
+      ansible.builtin.assert:
         that:
           - ansible_distribution == "Ubuntu"
           - ansible_distribution_version is version('22.04', '>=')
           - ansible_distribution_version is version('23.00', '<')
-        fail_msg: "This playbook is designed for Ubuntu 22.04 LTS only. Detected: {{ ansible_distribution }} {{ ansible_distribution_version }}"
-        success_msg: "Ubuntu 22.04 LTS detected - proceeding with assessment"
+        fail_msg: "This playbook is for Ubuntu 22.04 LTS only. Detected: {{ ansible_distribution }} {{ ansible_distribution_version }}"
 
     - name: Ensure report directory exists
       file:
-        path: "{{ assessment_report_dir }}"
+        path: "{{ report_dir }}"
         state: directory
         mode: '0755'
       delegate_to: localhost
       become: no
+      run_once: true
 
-  tasks:
-    # ==========================================================================
-    # SECTION 1.1: FILESYSTEM CONFIGURATION
-    # ==========================================================================
+    # ── Profile and attestations (validated before any fact is collected) ────
+    - name: Validate the CIS Ubuntu 22.04 profile and attestations
+      include_tasks: ../tasks/cis_linux_profile_attest.yml
+      vars:
+        cis_linux_name: "CIS Ubuntu 22.04"
+        cis_linux_policy_subdir: "ubuntu_22_04"
+        cis_linux_profile: "{{ cis_ubuntu_22_04_profile | default('level1_server', true) }}"
+        cis_linux_attestations: "{{ cis_ubuntu_22_04_attestations | default({}, true) }}"
 
-    - name: Collect filesystem module information
-      shell: |
-        echo "{"
-        for module in cramfs freevxfs jffs2 hfs hfsplus udf; do
-          loaded=$(lsmod | grep -q "^$module " && echo "true" || echo "false")
-          disabled=$(grep -q "install $module /bin/true" /etc/modprobe.d/*.conf 2>/dev/null && echo "true" || echo "false")
-          echo "  \"$module\": {\"loaded\": $loaded, \"disabled\": $disabled},"
-        done
-        echo "  \"dummy\": {}"
-        echo "}"
-      register: filesystem_modules_raw
-      changed_when: false
+    # ── Collect: the shared Linux compliance fact collector ──────────────────
+    - name: Collect Linux compliance facts (shared collector)
+      include_tasks: ../tasks/collect_linux_compliance_facts.yml
 
-    - name: Collect mount information
-      shell: mount | grep -v '^/dev/loop'
-      register: mount_info_raw
-      changed_when: false
+    # ── Map: the shared facts → OPA input mapper (no fabricated values) ───────
+    - name: Build OPA input from collected facts (shared mapper)
+      include_tasks: ../tasks/cis_linux_build_opa_input.yml
+      vars:
+        facts_data: "{{ combined_facts }}"
+        opa_hostname: "{{ inventory_hostname }}"
+        cis_selection: "{{ cis_linux_selection }}"
 
-    - name: Collect USB storage status
-      shell: |
-        echo "{"
-        echo "  \"loaded\": $(lsmod | grep -q '^usb_storage ' && echo 'true' || echo 'false'),"
-        echo "  \"disabled\": $(grep -q 'install usb-storage /bin/true' /etc/modprobe.d/*.conf 2>/dev/null && echo 'true' || echo 'false')"
-        echo "}"
-      register: usb_storage_raw
-      changed_when: false
-
-    # ==========================================================================
-    # SECTION 1.4: BOOT LOADER CONFIGURATION
-    # ==========================================================================
-
-    - name: Check bootloader configuration
-      shell: |
-        if [ -f /boot/grub/grub.cfg ]; then
-          stat -c '{"path":"/boot/grub/grub.cfg","mode":"%a","user":"%U","group":"%G"}' /boot/grub/grub.cfg
-        else
-          echo '{"path":"","mode":"","user":"","group":""}'
-        fi
-      register: bootloader_config_raw
-      changed_when: false
-
-    # ==========================================================================
-    # SECTION 1.5: ADDITIONAL PROCESS HARDENING
-    # ==========================================================================
-
-    - name: Check AppArmor status
-      shell: |
-        if command -v apparmor_status >/dev/null 2>&1; then
-          # Try JSON output, validate it, fallback to simple status
-          json_output=$(apparmor_status --json 2>/dev/null)
-          if echo "$json_output" | python3 -c "import sys, json; json.load(sys.stdin)" 2>/dev/null; then
-            echo "$json_output"
-          else
-            # JSON invalid or not supported, return simple status
-            echo '{"profiles":{},"processes":{},"enabled":true}'
-          fi
-        else
-          echo '{"error":"apparmor_status not found","enabled":false}'
-        fi
-      register: apparmor_status_raw
-      changed_when: false
-
-    # ==========================================================================
-    # SECTION 2: SERVICES
-    # ==========================================================================
-
-    - name: List enabled services
-      shell: systemctl list-unit-files --type=service --state=enabled --no-pager | grep -v '^UNIT' | awk '{print $1}'
-      register: enabled_services_raw
-      changed_when: false
-
-    # ==========================================================================
-    # SECTION 3: NETWORK CONFIGURATION
-    # ==========================================================================
-
-    - name: Collect network parameters
-      shell: |
-        echo "{"
-        for param in net.ipv4.ip_forward net.ipv4.conf.all.send_redirects net.ipv4.conf.default.accept_source_route; do
-          value=$(sysctl -n $param 2>/dev/null || echo "0")
-          echo "  \"$param\": $value,"
-        done
-        echo "  \"dummy\": 0"
-        echo "}"
-      register: network_params_raw
-      changed_when: false
-
-    - name: Check firewall status (UFW)
-      shell: |
-        if command -v ufw >/dev/null 2>&1; then
-          # Get status and sanitize (remove control chars, escape quotes)
-          status=$(ufw status 2>/dev/null | head -1 | awk '{print $2}' | tr -cd '[:alnum:]_-')
-          echo "{\"installed\": true, \"status\": \"${status:-unknown}\"}"
-        else
-          echo '{"installed": false, "status": "not_installed"}'
-        fi
-      register: ufw_status_raw
-      changed_when: false
-
-    # ==========================================================================
-    # SECTION 4: LOGGING AND AUDITING
-    # ==========================================================================
-
-    - name: Check rsyslog status
-      shell: systemctl is-enabled rsyslog 2>/dev/null || echo "not-found"
-      register: rsyslog_status_raw
-      changed_when: false
-
-    - name: Check auditd status
-      shell: systemctl is-active auditd 2>/dev/null || echo "inactive"
-      register: auditd_status_raw
-      changed_when: false
-
-    # ==========================================================================
-    # SECTION 5: ACCESS, AUTHENTICATION, AUTHORIZATION
-    # ==========================================================================
-
-    - name: Collect SSH configuration
-      shell: sshd -T 2>/dev/null || echo "error"
-      register: sshd_config_raw
-      changed_when: false
-
-    - name: Collect PAM configuration
-      shell: |
-        # Function to sanitize strings for JSON (convert tabs to spaces, remove control chars)
-        sanitize_for_json() {
-          echo "$1" | tr '\t' ' ' | tr '\n' ';' | tr -d '\r' | sed 's/\\/\\\\/g; s/"/\\"/g'
-        }
-        echo "{"
-        if [ -f /etc/security/pwquality.conf ]; then
-          pwquality_content=$(cat /etc/security/pwquality.conf | grep -v '^#' | grep -v '^$')
-          sanitized=$(sanitize_for_json "$pwquality_content")
-          echo "  \"pwquality\": \"$sanitized\","
-        else
-          echo "  \"pwquality\": \"\","
-        fi
-        if [ -f /etc/login.defs ]; then
-          login_content=$(grep -E '^(PASS_MAX_DAYS|PASS_MIN_DAYS|PASS_WARN_AGE)' /etc/login.defs 2>/dev/null || echo "")
-          sanitized=$(sanitize_for_json "$login_content")
-          echo "  \"login_defs\": \"$sanitized\","
-        else
-          echo "  \"login_defs\": \"\","
-        fi
-        echo "  \"dummy\": \"\""
-        echo "}"
-      register: pam_config_raw
-      changed_when: false
-
-    - name: Check sudo configuration
-      shell: |
-        if [ -f /etc/sudoers ]; then
-          stat -c '{"path":"/etc/sudoers","mode":"%a","user":"%U","group":"%G"}' /etc/sudoers
-        else
-          echo '{"path":"","mode":"","user":"","group":""}'
-        fi
-      register: sudo_config_raw
-      changed_when: false
-
-    # ==========================================================================
-    # SECTION 6: SYSTEM MAINTENANCE
-    # ==========================================================================
-
-    - name: Check important file permissions
-      shell: |
-        echo "["
-        for file in /etc/passwd /etc/shadow /etc/group /etc/gshadow; do
-          if [ -f $file ]; then
-            stat -c '{"file":"'$file'","mode":"%a","user":"%U","group":"%G"},' $file
-          fi
-        done
-        echo '{"file":"dummy","mode":"","user":"","group":""}]'
-      register: file_permissions_raw
-      changed_when: false
-
-    # ==========================================================================
-    # BUILD COMPLIANCE FACTS
-    # ==========================================================================
-
-    - name: Parse collected facts into structured format
-      set_fact:
-        compliance_facts:
-          system_info:
-            hostname: "{{ ansible_hostname }}"
-            distribution: "{{ ansible_distribution }}"
-            distribution_version: "{{ ansible_distribution_version }}"
-            kernel: "{{ ansible_kernel }}"
-            architecture: "{{ ansible_architecture }}"
-          disabled_filesystem_modules:
-            modules: "{{ filesystem_modules_raw.stdout | from_json }}"
-          mount_info:
-            lines: "{{ mount_info_raw.stdout_lines }}"
-          usb_storage_disabled: "{{ usb_storage_raw.stdout | from_json }}"
-          bootloader_config: "{{ bootloader_config_raw.stdout | from_json }}"
-          apparmor_status: "{{ apparmor_status_raw.stdout | from_json }}"
-          enabled_services:
-            services: "{{ enabled_services_raw.stdout_lines }}"
-          network_params: "{{ network_params_raw.stdout | from_json }}"
-          ufw_status: "{{ ufw_status_raw.stdout | from_json }}"
-          rsyslog_status: "{{ rsyslog_status_raw.stdout | trim }}"
-          auditd_status: "{{ auditd_status_raw.stdout | trim }}"
-          sshd_config:
-            lines: "{{ sshd_config_raw.stdout_lines }}"
-          pam_config: "{{ pam_config_raw.stdout | from_json }}"
-          sudo_config: "{{ sudo_config_raw.stdout | from_json }}"
-          file_permissions: "{{ file_permissions_raw.stdout | from_json }}"
-
-    - name: Save collected facts to file
+    - name: Save OPA input to local file
       copy:
-        content: "{{ compliance_facts | to_nice_json }}"
-        dest: "{{ assessment_report_dir }}/{{ ansible_hostname }}_ubuntu_22_04_facts_{{ ansible_date_time.iso8601_basic_short }}.json"
+        content: "{{ opa_input | to_nice_json }}"
+        dest: "{{ report_dir }}/{{ inventory_hostname }}_facts_{{ timestamp }}.json"
       delegate_to: localhost
       become: no
 
-    # ==========================================================================
-    # EVALUATE AGAINST OPA POLICIES
-    # ==========================================================================
-
-    - name: Query OPA for compliance assessment
+    # ── Evaluate: the gated report endpoint ──────────────────────────────────
+    - name: Query OPA — CIS Ubuntu 22.04 compliance report
       uri:
         use_proxy: false
-        url: "{{ opa_url }}/v1/data/cis_ubuntu_22_04/compliance_assessment"
+        url: "{{ opa_server_url }}/v1/data/{{ policy_package }}/main/compliance_report"
         method: POST
         body_format: json
         body:
-          input: "{{ compliance_facts }}"
+          input: "{{ opa_input }}"
         return_content: yes
-        status_code: [200, 404]
-      register: opa_assessment
+        status_code: 200
+      register: opa_response
       delegate_to: localhost
       become: no
-      ignore_errors: yes
+      failed_when: false
 
-    - name: Check if OPA policy exists
+    - name: Refuse to fabricate a result when OPA did not answer
+      ansible.builtin.assert:
+        that:
+          - (opa_response.status | default(-1)) == 200
+          - opa_response.json.result is defined
+          - opa_response.json.result.total_controls is defined
+          - opa_response.json.result.assessment_coverage_percentage is defined
+          - opa_response.json.result.sections_not_assessed is defined
+        fail_msg: >-
+          OPA did not return an evaluation (status
+          {{ opa_response.status | default('no connection') }} from
+          {{ opa_server_url }}). Refusing to continue: no answer from the policy
+          engine means NO ASSESSMENT, never a clean one.
+          OPA said: {{ (opa_response.json | default(opa_response.content | default(opa_response.msg | default('nothing')))) | to_json | truncate(600) }}
+
+    - name: Parse OPA report
       set_fact:
-        opa_policy_available: "{{ opa_assessment.json.result is defined and opa_assessment.json.result is not none }}"
+        compliance_result: "{{ opa_response.json.result }}"
+        assessment_timestamp: "{{ ansible_date_time.iso8601 }}"
 
-    - name: Save compliance report (when OPA policy available)
+    - name: Extract report fields
+      set_fact:
+        violations: "{{ compliance_result.violations | default([]) }}"
+        is_compliant: "{{ compliance_result.compliant | default(false) | bool }}"
+        total_controls: "{{ compliance_result.total_controls | int }}"
+        passed_controls: "{{ compliance_result.passed_controls | default(0) | int }}"
+        failed_controls: "{{ compliance_result.failed_controls | default(0) | int }}"
+        compliance_score: "{{ compliance_result.compliance_percentage | default(0) | float }}"
+        sections_not_assessed: "{{ compliance_result.sections_not_assessed | default([]) }}"
+        assessment_coverage_pct: "{{ compliance_result.assessment_coverage_percentage | default(0) | int }}"
+        controls_basis: "{{ compliance_result.controls_basis | default('') }}"
+        cis_profile: "{{ compliance_result.profile | default(cis_linux_selection.profile) }}"
+
+    - name: Generate compliance report
       copy:
-        content: "{{ opa_assessment.json.result | to_nice_json }}"
-        dest: "{{ assessment_report_dir }}/{{ ansible_hostname }}_ubuntu_22_04_compliance_report_{{ ansible_date_time.iso8601_basic_short }}.json"
+        content: "{{ {
+            'assessment_metadata': {
+              'hostname': inventory_hostname,
+              'ip_address': ansible_default_ipv4.address | default('unknown'),
+              'assessment_time': assessment_timestamp,
+              'benchmark': compliance_result.benchmark | default('CIS Ubuntu Linux 22.04 LTS Benchmark v3.0.0'),
+              'policy_package': policy_package,
+              'opa_server': opa_server_url,
+              'controls_basis': controls_basis,
+              'profile': cis_profile,
+              'attestations': cis_linux_selection.attestation_records
+            },
+            'system_info': {
+              'distribution': ansible_distribution,
+              'distribution_version': ansible_distribution_version,
+              'kernel': ansible_kernel,
+              'architecture': ansible_architecture
+            },
+            'compliance_summary': {
+              'is_compliant': is_compliant,
+              'total_controls': total_controls | int,
+              'passed_controls': passed_controls | int,
+              'failed_controls': failed_controls | int,
+              'compliance_percentage': compliance_score | float,
+              'assessment_coverage_percentage': assessment_coverage_pct | int,
+              'sections_not_assessed': sections_not_assessed
+            },
+            'violations': violations
+          } | to_nice_json }}"
+        dest: "{{ report_dir }}/{{ inventory_hostname }}_compliance_report_{{ timestamp }}.json"
       delegate_to: localhost
       become: no
-      when: opa_policy_available | bool
 
-    - name: Display compliance summary (when OPA policy available)
+    - name: Display compliance summary
       debug:
-        msg:
-          - "============================================"
-          - "CIS Ubuntu 22.04 Compliance Assessment"
-          - "============================================"
-          - "Hostname: {{ ansible_hostname }}"
-          - "Overall Compliance: {{ opa_assessment.json.result.compliance_summary.overall_compliance }}"
-          - "Compliance Percentage: {{ opa_assessment.json.result.compliance_summary.compliance_percentage }}%"
-          - "Total Violations: {{ opa_assessment.json.result.compliance_summary.total_violations }}"
-          - "Risk Level: {{ opa_assessment.json.result.compliance_summary.risk_level }}"
-          - "============================================"
-          - "Report saved to: {{ assessment_report_dir }}/{{ ansible_hostname }}_ubuntu_22_04_compliance_report_{{ ansible_date_time.iso8601_basic_short }}.json"
-      when: opa_policy_available | bool
+        msg: |
+          ========================================
+          CIS Ubuntu 22.04 Compliance Assessment Results
+          ========================================
+          Hostname: {{ inventory_hostname }}
+          Distribution: {{ ansible_distribution }} {{ ansible_distribution_version }} ({{ ansible_kernel }}, {{ ansible_architecture }})
 
-    - name: Display notice when OPA policy not available
+          Compliance Status: {{ 'COMPLIANT' if is_compliant else 'NON-COMPLIANT' }}
+          Profile: {{ cis_profile }} ({{ cis_linux_selection.attest | length }} attestation(s) supplied)
+          Controls ({{ controls_basis }}): {{ total_controls }}
+          Passed / Failed: {{ passed_controls }} / {{ failed_controls }}
+          Compliance: {{ compliance_score }}%
+          Assessment coverage: {{ assessment_coverage_pct }}% of sections assessed
+          Sections NOT assessed: {{ sections_not_assessed | join(', ') if sections_not_assessed else 'none' }}
+
+          Report saved to: {{ report_dir }}/{{ inventory_hostname }}_compliance_report_{{ timestamp }}.json
+          ========================================
+
+    - name: List top 10 violations (if any)
       debug:
-        msg:
-          - "============================================"
-          - "CIS Ubuntu 22.04 Compliance Assessment"
-          - "============================================"
-          - "Hostname: {{ ansible_hostname }}"
-          - "OPA Policy Status: NOT AVAILABLE"
-          - "Facts collected and saved to: {{ assessment_report_dir }}/{{ ansible_hostname }}_ubuntu_22_04_facts_{{ ansible_date_time.iso8601_basic_short }}.json"
-          - "============================================"
-          - "NOTE: The OPA policy 'cis_ubuntu_22_04/compliance_assessment' is not deployed."
-          - "System facts have been collected successfully and can be evaluated once the policy is available."
-      when: not (opa_policy_available | bool)
+        msg: "{{ violations[:10] }}"
+      when: violations | length > 0
 
-    # ── Store to PostgreSQL ────────────────────────────────────────────────────
-
-    - name: Build violations list for PostgreSQL
-      set_fact:
-        ubuntu_violations: >-
-          {%- set viols = [] -%}
-          {%- for v in (opa_assessment.json.result.violations | default([])) -%}
-            {%- if v is mapping -%}
-              {%- set _ = viols.append(v) -%}
-            {%- else -%}
-              {%- set _ = viols.append({'message': v | string, 'severity': 'medium', 'control_id': ''}) -%}
-            {%- endif -%}
-          {%- endfor -%}
-          {{ viols }}
-      when: opa_policy_available | bool
-
-    - name: Store results to PostgreSQL (+ Certifiable Audit Artifact)
+    # -------------------------------------------------------------------------
+    # Store results to PostgreSQL — plus a Certifiable Audit Artifact (CAA) row
+    # in compliance_certifications for auditor evidence. See
+    # docs/strategy/AAC_CERTIFIABLE_AUDIT_ARTIFACT_SPEC.md.
+    # Every number below comes from OPA's report; nothing is computed here.
+    # -------------------------------------------------------------------------
+    - name: Store CIS Ubuntu 22.04 results to PostgreSQL
       include_role:
         name: aac_store_results
       vars:
         aac_result_framework:      "cis_ubuntu_2204"
         aac_result_policy_name:    "CIS Ubuntu 22.04"
-        aac_result_policy_version: "CIS Ubuntu Linux 22.04 LTS Benchmark v1.0.0"
-        aac_result_total_controls: >-
-          {{ opa_assessment.json.result.compliance_summary.total_controls
-             | default(opa_assessment.json.result.compliance_summary.total_checks
-             | default(219)) | int }}
-        aac_result_violations:     "{{ ubuntu_violations | default([]) }}"
-        aac_result_compliance_pct: >-
-          {{ opa_assessment.json.result.compliance_summary.compliance_percentage
-             | default(0) | float }}
-        aac_result_metadata:
-          hostname:        "{{ inventory_hostname }}"
-          ip_address:      "{{ ansible_default_ipv4.address | default('N/A') }}"
-          assessment_time: "{{ ansible_date_time.iso8601 }}"
-          distribution:    "{{ ansible_distribution }}"
-          distribution_version: "{{ ansible_distribution_version }}"
-          kernel:          "{{ ansible_kernel }}"
-          architecture:    "{{ ansible_architecture }}"
-          opa_server:      "{{ opa_url }}"
-        # CAA opt-in — matches the CIS RHEL 9 pattern from PR #269.
-        # See docs/strategy/AAC_CERTIFIABLE_AUDIT_ARTIFACT_SPEC.md.
+        aac_result_policy_version: "{{ compliance_result.benchmark | default('CIS Ubuntu Linux 22.04 LTS Benchmark v3.0.0') }}"
+        aac_result_total_controls: "{{ total_controls | int }}"
+        aac_result_violations:     "{{ violations }}"
+        aac_result_failed_controls: "{{ failed_controls | int }}"
+        aac_result_passed_controls: "{{ passed_controls | int }}"
+        aac_result_compliance_pct:  "{{ compliance_score | float }}"
+        aac_result_metadata: "{{ {'hostname': inventory_hostname, 'ip_address': ansible_default_ipv4.address | default('unknown'), 'distribution': ansible_distribution, 'distribution_version': ansible_distribution_version, 'kernel': ansible_kernel, 'architecture': ansible_architecture, 'assessment_time': assessment_timestamp, 'is_compliant': is_compliant, 'controls_basis': controls_basis, 'profile': cis_profile, 'attested': (cis_linux_selection.attest | dict2items | selectattr('value') | map(attribute='key') | list), 'assessment_coverage_percentage': assessment_coverage_pct | int, 'sections_not_assessed': sections_not_assessed, 'evaluation_endpoint': 'main/compliance_report', 'facts_schema_version': facts_schema_version} }}"
+        aac_result_opa_server: "{{ opa_server_url }}"
+        # CAA opt-in — writes one compliance_certifications row per assessed host.
+        # Pass-through vars use aac_result_caa_* naming to avoid Jinja recursion
+        # in the wrapper role — see aac_store_results/tasks/main.yml for details.
         aac_caa_enabled: true
-        aac_result_caa_framework_version: "v1.0.0"
+        aac_result_caa_framework_version: "{{ compliance_result.version | default('unknown') }}"
         aac_result_caa_result:
           framework:             "cis_ubuntu_2204"
-          benchmark:             "CIS Ubuntu Linux 22.04 LTS Benchmark v1.0.0"
-          compliant:             "{{ (opa_assessment.json.result.compliance_summary.compliance_percentage | default(0) | float) >= 100.0 }}"
-          compliance_percentage: "{{ opa_assessment.json.result.compliance_summary.compliance_percentage | default(0) | float }}"
-          total_controls:        "{{ opa_assessment.json.result.compliance_summary.total_controls | default(opa_assessment.json.result.compliance_summary.total_checks | default(219)) | int }}"
-          violations:            "{{ ubuntu_violations | default([]) }}"
-        aac_result_caa_input: "{{ compliance_facts }}"
-      when: opa_policy_available | bool
+          benchmark:             "{{ compliance_result.benchmark | default('CIS Ubuntu Linux 22.04 LTS Benchmark v3.0.0') }}"
+          policy_package:        "{{ policy_package }}"
+          profile:               "{{ cis_profile }}"
+          compliant:             "{{ is_compliant | bool }}"
+          compliance_percentage: "{{ compliance_score | float }}"
+          total_controls:        "{{ total_controls | int }}"
+          passed_controls:       "{{ passed_controls | int }}"
+          failed_controls:       "{{ failed_controls | int }}"
+          assessment_coverage_percentage: "{{ assessment_coverage_pct | int }}"
+          sections_not_assessed: "{{ sections_not_assessed }}"
+          violations:            "{{ violations }}"
+        aac_result_caa_input: "{{ opa_input }}"
+
+    - name: Results stored to PostgreSQL
+      debug:
+        msg: "Stored CIS Ubuntu 22.04 result for {{ inventory_hostname }}: {{ compliance_score }}% ({{ passed_controls }}/{{ total_controls }} controls, coverage {{ assessment_coverage_pct }}%)"
+
+    - name: "📊 View results in Grafana"
+      debug:
+        msg: "{{ grafana_url | default('grafana_url not set in this environment', true) }}"
+      run_once: true
