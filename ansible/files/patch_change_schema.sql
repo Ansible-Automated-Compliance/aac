@@ -23,7 +23,8 @@ CREATE INDEX IF NOT EXISTS idx_tickets_cve
     ON helpdesk_tickets (cve_id) WHERE cve_id IS NOT NULL;
 
 COMMENT ON COLUMN helpdesk_tickets.outcome IS
-  'Terminal outcome: patched | patch_failed | service_failed_after_patch | rolled_back | rejected. '
+  'Terminal outcome: patched | patch_failed | reboot_pending | service_failed_after_patch | rolled_back | rejected. '
+  'reboot_pending: the fixed kernel build is installed and an older one is still running — still exposed. '
   'patch_failed and service_failed_after_patch are DIFFERENT recovery levels (R1 vs R2/R3) — '
   'recording which one occurred is what makes the closure meaningful.';
 

@@ -79,6 +79,22 @@ CREATE TABLE IF NOT EXISTS patch_worklist (
     UNIQUE (cve_id, hostname, vendor, product, installed_version)
 );
 
+-- ── How the catalog matcher reached its verdict (additive) ───────────────────
+-- installed_version stays the rpm VERSION so the unique key and every existing
+-- reader are unchanged. The catalog path (identify_affected_components.yml)
+-- also records the full builds it compared and the verdict:
+--   installed_evr    newest installed build, [epoch:]version-release
+--   booted_evr       running kernel build, kernel image packages only
+--   version_verdict  affected | reboot_pending | unknown
+--                    (fixed / not_affected / not_installed rows are not work
+--                    items; aac_cve_host_verdicts() returns them on request)
+--   verdict_detail   one sentence: what was compared with what
+-- NULL on rows written by the portal path (pull_patch_worklist.yml).
+ALTER TABLE patch_worklist ADD COLUMN IF NOT EXISTS installed_evr   VARCHAR(255);
+ALTER TABLE patch_worklist ADD COLUMN IF NOT EXISTS booted_evr      VARCHAR(255);
+ALTER TABLE patch_worklist ADD COLUMN IF NOT EXISTS version_verdict VARCHAR(20);
+ALTER TABLE patch_worklist ADD COLUMN IF NOT EXISTS verdict_detail  TEXT;
+
 CREATE INDEX IF NOT EXISTS idx_worklist_host     ON patch_worklist (hostname);
 CREATE INDEX IF NOT EXISTS idx_worklist_cve      ON patch_worklist (cve_id);
 CREATE INDEX IF NOT EXISTS idx_worklist_priority ON patch_worklist (kev_member DESC, severity);

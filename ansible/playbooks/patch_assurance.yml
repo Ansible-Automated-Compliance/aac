@@ -4,7 +4,8 @@
 # Implements docs/patch_remediation_lifecycle.md Stage 10 (assurance ladder).
 #
 # THE LADDER (§design position 3):
-#   A0  version compare       — is the fixed version actually installed?   BUILT
+#   A0  version compare       — is the fixed build installed AND, for a
+#                               kernel, running?                           BUILT
 #   A1  service health        — is the service up and listening?           BUILT HERE
 #   A2  functional probe      — does it do its job?                        NOT BUILT
 #   A3  integration           — do its dependants still work?              NOT BUILT
@@ -20,6 +21,15 @@
 # (R1 package downgrade vs R2/R3 config restore or snapshot). This playbook
 # reports which one occurred, and that verdict drives the change record's
 # terminal outcome.
+#
+# A0 COMPARES BUILDS, NOT VERSION STRINGS. For rpm packages the installed
+# epoch:version-release is compared with the worklist's fixed build by rpm's own
+# ordering (ansible/files/rpm_evr_functions.sql — the same functions the
+# identify playbook matches with). Comparing the rpm VERSION alone passed every
+# kernel patch before it was applied: 5.14.0 >= 5.14.0. A kernel also has to be
+# RUNNING: fixed build installed with an older kernel booted is the separate
+# outcome 'reboot_pending', which a reboot closes and a package downgrade (R1)
+# does not.
 #
 # AAP Job Template: "AAC - Patch Assurance (A0/A1)"
 # Credentials: Ansible Vault + Machine    EE: AAC Compliance EE
@@ -72,6 +82,9 @@
       ansible.builtin.set_fact:
         observed_packages: "{{ ansible_facts.packages }}"
         observed_services: "{{ ansible_facts.services | default({}) }}"
+        # `uname -r` of the RUNNING kernel: an installed kernel protects nothing
+        # until the host boots it.
+        observed_kernel: "{{ ansible_facts.kernel | default('') }}"
 
 
 - name: Evaluate and record the assurance verdict
@@ -103,6 +116,15 @@
         login_password: "{{ pg_password }}"
         login_db: "{{ pg_db }}"
         path: "{{ playbook_dir }}/../files/patch_change_schema.sql"
+
+    - name: Ensure the rpm version-comparison functions exist
+      community.postgresql.postgresql_script:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        path: "{{ playbook_dir }}/../files/rpm_evr_functions.sql"
 
     - name: Read the expected fix versions
       community.postgresql.postgresql_query:
@@ -156,22 +178,78 @@
     # A missing package key must produce a FAILED check, not an undefined-key
     # error. Packages get renamed, split or removed by the very patch being
     # assured, so absence is an expected outcome to report rather than a crash.
-    - name: A0 — compare installed against expected
+    #
+    # rpm packages are compared in the DATABASE (aac_evr_cmp), one query per work
+    # item: the newest installed build against the fixed build, and for the
+    # packages that carry the running kernel image the BOOTED build as well. The
+    # installed builds travel as a space-separated list of epoch:version-release
+    # strings (no EVR contains a space), not as JSON, so nothing is re-parsed on
+    # the way. Other package formats keep the previous Jinja `version` test.
+    - name: A0 — compare installed rpm builds with the fixed build (rpm ordering)
+      vars:
+        instances: "{{ hostvars[target_host].observed_packages[item.product] | default([]) }}"
+        installed_evrs: >-
+          {%- for e in instances if (e.version | default('', true) | string | length > 0) -%}
+          {{ (e.epoch | string ~ ':') if (e.epoch | default(0, true) | int != 0) else '' }}{{ e.version }}{{ ('-' ~ e.release) if (e.release | default('', true) | string | length > 0) else '' }}{{ '' if loop.last else ' ' }}
+          {%- endfor -%}
+      community.postgresql.postgresql_query:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        query: |
+          WITH o AS (
+            SELECT aac_evr_max(string_to_array(NULLIF(btrim(%(evrs)s), ''), ' ')) AS installed,
+                   aac_kernel_booted_evr_for(%(product)s, NULLIF(%(uname)s, ''))  AS booted
+          )
+          SELECT installed, booted,
+                 (installed IS NOT NULL AND aac_evr_cmp(installed, %(fixed)s) >= 0) AS installed_ok,
+                 (booted IS NULL OR aac_evr_cmp(booted, %(fixed)s) >= 0)            AS booted_ok
+            FROM o
+        named_args:
+          evrs: "{{ installed_evrs | trim }}"
+          product: "{{ item.product }}"
+          uname: "{{ hostvars[target_host].observed_kernel | default('') }}"
+          fixed: "{{ item.fixed_version }}"
+      # No rows comes back as an empty mapping from some collection versions.
+      loop: "{{ expected.query_result | default([], true) }}"
+      loop_control:
+        label: "{{ item.product }}"
+      register: a0_rpm
+      when:
+        - hostvars[target_host].observed_packages is defined
+        - (hostvars[target_host].observed_packages[item.product] | default([]) | first | default({})).source | default('') == 'rpm'
+
+    - name: A0 — record the result per work item
+      vars:
+        wi: "{{ cmp.item }}"
+        packages: "{{ hostvars[target_host].observed_packages | default({}) }}"
+        present: "{{ wi.product in packages }}"
+        has_rpm: "{{ (cmp.query_result is defined) and (cmp.query_result | length > 0) }}"
+        rpm: "{{ cmp.query_result[0] if (has_rpm | bool) else {} }}"
+        reboot_pending: "{{ (has_rpm | bool) and (rpm.installed_ok | bool) and not (rpm.booted_ok | bool) }}"
+        observed: >-
+          {{ 'not installed' if not (present | bool)
+             else (rpm.installed if (has_rpm | bool) else packages[wi.product][0].version) }}
+        passed: >-
+          {{ (present | bool) and
+             (((rpm.installed_ok | bool) and (rpm.booted_ok | bool)) if (has_rpm | bool)
+              else (packages[wi.product][0].version is version(wi.fixed_version, '>='))) }}
       ansible.builtin.set_fact:
         a0_results: >-
           {{ a0_results | default([]) + [{
-               'product': item.product,
-               'expected': item.fixed_version,
-               'observed': (hostvars[target_host].observed_packages[item.product][0].version
-                            if item.product in (hostvars[target_host].observed_packages | default({}))
-                            else 'not installed'),
-               'passed': (item.product in (hostvars[target_host].observed_packages | default({}))
-                          and (hostvars[target_host].observed_packages[item.product][0].version
-                               is version(item.fixed_version, '>=')))
+               'product': wi.product,
+               'expected': wi.fixed_version,
+               'observed': observed | string | trim,
+               'booted': (rpm.booted | default('', true)) if (has_rpm | bool) else '',
+               'reboot_pending': reboot_pending | bool,
+               'passed': passed | bool
              }] }}
-      loop: "{{ expected.query_result }}"
+      loop: "{{ a0_rpm.results | default([]) }}"
       loop_control:
-        label: "{{ item.product }}"
+        loop_var: cmp
+        label: "{{ cmp.item.product }}"
       when: hostvars[target_host].observed_packages is defined
 
     - name: A0 verdict
@@ -207,6 +285,8 @@
       ansible.builtin.set_fact:
         assurance_outcome: >-
           {%- if dry | bool -%}dry_run
+          {%- elif not a0_passed and (a0_results | default([]) | length > 0)
+                   and (a0_results | rejectattr('passed') | rejectattr('reboot_pending') | list | length == 0) -%}reboot_pending
           {%- elif not a0_passed -%}patch_failed
           {%- elif a1_attempted and not a1_passed -%}service_failed_after_patch
           {%- else -%}patched
@@ -229,7 +309,7 @@
           tid: "{{ ticket_id if ticket_id else None }}"
           chk: "version_compare:{{ item.product }}"
           ok: "{{ item.passed }}"
-          detail: "expected >= {{ item.expected }}, observed {{ item.observed }}"
+          detail: "expected >= {{ item.expected }}, observed {{ item.observed }}{{ (', booted ' ~ item.booted) if item.booted else '' }}{{ ' — fixed build installed, reboot pending' if item.reboot_pending else '' }}"
       loop: "{{ a0_results | default([]) }}"
       loop_control:
         label: "A0 {{ item.product }}"
@@ -278,6 +358,7 @@
           - "Outcome: {{ assurance_outcome }}{{ ' (PARTIAL — see NOT ASSESSED above)' if (skipped.query_result[0].skipped | int) > 0 and assurance_outcome == 'patched' else '' }}"
           - "──────────────────────────────────────────────────────────"
           - "{{ 'patch_failed → recovery level R1 (package downgrade from the manifest).' if assurance_outcome == 'patch_failed' else '' }}"
+          - "{{ 'reboot_pending → the fixed build is installed and the host is still running an older kernel. It is STILL EXPOSED until it reboots. Do not downgrade (R1); schedule the reboot and run assurance again.' if assurance_outcome == 'reboot_pending' else '' }}"
           - "{{ 'service_failed_after_patch → the package IS correct but the service is not healthy. R1 will not help; this needs R2/R3.' if assurance_outcome == 'service_failed_after_patch' else '' }}"
           - "{{ 'Assurance passed at A0/A1 only. That is not proof the application works.' if assurance_outcome == 'patched' else '' }}"
           - "──────────────────────────────────────────────────────────"
@@ -289,4 +370,4 @@
           workflow takes its failure path — but note the undrain and close-ticket nodes are
           wired on ALWAYS edges and will still run. The host will be returned to service and
           the change record closed with this outcome recorded.
-      when: assurance_outcome in ['patch_failed', 'service_failed_after_patch']
+      when: assurance_outcome in ['patch_failed', 'reboot_pending', 'service_failed_after_patch']

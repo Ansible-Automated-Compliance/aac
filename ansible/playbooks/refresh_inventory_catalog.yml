@@ -30,6 +30,17 @@
     pg_password: "{{ compliance_db_password }}"
 
   tasks:
+    # The rpm comparison functions come first: the rebuild below picks the
+    # newest installed build of each package with them.
+    - name: Ensure the rpm version-comparison functions exist
+      community.postgresql.postgresql_script:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password }}"
+        login_db: "{{ pg_db }}"
+        path: "{{ playbook_dir }}/../files/rpm_evr_functions.sql"
+
     - name: Ensure inventory schema exists (tables + matview)
       # postgresql_script, NOT postgresql_query: `path_to_script` was removed
       # from postgresql_query in community.postgresql 3.0, so this task had
@@ -54,22 +65,62 @@
       loop:
         # 1) clear
         - "TRUNCATE installed_inventory"
-        # 2) Linux (rpm/deb) packages from package_facts
-        - >-
+        # 2) Linux (rpm/deb) packages from package_facts.
+        #    package_facts gives a LIST of installed builds per package name (a
+        #    host keeps several kernels). For rpm the row records the NEWEST
+        #    build by rpm ordering (aac_evr_max), its epoch / version / release,
+        #    every installed build (installed_evrs) and, for the packages that
+        #    carry the running kernel image, the BOOTED build from `uname -r`
+        #    (facts.host.kernel). Until this change only the first build's
+        #    VERSION was kept, so every RHEL 9 kernel was "5.14.0".
+        #    For dpkg the Debian version string is kept whole in package_evr.
+        #    package_version keeps its old meaning for every existing reader.
+        - |
           INSERT INTO installed_inventory
             (hostname, package_name, package_version, package_vendor, cpe,
-             os_family, os_version, architecture, source, first_seen_at, last_seen_at)
+             os_family, os_version, architecture, source, first_seen_at, last_seen_at,
+             package_format, package_epoch, package_release, package_evr,
+             installed_evrs, booted_evr)
           SELECT hf.hostname, pkg,
-                 (hf.facts->'packages'->'installed'->pkg->0->>'version'),
+                 CASE WHEN b.fmt = 'rpm' THEN COALESCE(aac_evr_version(b.newest), b.first_version)
+                      ELSE b.first_version END,
                  lower(pkg), NULL,
                  hf.os_family, hf.os_version,
                  (hf.facts->'packages'->'installed'->pkg->0->>'arch'),
                  COALESCE(hf.facts->'packages'->>'package_manager','package_facts'),
-                 hf.collected_at, hf.collected_at
-            FROM host_facts_latest hf,
-                 LATERAL jsonb_object_keys(hf.facts->'packages'->'installed') pkg
+                 hf.collected_at, hf.collected_at,
+                 b.fmt,
+                 CASE WHEN b.fmt = 'rpm' AND aac_evr_epoch(b.newest) <> 0
+                      THEN aac_evr_epoch(b.newest)::text END,
+                 CASE WHEN b.fmt = 'rpm' THEN aac_evr_release(b.newest) END,
+                 CASE WHEN b.fmt = 'rpm' THEN b.newest
+                      WHEN b.fmt = 'deb' THEN b.first_version END,
+                 CASE WHEN b.fmt = 'rpm' THEN b.evrs END,
+                 CASE WHEN b.fmt = 'rpm'
+                      THEN aac_kernel_booted_evr_for(pkg, hf.facts->'host'->>'kernel') END
+            FROM host_facts_latest hf
+           CROSS JOIN LATERAL jsonb_object_keys(hf.facts->'packages'->'installed') pkg
+           CROSS JOIN LATERAL (
+                 SELECT CASE
+                          WHEN COALESCE(inst->0->>'source', '') = 'rpm'  THEN 'rpm'
+                          WHEN COALESCE(inst->0->>'source', '') = 'apt'  THEN 'deb'
+                          WHEN COALESCE(inst->0->>'source', '') <> ''    THEN NULL
+                          WHEN hf.os_family ~* 'red ?hat|suse|rocky|alma|fedora' THEN 'rpm'
+                          WHEN hf.os_family ~* 'debian|ubuntu'           THEN 'deb'
+                        END                                   AS fmt,
+                        inst->0->>'version'                   AS first_version,
+                        (SELECT array_agg(aac_evr(e->>'epoch', e->>'version', e->>'release'))
+                           FROM jsonb_array_elements(inst) e
+                          WHERE COALESCE(e->>'version', '') <> '') AS evrs,
+                        aac_evr_max((SELECT array_agg(aac_evr(e->>'epoch', e->>'version', e->>'release'))
+                                       FROM jsonb_array_elements(inst) e
+                                      WHERE COALESCE(e->>'version', '') <> '')) AS newest
+                   FROM (SELECT CASE WHEN jsonb_typeof(hf.facts->'packages'->'installed'->pkg) = 'array'
+                                     THEN hf.facts->'packages'->'installed'->pkg
+                                     ELSE '[]'::jsonb END AS inst) x
+                 ) b
            WHERE jsonb_typeof(hf.facts->'packages'->'installed') = 'object'
-             AND (hf.facts->'packages'->'installed'->pkg->0->>'version') IS NOT NULL
+             AND b.first_version IS NOT NULL
         # 3) Windows software from win facts
         - >-
           INSERT INTO installed_inventory

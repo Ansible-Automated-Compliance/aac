@@ -24,8 +24,9 @@
 #   change_action    open | close          (required)
 #   target_host      hostname              (required)
 #   cve_id           CVE being remediated  (required for open)
-#   change_outcome   patched | patch_failed | service_failed_after_patch |
-#                    rolled_back | rejected   (required for close)
+#   change_outcome   patched | patch_failed | reboot_pending |
+#                    service_failed_after_patch | rolled_back | rejected
+#                    (required for close)
 #   change_provider  native | servicenow | jira   (default: native)
 
 - name: Patch change record — open or close
@@ -172,13 +173,16 @@
       when: change_action == 'close'
       ansible.builtin.assert:
         that:
-          - change_outcome in ['patched', 'patch_failed', 'service_failed_after_patch',
+          - change_outcome in ['patched', 'patch_failed', 'reboot_pending',
+                               'service_failed_after_patch',
                                'rolled_back', 'rejected', 'dry_run', 'unknown']
         fail_msg: >-
           change_outcome '{{ change_outcome }}' is not a recognised terminal state.
           'patch_failed' and 'service_failed_after_patch' are deliberately distinct:
           they imply different recovery levels (R1 package downgrade vs R2/R3 config
           restore or snapshot). Collapsing them makes the closure meaningless.
+          'reboot_pending' means the fixed kernel build is installed and the host
+          is still running the old one: still exposed, closed by a reboot, not by R1.
           'dry_run' means nothing was applied. 'unknown' means the assurance node
           never reported — treat that as unverified, not as success.
 
@@ -207,7 +211,7 @@
           UPDATE helpdesk_tickets
              SET status      = CASE WHEN %(oc)s = 'rejected'  THEN 'rejected'
                                     WHEN %(oc)s = 'dry_run'   THEN 'closed'
-                                    WHEN %(oc)s IN ('patch_failed','service_failed_after_patch','unknown')
+                                    WHEN %(oc)s IN ('patch_failed','reboot_pending','service_failed_after_patch','unknown')
                                                               THEN 'closed_unresolved'
                                     ELSE 'closed' END,
                  resolved_at = now(),

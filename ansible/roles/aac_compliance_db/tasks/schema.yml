@@ -648,7 +648,8 @@
 # Every statement is IF NOT EXISTS / CREATE OR REPLACE / ADD COLUMN IF NOT
 # EXISTS, so re-running in either order is safe.
 #
-# ORDER MATTERS between files: cve_vendor_remediations references
+# ORDER MATTERS between files: the verdict functions in cve_cache_schema.sql
+# call rpm_evr_functions.sql; cve_vendor_remediations references
 # cve_events_received; patch_change_schema.sql ALTERs helpdesk_tickets, which
 # golden_image_schema.sql creates.
 #
@@ -657,6 +658,18 @@
 # strings and each postgresql_script `path`, and applies the result through
 # psql as the application role (its playbooks/install_aac_db.yml). A looped
 # script task or a conditional one would be rendered wrong there.
+
+# rpm_evr_functions.sql comes FIRST: refresh_inventory_catalog.yml and the
+# verdict functions in cve_cache_schema.sql call it. Functions only, CREATE OR
+# REPLACE.
+- name: Create rpm version-comparison functions (aac_rpmvercmp, aac_evr_cmp, aac_kernel_booted_evr)
+  community.postgresql.postgresql_script:
+    login_host: "{{ pg_host }}"
+    login_port: "{{ pg_port | default(5432) }}"
+    login_user: "{{ pg_user }}"
+    login_password: "{{ aac_db_password }}"
+    login_db: "{{ pg_db }}"
+    path: "{{ role_path }}/../../files/rpm_evr_functions.sql"
 
 - name: Create inventory catalog schema (installed_inventory, manual_product_declarations, inventory_catalog)
   community.postgresql.postgresql_script:
@@ -667,7 +680,7 @@
     login_db: "{{ pg_db }}"
     path: "{{ role_path }}/../../files/inventory_catalog_schema.sql"
 
-- name: Create CVE cache schema (cve_events_received, cve_vendor_remediations)
+- name: Create CVE cache schema (cve_events_received, cve_vendor_remediations, cve_fixed_builds, verdict functions)
   community.postgresql.postgresql_script:
     login_host: "{{ pg_host }}"
     login_port: "{{ pg_port | default(5432) }}"

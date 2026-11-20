@@ -29,7 +29,9 @@ database for Ansible Automated Compliance (AAC).
 | `ai_systems`, `ai_action_log`, `ai_approval_requests` | Tables | AI governance decision log (`files/ai_action_log_schema.sql`) |
 | `evidence_maintenance_log` | Table | Logged rewrites of the append-only evidence tables (`files/evidence_append_only.sql`) |
 | `installed_inventory`, `manual_product_declarations`, `inventory_catalog` | Tables, Mat. view | Installed-component inventory (`files/inventory_catalog_schema.sql`) |
-| `cve_events_received`, `cve_vendor_remediations` | Tables | AAC-side CVE cache (`files/cve_cache_schema.sql`) |
+| `aac_rpmvercmp`, `aac_evr_cmp`, `aac_evr_max`, `aac_rpm_stream`, `aac_kernel_booted_evr_for` … | Functions | rpm epoch:version-release ordering and booted-kernel parsing (`files/rpm_evr_functions.sql`) |
+| `cve_events_received`, `cve_vendor_remediations`, `cve_fixed_builds` | Tables | AAC-side CVE cache; `cve_fixed_builds` holds the fixed build per product stream (`files/cve_cache_schema.sql`) |
+| `aac_cve_package_verdict`, `aac_cve_host_verdicts` | Functions | The CVE matching rule: installed build against the fixed build of the same stream (`files/cve_cache_schema.sql`) |
 | `patch_manifest_raw`, `patch_worklist` | Tables | Patch worklist (`files/patch_worklist_schema.sql`) |
 | `patch_closure_evidence` | Table | Proof-of-closure record written by Verify Patch Closure (`files/patch_closure_schema.sql`) |
 | `product_lifecycle`, `support_status_map`, `host_support_status` | Tables | Vendor support status (`files/support_status_schema.sql`) |
