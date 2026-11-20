@@ -125,7 +125,10 @@
         login_db: "{{ cd_pg_db }}"
         path: "{{ playbook_dir }}/../files/component_discovery_schema.sql"
 
-    - name: Read the stored facts that detection uses
+    # Unit, process, container and host names in stored facts come from the
+    # managed hosts. They cross Ansible only as base64 blobs that
+    # scripts/component_discovery.py decodes; no task here sees them as text.
+    - name: Read the stored facts that detection uses (one opaque base64 value)
       community.postgresql.postgresql_query:
         login_host: "{{ cd_pg_host }}"
         login_port: "{{ cd_pg_port }}"
@@ -142,7 +145,9 @@
         login_user: "{{ cd_pg_user }}"
         login_password: "{{ compliance_db_password }}"
         login_db: "{{ cd_pg_db }}"
-        query: "SELECT to_jsonb(t) AS r FROM {{ item }} t"
+        query: >-
+          SELECT encode(convert_to(COALESCE(jsonb_agg(to_jsonb(t)), '[]'::jsonb)::text, 'UTF8'), 'base64') AS blob
+          FROM {{ item }} t
       loop:
         - host_components
         - host_unrecognised
@@ -167,16 +172,16 @@
               stale_after_days: "{{ component_stale_after_days | int }}"
               expiring_within_days: "{{ component_override_soon_days | int }}"
               job_id: "{{ tower_job_id | default(awx_job_id | default('')) }}"
-              facts_rows: "{{ cd_hosts.query_result | default([]) }}"
-              existing_components: "{{ cd_existing.results[0].query_result | default([]) | map(attribute='r') | list }}"
-              existing_unrecognised: "{{ cd_existing.results[1].query_result | default([]) | map(attribute='r') | list }}"
-              overrides: "{{ component_override_entries | default(cd_overrides_file.component_override_entries | default([])) }}"
+              facts_rows_b64: "{{ cd_hosts.query_result[0].blob }}"
+              existing_components_b64: "{{ cd_existing.results[0].query_result[0].blob }}"
+              existing_unrecognised_b64: "{{ cd_existing.results[1].query_result[0].blob }}"
+              overrides_b64: "{{ component_override_entries | default(cd_overrides_file.component_override_entries | default([])) | to_json | b64encode }}"
               # Who launched the job and where the list came from are recorded
               # beside each override; neither is taken from the entry itself.
               override_source: "{{ 'variable' if component_override_entries is defined else 'file' }}"
               launched_by: "{{ awx_user_name | default(tower_user_name | default('')) }}"
               override_max_expiry_days: "{{ component_override_max_days | int }}"
-              existing_overrides: "{{ cd_existing.results[2].query_result | default([]) | map(attribute='r') | list }}"
+              existing_overrides_b64: "{{ cd_existing.results[2].query_result[0].blob }}"
               # The approver list is read from this file by the script, not from a variable.
               site_config_file: "{{ playbook_dir }}/../vars/site_config.yml"
 
@@ -214,6 +219,8 @@
             login_db: "{{ cd_pg_db }}"
             path: "{{ cd_work.path }}/apply.sql"
 
+        # The summary file holds counts and names with template delimiters
+        # broken apart by the script; the verbatim values are in the database.
         - name: Read the run summary
           ansible.builtin.slurp:
             src: "{{ cd_work.path }}/summary.json"

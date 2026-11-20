@@ -624,6 +624,93 @@ def test_seeded_job_template_takes_no_variables_at_launch():
         assert f["type"] == "integer" and isinstance(f["min"], int) and isinstance(f["max"], int)
 
 
+# ── Host-originated strings never reach Ansible as templates ────────────────
+
+HOSTILE = "{{ lookup('pipe','id') }}"
+
+
+def _hostile_rows():
+    units = {f"{HOSTILE}.service": {"state": "running", "status": "enabled"},
+             "{% raw %}evil.service": {"state": "running", "status": "enabled"},
+             "sshd.service": {"state": "running", "status": "enabled"}}
+    facts = {"services": {"all": units, "enabled_at_boot": [f"{HOSTILE}.service"]},
+             "packages": {"installed": ["openssh-server", HOSTILE]},
+             "network": {"listening_ports": [
+                 'tcp LISTEN 0 128 0.0.0.0:7777 0.0.0.0:* users:(("{{7*7}}",pid=9,fd=3))']},
+             "containers": {"running": [{"name": HOSTILE, "image": f"quay.io/ansible/awx:{HOSTILE}"}]}}
+    return [{"host_id": f"evil-{HOSTILE}", "hostname": f"evil-{HOSTILE}", "facts_id": 1,
+             "collected_at": RUN2, "facts": facts}]
+
+
+def _b64(value):
+    import base64
+    return base64.b64encode(json.dumps(value).encode()).decode()
+
+
+def test_defang_breaks_every_template_delimiter():
+    for raw in ("{{ x }}", "{% if x %}", "{# c #}", "{{{ x }}}", "a{{b}}c{%d%}e{#f#}"):
+        out = cd.defang(raw)
+        assert not re.search(r"\{\{|\{%|\{#|\}\}|%\}|#\}", out), out
+    assert cd.defang("plain {name} 100% #1") == "plain {name} 100% #1"
+    nested = cd.safe_for_ansible({HOSTILE: [HOSTILE, {"k": HOSTILE}], "n": 3})
+    assert "{{" not in json.dumps(nested) and nested["n"] == 3
+
+
+def test_hostile_unit_and_container_names_are_stored_verbatim():
+    plan = cd.build_plan({"now": RUN2, "hosts": _hostile_rows()}, CATALOG)
+    items = {r["item"] for r in plan["payload"]["unrecognised"]}
+    assert f"{HOSTILE}.service" in items and "{% raw %}evil.service" in items
+    assert all(r["host_id"] == f"evil-{HOSTILE}" for r in plan["payload"]["components"])
+    awx = next(r for r in plan["payload"]["components"] if r["component_key"] == "awx")
+    assert awx["evidence"][0]["value"] == f"quay.io/ansible/awx:{HOSTILE}"
+    # the SQL carries the values inside base64 only: no template text in the script Ansible runs
+    sql = cd.persist_sql(plan["payload"])
+    assert "{{" not in sql and "{%" not in sql and "lookup" not in sql
+    import base64
+    blob = re.search(r"decode\('([A-Za-z0-9+/=]+)'", sql).group(1)
+    assert json.loads(base64.b64decode(blob))["unrecognised"] == plan["payload"]["unrecognised"]
+
+
+def test_nothing_the_script_returns_to_ansible_holds_a_template(tmp_path, capsys):
+    inp, sql, summary = tmp_path / "in.json", tmp_path / "apply.sql", tmp_path / "summary.json"
+    inp.write_text(json.dumps({"now": RUN2, "facts_rows_b64": _b64(_hostile_rows()),
+                               "existing_components_b64": _b64([]), "existing_unrecognised_b64": _b64([]),
+                               "existing_overrides_b64": _b64([]), "overrides_b64": _b64([])}))
+    # the input file Ansible wrote holds no template text either: the names are inside base64
+    assert "{{" not in inp.read_text() and "lookup" not in inp.read_text()
+    rc = cd.main(["plan", "--input", str(inp), "--sql-out", str(sql), "--summary-out", str(summary)])
+    printed = capsys.readouterr()
+    assert rc == 0
+    for text in (summary.read_text(), printed.out, printed.err, sql.read_text()):
+        assert not re.search(r"\{\{|\{%|\{#", text)
+    back = json.loads(summary.read_text())
+    assert back["hosts_evaluated"] == 1 and back["unrecognised_count"] == 3
+    host_names = list(back["components_per_host"])
+    assert host_names == ["evil-{ { lookup('pipe','id') } }"]     # visible, defanged, not evaluated
+
+
+def test_refusal_text_is_defanged(tmp_path, capsys):
+    inp = tmp_path / "in.json"
+    inp.write_text(json.dumps({"now": RUN2, "overrides_b64": _b64([{"host": HOSTILE, "component": "postgresql"}])}))
+    rc = cd.main(["plan", "--input", str(inp), "--sql-out", str(tmp_path / "a.sql"),
+                  "--summary-out", str(tmp_path / "s.json")])
+    err = capsys.readouterr().err
+    assert rc == 3 and "{{" not in err and "{ { lookup" in err
+    assert not (tmp_path / "a.sql").exists()
+
+
+def test_playbook_passes_host_data_only_as_base64():
+    book = (_root / "ansible" / "playbooks" / "discover_host_components.yml").read_text()
+    read_sql = (_root / "ansible" / "files" / "component_discovery_read_hosts.sql").read_text()
+    assert "'base64') AS blob" in read_sql and "'base64') AS blob" in book
+    code = "\n".join(line for line in book.splitlines() if not line.lstrip().startswith("#"))
+    assert "query_result | default" not in code and "to_jsonb(t) AS r" not in code
+    for key in ("facts_rows_b64", "existing_components_b64", "existing_unrecognised_b64",
+                "existing_overrides_b64", "overrides_b64"):
+        assert f"{key}:" in code and f"{key}:" in "".join(f"{k}:" for k in cd.B64_INPUT_KEYS)
+    assert "cd_plan.stdout" not in code
+
+
 # ── Summary and SQL ──────────────────────────────────────────────────────────
 
 def test_summary_counts():

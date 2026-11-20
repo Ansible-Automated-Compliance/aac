@@ -1,6 +1,6 @@
 # Component discovery: which technology runs on which host
 
-**Version:** v1.3
+**Version:** v1.4
 **Authors:** Tim Coulter, Claude (Anthropic)
 
 AAC already stores per-host facts (`host_facts`) and turns coarse signals such as the operating system and the cloud provider into enabled policy bundles. Component discovery adds the missing record: which technology components (a database server, a Kubernetes control plane, an automation controller) run on which host.
@@ -48,6 +48,16 @@ The job holds the database credential, so what a launcher can change is limited.
 | Tuning values must be within bounds | The playbook checks the same ranges as the survey |
 
 The job prints a summary and publishes it with `set_stats` under `component_discovery`: components per host, components detected with no collector, counts of running services and ports that were not recognised, entries with no newer facts, entries no longer present, privileged services, client tools found without the server, overrides in force and overrides expiring soon.
+
+### Host-reported names and Ansible
+
+Unit names, process names, container names and host names in the stored facts come from the managed hosts. A name such as `{{ lookup('pipe','id') }}` must not reach Ansible as text it could template on the controller.
+
+| Where | Handling |
+|---|---|
+| Stored facts and stored map, on their way to the script | Each query returns one base64 value. The playbook passes it to `scripts/component_discovery.py` unread; only the script decodes it |
+| The result, on its way to the database | One SQL script in which the data is a single base64 value. The tables keep every name exactly as the host reported it |
+| The printed summary, the `set_stats` data and any error text | Counts, and names in which the script has broken the template delimiters apart (`{{` becomes `{ {`, likewise `{%` and `{#`) |
 
 ## Signals and strength
 
