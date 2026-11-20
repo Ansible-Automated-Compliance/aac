@@ -537,7 +537,7 @@ This single run creates:
 - Credentials: GitHub PAT, Ansible Vault, AAC Demo Host SSH
 - Project: Compliance Automation (synced from GitHub, `ansible-automated-compliance/aac`)
 - Inventory: Compliance Infrastructure + 2 hosts (`localhost`, `aap-controller-ssh`)
-- ~54 job templates across all demo groups (Golden Image, NERC-CIP, AMI, DS, Technical Debt, Generic)
+- 36 job templates across all demo groups (Golden Image, NERC-CIP, AMI, DS, Technical Debt, Generic)
 - 3 workflows (GoldenImage Enforcement, NERC/AMI Nightly Audit, Digital Sovereignty Full Assessment)
 - 4 nightly schedules
 - EDA project, EDA credential (old-style PAT), 3 EDA activations (ports 5004, 5003, 5000)
@@ -1284,7 +1284,7 @@ ansible-playbook ansible/config_as_code/rhpds/rhpds_bootstrap.yml \
   --vault-password-file ~/.vault_pass
 ```
 
-Creates all ~54 templates, 3 workflows, 4 schedules, and 3 EDA activations on the RHPDS
+Creates all 36 templates, 3 workflows, 4 schedules, and 3 EDA activations on the RHPDS
 AAP cluster. Runs entirely over HTTPS — no need to SSH into or log into RHPDS AAP first.
 
 > **Verify in RHPDS AAP UI:**
