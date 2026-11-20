@@ -32,8 +32,8 @@
 
 **Never push directly to `main`.** Every change goes through a pull request.
 
-A PR touching a **protected path** (`policies/`, `opa/`, `.github/workflows/`,
-`aap-integration/`, `ansible/`) additionally needs an `Approved-By:` trailer
+A PR touching a **protected path** (`policies/`, `.github/workflows/`, `enforcement/git/`)
+additionally needs an `Approved-By:` trailer
 from an authorized approver in the commit message — CI enforces this as policy.
 See **`docs/CHANGE_GOVERNANCE.md`** for what CI checks, how review works, and
 where the governance is still weaker than it looks.

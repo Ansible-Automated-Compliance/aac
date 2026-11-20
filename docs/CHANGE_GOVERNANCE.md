@@ -122,9 +122,12 @@ release condition.
 Defined in `policies/enforcement/git/approval_policy.rego`:
 
 ```
-policies/            .github/workflows/            ansible/
-opa/                 aap-integration/
+policies/            .github/workflows/            enforcement/git/
 ```
+
+`ansible/`, `opa/` and `aap-integration/` were protected until the policy was narrowed: `ansible/` is nearly the
+whole repository (a trailer on every change is reflex, not a decision), and the other two directories no longer
+exist. `enforcement/git/` was added because the policy is the gate itself.
 
 A PR touching any of these needs a commit-message trailer:
 
@@ -196,10 +199,8 @@ to a team, this is the first control to make real* — require a GitHub review
 from a second person on protected paths and drop the trailer to a record rather
 than the gate.
 
-**`ansible/` is a protected path, which is nearly the whole repository.** Almost
-every change needs the trailer, so adding it becomes reflex rather than a
-decision. A control that fires on everything signals nothing. Worth narrowing to
-the paths where authorization genuinely matters.
+**Narrowed:** `ansible/` used to be a protected path, which made the trailer a reflex. The policy now protects
+only `policies/`, `.github/workflows/` and `enforcement/git/` (see §5).
 
 **The hygiene gate does not cover the whole tree.** It scans `ansible/`,
 `install/`, `scripts/`, `extensions/` and `grafana/`. It does **not**
