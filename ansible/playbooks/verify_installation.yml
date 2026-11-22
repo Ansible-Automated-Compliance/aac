@@ -33,9 +33,20 @@
     # `key: "{{ key | default(x) }}"`). Use-sites reference
     # `(var | default(_var_default))`.
     # _aap_token_default: <set via extra_vars / survey / inventory>
-    _compliance_db_password_default: "compliance"
+    # No default password: compliance_db_password comes from the vault (asserted below).
 
   tasks:
+
+    - name: Require the compliance DB password from the vault
+      ansible.builtin.assert:
+        that:
+          - compliance_db_password is defined
+          - compliance_db_password | string | length > 0
+        fail_msg: >-
+          compliance_db_password is not set. Passwords are never stored in the repo:
+          set it in ansible-vault (ansible/vars/vault_secrets.yml) or an AAP credential.
+        quiet: true
+      no_log: true
 
     - name: Set timestamp
       set_fact:
@@ -115,7 +126,7 @@
         login_host: "{{ pg_host }}"
         login_port: "{{ pg_port }}"
         login_user: postgres
-        login_password: "{{ compliance_db_password | default(_compliance_db_password_default) }}"
+        login_password: "{{ compliance_db_password }}"
         login_db: compliance
         query: >-
           SELECT

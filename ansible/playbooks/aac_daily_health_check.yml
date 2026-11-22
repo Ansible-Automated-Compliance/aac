@@ -49,7 +49,7 @@
     # value below kicks in. Each use-site picks up the live value via
     # `(var | default(shadow))`.
     # _aap_token_default: <set via extra_vars / survey / inventory>
-    _compliance_db_password_default: "compliance"
+    # No default password: compliance_db_password comes from the vault (asserted below).
     # No default password. An unset grafana_admin_password must fail the
     # check, not silently authenticate with a value baked into the repo.
     # _grafana_admin_password_default: <set via extra_vars / survey / inventory>
@@ -69,6 +69,17 @@
     min_pg_rows: 5
 
   tasks:
+
+    - name: Require the compliance DB password from the vault
+      ansible.builtin.assert:
+        that:
+          - compliance_db_password is defined
+          - compliance_db_password | string | length > 0
+        fail_msg: >-
+          compliance_db_password is not set. Passwords are never stored in the repo:
+          set it in ansible-vault (ansible/vars/vault_secrets.yml) or an AAP credential.
+        quiet: true
+      no_log: true
 
     # =========================================================================
     # OPA CONTAINERS
@@ -226,7 +237,7 @@
         login_host: "{{ pg_host }}"
         login_port: "{{ pg_port }}"
         login_user: postgres
-        login_password: "{{ compliance_db_password | default(_compliance_db_password_default) }}"
+        login_password: "{{ compliance_db_password }}"
         login_db: compliance
         query: >-
           SELECT
@@ -253,7 +264,7 @@
     # password in case the driver echoed the connection string back.
     - name: Surface why the PostgreSQL query failed
       vars:
-        _pg_pw: "{{ compliance_db_password | default(_compliance_db_password_default) }}"
+        _pg_pw: "{{ compliance_db_password }}"
       ansible.builtin.debug:
         msg: >-
           PostgreSQL check FAILED — host={{ pg_host }} port={{ pg_port }}
@@ -267,7 +278,7 @@
         login_host: "{{ pg_host }}"
         login_port: "{{ pg_port }}"
         login_user: postgres
-        login_password: "{{ compliance_db_password | default(_compliance_db_password_default) }}"
+        login_password: "{{ compliance_db_password }}"
         login_db: compliance
         query: >-
           SELECT framework,
@@ -526,7 +537,7 @@
         login_password: >-
           {{ compliance_writer_password
              if (aac_evidence_writer_user | default('', true) | length > 0)
-             else (compliance_db_password | default(_compliance_db_password_default)) }}
+             else (compliance_db_password) }}
         login_db: compliance
         query: >-
           INSERT INTO compliance_results
