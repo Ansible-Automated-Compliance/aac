@@ -92,6 +92,61 @@
     _crypto_overrides: "{{ (_sr.crypto_raw | default('')) | regex_findall('(?m)^override:(.*)$') }}"
     _dnf_conf: "{{ dict((_sr.dnf_conf_raw | default('')) | regex_findall('(?m)^\\s*(gpgcheck|localpkg_gpgcheck)\\s*=\\s*(\\d)')) }}"
 
+    # ── crypto policy state, policy check, back-ends, OpenSSL / sshd crypto files,
+    #    FIPS, sshd banner text and unit load state. Each key is emitted only when
+    #    the collector printed its "<name>_read" sentinel (the source was readable);
+    #    otherwise it is left out and the policy reports evidence missing.
+    _cs: "{{ _sr.crypto_state_raw | default('') }}"
+    _fr: "{{ _sr.fips_raw | default('') }}"
+    _br: "{{ _sr.ssh_banner_raw | default('') }}"
+    _pol_hash: "{{ _cs | regex_findall('(?m)^pol_hash:(.*)$') | first | default('') | trim }}"
+    _pol_min_rsa: "{{ _cs | regex_findall('(?m)^pol_min_rsa_size:\\s*(\\d+)\\s*$') | first | default('') }}"
+    _check_read: "{{ _cs is search('(?m)^check_read:yes$') }}"
+    _check_out: "{{ _cs | regex_findall('(?m)^check:(.*)$') | join('\n') }}"
+    _check_rc: "{{ _cs | regex_findall('(?m)^check_rc:(\\d+)$') | first | default('') }}"
+    # `update-crypto-policies --check && echo PASS`, as the Oracle Linux 9 check runs it
+    _pass_output: "{{ _check_out ~ ('\nPASS' if _check_rc == '0' else '') }}"
+    _is_applied_read: "{{ _cs is search('(?m)^is_applied_read:yes$') }}"
+    _is_applied: "{{ _cs | regex_findall('(?m)^is_applied:(.*)$') | join('\n') }}"
+    _backends_read: "{{ _cs is search('(?m)^backends_read:yes$') }}"
+    _backend_rows: "{{ _cs | regex_findall('(?m)^backend:([^|\\n]+)\\|(link|file)\\|(.*)$') }}"
+    _crypto_backends: >-
+      [{% for b in _backend_rows %}{"name": {{ b[0] | to_json }}, "is_symlink": {{ 'true' if b[1] == 'link' else 'false' }}, "target": {{ b[2] | to_json }}}{{ ',' if not loop.last }}{% endfor %}]
+    _openssl_cnf_read: "{{ _cs is search('(?m)^openssl_cnf_read:yes$') }}"
+    _openssl_cnf_lines: "{{ _cs | regex_findall('(?m)^openssl_cnf:(.*)$') }}"
+    _sshd_sysconfig_read: "{{ _cs is search('(?m)^sshd_sysconfig_read:yes$') }}"
+    _sshd_sysconfig_lines: "{{ _cs | regex_findall('(?m)^sshd_sysconfig:(.*)$') }}"
+    _mode_setup_read: "{{ _fr is search('(?m)^mode_setup_read:yes$') }}"
+    _mode_setup: "{{ _fr | regex_findall('(?m)^mode_setup:(.*)$') | join('\n') }}"
+    _kernelopts: "{{ _fr | regex_findall('(?m)^kernelopts:(.*)$') | first | default('') | trim }}"
+    _banner_read: "{{ _br is search('(?m)^banner_read:') }}"
+    _banner_text: "{{ _br | regex_findall('(?m)^banner:(.*)$') | join('\n') }}"
+    _unit_rows: "{{ (_sr.units_raw | default('')) | regex_findall('(?m)^([A-Za-z0-9@._-]+)\\|([a-z-]+)\\s*$') }}"
+    _systemd_units: >-
+      {{ '{' ~ (_unit_rows | map('join', '|') | map('regex_replace', '^([A-Za-z0-9@._-]+)\|([a-z-]+)$', '"\1": {"load_state": "\2"}') | join(',')) ~ '}' }}
+    _fips_enabled_raw: "{{ ((_sr.system_raw | default('')) | regex_findall('(?m)^fips:\\s*(\\d+)\\s*$') | first | default('')) }}"
+    _crypto_fips_input: >-
+      {{ {}
+         | combine({'crypto_policy': _crypto_policy} if _crypto_policy != '' else {})
+         | combine({'crypto_policy_state': {} | combine(
+               ({'hash': _pol_hash.split()} if _pol_hash != '' else {}),
+               ({'min_rsa_size': _pol_min_rsa | int} if _pol_min_rsa != '' else {}))}
+           if (_pol_hash != '' or _pol_min_rsa != '') else {})
+         | combine({'crypto_policy_check': {} | combine(
+               ({'output': _check_out,
+                 'pass_output': _pass_output} if _check_read | bool else {}),
+               ({'is_applied': _is_applied} if _is_applied_read | bool else {}))}
+           if ((_check_read | bool) or (_is_applied_read | bool)) else {})
+         | combine({'crypto_backends': (_crypto_backends | from_json) if _crypto_backends is string else _crypto_backends} if _backends_read | bool else {})
+         | combine({'openssl_cnf': {'lines': _openssl_cnf_lines}} if _openssl_cnf_read | bool else {})
+         | combine({'sshd_sysconfig': {'lines': _sshd_sysconfig_lines}} if _sshd_sysconfig_read | bool else {})
+         | combine({'fips': {} | combine(
+               ({'fips_enabled': _fips_enabled_raw} if _fips_enabled_raw != '' else {}),
+               ({'mode_setup_check': _mode_setup} if _mode_setup_read | bool else {}))}
+           if (_fips_enabled_raw != '' or (_mode_setup_read | bool)) else {})
+         | combine({'grub': {'kernelopts': _kernelopts}} if _kernelopts != '' else {})
+         | combine({'systemd_units': (_systemd_units | from_json) if _systemd_units is string else _systemd_units} if (_unit_rows | length) > 0 else {}) }}
+
     # ── certificates, openssl, aide, cron.allow
     _certs: "{{ _sr.certs_raw | default('') }}"
     _expired: "{{ _certs | regex_findall('(?m)^expired:(.*)$') }}"
@@ -180,7 +235,6 @@
         'yum_repos': (_yum_repos | from_json) if _yum_repos is string else _yum_repos,
         'dnf_config': {'gpgcheck': (_dnf_conf.gpgcheck | default('')) == '1', 'localpkg_gpgcheck': (_dnf_conf.localpkg_gpgcheck | default('')) == '1'},
         'yum_config': {'gpgcheck': (_dnf_conf.gpgcheck | default('')) == '1'},
-        'crypto_policy': _crypto_policy,
         'crypto_policy_overrides': _crypto_overrides,
         'fips_mode': (_sys.fips | default('')) == '1',
         'kernel_config': {'module_sig_enforce': (_sys.module_sig_enforce | default('')) == 'Y'},
@@ -217,11 +271,11 @@
         'auditd_config': _auditd_conf | combine({'log_dir_permissions': _audit_dir_row} if _audit_dir_row != '' else {}),
         'audit_rules': _audit_rules,
         'filesystem_mounts': (_filesystem_mounts | from_json) if _filesystem_mounts is string else _filesystem_mounts,
-        'ssh_config': _ssh_config,
+        'ssh_config': _ssh_config | combine({'banner_text': _banner_text} if _banner_read | bool else {}),
         'login_banner': {'issue': _issue},
         'selinux': {'status': (_af.selinux | default({})).mode | default((_af.selinux | default({})).status | default('')),
                     'policy': (_af.selinux | default({})).type | default('')}
-      } }}
+      } | combine(_crypto_fips_input) }}
     _base:
       system_info:
         hostname: "{{ _af.hostname | default(opa_hostname | default(inventory_hostname)) }}"
