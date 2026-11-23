@@ -237,3 +237,17 @@ aap_vault_credential_name: "Ansible Vault"
 aap_ssh_credential_name: "Compliance SSH Credential"
 aap_aws_credential_name: "AWS Compliance Lab"
 aap_scm_credential_name: "GitHub SCM"
+
+# ─── Result freshness (AAC - Assert Fresh Results) ───────────────────────────
+# What must be fresh, checked by ansible/playbooks/aac_assert_fresh_results.yml.
+# The job fails when a framework or host listed here has no row newer than its
+# limit. Leave both lists empty and the job fails too: nothing declared is not
+# a pass. Schedule it after your assessment jobs.
+# aac_freshness_max_age_hours: 26
+# aac_freshness_frameworks:
+#   - cis_rhel9                      # any host, default limit
+#   - framework: cis_m365_v7
+#     max_age_hours: 170             # assessed weekly
+#   - framework: cis_ubuntu_2204
+#     hosts: [web01, web02]          # each host must have its own fresh row
+# aac_freshness_fact_hosts: []       # hostnames that must have fresh host_facts
