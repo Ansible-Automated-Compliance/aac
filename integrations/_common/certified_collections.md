@@ -25,7 +25,7 @@ These ship with the `aac-compliance-ee` we already build (see
 
 | Collection | Version pin in EE | Used in repo for |
 |---|---|---|
-| `infra.aap_configuration` | `>= 2.9.0` | AAP config-as-code (templates, workflows, EDA) |
+| `infra.aap_configuration` | `>= 4.2.0` | AAP config-as-code (templates, workflows, EDA) |
 | `community.postgresql` | `>= 3.0.0` | compliance DB queries (1300+ calls in playbooks) |
 | `community.general` | `>= 8.0.0` | misc — mail, json_query, dict utilities |
 | `ansible.posix` | `>= 1.5.0` | filesystem ops, mounts, sysctl |

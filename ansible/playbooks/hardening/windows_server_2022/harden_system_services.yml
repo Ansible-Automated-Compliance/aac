@@ -28,6 +28,15 @@
 
   tasks:
 
+    - name: Check mode notice
+      ansible.builtin.debug:
+        msg: >-
+          Check mode: registry, service and user-right tasks report what they
+          would change. The 1 task(s) in this playbook that run a Windows
+          command (secedit, auditpol, net accounts, Set-MpPreference and
+          similar) cannot preview and are skipped. Nothing is changed.
+      when: ansible_check_mode
+
     # ── Section 5: Disable Unnecessary Services ───────────────────────────────
 
     - name: Disable Bluetooth Audio Gateway Service (CIS 5.1)
@@ -380,5 +389,6 @@
         type: dword
 
     - name: Hardening complete
+      when: not ansible_check_mode
       debug:
         msg: "Services and registry hardening complete. Run assessment to verify."

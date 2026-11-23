@@ -17,6 +17,7 @@
   changed_when: false
 
 - name: Install OPA systemd unit files
+  changed_when: true
   command: "mv /tmp/container-{{ item.name }}.service /etc/systemd/system/"
   loop: "{{ _aac_opa_expanded }}"
   loop_control:
@@ -39,6 +40,7 @@
   when: (_aac_opa_scaled | default([])) | length > 0
 
 - name: Install HAProxy systemd unit files
+  changed_when: true
   command: "mv /tmp/container-haproxy-{{ item.name }}.service /etc/systemd/system/"
   loop: "{{ _aac_opa_scaled | default([]) }}"
   loop_control:

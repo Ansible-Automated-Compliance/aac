@@ -2,7 +2,7 @@
 
 > **Generated** by `scripts/framework_coverage.py --write`. Do not edit by hand.
 
-Policy library pin: `3d3976e8`. Of 107 catalog keys, **101 return a report with a control count**, 6 return a report without one, and 0 resolve to nothing.
+Policy library pin: `98c3291f`. Of 107 catalog keys, **107 return a report with a control count**, 0 return a report without one, and 0 resolve to nothing.
 
 "Controls evaluated" is the module's own `total_controls` on empty input: the number of controls it evaluates. It is not a statement about how many controls the published standard contains.
 
@@ -11,11 +11,15 @@ Policy library pin: `3d3976e8`. Of 107 catalog keys, **101 return a report with 
 | `bsi_c5` | BSI C5:2020 | compliance | 168 | BSI C5:2026 |
 | `ccpa` | CCPA/CPRA | compliance | 7 | California Consumer Privacy Act (CCPA / CPRA) |
 | `cfr_part_11` | 21 CFR Part 11 | compliance | 43 | FDA 21 CFR Part 11 |
+| `cis_controls_v8` | CIS Controls v8.1 | compliance | 153 | CIS Controls v8.1 |
+| `cjis` | FBI CJIS Security Policy | compliance | 98 | FBI CJIS Security Policy |
 | `cmmc` | CMMC 2.0 | compliance | 110 |  |
 | `coppa` | COPPA | compliance | 21 | COPPA (Children's Online Privacy Protection Rule) |
 | `csa_ccm` | CSA Cloud Controls Matrix v4.0 | compliance | 197 | Cloud Security Alliance Cloud Controls Matrix (CSA CCM) |
+| `cyber_essentials` | UK Cyber Essentials | compliance | 28 | UK Cyber Essentials (Willow question set, April 2025) |
 | `digital_sovereignty` | Digital Sovereignty Framework | compliance | 140 | Digital Sovereignty Assessment |
 | `dora` | DORA (Digital Operational Resilience Act) | compliance | 399 | EU Digital Operational Resilience Act (DORA) |
+| `essential_eight` | ACSC Essential Eight | compliance | 96 | ACSC Essential Eight Maturity Model (Nov 2023) |
 | `eu_ai_act` | EU AI Act | compliance | 5 | EU Artificial Intelligence Act |
 | `fedramp` | FedRAMP Authorization | compliance | 12 | FedRAMP |
 | `ferpa` | FERPA | compliance | 32 | FERPA (Family Educational Rights and Privacy Act) |
@@ -23,6 +27,7 @@ Policy library pin: `3d3976e8`. Of 107 catalog keys, **101 return a report with 
 | `gdpr` | GDPR | compliance | 4 | GDPR (EU) 2016/679 — Full Compliance Assessment |
 | `hipaa` | HIPAA Security Rule | compliance | 246 | HIPAA Administrative Simplification (45 CFR Parts 160, 162, 164) + HITECH Act |
 | `hitrust` | HITRUST CSF r2 | compliance | 59 | HITRUST Common Security Framework (CSF) |
+| `irs_1075` | IRS Publication 1075 (FTI) | compliance | 57 | IRS Publication 1075 (Rev. 11-2021) |
 | `iso27001` | ISO/IEC 27001:2022 | compliance | 93 | ISO/IEC 27001:2022 |
 | `iso27701` | ISO/IEC 27701:2019 (PIMS) | compliance | 134 | ISO/IEC 27701 Privacy Information Management System |
 | `ncsc_caf` | NCSC CAF 4.0 | compliance | 23 | NCSC Cyber Assessment Framework 4.0 |
@@ -109,19 +114,7 @@ Policy library pin: `3d3976e8`. Of 107 catalog keys, **101 return a report with 
 | `stig_windows_11` | DISA STIGs | security | 117 |  |
 | `stig_windows_server_2022` | DISA STIGs | security | 103 |  |
 | `stig_windows_server_2025` | DISA STIGs | security | 94 |  |
-
-## Keys whose report has no control count
-
-An assessment for these returns a report, but the report does not say how many controls it evaluated, so a percentage cannot be checked against a total. Each is on the `no_control_count` list in `ansible/vars/framework_coverage_known_gaps.yml`.
-
-| Key | Catalog entry | Policy directory |
-|---|---|---|
-| `cis_controls_v8` | CIS Controls v8.1 | `frameworks/management/cis_controls_v8` |
-| `cjis` | FBI CJIS Security Policy | `frameworks/federal/cjis` |
-| `cyber_essentials` | UK Cyber Essentials | `frameworks/regional/cyber_essentials` |
-| `essential_eight` | ACSC Essential Eight | `frameworks/regional/essential_eight` |
-| `irs_1075` | IRS Publication 1075 (FTI) | `frameworks/federal/irs_1075` |
-| `zero_trust` | Zero Trust (CISA ZTMM v2.0) | `frameworks/federal/zero_trust` |
+| `zero_trust` | Zero Trust (CISA ZTMM v2.0) | security | 83 | CISA Zero Trust Maturity Model v2.0 |
 
 ## Bundles with no assessable key
 

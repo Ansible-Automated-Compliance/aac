@@ -12,6 +12,13 @@
     eda_username: "admin"
     eda_password: "{{ vault_eda_admin_password | default(lookup('env', 'EDA_PASSWORD')) }}"  # Set via vault_eda_admin_password or EDA_PASSWORD env var
 
+    # Repository and branch for the EDA project: this site's git_repo_url when
+    # it is set to a real repository, otherwise the public upstream.
+    eda_project_url: >-
+      {{ git_repo_url if ((git_repo_url | default('', true) | length > 0) and ('YOUR_ORG' not in git_repo_url))
+         else 'https://github.com/ansible-automated-compliance/aac.git' }}
+    eda_project_branch: "{{ git_branch | default('main', true) }}"
+
     controller_host: "https://{{ aac_host }}"
     controller_username: "admin"
     controller_password: "{{ vault_aap_admin_password | default(lookup('env', 'CONTROLLER_PASSWORD')) }}"  # Set via vault_aap_admin_password or CONTROLLER_PASSWORD env var
@@ -57,8 +64,10 @@
         body:
           name: "AAC Compliance Automation"
           description: "Ansible Automated Compliance - Drift Detection Rulebooks"
-          url: "https://github.com/ansible-automated-compliance/aac.git"
-          scm_branch: "main"
+          # The repository this site's controller project uses (a fork or a
+          # mirror), so rulebooks and playbooks come from the same source.
+          url: "{{ eda_project_url }}"
+          scm_branch: "{{ eda_project_branch }}"
         validate_certs: "{{ aac_validate_certs | default(aap_validate_certs | default(true)) | bool }}"
         status_code: [201, 400]
       no_log: "{{ aac_no_log | default(true) | bool }}"

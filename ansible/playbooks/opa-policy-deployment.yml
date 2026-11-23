@@ -300,6 +300,7 @@
         mode: '0644'
 
     - name: Build OPA bundle
+      changed_when: true
       shell: |
         cd {{ opa_home }}/bundles
         tar -czf {{ bundle_name }}.tar.gz {{ bundle_name }}/

@@ -79,6 +79,7 @@
     # chdir into the SOURCE dir so any additional_build_files src: paths
     # resolve relative to the definition file.
     - name: Generate the build context with ansible-builder
+      changed_when: true
       ansible.builtin.command: >-
         ansible-builder create --context {{ ee_context }}
       args:
@@ -110,6 +111,7 @@
       delegate_to: aap_physical_host
 
     - name: Build the image with podman
+      changed_when: true
       ansible.builtin.shell: >-
         /usr/bin/podman build
         -f {{ ee_context }}/Dockerfile
@@ -131,11 +133,13 @@
       when: ee_name == 'aac-windows-ee'
 
     - name: Tag latest
+      changed_when: true
       ansible.builtin.shell: >-
         /usr/bin/podman tag {{ ee_image }}:{{ ee_version }} {{ ee_image }}:latest
       delegate_to: aap_physical_host
 
     - name: Login to the registry
+      changed_when: true
       ansible.builtin.shell: >-
         /usr/bin/podman login quay.io
         -u {{ vault_quay_username }}
@@ -146,10 +150,12 @@
       no_log: true
 
     - name: Push the versioned tag
+      changed_when: true
       ansible.builtin.shell: "/usr/bin/podman push {{ ee_image }}:{{ ee_version }}"
       delegate_to: aap_physical_host
 
     - name: Push the latest tag
+      changed_when: true
       ansible.builtin.shell: "/usr/bin/podman push {{ ee_image }}:latest"
       delegate_to: aap_physical_host
 

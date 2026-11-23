@@ -17,6 +17,15 @@
 
   tasks:
 
+    - name: Check mode notice
+      ansible.builtin.debug:
+        msg: >-
+          Check mode: registry, service and user-right tasks report what they
+          would change. The 8 task(s) in this playbook that run a Windows
+          command (secedit, auditpol, net accounts, Set-MpPreference and
+          similar) cannot preview and are skipped. Nothing is changed.
+      when: ansible_check_mode
+
     # ── Fix 1: Account Policy via net accounts (Section 1) ───────────────────
     # secedit /configure silently fails on fresh Server 2022 installs.
     # net accounts modifies SAM directly — immediate effect, secedit /export reflects it.
@@ -309,5 +318,6 @@
       failed_when: false
 
     - name: Targeted fixes complete
+      when: not ansible_check_mode
       debug:
         msg: "Targeted fixes applied. Re-running assessment to measure improvement."
