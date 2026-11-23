@@ -290,6 +290,7 @@
         label: "{{ item.hostname }} (curr {{ item.curr_id }})"
 
     - name: Run diff comparison for each host
+      changed_when: false
       shell: >
         python3 /tmp/aac_drift_compare.py
         /tmp/drift_prev_{{ item.prev_id }}.json

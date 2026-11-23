@@ -54,8 +54,7 @@ setup: install ## Setup development environment
 
 check-syntax: _check-submodules ## Validate Rego syntax
 	@echo "📝 Checking Rego syntax..."
-	@find policies -name "*.rego" -exec opa fmt --diff {} \; || (echo "$(RED)❌ Syntax errors found$(NC)" && exit 1)
-	@find tests -name "*.rego" -exec opa fmt --diff {} \; || (echo "$(RED)❌ Syntax errors found in tests$(NC)" && exit 1)
+	@opa fmt --fail -l policies tests ansible/opa-routing integrations opa_bridges || (echo "$(RED)❌ The files listed above do not parse or are not formatted (opa fmt -w)$(NC)" && exit 1)
 	@echo "$(GREEN)✅ Syntax validation passed$(NC)"
 
 check-compilation: _check-submodules ## Check if policies compile

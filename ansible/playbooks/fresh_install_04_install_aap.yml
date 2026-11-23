@@ -50,6 +50,7 @@
       become: true
 
     - name: Extract AAP bundle
+      changed_when: true
       ansible.builtin.shell: |
         tar xzf {{ bundle_path }} -C {{ install_dir }} --strip-components=1
         echo "Extracted to: {{ install_dir }}"
@@ -111,6 +112,7 @@
 
     # ── Run AAP installer ──────────────────────────────────────────────────────
     - name: Run AAP 2.6 containerized installer (30-60 min)
+      changed_when: true
       ansible.builtin.shell: |
         cd {{ install_dir }}
         ansible-playbook -i inventory \

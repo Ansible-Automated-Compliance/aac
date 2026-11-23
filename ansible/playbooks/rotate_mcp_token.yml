@@ -84,6 +84,7 @@
       changed_when: false
 
     - name: Start MCP container with new token
+      changed_when: true
       ansible.builtin.shell: |
         podman run -d \
           --name aap-mcp \

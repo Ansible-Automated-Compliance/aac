@@ -94,6 +94,7 @@
     - name: Start HAProxy containers for scaled types
       # Binds on the canonical OPA port — callers need no reconfiguration.
       # host.containers.internal resolves to the host from inside podman containers.
+      changed_when: true
       command: >
         podman run -d
         --name haproxy-{{ item.name }}
