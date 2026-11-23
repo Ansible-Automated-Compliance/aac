@@ -40,6 +40,7 @@
         enabled: true
 
     - name: Run database migrations
+      changed_when: true
       ansible.builtin.command:
         cmd: "/opt/myapp/bin/migrate --db-host {{ db_host }}"
       tags:

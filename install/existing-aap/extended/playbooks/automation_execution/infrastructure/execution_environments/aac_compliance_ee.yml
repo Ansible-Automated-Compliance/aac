@@ -1,23 +1,22 @@
 ---
 
+# The image comes from aac_compliance_ee_image in playbooks/vars/defaults.yml.
+# (The module has no "readme" option; a readme block here made the task fail
+# with "Unsupported parameters".)
+- name: The AAC Compliance EE image must be set
+  ansible.builtin.assert:
+    that:
+      - aac_compliance_ee_image is defined
+      - aac_compliance_ee_image | length > 0
+      - aac_compliance_ee_image != 'PLACEHOLDER'
+    fail_msg: "Set aac_compliance_ee_image in playbooks/vars/defaults.yml to the execution environment image you pushed."
+    quiet: true
+
 - name: AAC Compliance EE
   ansible.controller.execution_environment:
     name: AAC Compliance EE
     description: AAC Compliance EE
-    image: PLACEHOLDER
+    image: "{{ aac_compliance_ee_image }}"
     pull: missing
     organization: "{{ aac_organization }}"
     state: present
-    readme: |
-      # AAC Compliance EE
-
-      ## Info
-
-      - Created by: PLACEHOLDER
-      - Email: PLACEHOLDER
-      - Date: PLACEHOLDER
-
-      ## Description
-
-      This is a compliance execution environment for AAC Compliance.
-      It contains the necessary tools and dependencies to run the AAC Compliance Automation Platform.

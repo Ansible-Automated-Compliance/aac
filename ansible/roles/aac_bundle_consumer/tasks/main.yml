@@ -252,6 +252,7 @@
       delegate_to: "{{ aac_bundle_runtime_host }}"
 
     - name: Keep previous bundle for rescue rollback
+      changed_when: true
       ansible.builtin.command:
         argv:
           - cp
@@ -263,6 +264,7 @@
       delegate_to: "{{ aac_bundle_runtime_host }}"
 
     - name: Install verified bundle (atomic same-filesystem move)
+      changed_when: true
       ansible.builtin.command:
         argv:
           - mv
@@ -289,6 +291,7 @@
       delegate_to: "{{ aac_bundle_runtime_host }}"
 
     - name: Label bundle dir container-readable (SELinux)
+      changed_when: true
       command:
         argv: ["chcon", "-R", "-t", "container_file_t", "{{ aac_bundle_dir }}"]
       when: (_selinux.stdout | default('') | trim) in ['Enforcing', 'Permissive']
@@ -345,6 +348,7 @@
       delegate_to: "{{ aac_bundle_runtime_host }}"
 
     - name: Start {{ aac_bundle_container_name }} with the verified bundle
+      changed_when: true
       command:
         argv: "{{ _opa_run_argv }}"
       delegate_to: "{{ aac_bundle_runtime_host }}"
@@ -402,6 +406,7 @@
   rescue:
 
     - name: Restore previous bundle after failure
+      changed_when: true
       ansible.builtin.command:
         argv:
           - mv
@@ -416,6 +421,7 @@
       delegate_to: "{{ aac_bundle_runtime_host }}"
 
     - name: Relabel restored bundle container-readable (SELinux)
+      changed_when: true
       command:
         argv: ["chcon", "-R", "-t", "container_file_t", "{{ aac_bundle_dir }}"]
       when:
@@ -448,6 +454,7 @@
     # would target a container that no longer exists. If this recovery
     # itself fails, the final fail below reports both errors.
     - name: Recreate {{ aac_bundle_container_name }} on the restored bundle
+      changed_when: true
       command:
         argv: "{{ _opa_run_argv }}"
       when:
@@ -576,6 +583,7 @@
       delegate_to: "{{ aac_bundle_runtime_host }}"
 
     - name: Install unit into the user manager
+      changed_when: true
       ansible.builtin.command:
         argv:
           - mv

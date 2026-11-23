@@ -12,6 +12,7 @@
 
 - name: Start MCP server container
   # Token is read from mcp.env at runtime — not embedded in the command.
+  changed_when: true
   shell: |
     source {{ aac_mcp_app_dir }}/mcp.env
     source {{ aac_mcp_app_dir }}/mcp-decision-log.env 2>/dev/null || true

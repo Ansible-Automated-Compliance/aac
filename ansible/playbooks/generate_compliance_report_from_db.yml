@@ -404,6 +404,7 @@
       when: (report_persist_host | default(aac_host | default(''))) | length > 0
       vars:
         persist_dest: "{{ report_persist_user | default(aap_ssh_user | default('aapuser1')) }}@{{ report_persist_host | default(aac_host) }}"
+      changed_when: true
       shell: >
         ssh -o StrictHostKeyChecking=no -o BatchMode=yes {{ persist_dest }} 'mkdir -p ~/reports'
         &&

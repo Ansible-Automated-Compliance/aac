@@ -2,6 +2,7 @@
 # Reload the user systemd daemon and enable the Compliance-State API unit.
 
 - name: reload_and_enable_eauth_unit
+  changed_when: true
   shell: |
     systemctl --user daemon-reload
     systemctl --user enable container-{{ aac_eauth_container_name }}.service
