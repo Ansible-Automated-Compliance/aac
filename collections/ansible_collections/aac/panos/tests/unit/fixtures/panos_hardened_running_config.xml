@@ -1,0 +1,414 @@
+<response status="success"><result>
+<config version="11.1.0" urldb="paloaltonetworks">
+  <mgt-config>
+    <users>
+      <entry name="admin">
+        <phash>$5$FIXTUREHASH$must-never-leave-the-mapper</phash>
+        <permissions><role-based><superuser>yes</superuser></role-based></permissions>
+      </entry>
+    </users>
+    <password-complexity>
+      <enabled>yes</enabled>
+      <block-username-inclusion>yes</block-username-inclusion>
+      <minimum-length>14</minimum-length>
+      <minimum-uppercase-letters>1</minimum-uppercase-letters>
+      <minimum-lowercase-letters>1</minimum-lowercase-letters>
+      <minimum-numeric-letters>1</minimum-numeric-letters>
+      <minimum-special-characters>1</minimum-special-characters>
+      <new-password-differs-by-characters>3</new-password-differs-by-characters>
+      <password-history-count>24</password-history-count>
+      <password-change>
+        <expiration-period>90</expiration-period>
+      </password-change>
+    </password-complexity>
+    <password-profile>
+      <entry name="svc">
+        <password-change><expiration-period>60</expiration-period></password-change>
+      </entry>
+    </password-profile>
+  </mgt-config>
+  <shared>
+    <authentication-profile>
+      <entry name="admin-auth">
+        <lockout><failed-attempts>5</failed-attempts><lockout-time>15</lockout-time></lockout>
+        <method><local-database/></method>
+      </entry>
+    </authentication-profile>
+    <log-settings>
+      <syslog>
+        <entry name="syslog-siem">
+          <server>
+            <entry name="siem">
+              <transport>SSL</transport><port>6514</port><format>IETF</format>
+              <server>192.0.2.30</server><facility>LOG_USER</facility>
+            </entry>
+          </server>
+        </entry>
+      </syslog>
+      <snmptrap>
+        <entry name="trap-v3">
+          <version>
+            <v3>
+              <server>
+                <entry name="nms">
+                  <manager>192.0.2.20</manager>
+                  <user>trapper</user>
+                  <engineid>0x80001f88</engineid>
+                  <authpwd>-AQ==FIXTUREAUTHSECRET</authpwd>
+                  <privpwd>-AQ==FIXTUREPRIVSECRET</privpwd>
+                </entry>
+              </server>
+            </v3>
+          </version>
+        </entry>
+      </snmptrap>
+      <system><match-list><entry name="all"><filter>All Logs</filter><send-syslog><member>syslog-siem</member></send-syslog><send-snmptrap><member>trap-v3</member></send-snmptrap></entry></match-list></system>
+      <config><match-list><entry name="all"><filter>All Logs</filter><send-syslog><member>syslog-siem</member></send-syslog><send-snmptrap><member>trap-v3</member></send-snmptrap></entry></match-list></config>
+      <userid><match-list><entry name="all"><filter>All Logs</filter><send-syslog><member>syslog-siem</member></send-syslog><send-snmptrap><member>trap-v3</member></send-snmptrap></entry></match-list></userid>
+      <hipmatch><match-list><entry name="all"><filter>All Logs</filter><send-syslog><member>syslog-siem</member></send-syslog><send-snmptrap><member>trap-v3</member></send-snmptrap></entry></match-list></hipmatch>
+      <iptag><match-list><entry name="all"><filter>All Logs</filter><send-syslog><member>syslog-siem</member></send-syslog><send-snmptrap><member>trap-v3</member></send-snmptrap></entry></match-list></iptag>
+      <profiles>
+        <entry name="lf-default">
+          <match-list>
+            <entry name="wf"><log-type>wildfire</log-type><filter>All Logs</filter><send-syslog><member>syslog-siem</member></send-syslog></entry>
+            <entry name="traffic"><log-type>traffic</log-type><filter>All Logs</filter><send-syslog><member>syslog-siem</member></send-syslog></entry>
+          </match-list>
+        </entry>
+      </profiles>
+    </log-settings>
+  </shared>
+  <devices>
+    <entry name="localhost.localdomain">
+      <network>
+        <ike>
+          <gateway>
+            <entry name="branch">
+              <authentication><pre-shared-key><key>-AQ==FIXTUREPSKSECRET</key></pre-shared-key></authentication>
+            </entry>
+          </gateway>
+        </ike>
+        <profiles>
+          <interface-management-profile>
+            <entry name="mgmt-ping">
+              <ping>yes</ping>
+              <https>yes</https>
+              <permitted-ip><entry name="192.0.2.0/24"/></permitted-ip>
+            </entry>
+          </interface-management-profile>
+          <zone-protection-profile>
+            <entry name="zp-strict">
+              <flood>
+                <tcp-syn>
+                  <enable>yes</enable>
+                  <syn-cookies><alarm-rate>10000</alarm-rate><activate-rate>10000</activate-rate><maximal-rate>40000</maximal-rate></syn-cookies>
+                </tcp-syn>
+                <udp><enable>yes</enable><red><alarm-rate>10000</alarm-rate><activate-rate>10000</activate-rate><maximal-rate>40000</maximal-rate></red></udp>
+                <icmp><enable>yes</enable><red><alarm-rate>10000</alarm-rate><activate-rate>10000</activate-rate><maximal-rate>40000</maximal-rate></red></icmp>
+                <icmpv6><enable>yes</enable><red><alarm-rate>10000</alarm-rate><activate-rate>10000</activate-rate><maximal-rate>40000</maximal-rate></red></icmpv6>
+                <other-ip><enable>yes</enable><red><alarm-rate>10000</alarm-rate><activate-rate>10000</activate-rate><maximal-rate>40000</maximal-rate></red></other-ip>
+              </flood>
+              <scan>
+                <entry name="8001"><action><block-ip><track-by>source</track-by><duration>600</duration></block-ip></action><interval>5</interval><threshold>20</threshold></entry>
+                <entry name="8002"><action><block/></action><interval>10</interval><threshold>30</threshold></entry>
+                <entry name="8003"><action><alert/></action><interval>10</interval><threshold>20</threshold></entry>
+              </scan>
+              <discard-ip-spoof>yes</discard-ip-spoof>
+              <discard-overlapping-tcp-segment-mismatch>yes</discard-overlapping-tcp-segment-mismatch>
+              <discard-strict-source-routing>yes</discard-strict-source-routing>
+              <discard-loose-source-routing>yes</discard-loose-source-routing>
+              <discard-malformed-option>yes</discard-malformed-option>
+            </entry>
+          </zone-protection-profile>
+        </profiles>
+      </network>
+      <deviceconfig>
+        <system>
+          <hostname>fw-fixture-01</hostname>
+          <login-banner>Authorised use only.</login-banner>
+          <server-verification>yes</server-verification>
+          <service>
+            <disable-http>yes</disable-http>
+            <disable-telnet>yes</disable-telnet>
+          </service>
+          <snmp-setting>
+            <access-setting>
+              <version>
+                <v3>
+                  <users><entry name="poller"><view>all</view><authpwd>-AQ==FIXTUREPOLLSECRET</authpwd><privpwd>-AQ==FIXTUREPOLLPRIV</privpwd></entry></users>
+                </v3>
+              </version>
+            </access-setting>
+          </snmp-setting>
+          <ntp-servers>
+            <primary-ntp-server><ntp-server-address>192.0.2.123</ntp-server-address></primary-ntp-server>
+            <secondary-ntp-server><ntp-server-address>192.0.2.124</ntp-server-address></secondary-ntp-server>
+          </ntp-servers>
+          <update-schedule>
+            <anti-virus><recurring><hourly><at>4</at><action>download-and-install</action></hourly></recurring></anti-virus>
+            <threats><recurring><every-30-mins><at>2</at><action>download-and-install</action></every-30-mins><threshold>48</threshold></recurring></threats>
+            <wildfire><recurring><real-time/></recurring></wildfire>
+          </update-schedule>
+        </system>
+        <setting>
+          <management>
+            <enable-log-high-dp-load>yes</enable-log-high-dp-load>
+            <idle-timeout>10</idle-timeout>
+          </management>
+          <ssl-decrypt><allow-forward-decrypted-content>yes</allow-forward-decrypted-content></ssl-decrypt>
+          <wildfire>
+            <session-info-select><exclude-src-ip>no</exclude-src-ip></session-info-select>
+          </wildfire>
+        </setting>
+        <high-availability>
+          <enabled>yes</enabled>
+          <interface>
+            <ha1><port>management</port></ha1>
+            <ha2><port>ethernet1/5</port></ha2>
+          </interface>
+          <group>
+            <group-id>1</group-id>
+            <peer-ip>192.0.2.2</peer-ip>
+            <election-option><preemptive>no</preemptive></election-option>
+            <state-synchronization><enabled>yes</enabled></state-synchronization>
+            <mode><active-passive><passive-link-state>auto</passive-link-state></active-passive></mode>
+            <monitoring>
+              <link-monitoring>
+                <enabled>yes</enabled>
+                <failure-condition>any</failure-condition>
+                <link-group>
+                  <entry name="uplinks">
+                    <enabled>yes</enabled>
+                    <failure-condition>any</failure-condition>
+                    <interface><member>ethernet1/1</member><member>ethernet1/2</member></interface>
+                  </entry>
+                </link-group>
+              </link-monitoring>
+            </monitoring>
+          </group>
+        </high-availability>
+      </deviceconfig>
+      <vsys>
+        <entry name="vsys1">
+          <zone>
+            <entry name="trust"><network><layer3><member>ethernet1/2</member></layer3><zone-protection-profile>zp-strict</zone-protection-profile></network><enable-user-identification>yes</enable-user-identification></entry>
+            <entry name="untrust"><network><layer3><member>ethernet1/1</member></layer3><zone-protection-profile>zp-strict</zone-protection-profile></network></entry>
+            <entry name="guest"><network><layer3><member>ethernet1/3</member></layer3><zone-protection-profile>zp-strict</zone-protection-profile></network></entry>
+            <entry name="dmz"><network><layer3><member>ethernet1/4</member></layer3><zone-protection-profile>zp-strict</zone-protection-profile></network></entry>
+          </zone>
+          <user-id-collector>
+            <setting><enable-probing>no</enable-probing></setting>
+            <include-exclude-network>
+              <entry name="corp"><discovery>include</discovery><network-address>10.0.0.0/8</network-address><enabled>yes</enabled></entry>
+              <entry name="guest-wifi"><discovery>exclude</discovery><network-address>172.16.0.0/16</network-address><enabled>yes</enabled></entry>
+            </include-exclude-network>
+          </user-id-collector>
+          <profile-group>
+            <entry name="pg-strict">
+              <virus><member>av-strict</member></virus>
+              <spyware><member>as-strict</member></spyware>
+              <vulnerability><member>vp-strict</member></vulnerability>
+              <url-filtering><member>url-strict</member></url-filtering>
+              <data-filtering><member>df-strict</member></data-filtering>
+              <wildfire-analysis><member>wf-strict</member></wildfire-analysis>
+            </entry>
+          </profile-group>
+          <profiles>
+            <virus>
+              <entry name="av-strict">
+                <decoder>
+                  <entry name="http"><action>reset-both</action><wildfire-action>reset-both</wildfire-action><mlav-action>reset-both</mlav-action></entry>
+                  <entry name="smtp"><action>reset-both</action><wildfire-action>reset-both</wildfire-action><mlav-action>reset-both</mlav-action></entry>
+                  <entry name="imap"><action>alert</action><wildfire-action>alert</wildfire-action><mlav-action>alert</mlav-action></entry>
+                  <entry name="pop3"><action>alert</action><wildfire-action>alert</wildfire-action><mlav-action>alert</mlav-action></entry>
+                </decoder>
+                <mlav-engine-filebased-enabled>
+                  <entry name="Windows Executables"><mlav-policy-action>enable</mlav-policy-action></entry>
+                  <entry name="PowerShell Script 1"><mlav-policy-action>enable</mlav-policy-action></entry>
+                  <entry name="Executable Linked Format"><mlav-policy-action>enable</mlav-policy-action></entry>
+                </mlav-engine-filebased-enabled>
+              </entry>
+            </virus>
+            <spyware>
+              <entry name="as-strict">
+                <rules>
+                  <entry name="block-chm">
+                    <action><reset-both/></action>
+                    <severity><member>critical</member><member>high</member><member>medium</member></severity>
+                    <threat-name>any</threat-name>
+                    <category>any</category>
+                    <packet-capture>single-packet</packet-capture>
+                  </entry>
+                </rules>
+                <botnet-domains>
+                  <lists>
+                    <entry name="default-paloalto-dns"><action><sinkhole/></action><packet-capture>single-packet</packet-capture></entry>
+                  </lists>
+                  <sinkhole><ipv4-address>sinkhole.paloaltonetworks.com</ipv4-address><ipv6-address>::1</ipv6-address></sinkhole>
+                  <dns-security-categories>
+                    <entry name="pan-dns-sec-cc"><action>sinkhole</action><packet-capture>extended-capture</packet-capture></entry>
+                    <entry name="pan-dns-sec-malware"><action>sinkhole</action></entry>
+                  </dns-security-categories>
+                </botnet-domains>
+                <cloud-inline-analysis>yes</cloud-inline-analysis>
+                <mica-engine-spyware-enabled>
+                  <entry name="HTTP Command and Control detector"><inline-policy-action>reset-both</inline-policy-action></entry>
+                </mica-engine-spyware-enabled>
+              </entry>
+            </spyware>
+            <vulnerability>
+              <entry name="vp-strict">
+                <rules>
+                  <entry name="block-ch">
+                    <action><reset-both/></action>
+                    <severity><member>critical</member><member>high</member></severity>
+                    <vendor-id><member>any</member></vendor-id><cve><member>any</member></cve>
+                    <threat-name>any</threat-name><host>any</host><category>any</category>
+                  </entry>
+                  <entry name="default-mli">
+                    <action><default/></action>
+                    <severity><member>medium</member><member>low</member><member>informational</member></severity>
+                    <vendor-id><member>any</member></vendor-id><cve><member>any</member></cve>
+                    <threat-name>any</threat-name><host>any</host><category>any</category>
+                  </entry>
+                </rules>
+                <cloud-inline-analysis>yes</cloud-inline-analysis>
+                <mica-engine-vulnerability-enabled>
+                  <entry name="SQL Injection"><inline-policy-action>alert</inline-policy-action></entry>
+                </mica-engine-vulnerability-enabled>
+              </entry>
+            </vulnerability>
+            <url-filtering>
+              <entry name="url-strict">
+                <block><member>malware</member><member>phishing</member></block>
+                <override><member>command-and-control</member></override>
+                <alert><member>news</member><member>business-and-economy</member></alert>
+                <log-http-hdr-user-agent>yes</log-http-hdr-user-agent>
+                <log-http-hdr-referer>yes</log-http-hdr-referer>
+                <log-http-hdr-xff>yes</log-http-hdr-xff>
+                <local-inline-cat>yes</local-inline-cat>
+                <cloud-inline-cat>yes</cloud-inline-cat>
+                <credential-enforcement>
+                  <mode><ip-user/></mode>
+                  <log-severity>medium</log-severity>
+                  <block><member>malware</member><member>phishing</member><member>command-and-control</member></block>
+                  <continue><member>news</member><member>business-and-economy</member></continue>
+                </credential-enforcement>
+              </entry>
+            </url-filtering>
+            <data-filtering>
+              <entry name="df-strict">
+                <rules>
+                  <entry name="cc">
+                    <data-object>credit-card-numbers</data-object>
+                    <application><member>any</member></application>
+                    <file-type><member>any</member></file-type>
+                    <direction>both</direction>
+                    <alert-threshold>20</alert-threshold>
+                    <block-threshold>0</block-threshold>
+                  </entry>
+                </rules>
+              </entry>
+            </data-filtering>
+            <wildfire-analysis>
+              <entry name="wf-strict">
+                <rules>
+                  <entry name="all"><application><member>any</member></application><file-type><member>any</member></file-type><direction>both</direction><analysis>public-cloud</analysis></entry>
+                </rules>
+                <cloud-inline-analysis>yes</cloud-inline-analysis>
+                <inline-cloud-rules>
+                  <entry name="pe"><application><member>any</member></application><file-type><member>pe</member></file-type><direction>both</direction><action>block</action></entry>
+                </inline-cloud-rules>
+              </entry>
+            </wildfire-analysis>
+          </profiles>
+          <rulebase>
+            <security>
+              <rules>
+                <entry name="outbound-web">
+                  <from><member>trust</member></from><to><member>untrust</member></to>
+                  <source><member>any</member></source><destination><member>any</member></destination>
+                  <source-user><member>any</member></source-user><category><member>any</member></category>
+                  <application><member>web-browsing</member><member>ssl</member></application>
+                  <service><member>application-default</member></service>
+                  <action>allow</action><log-end>yes</log-end><log-setting>lf-default</log-setting>
+                  <profile-setting>
+                    <profiles>
+                      <virus><member>av-strict</member></virus>
+                      <spyware><member>as-strict</member></spyware>
+                      <vulnerability><member>vp-strict</member></vulnerability>
+                      <url-filtering><member>url-strict</member></url-filtering>
+                      <data-filtering><member>df-strict</member></data-filtering>
+                      <wildfire-analysis><member>wf-strict</member></wildfire-analysis>
+                    </profiles>
+                  </profile-setting>
+                  <description>fixture: outbound web</description>
+                </entry>
+                <entry name="outbound-dns">
+                  <from><member>trust</member></from><to><member>untrust</member></to>
+                  <source><member>any</member></source><destination><member>any</member></destination>
+                  <application><member>dns</member></application>
+                  <service><member>application-default</member></service>
+                  <action>allow</action>
+                  <profile-setting><group><member>pg-strict</member></group></profile-setting>
+                </entry>
+                <entry name="deny-msrpc-untrusted">
+                  <from><member>trust</member></from><to><member>untrust</member><member>guest</member></to>
+                  <source><member>uid-agent</member></source><destination><member>any</member></destination>
+                  <application><member>msrpc</member></application>
+                  <service><member>application-default</member></service>
+                  <action>deny</action>
+                </entry>
+                <entry name="dmz-web-in">
+                  <from><member>untrust</member></from><to><member>dmz</member></to>
+                  <source><member>any</member></source><destination><member>web01</member></destination>
+                  <application><member>web-browsing</member></application>
+                  <service><member>application-default</member></service>
+                  <action>allow</action>
+                  <profile-setting><group><member>pg-strict</member></group></profile-setting>
+                </entry>
+                <entry name="deny-to-malicious">
+                  <from><member>any</member></from><to><member>any</member></to>
+                  <source><member>any</member></source>
+                  <destination><member>panw-known-ip-list</member><member>panw-highrisk-ip-list</member><member>panw-torexit-ip-list</member><member>panw-bulletproof-ip-list</member></destination>
+                  <application><member>any</member></application><service><member>any</member></service>
+                  <action>deny</action>
+                </entry>
+                <entry name="deny-from-malicious">
+                  <from><member>any</member></from><to><member>any</member></to>
+                  <source><member>panw-known-ip-list</member><member>panw-highrisk-ip-list</member><member>panw-torexit-ip-list</member><member>panw-bulletproof-ip-list</member></source>
+                  <destination><member>any</member></destination>
+                  <application><member>any</member></application><service><member>any</member></service>
+                  <action>drop</action>
+                </entry>
+                <entry name="old-any-any">
+                  <from><member>any</member></from><to><member>any</member></to>
+                  <source><member>any</member></source><destination><member>any</member></destination>
+                  <application><member>any</member></application><service><member>any</member></service>
+                  <action>allow</action><disabled>yes</disabled>
+                </entry>
+              </rules>
+            </security>
+            <default-security-rules>
+              <rules>
+                <entry name="intrazone-default"><action>allow</action><log-start>no</log-start><log-end>yes</log-end></entry>
+                <entry name="interzone-default"><action>deny</action><log-start>no</log-start><log-end>yes</log-end></entry>
+              </rules>
+            </default-security-rules>
+            <decryption>
+              <rules>
+                <entry name="decrypt-outbound">
+                  <from><member>trust</member></from><to><member>untrust</member></to>
+                  <source><member>any</member></source><destination><member>any</member></destination>
+                  <category><member>any</member></category>
+                  <type><ssl-forward-proxy/></type>
+                  <action>decrypt</action>
+                </entry>
+              </rules>
+            </decryption>
+          </rulebase>
+        </entry>
+      </vsys>
+    </entry>
+  </devices>
+</config>
+</result></response>

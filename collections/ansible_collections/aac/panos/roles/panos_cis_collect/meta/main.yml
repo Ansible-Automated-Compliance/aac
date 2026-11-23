@@ -1,0 +1,9 @@
+---
+galaxy_info:
+  role_name: panos_cis_collect
+  description: >-
+    Read a PAN-OS firewall's running configuration and license state over the
+    XML API and build the input for the CIS Palo Alto Firewall policy.
+  license: Apache-2.0
+  min_ansible_version: "2.15"
+dependencies: []

@@ -41,6 +41,14 @@
         dest: "{{ sim_dest }}"
         mode: "0755"
 
+    # The Palo Alto simulator serves this file as its running configuration over
+    # the PAN-OS XML API (POST /api/ on :8093), for the CIS Palo Alto collector.
+    - name: Copy the simulated PAN-OS running configuration to host
+      copy:
+        src: "{{ playbook_dir }}/../../examples/simulators/network/panos_running_config.xml"
+        dest: "{{ sim_dir }}/panos_running_config.xml"
+        mode: "0644"
+
     - name: Stop existing simulator process (if running)
       shell: |
         if [ -f {{ sim_pid }} ]; then

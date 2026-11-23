@@ -1,0 +1,37 @@
+---
+# panos_cis_collect — defaults
+#
+# The role talks to the PAN-OS XML API with ansible.builtin.uri. It needs no
+# Palo Alto collection and no extra Python library in the execution environment.
+
+# Where the firewall's management interface answers.
+panos_host: "{{ ansible_host | default(inventory_hostname) }}"
+panos_port: 443
+panos_scheme: https
+panos_api_timeout: 120
+
+# Certificate checking is on unless the site turns it off for all of AAC
+# (aac_validate_certs) or for these devices only.
+panos_validate_certs: "{{ aac_validate_certs | default(true) }}"
+
+# API key of a read-only admin account. Supplied by an AAP credential; never
+# written in a playbook, inventory or survey default. No default on purpose.
+# panos_api_key:
+
+# Virtual system whose zones, profiles and rules are assessed.
+panos_vsys: vsys1
+
+# CIS profile: 1 or 2 (Level 2 includes Level 1).
+panos_cis_level: 2
+
+# Operator classification the benchmark needs and the device cannot state.
+# A list left empty makes the recommendations that depend on it report
+# "evidence missing"; it is never guessed.
+#   untrusted_zones:      zones that face networks you do not control
+#   internet_zones:       zones that lead to the Internet
+#   url_block_categories: URL categories your organisation requires blocked
+panos_site: {}
+
+# Attestation booleans for the recommendations that need a human judgement.
+# Absent or false is a finding. Names are listed in the collection README.
+panos_attest: {}

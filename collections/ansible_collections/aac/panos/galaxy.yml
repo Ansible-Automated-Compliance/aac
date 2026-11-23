@@ -1,0 +1,34 @@
+namespace: aac
+name: panos
+version: 1.0.0
+
+readme: README.md
+
+authors:
+  - Ansible Automated Compliance (AAC) maintainers
+
+description: >
+  Palo Alto Networks PAN-OS fact collection for AAC: reads a firewall's
+  running configuration and license state over the PAN-OS XML API and maps
+  them to the input the CIS Palo Alto Firewall 11 Benchmark v1.2.1 policy
+  reads. Secrets in the configuration are never copied out.
+
+  Evaluated by the Rego under policies/benchmarks/cis/network_devices/palo_alto/.
+
+license:
+  - Apache-2.0
+
+tags:
+  - compliance
+  - cis
+  - paloalto
+  - panos
+  - firewall
+  - security
+
+dependencies: {}
+
+repository: https://github.com/ansible-automated-compliance/aac
+documentation: https://github.com/ansible-automated-compliance/aac/tree/main/collections/ansible_collections/aac/panos
+
+issues: https://github.com/ansible-automated-compliance/aac/issues

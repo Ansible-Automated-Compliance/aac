@@ -18,6 +18,7 @@ import os
 import threading
 from datetime import datetime, timezone, timedelta
 from http.server import HTTPServer, BaseHTTPRequestHandler
+from urllib.parse import parse_qs, urlparse
 
 logging.basicConfig(level=logging.WARNING, format='%(asctime)s %(levelname)s %(message)s')
 logger = logging.getLogger(__name__)
@@ -365,13 +366,85 @@ DEVICE_MAP = {
 }
 
 
+# ─── Palo Alto PAN-OS XML API ─────────────────────────────────────────────────
+# The firewall simulator also answers the three XML API operational commands the
+# CIS collector (collections/ansible_collections/aac/panos) sends to a real
+# firewall: POST or GET /api/ with type=op and cmd=<...>, API key in the
+# X-PAN-KEY header (or a key parameter). Any non-empty key is accepted unless
+# PANOS_SIM_API_KEY is set, in which case only that key is.
+PANOS_CONFIG_FILE = os.environ.get(
+    "PANOS_SIM_CONFIG",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "panos_running_config.xml"))
+
+PANOS_LICENSES = (
+    "<licenses>"
+    "<entry><feature>Threat Prevention</feature><description>Threat Prevention</description>"
+    "<issued>January 01, 2026</issued><expires>January 01, 2027</expires><expired>no</expired></entry>"
+    "<entry><feature>PAN-DB URL Filtering</feature><description>Palo Alto Networks URL Filtering License</description>"
+    "<issued>January 01, 2025</issued><expires>January 01, 2026</expires><expired>yes</expired></entry>"
+    "</licenses>")
+
+PANOS_SYSTEM_INFO = (
+    "<system><hostname>paloalto-fw-01</hostname><ip-address>192.0.2.11</ip-address>"
+    "<model>PA-VM</model><serial>007051000000001</serial><sw-version>11.1.0</sw-version>"
+    "<multi-vsys>off</multi-vsys></system>")
+
+
+def _panos_error(code, message):
+    return code, (
+        '<response status="error" code="%d"><result><msg>%s</msg></result></response>' % (code, message))
+
+
+def panos_api(params, header_key):
+    """Return (http_status, xml_text) for one XML API request."""
+    key = header_key or params.get("key", "")
+    wanted = os.environ.get("PANOS_SIM_API_KEY", "")
+    if not key or (wanted and key != wanted):
+        return _panos_error(403, "Invalid Credential")
+    if params.get("type") != "op":
+        return _panos_error(400, "the simulator answers type=op only")
+    cmd = "".join(params.get("cmd", "").split())
+    if cmd.startswith("<show><config><running>"):
+        try:
+            with open(PANOS_CONFIG_FILE, encoding="utf-8") as fh:
+                body = fh.read()
+        except OSError as exc:
+            return _panos_error(500, "running configuration not readable: %s" % exc)
+        return 200, '<response status="success"><result>%s</result></response>' % body
+    if cmd.startswith("<request><license><info>"):
+        return 200, '<response status="success"><result>%s</result></response>' % PANOS_LICENSES
+    if cmd.startswith("<show><system><info>"):
+        return 200, '<response status="success"><result>%s</result></response>' % PANOS_SYSTEM_INFO
+    return _panos_error(400, "command not simulated")
+
+
 def make_handler(device_name, facts):
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, fmt, *args):
             pass  # suppress per-request logs
 
+        def _panos(self, raw_params):
+            params = {k: v[0] for k, v in parse_qs(raw_params).items()}
+            status, xml_text = panos_api(params, self.headers.get("X-PAN-KEY", ""))
+            body = xml_text.encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/xml")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_POST(self):
+            if device_name == "paloalto" and urlparse(self.path).path in ("/api", "/api/"):
+                length = int(self.headers.get("Content-Length", "0") or 0)
+                self._panos(self.rfile.read(length).decode("utf-8", "replace"))
+            else:
+                self.send_response(404)
+                self.end_headers()
+
         def do_GET(self):
-            if self.path in ("/facts", "/api/facts", "/"):
+            if device_name == "paloalto" and urlparse(self.path).path in ("/api", "/api/"):
+                self._panos(urlparse(self.path).query)
+            elif self.path in ("/facts", "/api/facts", "/"):
                 body = json.dumps(facts, indent=2).encode()
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")

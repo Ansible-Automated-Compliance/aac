@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Added — CIS Palo Alto Firewall 11 v1.2.1: collector (`aac.panos`) and assessment playbook
+
+- The policy library has carried all 79 recommendations of the benchmark since 2026-11-14, but nothing collected the facts it reads. New collection `collections/ansible_collections/aac/panos`: role `panos_cis_collect` reads a firewall with three read-only XML API requests (`show config running`, `request license info`, `show system info`) through `ansible.builtin.uri`, and filter `aac.panos.panos_cis_facts` maps the configuration XML to `input.panos_config`. No Palo Alto collection or Python library is needed in the execution environment.
+- **Secrets stay behind.** The running configuration holds password hashes, pre-shared keys and SNMP secrets; the mapper copies only what the policy reads and sends `(set)` where the policy needs to know a secret exists. API tasks run with `no_log` and the raw replies are discarded once the facts are built.
+- **Absence is judged, not guessed.** A section the device does not have is sent empty (a finding); license information that could not be read is left out (evidence missing for 6.8 and 6.22-6.25); a setting the configuration does not state is not filled in.
+- New playbook `ansible/playbooks/cis_palo_alto_panos_assessment.yml`: one result per firewall, CIS level 1 or 2 (`panos_cis_level`), operator zone and URL classification (`panos_site`), attestations (`panos_attest`), and `panos_store_results: false` to assess without storing.
+- The network simulator's Palo Alto device (:8093) now answers the same XML API requests and serves a deliberately weak running configuration; `deploy_network_simulators.yml` copies it.
+- Tests: 14 mapper unit tests and 4 simulator tests in the Python suite; `tests/panos_collector/score_fixture.py` scores the fixtures through the policy itself (hardened fixture 79 of 79 at Level 2 and 69 of 69 at Level 1; exactly the license-gated and the attested recommendations fail when those inputs are withheld).
+- Not yet run against a real firewall, and policy pushed from Panorama is not read; both are stated in the collection README.
+
 ### Added — CIS M365 v7: opt-in shape capture (`m365_shape_capture`)
 
 - `m365_shape_capture: true` (default `false`) makes the `m365_assessment` role record, after collection, the shape of every collected fact and nothing else: JSON types, list lengths, field-name unions and field types, and distinct values only for an allowlist of closed configuration enums, booleans and numeric settings (`aac.m365.m365_fact_shape`). Names, addresses, domains, ids, mailbox data and free text are never recorded. Output: `<m365_shape_capture_dir>/m365_fact_shape_<UTC>.json`, the job artifact `m365_fact_shape` (`set_stats`) and the job output. One real run with it on settles the collector shapes that could not be confirmed without a tenant (enum serialisation, `AllowedDomains`, `RecipientTags`, `AssignedRoles`, `SetSCL`, `transferMethods`, Graph beta fields).
