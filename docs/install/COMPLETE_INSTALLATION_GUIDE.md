@@ -1498,7 +1498,6 @@ podman run -d \
   -v grafana-storage:/var/lib/grafana \
   -e GF_SECURITY_ADMIN_USER=admin \
   -e GF_SECURITY_ADMIN_PASSWORD=$GRAFANA_PASSWORD \
-  -e GF_INSTALL_PLUGINS=grafana-postgresql-datasource \
   docker.io/grafana/grafana:latest
 ```
 
