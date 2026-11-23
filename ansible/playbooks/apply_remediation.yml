@@ -11,7 +11,10 @@
 #
 # Safety gates:
 #   dry_run=true  — print what WOULD be changed, no actual changes
-#   dry_run=false — apply the tasks with ansible --check=false
+#   dry_run=false — apply the tasks
+#   dry_run=false with --check — run the generated tasks in check mode: each
+#     reports what it would change on the host; nothing is changed and no
+#     audit record is written
 #
 # After application, collects facts again and runs a new comparison to
 # verify the host now matches baseline.
@@ -130,6 +133,7 @@
             {{ t.task | to_yaml | indent(2) }}
           {% endfor %}
       when: _apply_live | bool
+      check_mode: false   # controller-side temp file; needed so --check can preview the generated tasks
 
     # Store target in fact for Play 2
     - name: Set target fact for Play 2
@@ -183,6 +187,7 @@
       register: selinux_post
       changed_when: false
       failed_when: false
+      check_mode: false   # read-only
       when: _apply_live | bool
 
     - name: Verify sshd config syntax
@@ -190,6 +195,7 @@
       register: sshd_test
       changed_when: false
       failed_when: sshd_test.rc != 0
+      check_mode: false   # read-only
       when: _apply_live | bool
 
 
@@ -231,7 +237,7 @@
         positional_args:
           - "{{ target_hostname }}"
           - "Remediation applied from action {{ action_id }} ({{ task_count }} tasks, dry_run={{ not (_apply_live | bool) }})"
-      when: _apply_live | bool
+      when: _apply_live | bool and not ansible_check_mode   # --check applies nothing, so it records nothing
 
     - name: Update remediation_status to in_progress
       community.postgresql.postgresql_query:
@@ -251,19 +257,20 @@
         positional_args:
           - "{{ action_id }}"
           - "{{ target_hostname }}"
-      when: _apply_live | bool
+      when: _apply_live | bool and not ansible_check_mode
 
     - name: Clean up temp task file
       file:
         path: "/tmp/aac_remediation_tasks_{{ action_id }}.yml"
         state: absent
       when: _apply_live | bool
+      check_mode: false   # remove the temp file written above, also under --check
 
     - name: Print completion message
       debug:
         msg: |
           ══════════════════════════════════════════════════════════════════
-          AAC REMEDIATION {% if not (_apply_live | bool) %}DRY RUN COMPLETE{% else %}APPLIED{% endif %}
+          AAC REMEDIATION {% if not (_apply_live | bool) %}DRY RUN COMPLETE{% elif ansible_check_mode %}CHECK MODE PREVIEW (nothing changed, nothing recorded){% else %}APPLIED{% endif %}
 
           Host:          {{ target_hostname }}
           Action ID:     {{ action_id }}
@@ -272,6 +279,11 @@
 
           No changes were made. This was a dry run.
           To apply: Re-run with dry_run=false
+          {% elif ansible_check_mode %}
+
+          Check mode: the generated tasks were evaluated against the host
+          and reported what they would change. No change was made and no
+          audit record was written. To apply: re-run without --check.
           {% else %}
 
           ✅ Remediation tasks applied.

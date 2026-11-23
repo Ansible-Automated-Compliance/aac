@@ -10,6 +10,7 @@
   changed_when: false
 
 - name: Install systemd unit file
+  changed_when: true
   command: "mv /tmp/container-{{ aac_db_container_name }}.service /etc/systemd/system/"
   delegate_to: "{{ aac_host }}"
   become: true

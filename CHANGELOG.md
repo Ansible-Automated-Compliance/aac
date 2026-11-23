@@ -2,15 +2,13 @@
 
 ## Unreleased
 
-### Added — AAC - Assert Fresh Results: fail when an expected framework or host is stale
+### Added — check mode for the playbooks that change managed hosts
 
-- `ansible/playbooks/aac_assert_fresh_results.yml` checks each framework in `aac_freshness_frameworks` (optionally per host) and each host in `aac_freshness_fact_hosts` against its own age limit and fails the job when one is stale or has never produced a row. The daily health check only warns when nothing at all ran in 24 hours, so one busy framework hid another that had stopped. Read-only; nothing declared is a failure.
-
-### Fixed — found by running main nightly against a live AAP
-
-- **CIS Ubuntu 22.04 assessment passed green and stored nothing.** The playbook queried `cis_ubuntu_22_04/compliance_assessment`, which the rebuilt (v3.0.0) library module no longer has, took the empty answer as "policy not deployed" and ended successfully. It now queries `cis_ubuntu_22_04/main/compliance_report`, reads the flat report, records the benchmark version the policy reports, and fails when OPA returns no report. The Amazon Linux 2023 assessment fails the same way instead of printing a notice.
-- **Policy loader ran out of memory** (job pod killed, exit 137) on the full library: every registered result carried the whole file listing of its framework directory. It now loops over one small record per file; the job output is readable again.
-- **First policy load after an upgrade failed when the library had renamed files.** The old copy was still loaded under its old id, OPA refused the new file ("package annotation redeclared"), and the old copy was pruned only afterwards, so the framework stayed empty until the loader was run a second time. Files that failed are now retried after the prune.
+- `--check` is supported for `apply_remediation.yml`, `crypto_miner_detection_remediation.yml`, `remediate_ocp_nerc_cip.yml` and the five Windows Server 2022 hardening playbooks; `docs/reference/CHECK_MODE.md` says what each previews and what it cannot. Assessment playbooks are out of scope.
+- **Fixed: a check-mode run of the crypto miner playbook reported every host clean.** The detection commands were skipped under `--check`, so the summary was built from nothing. They now run (they are read-only), removals are previewed, and the play ends failed when a miner is found.
+- `apply_remediation.yml` with `dry_run=false` under `--check` now previews the generated tasks against the host and writes no audit record; before, it failed on a missing task file.
+- The Windows hardening playbooks say under `--check` how many command tasks cannot be previewed, and no longer print "hardening complete".
+- `tests/test_check_mode_support.py` keeps the list and the task markings true.
 
 ### Added — CIS M365 v7: opt-in shape capture (`m365_shape_capture`)
 

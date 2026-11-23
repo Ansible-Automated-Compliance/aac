@@ -1,5 +1,5 @@
 {
-  "pin": "3d3976e8",
+  "pin": "98c3291f",
   "rows": [
     {
       "container": "compliance",
@@ -42,29 +42,29 @@
     },
     {
       "container": "compliance",
-      "counted": false,
+      "counted": true,
       "display_name": "CIS Controls v8.1",
       "enabled_by_default": false,
       "key": "cis_controls_v8",
       "loader_key": "cis_controls_v8",
       "policy_dir": "frameworks/management/cis_controls_v8",
-      "reason": "the report has no numeric total_controls",
+      "reason": "",
       "resolves": true,
       "standard": "CIS Controls v8.1",
-      "total_controls": null
+      "total_controls": 153
     },
     {
       "container": "compliance",
-      "counted": false,
+      "counted": true,
       "display_name": "FBI CJIS Security Policy",
       "enabled_by_default": false,
       "key": "cjis",
       "loader_key": "cjis",
       "policy_dir": "frameworks/federal/cjis",
-      "reason": "the report has no numeric total_controls",
+      "reason": "",
       "resolves": true,
       "standard": "FBI CJIS Security Policy",
-      "total_controls": null
+      "total_controls": 98
     },
     {
       "container": "compliance",
@@ -107,16 +107,16 @@
     },
     {
       "container": "compliance",
-      "counted": false,
+      "counted": true,
       "display_name": "UK Cyber Essentials",
       "enabled_by_default": false,
       "key": "cyber_essentials",
       "loader_key": "cyber_essentials",
       "policy_dir": "frameworks/regional/cyber_essentials",
-      "reason": "the report has no numeric total_controls",
+      "reason": "",
       "resolves": true,
       "standard": "UK Cyber Essentials (Willow question set, April 2025)",
-      "total_controls": null
+      "total_controls": 28
     },
     {
       "container": "compliance",
@@ -146,16 +146,16 @@
     },
     {
       "container": "compliance",
-      "counted": false,
+      "counted": true,
       "display_name": "ACSC Essential Eight",
       "enabled_by_default": false,
       "key": "essential_eight",
       "loader_key": "essential_eight",
       "policy_dir": "frameworks/regional/essential_eight",
-      "reason": "the report has no numeric total_controls",
+      "reason": "",
       "resolves": true,
       "standard": "ACSC Essential Eight Maturity Model (Nov 2023)",
-      "total_controls": null
+      "total_controls": 96
     },
     {
       "container": "compliance",
@@ -250,16 +250,16 @@
     },
     {
       "container": "compliance",
-      "counted": false,
+      "counted": true,
       "display_name": "IRS Publication 1075 (FTI)",
       "enabled_by_default": false,
       "key": "irs_1075",
       "loader_key": "irs_1075",
       "policy_dir": "frameworks/federal/irs_1075",
-      "reason": "the report has no numeric total_controls",
+      "reason": "",
       "resolves": true,
       "standard": "IRS Publication 1075 (Rev. 11-2021)",
-      "total_controls": null
+      "total_controls": 57
     },
     {
       "container": "compliance",
@@ -1381,16 +1381,16 @@
     },
     {
       "container": "security",
-      "counted": false,
+      "counted": true,
       "display_name": "Zero Trust (CISA ZTMM v2.0)",
       "enabled_by_default": false,
       "key": "zero_trust",
       "loader_key": "zero_trust",
       "policy_dir": "frameworks/federal/zero_trust",
-      "reason": "the report has no numeric total_controls",
+      "reason": "",
       "resolves": true,
       "standard": "CISA Zero Trust Maturity Model v2.0",
-      "total_controls": null
+      "total_controls": 83
     }
   ]
 }

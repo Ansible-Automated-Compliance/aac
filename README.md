@@ -163,7 +163,7 @@ git submodule update --remote policies/
 
 ### Policy Library Coverage
 
-Policy counts are `.rego` files, tests excluded, at the pinned library commit `3d3976e8` (1,065 files in total). They are file counts, not control counts; the measured control figures are in [Compliance Frameworks](#compliance-frameworks).
+Policy counts are `.rego` files, tests excluded, at the pinned library commit `98c3291f` (1,065 files in total). They are file counts, not control counts; the measured control figures are in [Compliance Frameworks](#compliance-frameworks).
 
 | Domain | Path | Policies | Frameworks |
 | -------- | ------ | ---------- | ------------ |
@@ -179,7 +179,7 @@ Policy counts are `.rego` files, tests excluded, at the pinned library commit `3
 | Governance | `governance/` | 26 | AI governance, MCP tool-call controls, **EU AI Act (2024/1689)** |
 | Threat Detection | `threat_detection/` | 2 | Crypto mining (xmrig, 20+ miners) |
 
-*(Per-domain counts measured at the pinned submodule commit `3d3976e8`, 2026-11-19; remaining files
+*(Per-domain counts measured at the pinned submodule commit `98c3291f`, 2026-11-19; remaining files
 sit in shared/other paths.)*
 
 **Total: 1,065 policy files** (2,506 including tests) across **55+ frameworks** — all using Rego v1
@@ -324,7 +324,7 @@ submodule at release tags. `aac-demo-datacenter` is likewise its own repository.
 | **PCI-DSS v4.0** (`pci_dss`) | 12 | PCI DSS v4.0.1 |
 | **NERC CIP (CIP-002 to CIP-015)** (`nerc_cip`) | 33 | NERC CIP — Critical Infrastructure Protection |
 
-Measured at policy library pin `3d3976e8`: 101 of 107 catalog keys return a report with a control count. Each number is the module's own `total_controls`, the controls it evaluates, not the size of the published standard. Every framework, and the keys that fall short: [docs/reference/FRAMEWORK_COVERAGE.md](docs/reference/FRAMEWORK_COVERAGE.md).
+Measured at policy library pin `98c3291f`: 107 of 107 catalog keys return a report with a control count. Each number is the module's own `total_controls`, the controls it evaluates, not the size of the published standard. Every framework, and the keys that fall short: [docs/reference/FRAMEWORK_COVERAGE.md](docs/reference/FRAMEWORK_COVERAGE.md).
 
 <!-- END GENERATED: framework coverage -->
 

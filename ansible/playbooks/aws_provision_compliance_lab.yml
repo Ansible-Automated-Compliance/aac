@@ -135,6 +135,7 @@
         - ec2_key.key.private_key is defined
 
     - name: Persist private key to AAP controller filesystem
+      changed_when: true
       shell: >
         scp -o StrictHostKeyChecking=no -o BatchMode=yes
         /tmp/{{ key_name }}.pem
@@ -299,6 +300,7 @@
         - ec2_key_win.key.private_key is defined
 
     - name: Persist Windows private key to AAP controller filesystem
+      changed_when: true
       shell: >
         scp -o StrictHostKeyChecking=no -o BatchMode=yes
         /tmp/{{ key_name }}-win.pem
