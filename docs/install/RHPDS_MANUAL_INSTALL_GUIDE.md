@@ -481,7 +481,7 @@ This job:
 > **Expected result:**
 > ```bash
 > # From local machine (requires psql) or via SSH on EC2:
-> PGPASSWORD=compliance psql -h <EIP> -U postgres -d compliance -c '\dt'
+> psql -W -h <EIP> -U postgres -d compliance -c '\dt'
 > # Expected tables (7 minimum):
 > #  compliance_results
 > #  technical_debt_items
@@ -492,7 +492,7 @@ This job:
 > #  remediation_log
 >
 > # Row counts:
-> PGPASSWORD=compliance psql -h <EIP> -U postgres -d compliance \
+> psql -W -h <EIP> -U postgres -d compliance \
 >   -c "SELECT table_name, (SELECT count(*) FROM information_schema.tables t2
 >       WHERE t2.table_name = t.table_name LIMIT 1)
 >       FROM information_schema.tables t WHERE table_schema='public'"
@@ -734,7 +734,7 @@ This single job:
 > # SELINUXTYPE=targeted
 >
 > # DB baseline was captured
-> PGPASSWORD=compliance psql -h localhost -U postgres -d compliance \
+> psql -W -h localhost -U postgres -d compliance \
 >   -c "SELECT baseline_label, is_current FROM golden_image_baselines WHERE hostname='demo-rhel9'"
 > # EXPECTED: one row with is_current=t
 > ```
@@ -836,7 +836,7 @@ In RHPDS AAP, navigate to **Jobs** and watch the enforcement workflow run:
 > # SELINUX=enforcing   ← restored to golden state
 >
 > # Helpdesk ticket was created:
-> PGPASSWORD=compliance psql -h <EIP> -U postgres -d compliance \
+> psql -W -h <EIP> -U postgres -d compliance \
 >   -c "SELECT id, issue_type, severity, status FROM helpdesk_tickets ORDER BY id DESC LIMIT 1"
 > # EXPECTED: a row with issue_type=selinux_drift, status=open
 > ```
@@ -1249,7 +1249,7 @@ ansible-playbook ansible/playbooks/postgres_database_init.yml \
 
 > **Verify:**
 > ```bash
-> PGPASSWORD=compliance psql -h <ELASTIC_IP> -p 5433 -U postgres compliance \
+> psql -W -h <ELASTIC_IP> -p 5433 -U postgres compliance \
 >   -c "\dt"
 > # Expected: compliance_results, compliance_facts, remediation_rates,
 > #           technical_debt_items, technical_debt_summary, sidecar_datasets
