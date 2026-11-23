@@ -10,4 +10,4 @@ import rego.v1
 # ---------------------------------------------------------------------------
 
 # Placeholder — always passes; ensures CI matrix has a real file to execute.
-test_placeholder if { true }
+test_placeholder := true

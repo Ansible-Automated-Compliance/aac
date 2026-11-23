@@ -17,7 +17,9 @@
 #
 #   --aap-host HOST      AAP server IP or hostname (default: localhost)
 #   --aap-user USER      AAP admin username (default: admin)
-#   --aap-password PASS  AAP admin password (prompted if omitted)
+#   --aap-password PASS  AAP admin password. Prefer the AAC_AAP_PASSWORD
+#                        environment variable: an argument is visible in the
+#                        process list. Prompted if neither is given.
 #   --git-repo URL       Git repo URL (default: https://github.com/ansible-automated-compliance/aac.git)
 #   --git-branch BRANCH  Git branch (default: main)
 #   --skip-run           Create templates but do not run them
@@ -36,7 +38,7 @@ NC='\033[0m'
 # ─── Defaults ─────────────────────────────────────────────────────────────────
 AAP_HOST="localhost"
 AAP_USER="admin"
-AAP_PASS=""
+AAP_PASS="${AAC_AAP_PASSWORD:-}"
 GIT_REPO="https://github.com/ansible-automated-compliance/aac.git"
 GIT_BRANCH="main"
 SKIP_RUN=false
@@ -79,6 +81,12 @@ $DRY_RUN && echo -e "  ${YELLOW}DRY RUN mode — no changes will be made${NC}"
 echo ""
 
 # ─── Helper: AAP API call ─────────────────────────────────────────────────────
+# curl reads the credentials from a file descriptor (--config), so the password
+# is never in a process argument list.
+aap_basic_auth() {
+    local u=${AAP_USER//\\/\\\\} p=${AAP_PASS//\\/\\\\}
+    printf 'user = "%s:%s"\n' "${u//\"/\\\"}" "${p//\"/\\\"}"
+}
 aap_get()  { curl -sk -H "Authorization: Bearer ${AAP_TOKEN}" "${CTRL_API}$1"; }
 aap_post() { curl -sk -X POST -H "Authorization: Bearer ${AAP_TOKEN}" \
                   -H "Content-Type: application/json" -d "$2" "${CTRL_API}$1"; }
@@ -120,7 +128,7 @@ if $DRY_RUN; then
 else
     log_step "Creating API token for ${AAP_USER}..."
     token_resp=$(curl -sk -X POST \
-        -u "${AAP_USER}:${AAP_PASS}" \
+        --config <(aap_basic_auth) \
         -H "Content-Type: application/json" \
         -d '{"description":"AAC Installer Token","scope":"write"}' \
         "${GW_API}/tokens/")
@@ -341,7 +349,7 @@ fi
 # ─── Step 7: Cleanup installer token ─────────────────────────────────────────
 if ! $DRY_RUN && [[ -n "$TOKEN_ID" ]]; then
     curl -sk -X DELETE \
-        -u "${AAP_USER}:${AAP_PASS}" \
+        --config <(aap_basic_auth) \
         "${GW_API}/tokens/${TOKEN_ID}/" >/dev/null 2>&1 || true
     log_info "Installer token cleaned up"
 fi

@@ -122,7 +122,7 @@
         aac_result_metadata:
           source: "openshift-compliance-operator"
           integration: "ACS->AAC (CO ocp4-nerc-cip remediation)"
-          action: "{{ 'applied' if (apply_remediations | bool) else 'dry-run (gate closed)' }}"
+          action: "{{ 'check mode (nothing applied)' if ansible_check_mode else ('applied' if (apply_remediations | bool) else 'dry-run (gate closed)') }}"
           apply_remediations: "{{ apply_remediations | bool }}"
           change_ticket: "{{ change_ticket }}"
           pending: "{{ pending }}"

@@ -123,6 +123,7 @@
           register: disk_usage
           
         - name: Check systemd services status
+          changed_when: false
           command: systemctl list-units --type=service --state=active
           register: active_services
     
@@ -238,6 +239,7 @@
           ignore_errors: yes
           
         - name: Get database transaction settings
+          changed_when: false
           command: "{{ item }}"
           register: db_transaction_settings
           loop:

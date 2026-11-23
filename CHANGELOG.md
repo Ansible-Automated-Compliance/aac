@@ -2,13 +2,13 @@
 
 ## Unreleased
 
-### Fixed — credential rotation pushed the vault to the public repository; install fixes
+### Added — check mode for the playbooks that change managed hosts
 
-- **`rotation_update_vault.yml` pushed the re-encrypted vault to the public upstream repository**, with the token inside the URL, and synced controller project 11 whatever the install's project was. The target is now `git_repo_url` (or `aac_vault_repo_url`) from `site_config.yml` and the play stops before touching a credential when that is empty, a placeholder, not https, or the public upstream. The token travels as an HTTP header set through the environment. New optional settings: `aac_vault_repo_url`, `aac_vault_repo_branch`, `aac_controller_project_id`, `aac_controller_project_dir`.
-- `setup_eda_drift_detection.yml` creates the EDA project from the site's `git_repo_url` and `git_branch` when they are set, so rulebooks come from the same repository as the controller project. Default unchanged.
-- Extended install: the Grafana container no longer sets `GF_INSTALL_PLUGINS=grafana-postgresql-datasource` (Quadlet, OpenShift manifest, bootstrap playbook, two guides). That data source is built into the Red Hat Grafana image (checked on 10.2.6); the setting only made Grafana try to reach grafana.com at start, which fails or stalls on a host without internet access.
-- Extended install: `aac_compliance_ee.yml` passed a `readme` option the `execution_environment` module does not have, so the bootstrap task failed. The block is removed and the image is the new `aac_compliance_ee_image` in `playbooks/vars/defaults.yml`; bootstrap stops with a message while it is still `PLACEHOLDER`.
-- Config-as-code bootstrap (`ansible/config_as_code/rhpds/rhpds_bootstrap.yml`): it set only `controller_hostname` / `controller_username` / `controller_password`, which `infra.aap_configuration` 3.0 and later ignore (the roles read `aap_hostname`, `aap_username`, `aap_password`, `aap_validate_certs`), so with the required 4.2.0 or later the roles had no connection settings. Both sets are now set, and the EDA roles are given the gateway address (`eda_hostname` to override). Not run against a controller. The job template count in the README, the guide and the summary is the measured 36 (was "54"); the collection floor in `integrations/_common/certified_collections.md` matches `requirements.yml` (4.2.0).
+- `--check` is supported for `apply_remediation.yml`, `crypto_miner_detection_remediation.yml`, `remediate_ocp_nerc_cip.yml` and the five Windows Server 2022 hardening playbooks; `docs/reference/CHECK_MODE.md` says what each previews and what it cannot. Assessment playbooks are out of scope.
+- **Fixed: a check-mode run of the crypto miner playbook reported every host clean.** The detection commands were skipped under `--check`, so the summary was built from nothing. They now run (they are read-only), removals are previewed, and the play ends failed when a miner is found.
+- `apply_remediation.yml` with `dry_run=false` under `--check` now previews the generated tasks against the host and writes no audit record; before, it failed on a missing task file.
+- The Windows hardening playbooks say under `--check` how many command tasks cannot be previewed, and no longer print "hardening complete".
+- `tests/test_check_mode_support.py` keeps the list and the task markings true.
 
 ### Added — CIS M365 v7: opt-in shape capture (`m365_shape_capture`)
 
