@@ -1,0 +1,9 @@
+State,Control,Subject,Title,Proven closed,Resolved at,Open age (days),Times seen
+open,CIS 1.1.1,rhel-web-01.example.com,CIS 1.1.1: cramfs kernel module is loadable,,,71.4,10
+open,CIS 5.1.20,rhel-web-01.example.com,"CIS 5.1.20: sshd PermitRootLogin is 'yes', expected 'no'",,,15.4,3
+open,CIS 5.1.20,rhel-db-01.example.com,"CIS 5.1.20: sshd PermitRootLogin is 'yes', expected 'no'",,,8.4,2
+open,CIS 6.2.1,rhel-web-01.example.com,CIS 6.2.1: auditd service is not enabled,,,1.4,1
+open,EVIDENCE-GAP:no audit rule facts supplied for this host,rhel-db-01.example.com,FAIL-CLOSED: no audit rule facts supplied for this host,,,1.4,1
+resolved,CIS 3.3.1,rhel-db-01.example.com,CIS 3.3.1: IP forwarding is enabled,yes,2026-10-05T02:03:00+00:00,,4
+resolved,CIS 5.4.1.1,rhel-web-01.example.com,CIS 5.4.1.1: password maximum age is 99999 days,yes,2026-09-28T02:00:00+00:00,,8
+waived,CIS 1.4.1,rhel-web-01.example.com,CIS 1.4.1: bootloader password not set,,,,10

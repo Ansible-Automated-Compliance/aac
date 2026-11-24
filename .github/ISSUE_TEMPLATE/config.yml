@@ -1,0 +1,11 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Report a security vulnerability (private)
+    url: https://github.com/Ansible-Automated-Compliance/aac/security/advisories/new
+    about: Do not open a public issue for a vulnerability. This form is private to the maintainers.
+  - name: Weekly updates
+    url: https://github.com/Ansible-Automated-Compliance/aac/blob/main/docs/updates/README.md
+    about: What was added and fixed each week, and how to subscribe.
+  - name: How to generate reports
+    url: https://github.com/Ansible-Automated-Compliance/aac/blob/main/docs/operations/COMPLIANCE_REPORTING.md
+    about: The reports AAC ships, the data each one needs, and examples.

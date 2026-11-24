@@ -1,0 +1,57 @@
+name: Request a feature
+description: Something AAC does not do today that you need (a platform, a framework, an integration, a workflow).
+title: "Feature: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This request is public. Leave out host names, IP addresses, tenant and customer names, and never paste a password, token or key. Describe your environment in general terms (for example "40 RHEL 9 hosts on AAP 2.6").
+  - type: textarea
+    id: need
+    attributes:
+      label: What do you need to be able to do?
+      description: Describe the outcome, not the implementation. Who needs it and what do they do with it?
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Collecting evidence from a platform
+        - A framework or benchmark
+        - Evaluating and storing results
+        - Reports and dashboards
+        - Drift detection and event-driven response
+        - Remediation
+        - Waivers, decisions and attestations
+        - Install and operation
+        - Integration with another product
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: target
+    attributes:
+      label: Platform, framework or product it concerns
+      description: Include versions, for example "Windows Server 2022, CIS v3.0.0" or "PAN-OS 11".
+  - type: textarea
+    id: today
+    attributes:
+      label: How do you do this today?
+      description: A manual step, another tool, or not at all. This tells us what "better" means.
+  - type: textarea
+    id: done
+    attributes:
+      label: How would you know it works?
+      description: The result you would check, for example "a stored result per host for each CIS control, pass or fail".
+  - type: dropdown
+    id: help
+    attributes:
+      label: Can you help?
+      options:
+        - I can test it in my environment
+        - I can share sample output with identifying details removed
+        - I can contribute a pull request
+        - Not at the moment

@@ -2,6 +2,7 @@
 
 ## Table of Contents
 
+- [Requests and Weekly Updates](#requests-and-weekly-updates)
 - [Prerequisites](#prerequisites)
 - [Branching and Pull Requests](#branching-and-pull-requests)
 - [Adding a Compliance Policy](#adding-a-compliance-policy)
@@ -9,6 +10,14 @@
 - [Adding an EDA Rulebook](#adding-an-eda-rulebook)
 - [Testing](#testing)
 - [Code Style](#code-style)
+
+---
+
+## Requests and Weekly Updates
+
+You do not need to write code to contribute. If you run AAC and need a feature, a change, a report, or have found a problem, [open a request](https://github.com/Ansible-Automated-Compliance/aac/issues/new/choose) and pick the form that fits. Requests are public: leave out host names, addresses, tenant names and credentials. Security vulnerabilities go through a [private advisory](SECURITY.md), not an issue.
+
+What was merged each week is published in [docs/updates](docs/updates/README.md), which also says how to subscribe. The update is built from pull request titles, so write the title for someone who runs AAC: `feat(scope): what they get`, `fix(scope): what was wrong`, and `feat!:` or `fix!:` when the reader must do something when they update.
 
 ---
 

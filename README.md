@@ -12,7 +12,7 @@
 [![AAP 2.6+](https://img.shields.io/badge/AAP-2.6%2B_(2.7_reference)-red.svg)](https://www.redhat.com/en/technologies/management/ansible)
 [![OPA](https://img.shields.io/badge/OPA-Rego_v1-green.svg)](https://www.openpolicyagent.org/)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-15+-blue.svg)](https://www.postgresql.org/)
-[![Frameworks](https://img.shields.io/badge/Frameworks-55+-orange.svg)](#compliance-frameworks)
+[![Frameworks](https://img.shields.io/badge/Frameworks-100+-orange.svg)](#compliance-frameworks)
 [![Policies](https://img.shields.io/badge/Rego_Policies-1065-brightgreen.svg)](https://github.com/ynotbhatc/rego_policy_libraries)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
@@ -33,11 +33,93 @@ Built on **Ansible Automation Platform 2.6+** (2.7 is the reference deployment),
 
 | | Manual Compliance | Commercial Tools | **AAC** |
 | -- | -- | -- | -- |
-| **Coverage** | Partial, delayed | Usually 1–2 frameworks | **55+ frameworks** |
+| **Coverage** | Partial, delayed | Usually 1–2 frameworks | **100+ frameworks** |
 | **Frequency** | Annual or quarterly | Periodic scans | **Continuous, real-time** |
 | **Remediation** | Manual | Alerts only | **Automated rollback + enforcement** |
 | **Historical trending** | Spreadsheets | Limited | **Full time-series in PostgreSQL** |
 | **Audit evidence** | Manual collection | PDF exports | **Automated, dashboard-ready** |
+
+---
+
+## What AAC does
+
+Each row is something in this repository today. Where a capability is partial or has not been
+exercised end to end, the row says so.
+
+| Capability | What AAC does | Where to look |
+| --- | --- | --- |
+| **Policy content** | The rules come from a separate open-source Rego policy library, pinned here as the `policies/` submodule. The catalog lists more than 100 framework and benchmark modules (CIS, DISA STIG, NIST, ISO 27001, PCI-DSS, NERC CIP and others); a new install loads a small default set and you enable the rest. | [Framework catalog](ansible/vars/framework_catalog.yml) |
+| **Measured coverage** | Every module reports how many controls it evaluates, and the published figures are read from the modules, not written by hand. That number is often smaller than the full published standard. | [Framework coverage](docs/reference/FRAMEWORK_COVERAGE.md) |
+| **Evidence collection** | Ansible gathers configuration facts over SSH, WinRM or an API, from hosts, Windows, network devices, databases, Microsoft 365, OpenShift and more. The table below lists each target and how its facts are gathered. | [What AAC collects from, and how](#what-aac-collects-from-and-how) |
+| **Targets gathered with a vendor collection** | Where this repository has no collector of its own, you gather the facts with the vendor's Ansible collection and the generic assessment evaluates them. | [Generic assessment](ansible/playbooks/generic_framework_assessment.yml), [target table](#what-aac-collects-from-and-how) |
+| **Collect once, evaluate many times** | Facts are stored as snapshots, so they can be evaluated again after a policy update, or against another framework, without logging in to the hosts again. Several platform playbooks still collect and evaluate in one job. | [Collect](ansible/playbooks/collect_all_facts.yml), [evaluate](ansible/playbooks/evaluate_stored_facts.yml) |
+| **Evaluation engine** | Open Policy Agent evaluates the facts, in three services (security, compliance, operational technology). Assessments fail closed: no facts means a failed assessment, never a pass. | [Assessment contract](#cis-coverage-and-the-assessment-contract) |
+| **Stored evidence and history** | Every result is a row in PostgreSQL with the host, framework, counts, findings, time and the policy version that produced it. The evidence tables are append-only and hash-chained, and a job checks the chain. Signing a result with cosign is opt-in per playbook. | [Evidence immutability](docs/EVIDENCE_IMMUTABILITY.md), [verifying a signed result](docs/security/CAA_VERIFICATION.md) |
+| **Reporting** | A findings workbook (Excel, CSV, HTML, Markdown, JSON) with one row per control and system: risk, where to fix it, owner, decision and what changed since the last run. Closure, risk, mitigation and Microsoft 365 reports, plus OSCAL, SARIF and HDF exports. | [Compliance reporting](docs/operations/COMPLIANCE_REPORTING.md), [example reports](examples/reports/) |
+| **Drift detection and event-driven response** | A scheduled job compares fact snapshots with each other and with an approved baseline. Event-Driven Ansible rulebooks react to webhooks, file changes and Windows event logs and launch AAP jobs, for example a golden-image check and rollback. | [Rulebooks](extensions/eda/rulebooks/README.md), [drift job](ansible/playbooks/detect_fact_drift.yml) |
+| **Remediation** | AAC generates tasks that restore a drifted setting to its baseline and applies them only when asked; the default is a dry run. Check mode is supported on the playbooks that change hosts, with limits listed in the document. | [Check mode](docs/reference/CHECK_MODE.md) |
+| **Waivers, decisions and attestations** | A waiver needs a reason, a named approver and an expiry date; the finding stays visible and becomes active again when the waiver expires. Owner decisions are kept in a reviewed file and carried into every report. Controls that need a human review are recorded as attestations. | [Waivers](ansible/vars/waivers.yml), [decisions](ansible/vars/decisions/README.md) |
+| **Dashboards** | Eight Grafana dashboards read the stored results: overall posture, NERC CIP, smart metering, NCSC CAF, digital sovereignty and technical debt. | [Dashboards](grafana/dashboards/) |
+| **Results from other scanners** | OpenSCAP, Kubescape, Trivy and Checkov results, and any scanner output converted to HDF, are stored next to AAC's own results, with the same waivers and history. | [OpenSCAP](ansible/playbooks/openscap_assess.yml), [HDF](ansible/playbooks/hdf_ingest.yml), [Checkov and Trivy](ansible/playbooks/ingest_scanner_findings.yml) |
+| **Policy gates on changes** | Ansible playbooks and Terraform plans are checked against policy when they are committed and again before they run. This repository applies the same approval policy to its own pull requests. | [Playbook gate](ansible/playbooks/aac_comply_validate_ansible.yml), [change governance](docs/CHANGE_GOVERNANCE.md) |
+| **Install and operation** | AAC runs on Ansible Automation Platform 2.6 or later. The install chooser points to the path that fits your starting point, the support matrix gives each path's tier and what has been tested, and one playbook verifies the finished install. | [Install chooser](install/README.md), [support matrix](install/SUPPORT_MATRIX.md) |
+
+AAC keeps three things apart: the policies (a separate library), the collection of facts, and the
+platform that runs both. Teams that already scan with OpenSCAP and ComplianceAsCode content can keep
+those scans and bring the results into the same evidence store.
+
+## What AAC collects from, and how
+
+AAC is **target-agnostic** — anything Ansible can collect facts from, OPA can evaluate. The
+policy library covers eleven target categories today, with overlapping framework families per
+category. Add a target type by writing the fact-collection playbook + the matching Rego package;
+the rest (storage, dashboards, evidence export) is handled by the platform.
+
+| Target | How the facts are gathered | Playbook or collection | Status |
+| --- | --- | --- | --- |
+| **Hosts / Servers**<br>RHEL 8/9/10, Oracle Linux 8/9, Ubuntu 22.04, Amazon Linux, Rocky Linux, SUSE | Over SSH. Ansible's own fact gathering (`setup`), then a set of read-only commands run with privilege for what `setup` does not report: audit rules, PAM, SSH settings, file permissions, services, disk encryption. | `collect_all_facts.yml`, `aac_gather_facts.yml`, `cis_*_assessment.yml`, `stig_linux_assessment.yml`; shared collector `ansible/tasks/collect_linux_compliance_facts.yml` | Collector in this repository |
+| **Operating systems (Windows)**<br>Windows Server 2019/2022, Windows 10/11 | Over WinRM. PowerShell commands run through `win_shell` read registry settings, the audit policy (`auditpol`), account policy and user rights (`secedit`), services, firewall and local users. | `cis_windows_server_2019_assessment.yml`, `cis_windows_server_2022_assessment.yml`, `aac_gather_facts.yml` | Collector in this repository |
+| **Network equipment**<br>VyOS, pfSense / OPNsense | The device's own configuration, read as one document (`show configuration json` on VyOS, `config.xml` on pfSense): over SSH in the gathering playbook, and with `podman exec` in the two assessment playbooks, where the device runs as a container on the AAC host. | `aac_gather_network_facts.yml`, `cis_vyos_assessment.yml`, `cis_pfsense_assessment.yml` | Collector in this repository |
+| **Network equipment**<br>Cisco IOS, Juniper, Palo Alto | Over HTTP: `ansible.builtin.uri` reads a `/facts` address for each device listed in `device_endpoints`. | `aac_gather_network_facts.yml`, `deploy_network_simulators.yml` | Collector in this repository |
+| **Network equipment**<br>Cisco IOS, Arista, Juniper, Fortinet, Palo Alto | Over SSH or the device API, with the vendor's facts module: `cisco.ios.ios_facts`, `arista.eos.eos_facts`, `juniper.device.junos_facts`, `fortinet.fortios.fortios_configuration_fact`, `paloaltonetworks.panos.panos_facts`. | The vendor's collection | Vendor Ansible collection |
+| **Databases**<br>Oracle Database 19c | Over SSH to the database host: the STIG's own queries run through `sqlplus / as sysdba`, plus the listener and network configuration files. | `stig_oracle_database_19c_assessment.yml` | Collector in this repository |
+| **Databases**<br>PostgreSQL, MySQL, SQL Server | Over a database connection, with `community.postgresql.postgresql_info`, `ansible.mysql.mysql_info` or queries through `community.general.mssql_script`. | The vendor's or community collection | Vendor Ansible collection |
+| **Applications**<br>Web servers (Apache, Nginx), runtimes (Java, Python), middleware | Over SSH, with Ansible's built-in modules: read the configuration files (`slurp`) or the server's own configuration dump (for example `nginx -T`, `apachectl -S`) with `command`. | `ansible.builtin` | Ansible built-in modules |
+| **Storage**<br>NAS/SAN arrays, S3/object stores, encrypted volumes | Object storage over HTTP: `ansible.builtin.uri` reads a `/facts` address listed in `device_endpoints`. Encrypted volumes on Linux hosts are read by the Linux collector (`cryptsetup luksDump`). | `aac_gather_network_facts.yml`, `ansible/tasks/collect_linux_compliance_facts.yml` | Collector in this repository |
+| **Storage**<br>S3 buckets in AWS | Over the AWS API, with `amazon.aws.s3_bucket_info`. | `amazon.aws` | Vendor Ansible collection |
+| **Smart meters / AMI**<br>Smart meter endpoints, head-end systems, MDMS | Over HTTP: `ansible.builtin.uri` reads the metering system's REST address (`/api/ami-assessment`) for each utility; the device, head-end and NIST IR 7628 facts are then evaluated and stored. | `ansible/tasks/ami_compliance_per_utility.yml`; sample inputs in `examples/ami_*_assessment_data.yml` | Collector in this repository |
+| **Cloud providers**<br>AWS, Azure, GCP | Over the provider's API, with the provider's `_info` modules, for example `amazon.aws.iam_user_info`, `amazon.aws.cloudtrail_info`, `amazon.aws.ec2_security_group_info`, `azure.azcollection.azure_rm_storageaccount_info`, `azure.azcollection.azure_rm_securitygroup_info`, `google.cloud.gcp_compute_firewall_info`. | `amazon.aws`, `azure.azcollection`, `google.cloud` | Vendor Ansible collection |
+| **Kubernetes / OpenShift**<br>OCP 4.14+, generic K8s clusters, admission controllers | Over the cluster API with a token. On OpenShift, `kubernetes.core.k8s_info` reads the Compliance Operator's check results and the cluster's security settings. On any Kubernetes cluster or manifest, the `kubescape` command-line scanner runs inside the execution environment. | `capture_ocp_baseline.yml`, `check_ocp_drift.yml`, `collate_ocp_nerc_cip.yml`, `kubescape_assess.yml` | Collector in this repository |
+| **Containers**<br>Container images, Containerfiles, podman / Docker runtimes | Locally in the execution environment: the `trivy` command-line scanner reads a Containerfile or Dockerfile, a manifest, a file tree or a container image. | `trivy_assess_artifact.yml` | Collector in this repository |
+| **CI/CD pipelines**<br>Ansible playbooks, Terraform plans, Git commits, GitHub Actions, AI-agent actions | A GitHub webhook received by Event-Driven Ansible starts a job that fetches the changed playbook or Terraform plan through the GitHub API (`ansible.builtin.uri`). The same check can run as the first task of a job, reading the playbook or plan file locally. | `aac_comply_validate_ansible.yml`, `aac_comply_validate_terraform.yml`, `extensions/eda/rulebooks/aac_comply_webhook.yml`, `ansible/tasks/aac_comply_preflight.yml` | Collector in this repository |
+
+**Collector in this repository** means a playbook here gathers the facts. **Ansible built-in modules** means the facts are gathered with modules that ship with Ansible, in a playbook you write for the target, and evaluated the same way as the next kind. **Vendor Ansible
+collection** means the policy library has a module for the target and you gather the facts with the
+named module, pass them to [`generic_framework_assessment.yml`](ansible/playbooks/generic_framework_assessment.yml)
+as `assessment_input`, and write the mapping from the module's output to the policy's input
+yourself. Playbooks are in [`ansible/playbooks/`](ansible/playbooks/); the policies available for
+each target are in the [framework catalog](ansible/vars/framework_catalog.yml).
+
+How much of each framework a collector's facts cover is measured per framework in the
+[coverage reference](docs/reference/FRAMEWORK_COVERAGE.md); coverage per device type will be
+measured from customer catalogs as they are contributed.
+
+**Common across all targets:** each assessment writes a row to `compliance_results` (PostgreSQL,
+JSONB) with hostname, framework, controls passed/failed, violations, and timestamp. The same
+PostgreSQL → Grafana → evidence-export path applies regardless of target category — auditors
+get one schema for the whole fleet rather than per-tool point views.
+
+**Roadmap target types** (policy work in progress): identity providers (LDAP / IdP), secrets
+managers (HashiCorp Vault / AWS Secrets Manager), message brokers (Kafka, RabbitMQ), VoIP /
+unified comms, IoT sensors beyond AMI. Submit a target-type request via GitHub issue.
+
+---
+
+## Stay up to date and ask for changes
+
+- **Weekly update of new features and fixes:** [docs/updates/README.md](docs/updates/README.md), which also says how to subscribe.
+- **Request a feature or a change, or report a problem:** [open an issue](https://github.com/Ansible-Automated-Compliance/aac/issues/new/choose).
+- **Reports, how to generate them, with examples:** [docs/operations/COMPLIANCE_REPORTING.md](docs/operations/COMPLIANCE_REPORTING.md) and [examples/reports/](examples/reports/).
 
 ---
 
@@ -48,7 +130,7 @@ Built on **Ansible Automation Platform 2.6+** (2.7 is the reference deployment),
 │                    Ansible Automated Compliance (AAC)                  │
 ├────────────────────────────────────────────────────────────────────────┤
 │                                                                        │
-│   Analyzed Targets (see "What AAC Analyzes" below):                    │
+│   Analyzed Targets (see "What AAC collects from, and how" above):      │
 │     Hosts · OSes · Network · Databases · Apps · Storage · Cloud · K8s  │
 │     Smart Meters / SCADA · Containers · CI/CD pipelines                │
 │              │  SSH · WinRM · API · SNMP · Cloud SDK · K8s API         │
@@ -85,38 +167,6 @@ all listening on 8181, distinguished by *service name*. On a single-host contain
 deployment the three OPAs bind host ports 8181/8182/8183. Playbooks resolve endpoints from
 the environment profile (`opa_framework_map` + `resolve_opa_url.yml`) — never hardcode
 either form.
-
----
-
-## What AAC Analyzes
-
-AAC is **target-agnostic** — anything Ansible can collect facts from, OPA can evaluate. The
-policy library covers eleven target categories today, with overlapping framework families per
-category. Add a target type by writing the fact-collection playbook + the matching Rego package;
-the rest (storage, dashboards, evidence export) is handled by the platform.
-
-| Target category | Examples | Fact collection | Framework coverage today |
-| --- | --- | --- | --- |
-| **Hosts / Servers** | RHEL 8/9/10, Oracle Linux 8/9, Ubuntu 22.04, Amazon Linux, Rocky Linux, SUSE | Ansible `gather_facts` over SSH | CIS, STIG (RHEL and Oracle Linux: `stig_linux_assessment.yml`), NIST 800-53, NCSC CAF, ISO 27001 |
-| **Operating systems (Windows)** | Windows Server 2019/2022, Windows 10/11 | Ansible facts over WinRM | CIS Windows, STIG Windows, MS Security Baselines |
-| **Network equipment** | Cisco IOS/NX-OS, Arista, Juniper, F5, pfSense, VyOS | `ansible.netcommon`, SSH, SNMP, NETCONF | CIS network-device benchmarks, NERC CIP-005/007 |
-| **Databases** | PostgreSQL (active), Oracle Database 19c (active: `stig_oracle_database_19c_assessment.yml`, the STIG's own queries as SYSDBA), MySQL/MariaDB, MongoDB, SQL Server | `community.postgresql`, `sqlplus`, vendor SDKs | CIS DBMS benchmarks, DISA STIG Oracle Database 19c, PCI-DSS 8/10, HIPAA technical safeguards |
-| **Applications** | Web servers (Apache, Nginx), runtimes (Java, Python), middleware | Module-based introspection + config file evaluation | CIS application benchmarks, ISO 27001:2022 A.8.25–A.8.29, Sentinel enforcement |
-| **Storage** | NetApp, NAS/SAN arrays, S3/object stores, encrypted volumes | Vendor REST APIs + `ansible.builtin` storage facts | NIST SC-28, ISO 27001:2022 A.8.24, HIPAA §164.312(a)(2)(iv) |
-| **Smart meters / AMI** | Smart meter endpoints, head-end systems, MDMS | Smart Meter simulator + REST APIs | NIST IR 7628 (all 7 domains), NERC CIP-002→015, IEC 62443 |
-| **Cloud providers** | AWS (active), Azure, GCP | `amazon.aws`, `azure.azcollection`, `google.cloud` | CIS AWS / Azure / GCP, FedRAMP, SOC 2 CC6 |
-| **Kubernetes / OpenShift** | OCP 4.14+, generic K8s clusters, admission controllers | `kubernetes.core`, `community.okd` | CIS Kubernetes, STIG K8s, STIG OpenShift 4, NIST 800-190 |
-| **Containers** | Container images, Containerfiles, podman / Docker runtimes | Image inspection, Dockerfile / Containerfile static analysis | CIS Docker, CIS Containerd, supply-chain SLSA controls |
-| **CI/CD pipelines** | Ansible playbooks, Terraform plans, Git commits, GitHub Actions, AI-agent actions | Pre-task hooks, webhook ingestion via EDA, plan-JSON inspection | Sentinel enforcement (Ansible + Terraform + AI), MCP governance, EU AI Act |
-
-**Common across all targets:** each assessment writes a row to `compliance_results` (PostgreSQL,
-JSONB) with hostname, framework, controls passed/failed, violations, and timestamp. The same
-PostgreSQL → Grafana → evidence-export path applies regardless of target category — auditors
-get one schema for the whole fleet rather than per-tool point views.
-
-**Roadmap target types** (policy work in progress): identity providers (LDAP / IdP), secrets
-managers (HashiCorp Vault / AWS Secrets Manager), message brokers (Kafka, RabbitMQ), VoIP /
-unified comms, IoT sensors beyond AMI. Submit a target-type request via GitHub issue.
 
 ---
 
@@ -182,7 +232,7 @@ Policy counts are `.rego` files, tests excluded, at the pinned library commit `9
 *(Per-domain counts measured at the pinned submodule commit `98c3291f`, 2026-11-19; remaining files
 sit in shared/other paths.)*
 
-**Total: 1,065 policy files** (2,506 including tests) across **55+ frameworks** — all using Rego v1
+**Total: 1,065 policy files** (2,506 including tests) across **100+ frameworks** — all using Rego v1
 syntax with `import rego.v1`. Counted at the pinned submodule commit; the number drifts with every
 merge, so count it rather than quoting it:
 
@@ -247,7 +297,7 @@ evaluating normally on real facts.
 ```bash
 compliance/
 ├── policies/                    # ⚠ Git submodule → ynotbhatc/rego_policy_libraries
-│                                #   Rego v1 policies across 55+ frameworks
+│                                #   Rego v1 policies across 100+ frameworks
 │                                #   Clone with: git clone --recurse-submodules
 │
 ├── ansible/
@@ -424,7 +474,7 @@ external systems:
 | Ansible continuous audit sweep | ❌ | ✅ |
 | AI action governance | ❌ | ✅ |
 | Historical compliance trending | ❌ | ✅ |
-| Regulatory frameworks (55+) | ❌ | ✅ |
+| Regulatory frameworks (100+) | ❌ | ✅ |
 | Executive dashboards | ❌ | ✅ |
 
 **AAC delivers 5 enforcement points** (Ansible + Terraform + AI) vs **Sentinel's 2** (Terraform only).
@@ -433,7 +483,7 @@ external systems:
 
 | Capability | Qualys / Rapid7 / Tenable | AAC |
 | ------------ | -------------------------- | ----- |
-| Frameworks covered | 5–15 | 55+ |
+| Frameworks covered | 5–15 | 100+ |
 | Remediation automation | Alerts only | Automated rollback + enforcement |
 | Custom policy authoring | Vendor roadmap | Full Rego v1, open source |
 | Works on AAP you already own | ❌ | ✅ |

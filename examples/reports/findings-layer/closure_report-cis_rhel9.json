@@ -1,0 +1,105 @@
+{
+ "summary": {
+  "total": 8,
+  "by_state": {
+   "open": 5,
+   "resolved": 2,
+   "waived": 1
+  },
+  "closure_rate_pct": 37.5,
+  "proven_closed": 2,
+  "recently_resolved_30d": 2,
+  "oldest_open_days": 71.4,
+  "verdict": "5 still open, 2 resolved, 1 waived of 8. Oldest open finding: 71.4 days."
+ },
+ "records": [
+  {
+   "control_id": "CIS 1.1.1",
+   "subject": "rhel-web-01.example.com",
+   "title": "CIS 1.1.1: cramfs kernel module is loadable",
+   "state": "open",
+   "first_seen": "2026-08-03T02:00:00+00:00",
+   "resolved_at": null,
+   "proven_closed": false,
+   "times_seen": 10,
+   "open_age_days": 71.4
+  },
+  {
+   "control_id": "CIS 5.1.20",
+   "subject": "rhel-web-01.example.com",
+   "title": "CIS 5.1.20: sshd PermitRootLogin is 'yes', expected 'no'",
+   "state": "open",
+   "first_seen": "2026-09-28T02:00:00+00:00",
+   "resolved_at": null,
+   "proven_closed": false,
+   "times_seen": 3,
+   "open_age_days": 15.4
+  },
+  {
+   "control_id": "CIS 5.1.20",
+   "subject": "rhel-db-01.example.com",
+   "title": "CIS 5.1.20: sshd PermitRootLogin is 'yes', expected 'no'",
+   "state": "open",
+   "first_seen": "2026-10-05T02:03:00+00:00",
+   "resolved_at": null,
+   "proven_closed": false,
+   "times_seen": 2,
+   "open_age_days": 8.4
+  },
+  {
+   "control_id": "CIS 6.2.1",
+   "subject": "rhel-web-01.example.com",
+   "title": "CIS 6.2.1: auditd service is not enabled",
+   "state": "open",
+   "first_seen": "2026-10-12T02:00:00+00:00",
+   "resolved_at": null,
+   "proven_closed": false,
+   "times_seen": 1,
+   "open_age_days": 1.4
+  },
+  {
+   "control_id": "EVIDENCE-GAP:no audit rule facts supplied for this host",
+   "subject": "rhel-db-01.example.com",
+   "title": "FAIL-CLOSED: no audit rule facts supplied for this host",
+   "state": "open",
+   "first_seen": "2026-10-12T02:03:00+00:00",
+   "resolved_at": null,
+   "proven_closed": false,
+   "times_seen": 1,
+   "open_age_days": 1.4
+  },
+  {
+   "control_id": "CIS 3.3.1",
+   "subject": "rhel-db-01.example.com",
+   "title": "CIS 3.3.1: IP forwarding is enabled",
+   "state": "resolved",
+   "first_seen": "2026-09-07T02:03:00+00:00",
+   "resolved_at": "2026-10-05T02:03:00+00:00",
+   "proven_closed": true,
+   "times_seen": 4,
+   "open_age_days": null
+  },
+  {
+   "control_id": "CIS 5.4.1.1",
+   "subject": "rhel-web-01.example.com",
+   "title": "CIS 5.4.1.1: password maximum age is 99999 days",
+   "state": "resolved",
+   "first_seen": "2026-08-03T02:00:00+00:00",
+   "resolved_at": "2026-09-28T02:00:00+00:00",
+   "proven_closed": true,
+   "times_seen": 8,
+   "open_age_days": null
+  },
+  {
+   "control_id": "CIS 1.4.1",
+   "subject": "rhel-web-01.example.com",
+   "title": "CIS 1.4.1: bootloader password not set",
+   "state": "waived",
+   "first_seen": "2026-08-03T02:00:00+00:00",
+   "resolved_at": null,
+   "proven_closed": false,
+   "times_seen": 10,
+   "open_age_days": null
+  }
+ ]
+}

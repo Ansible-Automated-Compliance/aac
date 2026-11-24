@@ -1,0 +1,86 @@
+<!doctype html><html><head><meta charset='utf-8'><title>CIS Microsoft 365 Foundations Benchmark findings workbook</title>
+<style>body{font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;margin:24px;color:#222}
+h1{font-size:22px;margin:0 0 4px}h2{font-size:17px;margin:28px 0 8px;border-bottom:1px solid #ddd}
+.meta{color:#555;font-size:13px}.verdict{background:#f3f6fa;border-left:4px solid #2a5db0;padding:10px 14px;margin:14px 0}
+table{border-collapse:collapse;font-size:12.5px;width:100%}th,td{border:1px solid #e3e3e3;padding:4px 7px;text-align:left;vertical-align:top}
+th{background:#f7f7f7;position:sticky;top:0}.Critical{color:#b00020;font-weight:600}.High{color:#d2691e;font-weight:600}
+.Medium{color:#8a6d00}.Low{color:#2e7d32}.regressed{color:#b00020;font-weight:600}.new{color:#d2691e}.fixed{color:#2e7d32}
+.ft{margin-top:30px;color:#777;font-size:12px}</style></head><body>
+<h1>CIS Microsoft 365 Foundations Benchmark v7.0.0 — Findings Workbook</h1>
+<div class='meta'>Framework cis_m365_v7 · Subjects: tenant.example · Generated 2026-10-13T12:00:00+00:00 · Contract v1.0</div>
+<div class='verdict'>3 critical/high-risk failure(s) need attention first, of 3 open. 1 regressed since the previous run.</div>
+<h2>Summary</h2><table>
+<tr><th>Contract version</th><td>1.0</td></tr>
+<tr><th>Framework</th><td>cis_m365_v7</td></tr>
+<tr><th>Benchmark</th><td>CIS Microsoft 365 Foundations Benchmark v7.0.0</td></tr>
+<tr><th>Subjects</th><td>tenant.example</td></tr>
+<tr><th>Generated</th><td>2026-10-13T12:00:00+00:00</td></tr>
+<tr><th>Latest run</th><td>tenant.example: 2026-10-12T09:00:03+00:00</td></tr>
+<tr><th>Previous run</th><td>tenant.example: 2026-09-15T10:00:02+00:00</td></tr>
+<tr><th>Policy SHA</th><td>(not recorded)</td></tr>
+<tr><th>Verdict</th><td>3 critical/high-risk failure(s) need attention first, of 3 open. 1 regressed since the previous run.</td></tr>
+<tr><th>Controls in benchmark</th><td>11</td></tr>
+<tr><th>Controls evaluated</th><td>6</td></tr>
+<tr><th>Passed</th><td>2</td></tr>
+<tr><th>Failed (open)</th><td>3</td></tr>
+<tr><th>Waived</th><td>1</td></tr>
+<tr><th>Unassessable</th><td>5</td></tr>
+<tr><th>  unassessable: attestation_required</th><td>1</td></tr>
+<tr><th>  unassessable: benchmark_manual</th><td>2</td></tr>
+<tr><th>  unassessable: collector_not_built</th><td>1</td></tr>
+<tr><th>  unassessable: facts_not_collected</th><td>1</td></tr>
+<tr><th>Open by risk: Critical</th><td>1</td></tr>
+<tr><th>Open by risk: High</th><td>2</td></tr>
+<tr><th>Open by risk: Medium</th><td>0</td></tr>
+<tr><th>Open by risk: Low</th><td>0</td></tr>
+<tr><th>Open by owner: Identity team</th><td>1</td></tr>
+<tr><th>Open by owner: M365 platform team</th><td>1</td></tr>
+<tr><th>Open by owner: Messaging team lead</th><td>1</td></tr>
+<tr><th>Sampled evidence (findings)</th><td>1</td></tr>
+<tr><th>Delta: new</th><td>2</td></tr>
+<tr><th>Delta: fixed</th><td>1</td></tr>
+<tr><th>Delta: regressed</th><td>1</td></tr>
+<tr><th>Delta: still open</th><td>1</td></tr>
+<tr><th>Decisions on file</th><td>3</td></tr>
+<tr><th>Decisions expiring</th><td>0</td></tr>
+<tr><th>Decisions expired</th><td>0</td></tr>
+<tr><th>Decisions unmatched</th><td>1</td></tr>
+<tr><th>Decisions with issues</th><td>2</td></tr>
+<tr><th>Open findings undecided</th><td>1</td></tr>
+</table>
+<h2>Findings (4)</h2>
+<table><tr><th>Finding ID</th><th>Control</th><th>Title</th><th>Category</th><th>Profile level</th><th>Subject</th><th>Effective risk</th><th>Risk basis</th><th>Owner</th><th>Decision</th><th>Decision status</th><th>Expires</th><th>Delta</th><th>Age (days)</th><th>Where to fix</th><th>Action</th><th>Sampled</th><th>Detail</th></tr>
+<tr><td class=''>55edb7693f</td><td class=''>1.1.3</td><td class=''>only 1 global admin designated; fewer than two risks lockout</td><td class=''>M365 admin center</td><td class=''>L1</td><td class=''>tenant.example</td><td class='Critical'>Critical</td><td class=''>criticality 4 (control family 1.1); +2: affects global administrators</td><td class=''>M365 platform team</td><td class=''>remediate</td><td class=''>active</td><td class=''></td><td class='regressed'>regressed</td><td class=''>42</td><td class=''>Microsoft 365 admin center -&gt; Users / Roles</td><td class=''>adjust administrative role assignments and account configuration</td><td class=''></td><td class=''>CIS 1.1.3: only 1 global admin designated; fewer than two risks lockout</td></tr>
+<tr><td class=''>886185661f</td><td class=''>6.5.1</td><td class=''>modern authentication for Exchange Online is not enabled; legacy authentication bypasses MFA</td><td class=''>Exchange admin center</td><td class=''>L1</td><td class=''>tenant.example</td><td class='High'>High</td><td class=''>criticality 3 (control family 6.5); +2: permits legacy authentication (bypasses CA/MFA); +2: weakens multifactor authentication</td><td class=''>Messaging team lead</td><td class=''>accept</td><td class=''>active</td><td class=''>2026-12-30</td><td class='still-open'>still open</td><td class=''>42</td><td class=''>Exchange admin center -&gt; Mail flow / Settings</td><td class=''>apply the Exchange Online configuration for this control</td><td class=''></td><td class=''>CIS 6.5.1: modern authentication for Exchange Online is not enabled; legacy authentication bypasses MFA</td></tr>
+<tr><td class=''>def0c4713b</td><td class=''>5.1.2.2</td><td class=''>users can register applications; any user can consent-phish other users</td><td class=''>Entra admin center</td><td class=''>L1</td><td class=''>tenant.example</td><td class='High'>High</td><td class=''>criticality 4 (control family 5.1.2); +1: consent / consent-phishing exposure</td><td class=''>Identity team</td><td class=''></td><td class=''>undecided</td><td class=''></td><td class='new'>new</td><td class=''>1</td><td class=''>Microsoft Entra admin center -&gt; Identity -&gt; Users -&gt; User settings</td><td class=''>restrict the user self-service capability to administrators</td><td class=''></td><td class=''>CIS 5.1.2.2: users can register applications; any user can consent-phish other users</td></tr>
+<tr><td class=''>098cc943cb</td><td class=''>6.1.2</td><td class=''>mailbox auditing disabled for 3 mailboxes</td><td class=''>Exchange admin center</td><td class=''>L1</td><td class=''>tenant.example</td><td class='Medium'>Medium</td><td class=''>criticality 3 (control family 6.1); +1: affects audit/evidence capture</td><td class=''>Messaging team</td><td class=''>accept</td><td class=''>expiring</td><td class=''>2026-10-30</td><td class='new'>new</td><td class=''>1</td><td class=''>Exchange admin center -&gt; Mail flow / Settings</td><td class=''>apply the Exchange Online configuration for this control</td><td class=''>yes</td><td class=''>CIS 6.1.2: mailbox auditing disabled for 3 mailboxes</td></tr>
+</table>
+<h2>Unassessable (5)</h2>
+<table><tr><th>Control</th><th>Title</th><th>Section</th><th>Category</th><th>Profile level</th><th>Benchmark assessment</th><th>Subject</th><th>Reason</th><th>Who acts</th><th>Owner</th><th>Detail</th><th>Evidence row</th></tr>
+<tr><td class=''>5.2.4.1</td><td class=''></td><td class=''>5</td><td class=''>Entra admin center</td><td class=''>L1</td><td class=''>Manual</td><td class=''>tenant.example</td><td class=''>attestation_required</td><td class=''>customer</td><td class=''>Identity team</td><td class=''>CIS 5.2.4.1: requires attestation -- no automated procedure (this is not a pass)</td><td class=''>10</td></tr>
+<tr><td class=''>1.3.3</td><td class=''></td><td class=''>1</td><td class=''>M365 admin center</td><td class=''>L2</td><td class=''>Manual</td><td class=''>*</td><td class=''>benchmark_manual</td><td class=''>customer</td><td class=''>M365 platform team</td><td class=''>benchmark classifies this control as Manual</td><td class=''></td></tr>
+<tr><td class=''>7.2.1</td><td class=''></td><td class=''>7</td><td class=''>SharePoint admin center</td><td class=''>L2</td><td class=''>Manual</td><td class=''>*</td><td class=''>benchmark_manual</td><td class=''>customer</td><td class=''>Security operations</td><td class=''>benchmark classifies this control as Manual</td><td class=''></td></tr>
+<tr><td class=''>9.1.1</td><td class=''></td><td class=''>9</td><td class=''>Fabric</td><td class=''>L1</td><td class=''>Automated</td><td class=''>*</td><td class=''>collector_not_built</td><td class=''>vendor</td><td class=''>Security operations</td><td class=''>no collector path yet (vendor backlog)</td><td class=''></td></tr>
+<tr><td class=''>2.1.1</td><td class=''></td><td class=''>2</td><td class=''>Microsoft 365 Defender</td><td class=''>L2</td><td class=''>Automated</td><td class=''>tenant.example</td><td class=''>facts_not_collected</td><td class=''>vendor</td><td class=''>Security operations</td><td class=''>CIS 2.1.1: Defender policy facts were not collected (this is not a pass)</td><td class=''>8</td></tr>
+</table>
+<h2>Decisions (3)</h2>
+<table><tr><th>Control</th><th>Subject</th><th>Decision</th><th>Owner</th><th>Justification</th><th>Approver</th><th>Approved</th><th>Expires</th><th>Status</th><th>Days to expiry</th><th>Matched findings</th><th>Issues</th><th>Ticket</th></tr>
+<tr><td class=''>6.5.1</td><td class=''>*</td><td class=''>accept</td><td class=''>Messaging team lead</td><td class=''>Legacy scanners need basic authentication until the Q1 replacement</td><td class=''>Jane Doe</td><td class=''>2026-10-01</td><td class=''>2026-12-30</td><td class=''>active</td><td class=''>78</td><td class=''>886185661f</td><td class=''>expiry missing — defaulted to approved + 90 days (2026-12-30)</td><td class=''>CHG-0001</td></tr>
+<tr><td class=''>1.1.3</td><td class=''>tenant.example</td><td class=''>remediate</td><td class=''>M365 platform team</td><td class=''></td><td class=''>security-team</td><td class=''>2026-10-05</td><td class=''></td><td class=''>active</td><td class=''></td><td class=''>55edb7693f</td><td class=''>approver is not a named person</td><td class=''></td></tr>
+<tr><td class=''>9.1.1</td><td class=''>*</td><td class=''>accept</td><td class=''>Data platform team</td><td class=''>Superseded exception</td><td class=''>Ann Lee</td><td class=''>2026-07-01</td><td class=''>2026-09-30</td><td class=''>unmatched</td><td class=''>-13</td><td class=''></td><td class=''></td><td class=''></td></tr>
+</table>
+<h2>Delta (5)</h2>
+<table><tr><th>Change</th><th>Finding ID</th><th>Control</th><th>Title</th><th>Subject</th><th>Effective risk</th><th>First seen</th><th>Previous run</th><th>Latest run</th></tr>
+<tr><td class='regressed'>regressed</td><td class=''>55edb7693f</td><td class=''>1.1.3</td><td class=''>only 1 global admin designated; fewer than two risks lockout</td><td class=''>tenant.example</td><td class='Critical'>Critical</td><td class=''>2026-09-01T10:00:02+00:00</td><td class=''>2026-09-15T10:00:02+00:00</td><td class=''>2026-10-12T09:00:03+00:00</td></tr>
+<tr><td class='new'>new</td><td class=''>def0c4713b</td><td class=''>5.1.2.2</td><td class=''>users can register applications; any user can consent-phish other users</td><td class=''>tenant.example</td><td class='High'>High</td><td class=''>2026-10-12T09:00:03+00:00</td><td class=''>2026-09-15T10:00:02+00:00</td><td class=''>2026-10-12T09:00:03+00:00</td></tr>
+<tr><td class='new'>new</td><td class=''>098cc943cb</td><td class=''>6.1.2</td><td class=''>mailbox auditing disabled for 3 mailboxes</td><td class=''>tenant.example</td><td class='Medium'>Medium</td><td class=''>2026-10-12T09:00:03+00:00</td><td class=''>2026-09-15T10:00:02+00:00</td><td class=''>2026-10-12T09:00:03+00:00</td></tr>
+<tr><td class='fixed'>fixed</td><td class=''>c56218b77f</td><td class=''>5.2.3.6</td><td class=''></td><td class=''>tenant.example</td><td class=''></td><td class=''>2026-09-01T10:00:02+00:00</td><td class=''>2026-09-15T10:00:02+00:00</td><td class=''>2026-10-12T09:00:03+00:00</td></tr>
+<tr><td class='still-open'>still open</td><td class=''>886185661f</td><td class=''>6.5.1</td><td class=''>modern authentication for Exchange Online is not enabled; legacy authentication bypasses MFA</td><td class=''>tenant.example</td><td class='High'>High</td><td class=''>2026-09-01T10:00:02+00:00</td><td class=''>2026-09-15T10:00:02+00:00</td><td class=''>2026-10-12T09:00:03+00:00</td></tr>
+</table>
+<h2>Passed (2)</h2>
+<table><tr><th>Control</th><th>Title</th><th>Section</th><th>Category</th><th>Subject</th><th>Sampled</th><th>Evidence strength</th><th>Evidence row</th></tr>
+<tr><td class=''>1.1.1</td><td class=''></td><td class=''>1</td><td class=''>M365 admin center</td><td class=''>tenant.example</td><td class=''></td><td class=''></td><td class=''>7</td></tr>
+<tr><td class=''>5.2.3.6</td><td class=''></td><td class=''>5</td><td class=''>Entra admin center</td><td class=''>tenant.example</td><td class=''></td><td class=''></td><td class=''>8</td></tr>
+</table>
+<div class='ft'>Generated by AAC from stored OPA evaluations · evidence is never edited; decisions live in the decisions file; this workbook is their join · Co-authored by Claude (Anthropic) via Claude Code</div>
+</body></html>
