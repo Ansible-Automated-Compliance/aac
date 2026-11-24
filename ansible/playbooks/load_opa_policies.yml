@@ -710,26 +710,39 @@
         (waiver_module_load.status | default(0) == 200)
         or (waiver_module_load.status | default(0) >= 400 and waiver_module_load.status | default(0) < 500)
 
-    - name: Load site waiver entries
-      ansible.builtin.include_vars: "{{ item }}"
+    # Read into its own name so the file can supply the entries, the settings
+    # or both: either may also come from extra_vars or the inventory, and a
+    # supplied value always wins over the file.
+    - name: Load the site waiver file
+      ansible.builtin.include_vars:
+        file: "{{ item }}"
+        name: _waiver_file
       with_first_found:
         - files:
             - "{{ project_dir }}/ansible/vars/waivers.yml"
           skip: true
-      when: waiver_entries is not defined
+
+    - name: Resolve waiver entries and settings
+      ansible.builtin.set_fact:
+        _waiver_entries: "{{ waiver_entries | default((_waiver_file | default({})).waiver_entries | default([], true)) }}"
+        _waiver_settings: "{{ waiver_settings | default((_waiver_file | default({})).waiver_settings | default({}, true)) }}"
 
     - name: Push waiver entries as OPA data
       uri:
         use_proxy: false
         url: "{{ item.url }}/v1/data/waivers"
         method: PUT
-        body: { "entries": "{{ waiver_entries | default([]) }}" }
+        body:
+          entries: "{{ _waiver_entries }}"
+          # Site rules for waivers (required fields, maximum time to live);
+          # see ansible/vars/waivers.yml. Empty = the policy applies none.
+          settings: "{{ _waiver_settings }}"
         body_format: json
         status_code: [204]
         timeout: 60
       loop: "{{ opa_containers_active }}"
       loop_control:
-        label: "{{ item.name }}: {{ waiver_entries | default([]) | length }} entries"
+        label: "{{ item.name }}: {{ _waiver_entries | length }} entries, {{ _waiver_settings | length }} settings"
 
     # ── Reconcile (prune) ────────────────────────────────────────────────────
     # A PUT-only load never REMOVES policies already in OPA, so orphans from a

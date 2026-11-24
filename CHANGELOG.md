@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Added — waivers carry a mitigation and can be held to site rules
+
+- Waiver entries may carry `mitigation` and `evidence_ref`. New `waiver_settings` in `ansible/vars/waivers.yml` (`required_fields`, `max_ttl_days`, `expiring_within_days`) is loaded by "AAC - Load OPA Policies" with the entries. A waiver that matches a finding but breaks a rule is refused: the finding stays a violation and the stored row lists it in `metadata.waivers_refused`. Waivers close to expiry are listed in `metadata.waivers_expiring_soon`. Reference: `docs/operations/WAIVERS.md`. The rules take effect with a policy library that includes them (rego library after 2026-11-19); the shipped default applies none.
+- The loader reads the waiver file under its own name, so entries and settings can each come from the file, the inventory or extra vars.
+
+### Fixed — a waived result leaked into the next result for the same host
+
+- `aac_store_results` kept the waiver outcome of an earlier call. When one result had a waived finding, the next result stored for the same host in the same play (another framework, or the stored-facts loop) was written with the first result's violations and metadata, and a later result with no violations failed the play. The outcome is now cleared on every call.
+
 ### Added — check mode for the playbooks that change managed hosts
 
 - `--check` is supported for `apply_remediation.yml`, `crypto_miner_detection_remediation.yml`, `remediate_ocp_nerc_cip.yml` and the five Windows Server 2022 hardening playbooks; `docs/reference/CHECK_MODE.md` says what each previews and what it cannot. Assessment playbooks are out of scope.
