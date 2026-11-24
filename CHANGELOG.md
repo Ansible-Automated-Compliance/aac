@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Added — CIS Palo Alto Firewall 11 v1.2.1: collector (`aac.panos`) and assessment playbook
+
+- The policy library has carried all 79 recommendations of the benchmark since 2026-11-14, but nothing collected the facts it reads. New collection `collections/ansible_collections/aac/panos`: role `panos_cis_collect` reads a firewall with three read-only XML API requests (`show config running`, `request license info`, `show system info`) through `ansible.builtin.uri`, and filter `aac.panos.panos_cis_facts` maps the configuration XML to `input.panos_config`. No Palo Alto collection or Python library is needed in the execution environment.
+- **Secrets stay behind.** The running configuration holds password hashes, pre-shared keys and SNMP secrets; the mapper copies only what the policy reads and sends `(set)` where the policy needs to know a secret exists. API tasks run with `no_log` and the raw replies are discarded once the facts are built.
+- **Absence is judged, not guessed.** A section the device does not have is sent empty (a finding); license information that could not be read is left out (evidence missing for 6.8 and 6.22-6.25); a setting the configuration does not state is not filled in.
+- New playbook `ansible/playbooks/cis_palo_alto_panos_assessment.yml`: one result per firewall, CIS level 1 or 2 (`panos_cis_level`), operator zone and URL classification (`panos_site`), attestations (`panos_attest`), and `panos_store_results: false` to assess without storing.
+- The network simulator's Palo Alto device (:8093) now answers the same XML API requests and serves a deliberately weak running configuration; `deploy_network_simulators.yml` copies it.
+- **Numbers are sent as numbers.** The device XML carries every value as text; the mapper converts the whole-number settings the policy reads (password rules, idle timeout, lockout, flood rates, scan thresholds, data-filtering thresholds). The library is tightening the policy to accept a number only as a JSON number, so the collector scores the same before and after that pin moves. A value that is not a whole number is passed through as text for the policy to reject.
+- Tests: 16 mapper unit tests and 4 simulator tests in the Python suite; `tests/panos_collector/score_fixture.py` scores the fixtures through the policy itself (hardened fixture 79 of 79 at Level 2 and 69 of 69 at Level 1; exactly the license-gated and the attested recommendations fail when those inputs are withheld).
+- Not yet run against a real firewall, and policy pushed from Panorama is not read; both are stated in the collection README.
+
 ### Added — check mode for the playbooks that change managed hosts
 
 - `--check` is supported for `apply_remediation.yml`, `crypto_miner_detection_remediation.yml`, `remediate_ocp_nerc_cip.yml` and the five Windows Server 2022 hardening playbooks; `docs/reference/CHECK_MODE.md` says what each previews and what it cannot. Assessment playbooks are out of scope.
