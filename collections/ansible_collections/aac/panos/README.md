@@ -113,6 +113,10 @@ attested `true`.
 | `ssl_inbound_inspection_reviewed` | 8.2 |
 | `decryption_certificate_trusted` | 8.3 |
 
+## Types
+
+The device returns every value as text. Whole-number settings the policy reads are sent as numbers; yes/no settings are sent as the device wrote them (`yes` / `no`); attestations are booleans. A value that should be a whole number and is not is passed through unchanged, and the policy reports it as invalid evidence.
+
 ## How absence is treated
 
 - A section the device does not have (no HA, no password complexity) is sent

@@ -59,10 +59,10 @@ def test_device_setup(facts):
     assert system["update_schedule"]["threats"]["recurrence"] == "every-30-mins"
     assert system["update_schedule"]["wildfire"] == {"recurrence": "real-time"}
     assert facts["deviceconfig"]["setting"]["management"] == {
-        "enable_log_high_dp_load": "yes", "idle_timeout": "10"}
-    assert facts["mgt_config"]["password_complexity"]["password_change"] == {"expiration_period": "90"}
+        "enable_log_high_dp_load": "yes", "idle_timeout": 10}
+    assert facts["mgt_config"]["password_complexity"]["password_change"] == {"expiration_period": 90}
     assert facts["mgt_config"]["password_profile"] == [
-        {"name": "svc", "password_change": {"expiration_period": "60"}}]
+        {"name": "svc", "password_change": {"expiration_period": 60}}]
 
 
 def test_high_availability_group_settings_are_lifted(facts):
@@ -88,7 +88,7 @@ def test_logging(facts):
         assert match["send_syslog"] == ["syslog-siem"]
         assert match["send_snmptrap"] == ["trap-v3"]
     assert shared["authentication_profile"] == [
-        {"name": "admin-auth", "lockout": {"failed_attempts": "5", "lockout_time": "15"}}]
+        {"name": "admin-auth", "lockout": {"failed_attempts": 5, "lockout_time": 15}}]
     wildfire = shared["log_forwarding_profile"][0]["match_list"][0]
     assert wildfire["log_type"] == "wildfire" and wildfire["send_syslog"] == ["syslog-siem"]
 
@@ -97,12 +97,12 @@ def test_zone_protection(facts):
     profile = facts["network"]["profiles"]["zone_protection"][0]
     assert profile["flood"]["tcp_syn"] == {
         "enable": "yes", "action": "syn-cookies",
-        "alarm_rate": "10000", "activate_rate": "10000", "maximal_rate": "40000"}
+        "alarm_rate": 10000, "activate_rate": 10000, "maximal_rate": 40000}
     assert "action" not in profile["flood"]["udp"]
-    assert profile["flood"]["other_ip"]["maximal_rate"] == "40000"
+    assert profile["flood"]["other_ip"]["maximal_rate"] == 40000
     assert profile["scan"]["tcp_port_scan"] == {
-        "interval": "5", "threshold": "20", "action": "block-ip",
-        "track_by": "source", "duration": "600", "enable": "yes"}
+        "interval": 5, "threshold": 20, "action": "block-ip",
+        "track_by": "source", "duration": 600, "enable": "yes"}
     assert profile["scan"]["host_sweep"]["action"] == "block"
     assert profile["scan"]["udp_port_scan"]["action"] == "alert"
     assert profile["discard_ip_spoof"] == "yes"
@@ -222,3 +222,19 @@ def test_system_info():
            "<serial>0123</serial><sw-version>11.1.4</sw-version></system></result></response>")
     assert mapper.panos_system_info(xml) == {
         "hostname": "fw1", "model": "PA-440", "serial": "0123", "sw_version": "11.1.4"}
+
+
+def test_whole_number_settings_are_numbers(facts):
+    """The device XML is all text; the policy accepts a number only as a JSON number."""
+    cfg = facts
+    assert cfg["mgt_config"]["password_complexity"]["minimum_length"] == 14
+    assert cfg["deviceconfig"]["setting"]["management"]["idle_timeout"] == 10
+    lockout = cfg["shared"]["authentication_profile"][0]["lockout"]
+    assert lockout["failed_attempts"] == 5 and lockout["lockout_time"] == 15
+    flood = cfg["network"]["profiles"]["zone_protection"][0]["flood"]["tcp_syn"]
+    assert flood["activate_rate"] == 10000 and isinstance(flood["maximal_rate"], int)
+
+
+def test_non_numeric_text_is_left_for_the_policy_to_reject():
+    node = {"idle_timeout": "never", "site": {"threshold": 5}, "name": "60"}
+    assert mapper._numbers(node) == {"idle_timeout": "never", "site": {"threshold": 5}, "name": "60"}

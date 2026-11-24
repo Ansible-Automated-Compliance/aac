@@ -82,6 +82,19 @@ SCAN_IDS = {"8001": "tcp_port_scan", "8002": "host_sweep", "8003": "udp_port_sca
 # containers whose single child element is a choice: the child's tag is the value
 CHOICE_KEYS = ("action", "type", "mode")
 ATTEST_TRUE = ("true", "yes", "1", "on")
+# Settings PAN-OS holds as whole numbers. The device XML carries every value as
+# text; the policy takes a number only as a JSON number, so these are converted.
+# A value that is not a whole number is left as the text the device returned and
+# the policy reports it as invalid evidence.
+NUMERIC_KEYS = frozenset((
+    "minimum_length", "minimum_uppercase_letters", "minimum_lowercase_letters",
+    "minimum_numeric_letters", "minimum_special_characters", "block_repeated_characters",
+    "new_password_differs_by_characters", "password_history_count",
+    "expiration_period", "expiration_warning_period", "post_expiration_admin_login_count",
+    "post_expiration_grace_period", "idle_timeout", "failed_attempts", "lockout_time",
+    "alert_threshold", "block_threshold", "activate_rate", "alarm_rate", "maximal_rate",
+    "interval", "threshold", "duration",
+))
 
 
 def _u(tag):
@@ -618,6 +631,22 @@ def _site(site):
     return out
 
 
+def _numbers(node, skip=("site", "attest")):
+    """Convert the whole-number settings (NUMERIC_KEYS) from device text to numbers, in place."""
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key in skip:
+                continue
+            if key in NUMERIC_KEYS and isinstance(value, str) and value.strip().isdigit():
+                node[key] = int(value.strip())
+            else:
+                _numbers(value, skip=())
+    elif isinstance(node, list):
+        for item in node:
+            _numbers(item, skip=())
+    return node
+
+
 def panos_cis_facts(config_xml, licenses_xml=None, vsys="vsys1", site=None, attest=None):
     config = _config_root(_parse(config_xml, "configuration"))
     dev = config.find("devices/entry")
@@ -654,7 +683,7 @@ def panos_cis_facts(config_xml, licenses_xml=None, vsys="vsys1", site=None, atte
     }
     if licenses_xml is not None and str(licenses_xml).strip():
         out["licenses"] = _licenses(licenses_xml)
-    return out
+    return _numbers(out)
 
 
 def panos_system_info(system_xml):
