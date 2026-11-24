@@ -19,6 +19,15 @@
 
   tasks:
 
+    - name: Check mode notice
+      ansible.builtin.debug:
+        msg: >-
+          Check mode: registry, service and user-right tasks report what they
+          would change. The 10 task(s) in this playbook that run a Windows
+          command (secedit, auditpol, net accounts, Set-MpPreference and
+          similar) cannot preview and are skipped. Nothing is changed.
+      when: ansible_check_mode
+
     # ── Section 18.10: Windows Defender AV ────────────────────────────────────
 
     - name: Enable real-time protection (CIS AV basics)
@@ -166,6 +175,7 @@
       failed_when: false
 
     - name: Endpoint security hardening complete
+      when: not ansible_check_mode
       debug:
         msg: |
           Endpoint security hardening complete.

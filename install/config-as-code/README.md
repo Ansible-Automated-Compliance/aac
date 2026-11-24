@@ -39,7 +39,7 @@ All 14 YAML files live in `ansible/config_as_code/rhpds/`:
 | `controller_projects.yml` | Compliance Automation project (this repo) |
 | `controller_inventories.yml` | Compliance Infrastructure inventory |
 | `controller_hosts.yml` | Inventory hosts (localhost, aap-controller-ssh) |
-| `controller_templates.yml` | 54 AAC job templates with surveys, credentials, EE |
+| `controller_templates.yml` | 36 AAC job templates with surveys, credentials, EE |
 | `controller_workflows.yml` | 3 workflows: `AAC_GoldenImage_Enforcement`, `AAC_DS_FullAssessment`, `AAC_NERC_FullAudit` |
 | `controller_schedules.yml` | Nightly audit schedule, NERC-CIP recurring check |
 | `eda_decision_environments.yml` | EDA decision environment registration |
@@ -85,7 +85,7 @@ For a non-OpenShift AAP, the cluster variables are not needed — use:
 
 ```bash
 ansible-playbook ansible/config_as_code/rhpds/rhpds_bootstrap.yml \
-  -e "controller_hostname=<aap-host>" \
+  -e "controller_hostname=https://<aap-host>" \
   -e "controller_password=<aap-admin-password>" \
   -e "aac_demo_host_ip=<demo-host>"
 ```
@@ -103,7 +103,7 @@ The bootstrap dispatches to `infra.aap_configuration` roles in two role groups; 
 | Controller | `projects` | Compliance Automation project (synced from GitHub) |
 | Controller | `inventories` | Compliance Infrastructure inventory |
 | Controller | `hosts` | localhost, aap-controller-ssh |
-| Controller | `job_templates` | 54 AAC job templates (Infra ×7, Comply ×11, GoldenImage ×6, AMI ×7, NERC ×5, DS ×3, etc.) |
+| Controller | `job_templates` | 36 AAC job templates |
 | Controller | `workflow_job_templates` | 3 workflows: `AAC_GoldenImage_Enforcement`, `AAC_DS_FullAssessment`, `AAC_NERC_FullAudit` |
 | Controller | `schedules` | Nightly OPA reload, NERC-CIP recurring, AMI audit, tech debt |
 | EDA | `eda_decision_environments` | Default decision environment registration |

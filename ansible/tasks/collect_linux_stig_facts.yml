@@ -10,7 +10,11 @@
 # its overrides, faillock, login.defs, useradd defaults, pwhistory, sssd and
 # smart-card PAM state, dconf, FIPS, module signing, GRUB password, wireless and
 # promiscuous interfaces, ownership/permission sweeps, unsigned packages,
-# certificate anchors, AIDE, cron.allow and the audit log directory.
+# certificate anchors, AIDE, cron.allow and the audit log directory; and the
+# crypto-policy evidence the V2R9 / RHEL 9 rules read: CURRENT.pol hash and
+# min_rsa_size, update-crypto-policies --check / --is-applied, the back-end
+# links, openssl.cnf, /etc/sysconfig/sshd, fips-mode-setup --check, the GRUB
+# kernelopts, the text of the sshd Banner file and unit load states.
 #
 # Requires: gather_facts: yes and become: yes in the calling play, and
 #           combined_facts from the shared collector.
@@ -86,6 +90,74 @@
     echo "policy:$(update-crypto-policies --show 2>/dev/null || cat /etc/crypto-policies/config 2>/dev/null | grep -v '^#' | head -1)"
     find /etc/crypto-policies/back-ends -maxdepth 1 -type f 2>/dev/null | sed 's/^/override:/'
   register: stig_crypto_raw
+  changed_when: false
+  failed_when: false
+
+# Each block below prints a "<name>_read:yes" sentinel only when its source could
+# be read, then one "<name>:<line>" row per line (awk, so a file without a final
+# newline cannot run into the next row). No sentinel means not collected: the
+# mapper leaves the key out and the policy reports evidence missing.
+- name: STIG — crypto policy state, policy check, back-ends, openssl.cnf and sshd sysconfig
+  shell: |
+    if [ -r /etc/crypto-policies/state/CURRENT.pol ]; then
+      awk '/^[[:space:]]*hash[[:space:]]*=/{sub(/^[^=]*=[[:space:]]*/,""); print "pol_hash:" $0}
+           /^[[:space:]]*min_rsa_size[[:space:]]*=/{sub(/^[^=]*=[[:space:]]*/,""); print "pol_min_rsa_size:" $0}' /etc/crypto-policies/state/CURRENT.pol
+    fi
+    if command -v update-crypto-policies >/dev/null 2>&1; then
+      out=$(update-crypto-policies --check 2>&1); rc=$?
+      echo "check_read:yes"; echo "check_rc:$rc"
+      printf '%s\n' "$out" | awk '{print "check:" $0}'
+      out=$(update-crypto-policies --is-applied 2>&1)
+      [ -n "$out" ] && { echo "is_applied_read:yes"; printf '%s\n' "$out" | awk '{print "is_applied:" $0}'; }
+    fi
+    if [ -d /etc/crypto-policies/back-ends ] && [ -r /etc/crypto-policies/back-ends ]; then
+      echo "backends_read:yes"
+      for f in /etc/crypto-policies/back-ends/*; do
+        [ -e "$f" ] || [ -L "$f" ] || continue
+        if [ -L "$f" ]; then echo "backend:$(basename "$f")|link|$(readlink "$f")"; else echo "backend:$(basename "$f")|file|"; fi
+      done
+    fi
+    [ -r /etc/pki/tls/openssl.cnf ] && { echo "openssl_cnf_read:yes"; awk '!/^[[:space:]]*(#|$)/{print "openssl_cnf:" $0}' /etc/pki/tls/openssl.cnf; }
+    [ -r /etc/sysconfig/sshd ] && { echo "sshd_sysconfig_read:yes"; awk '{print "sshd_sysconfig:" $0}' /etc/sysconfig/sshd; }
+    true
+  register: stig_crypto_state_raw
+  changed_when: false
+  failed_when: false
+
+- name: STIG — fips-mode-setup check and the GRUB kernelopts
+  shell: |
+    if command -v fips-mode-setup >/dev/null 2>&1; then
+      out=$(fips-mode-setup --check 2>&1)
+      [ -n "$out" ] && { echo "mode_setup_read:yes"; printf '%s\n' "$out" | awk '{print "mode_setup:" $0}'; }
+    fi
+    if command -v grub2-editenv >/dev/null 2>&1; then
+      grub2-editenv list 2>/dev/null | awk '/^kernelopts=/{sub(/^kernelopts=/,""); print "kernelopts:" $0}'
+    fi
+    true
+  register: stig_fips_raw
+  changed_when: false
+  failed_when: false
+
+- name: STIG — text of the file the sshd Banner keyword names
+  shell: |
+    b=$(sshd -T 2>/dev/null | awk 'tolower($1)=="banner"{print $2; exit}')
+    [ -n "$b" ] || b=$(awk 'tolower($1)=="banner"{print $2; exit}' /etc/ssh/sshd_config 2>/dev/null)
+    if [ -n "$b" ] && [ "$b" != "none" ] && [ -r "$b" ]; then
+      echo "banner_read:$b"; awk '{print "banner:" $0}' "$b"
+    fi
+    true
+  register: stig_ssh_banner_raw
+  changed_when: false
+  failed_when: false
+
+- name: STIG — systemd unit load state (systemctl show -p LoadState)
+  shell: |
+    for u in ctrl-alt-del.target; do
+      s=$(systemctl show -p LoadState --value "$u" 2>/dev/null)
+      [ -n "$s" ] && echo "$u|$s"
+    done
+    true
+  register: stig_units_raw
   changed_when: false
   failed_when: false
 
@@ -195,6 +267,10 @@
            'repos_raw':     stig_repos_raw.stdout | default(''),
            'dnf_conf_raw':  stig_dnf_conf_raw.stdout | default(''),
            'crypto_raw':    stig_crypto_raw.stdout | default(''),
+           'crypto_state_raw': stig_crypto_state_raw.stdout | default(''),
+           'fips_raw':      stig_fips_raw.stdout | default(''),
+           'ssh_banner_raw': stig_ssh_banner_raw.stdout | default(''),
+           'units_raw':     stig_units_raw.stdout | default(''),
            'auth_raw':      stig_auth_raw.stdout | default(''),
            'pam_raw':       stig_pam_raw.stdout | default(''),
            'dconf_raw':     stig_dconf_raw.stdout | default(''),

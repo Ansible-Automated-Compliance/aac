@@ -541,7 +541,6 @@
               -e GF_SERVER_HTTP_ADDR=0.0.0.0
               -e GF_SERVER_PORT=3000
               -e GF_SERVER_ROOT_URL=http://{{ aac_hostname }}:3000
-              -e GF_INSTALL_PLUGINS=grafana-postgresql-datasource
               {{ grafana_image }}
           when: _grafana_status.rc != 0 or _grafana_status.stdout != 'running'
           changed_when: true

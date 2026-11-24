@@ -569,20 +569,40 @@
     # (e.g. cis_rhel9 missing → Day-2 CIS check returns {}). Retry transient
     # failures (5xx / timeout) with backoff; do NOT retry a permanent 4xx
     # (genuine Rego compile error), which retries can't fix.
+    # One small record per file. Looping over the find results directly made
+    # every registered result carry the whole file listing of its framework
+    # directory; with a thousand files the job pod ran out of memory (exit 137)
+    # and the job output was unreadable.
+    - name: Flatten the policy files into one small record each
+      ansible.builtin.set_fact:
+        _policy_puts: >-
+          {%- set out = [] -%}
+          {%- for r in policy_files_raw.results if r.files is defined -%}
+          {%-   for f in r.files -%}
+          {%-     set rel = f.path | regex_replace('^.*/' ~ r.item.1.dir ~ '/', '') -%}
+          {%-     set _ = out.append({
+                    'container': r.item.0.name,
+                    'url': r.item.0.url,
+                    'id': r.item.1.prefix ~ (rel | regex_replace('/', '_') | regex_replace('[.]rego$', '')),
+                    'path': f.path}) -%}
+          {%-   endfor -%}
+          {%- endfor -%}
+          {{ out }}
+
     - name: Load each policy file into the appropriate OPA container
       uri:
         use_proxy: false
-        url: "{{ item.0.item.0.url }}/v1/policies/{{ item.0.item.1.prefix }}{{ item.1.path | regex_replace('^.*/' + item.0.item.1.dir + '/', '') | regex_replace('/', '_') | regex_replace('\\.rego$', '') }}"
+        url: "{{ item.url }}/v1/policies/{{ item.id }}"
         method: PUT
-        body: "{{ lookup('file', item.1.path) }}"
+        body: "{{ lookup('file', item.path) }}"
         body_format: raw
         headers:
           Content-Type: "text/plain"
         status_code: 200
         timeout: 60
-      loop: "{{ policy_files_raw.results | subelements('files', skip_missing=True) }}"
+      loop: "{{ _policy_puts }}"
       loop_control:
-        label: "{{ item.0.item.0.name }}: {{ item.1.path | basename }}"
+        label: "{{ item.container }}: {{ item.path | basename }}"
       register: load_results
       retries: 6
       delay: 3
@@ -650,7 +670,7 @@
         failed_policies: >-
           {{ load_results.results
              | selectattr('failed', 'equalto', true)
-             | map(attribute='item.1.path')
+             | map(attribute='item.path')
              | map('basename')
              | list }}
 
@@ -813,6 +833,47 @@
         msg: "Reconcile pruned {{ _prune_targets | default([]) | length }} orphaned policies (present in OPA, not in this load)."
       when: reconcile | bool and _prune_allowed | bool
 
+    # A file renamed in the library collides with its own old copy: the old
+    # module is still loaded under the old id, so the PUT of the new file is
+    # refused ("package annotation redeclared"), and the old copy is pruned only
+    # afterwards. Without this retry the first load after such an upgrade fails
+    # and leaves the framework EMPTY until someone runs the loader again.
+    - name: Retry the policy files that failed before the prune
+      uri:
+        use_proxy: false
+        url: "{{ item.url }}/v1/policies/{{ item.id }}"
+        method: PUT
+        body: "{{ lookup('file', item.path) }}"
+        body_format: raw
+        headers:
+          Content-Type: "text/plain"
+        status_code: 200
+        timeout: 60
+      loop: "{{ load_results.results | selectattr('failed', 'equalto', true) | map(attribute='item') | list }}"
+      loop_control:
+        label: "{{ item.container }}: {{ item.path | basename }}"
+      register: load_retry_results
+      retries: 6
+      delay: 3
+      until: >-
+        (load_retry_results.status | default(0) == 200)
+        or (load_retry_results.status | default(0) >= 400 and load_retry_results.status | default(0) < 500)
+      ignore_errors: true
+      when:
+        - reconcile | bool and _prune_allowed | bool
+        - _prune_targets | default([]) | length > 0
+        - failed_policies | length > 0
+
+    - name: Keep only the policy files that still fail after the retry
+      ansible.builtin.set_fact:
+        failed_policies: >-
+          {{ load_retry_results.results
+             | selectattr('failed', 'equalto', true)
+             | map(attribute='item.path')
+             | map('basename')
+             | list }}
+      when: load_retry_results.results is defined
+
     # FAIL LOUD — placed AFTER the prune so a sediment-collision run still gets
     # its orphans cleaned first (making the re-run converge); only then do we
     # fail on any genuine remaining load failure. A partial load is a silent
@@ -826,8 +887,9 @@
           MISSING from OPA — the frameworks they belong to will return {} and
           their assessment jobs will silently pass empty. Failed:
           {{ failed_policies | join(', ') }}.
-          Orphans were pruned this run; re-run to converge, or fix the failing
-          file(s). Pass allow_partial_load=true to tolerate deliberately.
+          Files that collided with a stale copy were retried after the prune,
+          so what is listed here needs fixing. Pass allow_partial_load=true to
+          tolerate deliberately.
       when:
         - failed_policies | length > 0
         - not (allow_partial_load | bool)

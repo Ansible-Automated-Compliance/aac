@@ -11,6 +11,14 @@
 
 - `aac_store_results` kept the waiver outcome of an earlier call. When one result had a waived finding, the next result stored for the same host in the same play (another framework, or the stored-facts loop) was written with the first result's violations and metadata, and a later result with no violations failed the play. The outcome is now cleared on every call.
 
+### Added — check mode for the playbooks that change managed hosts
+
+- `--check` is supported for `apply_remediation.yml`, `crypto_miner_detection_remediation.yml`, `remediate_ocp_nerc_cip.yml` and the five Windows Server 2022 hardening playbooks; `docs/reference/CHECK_MODE.md` says what each previews and what it cannot. Assessment playbooks are out of scope.
+- **Fixed: a check-mode run of the crypto miner playbook reported every host clean.** The detection commands were skipped under `--check`, so the summary was built from nothing. They now run (they are read-only), removals are previewed, and the play ends failed when a miner is found.
+- `apply_remediation.yml` with `dry_run=false` under `--check` now previews the generated tasks against the host and writes no audit record; before, it failed on a missing task file.
+- The Windows hardening playbooks say under `--check` how many command tasks cannot be previewed, and no longer print "hardening complete".
+- `tests/test_check_mode_support.py` keeps the list and the task markings true.
+
 ### Added — CIS M365 v7: opt-in shape capture (`m365_shape_capture`)
 
 - `m365_shape_capture: true` (default `false`) makes the `m365_assessment` role record, after collection, the shape of every collected fact and nothing else: JSON types, list lengths, field-name unions and field types, and distinct values only for an allowlist of closed configuration enums, booleans and numeric settings (`aac.m365.m365_fact_shape`). Names, addresses, domains, ids, mailbox data and free text are never recorded. Output: `<m365_shape_capture_dir>/m365_fact_shape_<UTC>.json`, the job artifact `m365_fact_shape` (`set_stats`) and the job output. One real run with it on settles the collector shapes that could not be confirmed without a tenant (enum serialisation, `AllowedDomains`, `RecipientTags`, `AssignedRoles`, `SetSCL`, `transferMethods`, Graph beta fields).

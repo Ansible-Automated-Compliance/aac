@@ -3,14 +3,17 @@
 # Notify these from tasks that update policy files on the host.
 
 - name: restart_opa_security
+  changed_when: true
   command: "podman restart opa-security"
   delegate_to: "{{ aac_host }}"
 
 - name: restart_opa_compliance
+  changed_when: true
   command: "podman restart opa-compliance"
   delegate_to: "{{ aac_host }}"
 
 - name: restart_opa_ot
+  changed_when: true
   command: "podman restart opa-ot"
   delegate_to: "{{ aac_host }}"
 
@@ -19,6 +22,7 @@
 # briefly during restart and route traffic to healthy backends automatically.
 
 - name: restart_opa_security_replicas
+  changed_when: true
   shell: |
     for c in $(podman ps --format '{% raw %}{{.Names}}{% endraw %}' | grep '^opa-security-'); do
       podman restart "$c"
@@ -26,6 +30,7 @@
   delegate_to: "{{ aac_host }}"
 
 - name: restart_opa_compliance_replicas
+  changed_when: true
   shell: |
     for c in $(podman ps --format '{% raw %}{{.Names}}{% endraw %}' | grep '^opa-compliance-'); do
       podman restart "$c"
@@ -33,6 +38,7 @@
   delegate_to: "{{ aac_host }}"
 
 - name: restart_opa_ot_replicas
+  changed_when: true
   shell: |
     for c in $(podman ps --format '{% raw %}{{.Names}}{% endraw %}' | grep '^opa-ot-'); do
       podman restart "$c"
@@ -40,16 +46,19 @@
   delegate_to: "{{ aac_host }}"
 
 - name: restart_haproxy_security
+  changed_when: true
   command: "podman restart haproxy-opa-security"
   delegate_to: "{{ aac_host }}"
   ignore_errors: true
 
 - name: restart_haproxy_compliance
+  changed_when: true
   command: "podman restart haproxy-opa-compliance"
   delegate_to: "{{ aac_host }}"
   ignore_errors: true
 
 - name: restart_haproxy_ot
+  changed_when: true
   command: "podman restart haproxy-opa-ot"
   delegate_to: "{{ aac_host }}"
   ignore_errors: true

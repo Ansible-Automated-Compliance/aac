@@ -242,7 +242,7 @@ Use a fully qualified image reference the controller will resolve at job time, f
 
 Before `bootstrap_controller.yml`, complete the controller execution environment definition:
 
-. Edit `playbooks/automation_execution/infrastructure/execution_environments/aac_compliance_ee.yml` — set `image:` to your pushed reference and replace the `PLACEHOLDER` lines in the readme block with your contact metadata.
+. In `playbooks/vars/defaults.yml`, set `aac_compliance_ee_image` to your pushed reference. Bootstrap stops with a message while it is still `PLACEHOLDER`.
 . In `playbooks/vars/defaults.yml`, set `aap_project_default_ee: AAC Compliance EE` so the AAC project and all job templates select the image you registered.
 
 Bootstrap creates the *AAC Compliance EE* object on the controller from that file. The AAC project default and every seeded template reference `aap_project_default_ee`; they do not hard-code an image URL in the template playbooks.

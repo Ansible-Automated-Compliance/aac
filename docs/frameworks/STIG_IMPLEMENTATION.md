@@ -38,8 +38,10 @@
 | **RHEL 8** | 53 | Assessed |
 | **Ubuntu 20.04 LTS** | none reported | SUNSET — module frozen for historical assessments; do not use for new ones |
 
-Measured 2026-11-18 at library commit `a84e39cf`: each number is the module's own
-`total_controls`. Every module is a subset of its STIG; a full DISA STIG for these
+Each number is the module's own `total_controls`. The figures for catalog keys are
+re-measured in CI at the pinned library commit and published, with that commit, in
+[FRAMEWORK_COVERAGE.md](../reference/FRAMEWORK_COVERAGE.md); Windows Server 2019 and 2016
+are not catalog keys and were measured by hand at library commit `3d3976e8` (2026-11-19). Every module is a subset of its STIG; a full DISA STIG for these
 platforms has several hundred rules. Earlier versions of this table gave figures of
 "~280+" to "~320+" per platform and a STIG release for each; neither was measured.
 
