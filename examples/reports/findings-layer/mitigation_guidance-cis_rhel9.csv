@@ -1,0 +1,6 @@
+Control,Subject,Title,Where,Action,Method
+CIS 1.1.1,rhel-web-01.example.com,CIS 1.1.1: cramfs kernel module is loadable,the relevant admin console,apply the benchmark-recommended configuration for this control,manual
+CIS 5.1.20,rhel-web-01.example.com,"CIS 5.1.20: sshd PermitRootLogin is 'yes', expected 'no'",the relevant admin console,apply the benchmark-recommended configuration for this control,manual
+CIS 5.1.20,rhel-db-01.example.com,"CIS 5.1.20: sshd PermitRootLogin is 'yes', expected 'no'",the relevant admin console,apply the benchmark-recommended configuration for this control,manual
+CIS 6.2.1,rhel-web-01.example.com,CIS 6.2.1: auditd service is not enabled,the relevant admin console,apply the benchmark-recommended configuration for this control,manual
+EVIDENCE-GAP:no audit rule facts supplied for this host,rhel-db-01.example.com,FAIL-CLOSED: no audit rule facts supplied for this host,the assessment collector,enable or fix fact collection for this area so the control can be assessed,manual

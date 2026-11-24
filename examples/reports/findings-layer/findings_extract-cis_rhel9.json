@@ -1,0 +1,84 @@
+{
+  "findings": [
+    {
+      "subject": "rhel-db-01.example.com",
+      "framework": "cis_rhel9",
+      "control_id": "CIS 5.1.20",
+      "finding_type": "violation",
+      "severity": null,
+      "title": "CIS 5.1.20: sshd PermitRootLogin is 'yes', expected 'no'",
+      "refs": {},
+      "result_id": 102,
+      "observed_at": "2026-10-12T02:03:00Z"
+    },
+    {
+      "subject": "rhel-db-01.example.com",
+      "framework": "cis_rhel9",
+      "control_id": "EVIDENCE-GAP:no audit rule facts supplied for this host",
+      "finding_type": "evidence_gap",
+      "severity": null,
+      "title": "FAIL-CLOSED: no audit rule facts supplied for this host",
+      "refs": {},
+      "result_id": 102,
+      "observed_at": "2026-10-12T02:03:00Z"
+    },
+    {
+      "subject": "rhel-web-01.example.com",
+      "framework": "cis_rhel9",
+      "control_id": "CIS 1.1.1",
+      "finding_type": "violation",
+      "severity": null,
+      "title": "CIS 1.1.1: cramfs kernel module is loadable",
+      "refs": {},
+      "result_id": 101,
+      "observed_at": "2026-10-12T02:00:00Z"
+    },
+    {
+      "subject": "rhel-web-01.example.com",
+      "framework": "cis_rhel9",
+      "control_id": "CIS 5.1.20",
+      "finding_type": "violation",
+      "severity": null,
+      "title": "CIS 5.1.20: sshd PermitRootLogin is 'yes', expected 'no'",
+      "refs": {},
+      "result_id": 101,
+      "observed_at": "2026-10-12T02:00:00Z"
+    },
+    {
+      "subject": "rhel-web-01.example.com",
+      "framework": "cis_rhel9",
+      "control_id": "CIS 6.2.1",
+      "finding_type": "violation",
+      "severity": null,
+      "title": "CIS 6.2.1: auditd service is not enabled",
+      "refs": {},
+      "result_id": 101,
+      "observed_at": "2026-10-12T02:00:00Z"
+    }
+  ],
+  "waived": [
+    {
+      "subject": "rhel-web-01.example.com",
+      "framework": "cis_rhel9",
+      "control_id": "CIS 1.4.1",
+      "finding_type": "violation",
+      "severity": null,
+      "title": "CIS 1.4.1: bootloader password not set",
+      "refs": {},
+      "result_id": 101,
+      "observed_at": "2026-10-12T02:00:00Z"
+    }
+  ],
+  "scanned": [
+    {
+      "framework": "cis_rhel9",
+      "subject": "rhel-db-01.example.com",
+      "ts": "2026-10-12T02:03:00Z"
+    },
+    {
+      "framework": "cis_rhel9",
+      "subject": "rhel-web-01.example.com",
+      "ts": "2026-10-12T02:00:00Z"
+    }
+  ]
+}

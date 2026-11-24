@@ -1,0 +1,547 @@
+{
+  "_note": "SYNTHETIC DATA. Not from any real tenant or host. Shape mirrors the rows the report playbooks read from the evidence store.",
+  "framework": "cis_m365_v7",
+  "rows": [
+    {
+      "id": 1,
+      "hostname": "tenant.example",
+      "framework": "cis_m365_v7",
+      "policy_name": "cis_m365_v7.1",
+      "policy_version": "v7.0.0",
+      "total_controls": 2,
+      "passed_controls": 1,
+      "failed_controls": 1,
+      "violations": [
+        "CIS 1.1.3: only 1 global admin designated; fewer than two risks lockout"
+      ],
+      "metadata": {
+        "section": 1,
+        "evaluated_control_ids": [
+          "1.1.1",
+          "1.1.3"
+        ],
+        "controls_evaluated": 2
+      },
+      "evaluation_timestamp": "2026-09-01T10:00:00Z"
+    },
+    {
+      "id": 2,
+      "hostname": "tenant.example",
+      "framework": "cis_m365_v7",
+      "policy_name": "cis_m365_v7.5",
+      "policy_version": "v7.0.0",
+      "total_controls": 2,
+      "passed_controls": 1,
+      "failed_controls": 1,
+      "violations": [
+        "CIS 5.2.3.6: system-preferred multifactor authentication is not enabled"
+      ],
+      "metadata": {
+        "section": 5,
+        "evaluated_control_ids": [
+          "5.2.3.6",
+          "5.1.2.2"
+        ],
+        "controls_evaluated": 2
+      },
+      "evaluation_timestamp": "2026-09-01T10:00:01Z"
+    },
+    {
+      "id": 3,
+      "hostname": "tenant.example",
+      "framework": "cis_m365_v7",
+      "policy_name": "cis_m365_v7.6",
+      "policy_version": "v7.0.0",
+      "total_controls": 2,
+      "passed_controls": 1,
+      "failed_controls": 1,
+      "violations": [
+        "CIS 6.5.1: modern authentication for Exchange Online is not enabled; legacy authentication bypasses MFA"
+      ],
+      "metadata": {
+        "section": 6,
+        "evaluated_control_ids": [
+          "6.5.1",
+          "6.1.2"
+        ],
+        "controls_evaluated": 2,
+        "evidence_strength": {
+          "6.1.2": "sampled -- 200 of at most 200 mailboxes inspected"
+        }
+      },
+      "evaluation_timestamp": "2026-09-01T10:00:02Z"
+    },
+    {
+      "id": 4,
+      "hostname": "tenant.example",
+      "framework": "cis_m365_v7",
+      "policy_name": "cis_m365_v7.1",
+      "policy_version": "v7.0.0",
+      "total_controls": 2,
+      "passed_controls": 2,
+      "failed_controls": 0,
+      "violations": [],
+      "metadata": {
+        "section": 1,
+        "evaluated_control_ids": [
+          "1.1.1",
+          "1.1.3"
+        ],
+        "controls_evaluated": 2
+      },
+      "evaluation_timestamp": "2026-09-15T10:00:00Z"
+    },
+    {
+      "id": 5,
+      "hostname": "tenant.example",
+      "framework": "cis_m365_v7",
+      "policy_name": "cis_m365_v7.5",
+      "policy_version": "v7.0.0",
+      "total_controls": 2,
+      "passed_controls": 1,
+      "failed_controls": 1,
+      "violations": [
+        "CIS 5.2.3.6: system-preferred multifactor authentication is not enabled"
+      ],
+      "metadata": {
+        "section": 5,
+        "evaluated_control_ids": [
+          "5.2.3.6",
+          "5.1.2.2"
+        ],
+        "controls_evaluated": 2
+      },
+      "evaluation_timestamp": "2026-09-15T10:00:01Z"
+    },
+    {
+      "id": 6,
+      "hostname": "tenant.example",
+      "framework": "cis_m365_v7",
+      "policy_name": "cis_m365_v7.6",
+      "policy_version": "v7.0.0",
+      "total_controls": 2,
+      "passed_controls": 1,
+      "failed_controls": 1,
+      "violations": [
+        "CIS 6.5.1: modern authentication for Exchange Online is not enabled; legacy authentication bypasses MFA"
+      ],
+      "metadata": {
+        "section": 6,
+        "evaluated_control_ids": [
+          "6.5.1",
+          "6.1.2"
+        ],
+        "controls_evaluated": 2,
+        "evidence_strength": {
+          "6.1.2": "sampled -- 200 of at most 200 mailboxes inspected"
+        }
+      },
+      "evaluation_timestamp": "2026-09-15T10:00:02Z"
+    },
+    {
+      "id": 7,
+      "hostname": "tenant.example",
+      "framework": "cis_m365_v7",
+      "policy_name": "cis_m365_v7.1",
+      "policy_version": "v7.0.0",
+      "total_controls": 2,
+      "passed_controls": 1,
+      "failed_controls": 1,
+      "violations": [
+        "CIS 1.1.3: only 1 global admin designated; fewer than two risks lockout"
+      ],
+      "metadata": {
+        "section": 1,
+        "evaluated_control_ids": [
+          "1.1.1",
+          "1.1.3"
+        ],
+        "controls_evaluated": 2
+      },
+      "evaluation_timestamp": "2026-10-12T09:00:00Z"
+    },
+    {
+      "id": 8,
+      "hostname": "tenant.example",
+      "framework": "cis_m365_v7",
+      "policy_name": "cis_m365_v7.5",
+      "policy_version": "v7.0.0",
+      "total_controls": 2,
+      "passed_controls": 1,
+      "failed_controls": 1,
+      "violations": [
+        "CIS 5.1.2.2: users can register applications; any user can consent-phish other users",
+        "CIS 2.1.1: Defender policy facts were not collected (this is not a pass)"
+      ],
+      "metadata": {
+        "section": 5,
+        "evaluated_control_ids": [
+          "5.2.3.6",
+          "5.1.2.2"
+        ],
+        "controls_evaluated": 2
+      },
+      "evaluation_timestamp": "2026-10-12T09:00:01Z"
+    },
+    {
+      "id": 9,
+      "hostname": "tenant.example",
+      "framework": "cis_m365_v7",
+      "policy_name": "cis_m365_v7.6",
+      "policy_version": "v7.0.0",
+      "total_controls": 2,
+      "passed_controls": 1,
+      "failed_controls": 1,
+      "violations": [
+        "CIS 6.5.1: modern authentication for Exchange Online is not enabled; legacy authentication bypasses MFA"
+      ],
+      "metadata": {
+        "section": 6,
+        "evaluated_control_ids": [
+          "6.5.1",
+          "6.1.2"
+        ],
+        "controls_evaluated": 2,
+        "evidence_strength": {
+          "6.1.2": "sampled -- 200 of at most 200 mailboxes inspected"
+        },
+        "waivers_applied": [
+          {
+            "violation": "CIS 6.1.2: mailbox auditing disabled for 3 mailboxes",
+            "waiver": {
+              "reason": "service mailboxes",
+              "approver": "Jane Doe",
+              "expires": "2026-10-30"
+            }
+          }
+        ]
+      },
+      "evaluation_timestamp": "2026-10-12T09:00:02Z"
+    },
+    {
+      "id": 10,
+      "hostname": "tenant.example",
+      "framework": "cis_m365_v7",
+      "policy_name": "cis_m365_v7.attestation",
+      "policy_version": "v7.0.0",
+      "total_controls": 1,
+      "passed_controls": 0,
+      "failed_controls": 0,
+      "violations": [
+        "CIS 5.2.4.1: requires attestation -- no automated procedure (this is not a pass)"
+      ],
+      "metadata": {
+        "evidence_source": "attested"
+      },
+      "evaluation_timestamp": "2026-10-12T09:00:03Z"
+    }
+  ],
+  "catalog": [
+    {
+      "control_id": "1.1.1",
+      "section": 1,
+      "section_name": "M365 admin center",
+      "assessment": "Automated",
+      "levels": [
+        "E3 Level 1"
+      ]
+    },
+    {
+      "control_id": "1.1.3",
+      "section": 1,
+      "section_name": "M365 admin center",
+      "assessment": "Automated",
+      "levels": [
+        "E3 Level 1"
+      ]
+    },
+    {
+      "control_id": "1.3.3",
+      "section": 1,
+      "section_name": "M365 admin center",
+      "assessment": "Manual",
+      "levels": [
+        "E3 Level 2"
+      ]
+    },
+    {
+      "control_id": "2.1.1",
+      "section": 2,
+      "section_name": "Microsoft 365 Defender",
+      "assessment": "Automated",
+      "levels": [
+        "E5 Level 2"
+      ]
+    },
+    {
+      "control_id": "5.1.2.2",
+      "section": 5,
+      "section_name": "Entra admin center",
+      "assessment": "Automated",
+      "levels": [
+        "E3 Level 1"
+      ]
+    },
+    {
+      "control_id": "5.2.3.6",
+      "section": 5,
+      "section_name": "Entra admin center",
+      "assessment": "Automated",
+      "levels": [
+        "E5 Level 1"
+      ]
+    },
+    {
+      "control_id": "5.2.4.1",
+      "section": 5,
+      "section_name": "Entra admin center",
+      "assessment": "Manual",
+      "levels": [
+        "E3 Level 1"
+      ]
+    },
+    {
+      "control_id": "6.1.2",
+      "section": 6,
+      "section_name": "Exchange admin center",
+      "assessment": "Automated",
+      "levels": [
+        "E3 Level 1"
+      ]
+    },
+    {
+      "control_id": "6.5.1",
+      "section": 6,
+      "section_name": "Exchange admin center",
+      "assessment": "Automated",
+      "levels": [
+        "E3 Level 1"
+      ]
+    },
+    {
+      "control_id": "7.2.1",
+      "section": 7,
+      "section_name": "SharePoint admin center",
+      "assessment": "Manual",
+      "levels": [
+        "E3 Level 2"
+      ]
+    },
+    {
+      "control_id": "9.1.1",
+      "section": 9,
+      "section_name": "Fabric",
+      "assessment": "Automated",
+      "levels": [
+        "E3 Level 1"
+      ]
+    }
+  ],
+  "coverage": {
+    "evaluated": [
+      "1.1.1",
+      "1.1.3",
+      "5.1.2.2",
+      "5.2.3.6",
+      "6.5.1",
+      "6.1.2"
+    ],
+    "requires_attestation": [
+      "5.2.4.1"
+    ],
+    "unresolved": [
+      "9.1.1"
+    ],
+    "not_implemented": []
+  },
+  "risk_config": {
+    "framework": "cis_m365_v7",
+    "criticality": {
+      "1.1": 4,
+      "5.1.1": 4,
+      "5.1.2": 4,
+      "5.1.6": 4,
+      "5.2": 4,
+      "5.1.3": 3,
+      "5.1.4": 3,
+      "5.1.5": 3,
+      "2": 3,
+      "6.5": 3,
+      "6.1": 3,
+      "3": 3,
+      "1.2": 2,
+      "1.3": 2,
+      "6": 2,
+      "7": 2,
+      "8": 2,
+      "9": 2,
+      "_default": 2
+    },
+    "elevators": [
+      {
+        "match": "global admin",
+        "bump": 2,
+        "reason": "affects global administrators"
+      },
+      {
+        "match": "legacy auth|modern authentication|basic auth",
+        "bump": 2,
+        "reason": "permits legacy authentication (bypasses CA/MFA)"
+      },
+      {
+        "match": "\\bMFA\\b|multifactor|multi-factor",
+        "bump": 2,
+        "reason": "weakens multifactor authentication"
+      },
+      {
+        "match": "consent",
+        "bump": 1,
+        "reason": "consent / consent-phishing exposure"
+      },
+      {
+        "match": "external|outside the organization|anonymous",
+        "bump": 1,
+        "reason": "external exposure"
+      },
+      {
+        "match": "audit",
+        "bump": 1,
+        "reason": "affects audit/evidence capture"
+      }
+    ]
+  },
+  "mitigation_catalog": {
+    "framework": "cis_m365_v7",
+    "mitigations": {
+      "1.1": {
+        "where": "Microsoft 365 admin center -> Users / Roles",
+        "action": "adjust administrative role assignments and account configuration",
+        "method": "manual"
+      },
+      "1.2": {
+        "where": "Microsoft 365 admin center -> Teams & groups",
+        "action": "restrict group creation / sharing to approved owners",
+        "method": "manual"
+      },
+      "1.3": {
+        "where": "Microsoft 365 admin center -> Settings -> Org settings",
+        "action": "disable the permissive service setting for this control",
+        "method": "manual"
+      },
+      "2": {
+        "where": "Microsoft Defender portal -> Policies & rules",
+        "action": "enable or strengthen the Safe Links / Safe Attachments / anti-phishing policy",
+        "method": "manual"
+      },
+      "3": {
+        "where": "Microsoft Purview -> Data lifecycle / DLP",
+        "action": "enable the data-protection or DLP policy for this control",
+        "method": "manual"
+      },
+      "5.1.2": {
+        "where": "Microsoft Entra admin center -> Identity -> Users -> User settings",
+        "action": "restrict the user self-service capability to administrators",
+        "method": "manual"
+      },
+      "5.1.3": {
+        "where": "Microsoft Entra admin center -> Identity -> Groups -> General",
+        "action": "restrict group self-service to administrators",
+        "method": "manual"
+      },
+      "5.1.5": {
+        "where": "Microsoft Entra admin center -> Identity -> Enterprise applications -> Consent and permissions",
+        "action": "route application consent to an administrator",
+        "method": "manual"
+      },
+      "5.1": {
+        "where": "Microsoft Entra admin center -> Identity -> Users",
+        "action": "apply the identity restriction for this control",
+        "method": "manual"
+      },
+      "5.2": {
+        "where": "Microsoft Entra admin center -> Protection -> Authentication methods / Conditional Access",
+        "action": "enable the authentication-strength / MFA control",
+        "method": "manual"
+      },
+      "5.3": {
+        "where": "Microsoft Entra admin center -> Identity Governance",
+        "action": "apply the access-review / PIM configuration",
+        "method": "manual"
+      },
+      "6": {
+        "where": "Exchange admin center -> Mail flow / Settings",
+        "action": "apply the Exchange Online configuration for this control",
+        "method": "manual"
+      },
+      "7": {
+        "where": "SharePoint admin center -> Policies / Sharing",
+        "action": "tighten the SharePoint / OneDrive sharing setting",
+        "method": "manual"
+      },
+      "8": {
+        "where": "Teams admin center -> Meetings / Messaging policies",
+        "action": "apply the Teams policy for this control",
+        "method": "manual"
+      },
+      "9": {
+        "where": "Microsoft Fabric / Power Platform admin portal",
+        "action": "apply the tenant setting for this control",
+        "method": "manual"
+      },
+      "_default": {
+        "where": "Microsoft 365 / Entra admin center",
+        "action": "apply the CIS-recommended configuration for this control",
+        "method": "manual"
+      }
+    }
+  },
+  "decisions": {
+    "framework": "cis_m365_v7",
+    "review_cycle_days": 90,
+    "default_owners": {
+      "1": "M365 platform team",
+      "2": "Security operations",
+      "5": "Identity team",
+      "6": "Messaging team",
+      "_default": "Security operations"
+    },
+    "decisions": [
+      {
+        "control_id": "6.5.1",
+        "subject": "*",
+        "owner": "Messaging team lead",
+        "decision": "accept",
+        "justification": "Legacy scanners need basic authentication until the Q1 replacement",
+        "approver": "Jane Doe",
+        "approved": "2026-10-01",
+        "ticket": "CHG-0001"
+      },
+      {
+        "control_id": "1.1.3",
+        "subject": "tenant.example",
+        "owner": "M365 platform team",
+        "decision": "remediate",
+        "approver": "security-team",
+        "approved": "2026-10-05",
+        "risk_override": "critical"
+      },
+      {
+        "control_id": "9.1.1",
+        "subject": "*",
+        "owner": "Data platform team",
+        "decision": "accept",
+        "approver": "Ann Lee",
+        "approved": "2026-07-01",
+        "expires": "2026-09-30",
+        "justification": "Superseded exception"
+      }
+    ]
+  },
+  "benchmark": {
+    "name": "CIS Microsoft 365 Foundations Benchmark",
+    "version": "v7.0.0"
+  },
+  "run_gap_minutes": 30,
+  "expiring_days": 30,
+  "now": "2026-10-13T12:00:00Z"
+}

@@ -1,0 +1,49 @@
+name: Report a problem
+description: Something fails or gives a wrong result.
+title: "Problem: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This request is public. Leave out host names, IP addresses, tenant and customer names, and never paste a password, token or key. Describe your environment in general terms (for example "40 RHEL 9 hosts on AAP 2.6").
+        For a security vulnerability, do not use this form: open a [private security advisory](https://github.com/Ansible-Automated-Compliance/aac/security/advisories/new).
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: The job template or playbook you ran and what you saw. Paste the failing task's output with identifying details removed.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+  - type: input
+    id: version
+    attributes:
+      label: AAC version or commit
+      description: The contents of the VERSION file, or the commit your project is synced to.
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Environment
+      description: AAP version, install path used (see the install chooser), and the target platform, for example "AAP 2.6 containerized, existing-aap/extended, RHEL 9.4 targets".
+  - type: dropdown
+    id: wrong_result
+    attributes:
+      label: Is a compliance result wrong?
+      description: A control reported as passed that should fail (or the reverse) is treated with priority.
+      options:
+        - "Yes: reported as passed, should fail"
+        - "Yes: reported as failed, should pass"
+        - "Yes: reported as not assessed"
+        - "No"

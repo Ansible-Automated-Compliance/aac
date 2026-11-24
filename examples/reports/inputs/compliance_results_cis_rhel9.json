@@ -1,0 +1,29 @@
+[
+  {
+    "id": 101,
+    "hostname": "rhel-web-01.example.com",
+    "framework": "cis_rhel9",
+    "evaluation_timestamp": "2026-10-12T02:00:00Z",
+    "violations": [
+      "CIS 1.1.1: cramfs kernel module is loadable",
+      "CIS 5.1.20: sshd PermitRootLogin is 'yes', expected 'no'",
+      "CIS 6.2.1: auditd service is not enabled"
+    ],
+    "metadata": {
+      "waivers_applied": [
+        "CIS 1.4.1: bootloader password not set"
+      ]
+    }
+  },
+  {
+    "id": 102,
+    "hostname": "rhel-db-01.example.com",
+    "framework": "cis_rhel9",
+    "evaluation_timestamp": "2026-10-12T02:03:00Z",
+    "violations": [
+      "CIS 5.1.20: sshd PermitRootLogin is 'yes', expected 'no'",
+      "FAIL-CLOSED: no audit rule facts supplied for this host"
+    ],
+    "metadata": {}
+  }
+]

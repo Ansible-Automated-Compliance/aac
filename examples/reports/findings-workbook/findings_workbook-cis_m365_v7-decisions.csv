@@ -1,0 +1,4 @@
+Control,Subject,Decision,Owner,Justification,Approver,Approved,Expires,Status,Days to expiry,Matched findings,Issues,Ticket
+6.5.1,*,accept,Messaging team lead,Legacy scanners need basic authentication until the Q1 replacement,Jane Doe,2026-10-01,2026-12-30,active,78,886185661f,expiry missing — defaulted to approved + 90 days (2026-12-30),CHG-0001
+1.1.3,tenant.example,remediate,M365 platform team,,security-team,2026-10-05,,active,,55edb7693f,approver is not a named person,
+9.1.1,*,accept,Data platform team,Superseded exception,Ann Lee,2026-07-01,2026-09-30,unmatched,-13,,,

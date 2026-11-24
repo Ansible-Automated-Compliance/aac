@@ -1,0 +1,46 @@
+name: Request a report
+description: A report you need, or a change to one AAC already produces.
+title: "Report: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This request is public. Leave out host names, IP addresses, tenant and customer names, and never paste a password, token or key. Describe your environment in general terms (for example "40 RHEL 9 hosts on AAP 2.6").
+        A report can only show what was collected, so the questions below start with the data. The reports AAC ships today, and what each one needs, are in [docs/operations/COMPLIANCE_REPORTING.md](https://github.com/Ansible-Automated-Compliance/aac/blob/main/docs/operations/COMPLIANCE_REPORTING.md).
+  - type: textarea
+    id: question
+    attributes:
+      label: What question must the report answer, and for whom?
+      description: For example "which controls failed on which hosts since the last audit, for the control owner" or "posture by framework, for the CISO, monthly".
+    validations:
+      required: true
+  - type: textarea
+    id: data
+    attributes:
+      label: What data does it need?
+      description: Frameworks, platforms, and the fields you expect to see (host, control, status, evidence, owner, date found, date fixed). Say which of these AAC already collects for you and which it does not.
+    validations:
+      required: true
+  - type: dropdown
+    id: format
+    attributes:
+      label: Format
+      multiple: true
+      options:
+        - Spreadsheet (xlsx / csv)
+        - HTML
+        - PDF
+        - Markdown
+        - JSON for another system
+        - Dashboard (Grafana)
+  - type: input
+    id: frequency
+    attributes:
+      label: How often, and over what period?
+      description: For example "weekly, last 7 days" or "on demand, between two dates".
+  - type: textarea
+    id: example
+    attributes:
+      label: An example, if you have one
+      description: Column headings or a mock-up with made-up values. Do not attach a real report.

@@ -1,0 +1,74 @@
+{
+ "findings": [
+  {
+   "framework": "cis_rhel9",
+   "control_id": "CIS 1.1.1",
+   "subject": "rhel-web-01.example.com",
+   "finding_type": "violation",
+   "severity": null,
+   "title": "CIS 1.1.1: cramfs kernel module is loadable",
+   "blast_radius": 1,
+   "mitigation": {
+    "where": "the relevant admin console",
+    "action": "apply the benchmark-recommended configuration for this control",
+    "method": "manual"
+   }
+  },
+  {
+   "framework": "cis_rhel9",
+   "control_id": "CIS 5.1.20",
+   "subject": "rhel-web-01.example.com",
+   "finding_type": "violation",
+   "severity": null,
+   "title": "CIS 5.1.20: sshd PermitRootLogin is 'yes', expected 'no'",
+   "blast_radius": 2,
+   "mitigation": {
+    "where": "the relevant admin console",
+    "action": "apply the benchmark-recommended configuration for this control",
+    "method": "manual"
+   }
+  },
+  {
+   "framework": "cis_rhel9",
+   "control_id": "CIS 5.1.20",
+   "subject": "rhel-db-01.example.com",
+   "finding_type": "violation",
+   "severity": null,
+   "title": "CIS 5.1.20: sshd PermitRootLogin is 'yes', expected 'no'",
+   "blast_radius": 2,
+   "mitigation": {
+    "where": "the relevant admin console",
+    "action": "apply the benchmark-recommended configuration for this control",
+    "method": "manual"
+   }
+  },
+  {
+   "framework": "cis_rhel9",
+   "control_id": "CIS 6.2.1",
+   "subject": "rhel-web-01.example.com",
+   "finding_type": "violation",
+   "severity": null,
+   "title": "CIS 6.2.1: auditd service is not enabled",
+   "blast_radius": 1,
+   "mitigation": {
+    "where": "the relevant admin console",
+    "action": "apply the benchmark-recommended configuration for this control",
+    "method": "manual"
+   }
+  },
+  {
+   "framework": "cis_rhel9",
+   "control_id": "EVIDENCE-GAP:no audit rule facts supplied for this host",
+   "subject": "rhel-db-01.example.com",
+   "finding_type": "evidence_gap",
+   "severity": null,
+   "title": "FAIL-CLOSED: no audit rule facts supplied for this host",
+   "blast_radius": 1,
+   "mitigation": {
+    "where": "the assessment collector",
+    "action": "enable or fix fact collection for this area so the control can be assessed",
+    "method": "manual"
+   }
+  }
+ ]
+}

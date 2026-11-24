@@ -1,0 +1,6 @@
+Risk,Score,Control,Subject,Title,Risk basis
+Medium,3,CIS 5.1.20,rhel-db-01.example.com,"CIS 5.1.20: sshd PermitRootLogin is 'yes', expected 'no'",criticality 2 (default); +1: affects multiple systems (2)
+Medium,3,CIS 5.1.20,rhel-web-01.example.com,"CIS 5.1.20: sshd PermitRootLogin is 'yes', expected 'no'",criticality 2 (default); +1: affects multiple systems (2)
+Low,2,CIS 1.1.1,rhel-web-01.example.com,CIS 1.1.1: cramfs kernel module is loadable,criticality 2 (default)
+Low,2,CIS 6.2.1,rhel-web-01.example.com,CIS 6.2.1: auditd service is not enabled,criticality 2 (default)
+Unable to assess,,EVIDENCE-GAP:no audit rule facts supplied for this host,rhel-db-01.example.com,FAIL-CLOSED: no audit rule facts supplied for this host,evidence gap — facts not collected

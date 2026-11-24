@@ -1,0 +1,38 @@
+Item,Value
+Contract version,1.0
+Framework,cis_m365_v7
+Benchmark,CIS Microsoft 365 Foundations Benchmark v7.0.0
+Subjects,tenant.example
+Generated,2026-10-13T12:00:00+00:00
+Latest run,tenant.example: 2026-10-12T09:00:03+00:00
+Previous run,tenant.example: 2026-09-15T10:00:02+00:00
+Policy SHA,(not recorded)
+Verdict,"3 critical/high-risk failure(s) need attention first, of 3 open. 1 regressed since the previous run."
+Controls in benchmark,11
+Controls evaluated,6
+Passed,2
+Failed (open),3
+Waived,1
+Unassessable,5
+  unassessable: attestation_required,1
+  unassessable: benchmark_manual,2
+  unassessable: collector_not_built,1
+  unassessable: facts_not_collected,1
+Open by risk: Critical,1
+Open by risk: High,2
+Open by risk: Medium,0
+Open by risk: Low,0
+Open by owner: Identity team,1
+Open by owner: M365 platform team,1
+Open by owner: Messaging team lead,1
+Sampled evidence (findings),1
+Delta: new,2
+Delta: fixed,1
+Delta: regressed,1
+Delta: still open,1
+Decisions on file,3
+Decisions expiring,0
+Decisions expired,0
+Decisions unmatched,1
+Decisions with issues,2
+Open findings undecided,1

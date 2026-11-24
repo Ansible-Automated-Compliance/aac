@@ -1,0 +1,44 @@
+name: Request a change
+description: Something AAC already does that should work differently (a result, a default, a step in the install, a document).
+title: "Change: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This request is public. Leave out host names, IP addresses, tenant and customer names, and never paste a password, token or key. Describe your environment in general terms (for example "40 RHEL 9 hosts on AAP 2.6").
+  - type: textarea
+    id: current
+    attributes:
+      label: What does it do now?
+      description: Name the playbook, job template, report or document, and what you see.
+    validations:
+      required: true
+  - type: textarea
+    id: wanted
+    attributes:
+      label: What should it do instead?
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why?
+      description: If a standard or benchmark says so, cite the section. If it is an operational reason, say what it costs you today.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: AAC version or commit
+      description: The contents of the VERSION file, or the commit your project is synced to.
+  - type: dropdown
+    id: impact
+    attributes:
+      label: Would this change results that are already stored or reported?
+      options:
+        - "Yes"
+        - "No"
+        - Not sure
+    validations:
+      required: true
