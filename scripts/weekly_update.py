@@ -61,9 +61,11 @@ def is_dependency_bump(pr: dict) -> bool:
 
 def classify(title: str) -> tuple[str, str, bool]:
     """Return (heading, text to print, breaking?) for a pull request title."""
-    match = TITLE_RE.match(title.strip())
+    # a title is written by whoever opened the pull request: it must not be able to place a link in the update
+    title = re.sub(r"\]\s*\(", "] (", title.strip()).replace("<", "‹").replace(">", "›")
+    match = TITLE_RE.match(title)
     if not match:
-        return OTHER, title.strip(), False
+        return OTHER, title, False
     kind, scope, text = match["type"], (match["scope"] or "").strip(), match["text"].strip()
     breaking = bool(match["breaking"])
     if kind == "chore" and scope == "policies":
@@ -147,16 +149,18 @@ _STYLE = {
 
 def _inline(text: str) -> str:
     """Escape one line of the update and turn its links, bold and code spans into HTML."""
-    out = html.escape(text, quote=False)
+    out = html.escape(text, quote=True)
 
     def link(match: re.Match) -> str:
         url = match[2]
-        if not url.startswith("http"):  # a path inside the repo: an e-mail needs the full address
+        if re.fullmatch(r"(\.\./\.\./)?[A-Za-z0-9_./-]+\.md", url):  # a path inside the repo: an e-mail needs the full address
             path = "docs/updates/" + url if "/" not in url else url.replace("../../", "")
             url = f"{REPO_URL}/blob/main/{path}"
+        if not re.fullmatch(re.escape(REPO_URL) + r"/[A-Za-z0-9_./#-]*", url):
+            return match[0]  # only links into this repository become links in the e-mail
         return f'<a href="{url}" style="{_STYLE["a"]}">{match[1]}</a>'
 
-    out = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", link, out)
+    out = re.sub(r"\[([^\]]+)\]\(([^)\s]+)\)", link, out)
     out = re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", out)
     return re.sub(r"`([^`]+)`", rf'<code style="{_STYLE["code"]}">\1</code>', out)
 

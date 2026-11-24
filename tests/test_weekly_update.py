@@ -124,9 +124,30 @@ def test_email_version_keeps_every_line_and_uses_full_addresses():
 
 
 def test_email_version_escapes_markup_in_titles():
-    prs = [pr(9, "fix: <aac-host> placeholder & quoting", "2026-11-20")]
+    prs = [pr(9, 'fix: <aac-host> placeholder & "quoting"', "2026-11-20")]
     mail = weekly_update.to_email_html(weekly_update.render(prs, D("2026-11-17"), D("2026-11-24")))
-    assert "&lt;aac-host&gt; placeholder &amp; quoting" in mail
+    assert "<aac-host>" not in mail
+    assert "placeholder &amp; &quot;quoting&quot;" in mail
+
+
+def test_a_pull_request_title_cannot_place_a_link_or_an_attribute():
+    import re
+
+    hostile = [
+        pr(10, 'fix: see [here](https://evil.example/x" onmouseover="alert(1))', "2026-11-20"),
+        pr(11, "feat: [docs](javascript:alert(1)) updated", "2026-11-20"),
+        pr(12, "fix: [x](https://github.com/Ansible-Automated-Compliance/aac.evil.example/)", "2026-11-20"),
+        pr(13, 'docs: <img src=x onerror="alert(1)">', "2026-11-20"),
+    ]
+    text = weekly_update.render(hostile, D("2026-11-17"), D("2026-11-24"))
+    assert "](https://evil" not in text and "](javascript" not in text
+    mail = weekly_update.to_email_html(text)
+    hrefs = re.findall(r'href="([^"]*)"', mail)
+    assert len(hrefs) == 4 + 3  # one per pull request, plus the three footer links
+    assert all(h.startswith("https://github.com/Ansible-Automated-Compliance/aac/") for h in hrefs)
+    assert "<img" not in mail and "javascript:alert" not in "".join(hrefs)
+    for tag in re.findall(r"<[^>]+>", mail):  # no attribute other than the ones the script writes
+        assert set(re.findall(r'\s([a-z-]+)="', tag)) <= {"href", "style"}, tag
 
 
 FORMS = ROOT / ".github" / "ISSUE_TEMPLATE"
