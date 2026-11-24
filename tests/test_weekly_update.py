@@ -150,6 +150,15 @@ def test_a_pull_request_title_cannot_place_a_link_or_an_attribute():
         assert set(re.findall(r'\s([a-z-]+)="', tag)) <= {"href", "style"}, tag
 
 
+def test_email_links_cannot_leave_the_repository_through_dot_segments():
+    base = "https://github.com/Ansible-Automated-Compliance/aac"
+    for url in (f"{base}/../../someone/else", f"{base}/blob/main/../../../../x/y", "../../../../x/y.md", "../../docs/../../../x.md", f"{base}//evil"):
+        mail = weekly_update.to_email_html(f"- see [this]({url})")
+        assert "<a " not in mail, url
+    assert "<a " in weekly_update.to_email_html(f"- see [this]({base}/pull/7)")
+    assert f'href="{base}/blob/main/CHANGELOG.md"' in weekly_update.to_email_html("- [c](../../CHANGELOG.md)")
+
+
 FORMS = ROOT / ".github" / "ISSUE_TEMPLATE"
 
 

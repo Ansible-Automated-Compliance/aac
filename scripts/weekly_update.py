@@ -153,10 +153,10 @@ def _inline(text: str) -> str:
 
     def link(match: re.Match) -> str:
         url = match[2]
-        if re.fullmatch(r"(\.\./\.\./)?[A-Za-z0-9_./-]+\.md", url):  # a path inside the repo: an e-mail needs the full address
+        if re.fullmatch(r"(\.\./\.\./)?(?!.*\.\.)[A-Za-z0-9_-][A-Za-z0-9_./-]*\.md", url):  # a path inside the repo: an e-mail needs the full address
             path = "docs/updates/" + url if "/" not in url else url.replace("../../", "")
             url = f"{REPO_URL}/blob/main/{path}"
-        if not re.fullmatch(re.escape(REPO_URL) + r"/[A-Za-z0-9_./#-]*", url):
+        if ".." in url or "//" in url.split("://", 1)[-1] or not re.fullmatch(re.escape(REPO_URL) + r"/[A-Za-z0-9_./#-]*", url):
             return match[0]  # only links into this repository become links in the e-mail
         return f'<a href="{url}" style="{_STYLE["a"]}">{match[1]}</a>'
 
