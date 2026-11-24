@@ -63,6 +63,7 @@
 # ── Start containers from expanded list ───────────────────────────────────────
 
 - name: Start OPA containers
+  changed_when: true
   command: >
     podman run -d
     --name {{ item.name }}

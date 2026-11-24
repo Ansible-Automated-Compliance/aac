@@ -25,6 +25,15 @@
 
   tasks:
 
+    - name: Check mode notice
+      ansible.builtin.debug:
+        msg: >-
+          Check mode: registry, service and user-right tasks report what they
+          would change. The 3 task(s) in this playbook that run a Windows
+          command (secedit, auditpol, net accounts, Set-MpPreference and
+          similar) cannot preview and are skipped. Nothing is changed.
+      when: ansible_check_mode
+
     # ── Section 1.1: Password Policy (secedit) ────────────────────────────────
 
     - name: Export current security policy
@@ -342,6 +351,7 @@
         type: dword
 
     - name: Account policies hardening complete
+      when: not ansible_check_mode
       debug:
         msg: |
           Account policies hardening complete.

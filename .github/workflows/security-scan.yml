@@ -23,9 +23,9 @@ env:
 
 jobs:
   scan:
-    # DELIBERATELY GitHub-hosted: injects CUSTOMER_DENYLIST — same
-    # secret-isolation rule as traffic-snapshot (no secrets on the
-    # shared PR runner pool. Scheduled weekly; cost negligible.
+    # DELIBERATELY GitHub-hosted: injects CUSTOMER_DENYLIST. Secret-bearing
+    # scheduled jobs stay off the shared PR runner pool. Scheduled weekly;
+    # cost negligible.
     runs-on: ubuntu-latest
     steps:
       - name: Checkout (full history)

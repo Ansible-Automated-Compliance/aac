@@ -8,6 +8,8 @@
 # AAC Global Variables
 aac_organization: PLACEHOLDER
 aac_host_ssh_user: PLACEHOLDER
+# The execution environment image you built and pushed (registry/name:tag).
+aac_compliance_ee_image: PLACEHOLDER
 aac_host_description: "Dedicated AAC stack — OPA, PostgreSQL, Grafana"
 
 aac_template_deploy_opa_name: AAC_Deploy_OPA_Containers

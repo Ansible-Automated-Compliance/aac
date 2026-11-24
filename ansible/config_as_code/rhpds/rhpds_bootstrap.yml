@@ -47,11 +47,22 @@
     aap_controller_url: "https://aap-controller-aap.apps.{{ rhpds_cluster }}"
     aap_gateway_url:    "https://aap-aap.apps.{{ rhpds_cluster }}"
 
-    # infra.aap_configuration connection vars
+    # Connection settings. controller_* are this playbook's own names (and what
+    # the README tells an operator to pass with -e).
     controller_hostname:     "{{ aap_controller_url }}"
     controller_username:     admin
     controller_password:     "{{ rhpds_controller_password }}"
     controller_validate_certs: false
+
+    # infra.aap_configuration 3.0 and later read aap_* and ignore controller_*:
+    # with only the names above the roles had no host, user or password at
+    # all. The controller roles go to the controller route (the awx.awx
+    # modules used outside an execution environment speak /api/v2/, which the
+    # gateway does not serve); the EDA roles are given the gateway below.
+    aap_hostname:       "{{ controller_hostname }}"
+    aap_username:       "{{ controller_username }}"
+    aap_password:       "{{ controller_password }}"
+    aap_validate_certs: "{{ controller_validate_certs }}"
 
     # Config-as-Code file directory
     config_dir: "{{ playbook_dir }}"
@@ -184,6 +195,13 @@
     # ── Phase 8–10: EDA objects ───────────────────────────────────────────────
     - role: infra.aap_configuration.dispatch
       vars:
+        # Event-Driven Ansible is served by the platform gateway
+        # (/api/eda/v1/), not by the controller route. Override with
+        # -e eda_hostname=... ; without a cluster name it is the same host.
+        aap_hostname: "{{ eda_hostname | default(aap_gateway_url if (rhpds_cluster is defined) else controller_hostname, true) }}"
+        # The gateway has its own admin password on these clusters; it was
+        # required by this playbook and never used.
+        aap_password: "{{ rhpds_gateway_password | default(controller_password, true) }}"
         aap_configuration_dispatcher_roles:
           - eda_decision_environments
           - eda_credentials
@@ -207,7 +225,7 @@
             • Credentials:            GitHub PAT, Ansible Vault, SSH
             • Project:                Compliance Automation
             • Inventory:              Compliance Infrastructure (2 hosts)
-            • Job Templates:          ~54 (all 6 demo groups + infra + backup/restore)
+            • Job Templates:          {{ controller_templates | default([]) | length }} (all demo groups + infra + backup/restore)
             • Workflow Templates:     3 (GoldenImage, DS, NERC)
             • Schedules:              4 nightly jobs
             • EDA Activations:        3 (Golden Image :5004, Sentinel :5003, Webhook :5000)

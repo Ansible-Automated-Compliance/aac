@@ -127,6 +127,7 @@
 
     # ── Collect facts from VyOS via SSH ──────────────────────────────────────
     - name: Collect VyOS configuration via SSH
+      changed_when: false
       shell: |
         timeout 30 ssh -o StrictHostKeyChecking=no \
           -o ConnectTimeout=10 \
@@ -184,6 +185,7 @@
 
     # ── Collect facts from pfSense via SSH ────────────────────────────────────
     - name: Collect pfSense configuration via SSH
+      changed_when: false
       shell: |
         timeout 30 ssh -o StrictHostKeyChecking=no \
           -o ConnectTimeout=10 \

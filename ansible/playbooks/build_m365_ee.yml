@@ -236,10 +236,12 @@
       delegate_to: aap_physical_host
       block:
         - name: Tag the image as latest
+          changed_when: true
           ansible.builtin.shell: >
             /usr/bin/podman tag {{ ee_image }}:{{ ee_version }} {{ ee_image }}:latest
 
         - name: Log in to the registry
+          changed_when: true
           ansible.builtin.shell: >
             /usr/bin/podman login quay.io
             -u {{ vault_quay_username }} --password-stdin
@@ -248,7 +250,9 @@
           no_log: true
 
         - name: Push the versioned tag
+          changed_when: true
           ansible.builtin.shell: "/usr/bin/podman push {{ ee_image }}:{{ ee_version }}"
 
         - name: Push the latest tag
+          changed_when: true
           ansible.builtin.shell: "/usr/bin/podman push {{ ee_image }}:latest"

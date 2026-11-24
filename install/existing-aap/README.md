@@ -259,7 +259,6 @@ podman run -d --name aac-grafana \
   --secret grafana_admin_password,type=env,target=GF_SECURITY_ADMIN_PASSWORD \
   -e GF_SERVER_HTTP_ADDR=0.0.0.0 -e GF_SERVER_PORT=3000 \
   -e GF_SERVER_ROOT_URL=http://<aac-host>:3000 \
-  -e GF_INSTALL_PLUGINS=grafana-postgresql-datasource \
   registry.redhat.io/rhel9/grafana:latest
 ```
 

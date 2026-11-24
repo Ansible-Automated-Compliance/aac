@@ -19,6 +19,15 @@
 
   tasks:
 
+    - name: Check mode notice
+      ansible.builtin.debug:
+        msg: >-
+          Check mode: registry, service and user-right tasks report what they
+          would change. The 13 task(s) in this playbook that run a Windows
+          command (secedit, auditpol, net accounts, Set-MpPreference and
+          similar) cannot preview and are skipped. Nothing is changed.
+      when: ansible_check_mode
+
     # ── Section 17: Advanced Audit Policy (auditpol) ──────────────────────────
 
     - name: Configure advanced audit policy — Account Logon
@@ -181,8 +190,10 @@
       win_shell: auditpol /get /category:* 2>&1 | Select-String "Success|Failure"
       register: audit_verify
       changed_when: false
+      check_mode: false   # read-only
       failed_when: false
 
     - name: Show audit policy summary
+      when: not ansible_check_mode
       debug:
         msg: "Audit policy hardening complete. Run assessment to verify CIS compliance score."
