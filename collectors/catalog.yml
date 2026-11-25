@@ -1,0 +1,455 @@
+---
+# Collector catalog: one entry per way AAC gathers state for policy evaluation.
+#
+# AAC collects through Ansible. Anything an Ansible module or gather_facts can
+# read, AAC can collect, store and evaluate. This file lists the collectors that
+# ship in this repository, so the question "what does AAC collect, and how" has
+# one answer. A target that is not listed here has no collector shipped yet; it
+# can still be collected with the Ansible module that reads it.
+#
+# The single source of truth for:
+#   - collectors/README.md   (generated: python3 scripts/collector_catalog.py --write)
+#   - tests/test_collector_catalog.py (run in CI: every path below exists, and
+#     every collector-shaped file in the tree is listed here or under
+#     not_collectors with a reason)
+#
+# Fields
+#   id        unique, lower_snake_case
+#   target    what the facts are gathered from
+#   source    in_repo      playbook, task file, role or module in this repository
+#             integration  another product does the reading; AAC takes its results
+#             (reserved for the generated lists: certified, vendor, galaxy)
+#   how       how the facts are gathered, in one sentence
+#   reach     how the collector reaches the target
+#   uses      the Ansible modules or tools that do the reading
+#   paths     files or directories in this repository; each must exist
+#   stores    table the collector writes (host_facts, compliance_facts,
+#             compliance_results, another table) or "none"
+#   feeds     the policy or report that reads what is collected
+
+collectors:
+
+  # ── Hosts ────────────────────────────────────────────────────────────────
+  - id: linux_host_facts
+    target: Linux hosts
+    source: in_repo
+    how: Nightly facts by area (packages, application dependencies, services, users, network, SSH, audit, file system, kernel, SELinux, PAM, cron, processes, certificates).
+    reach: SSH
+    uses: [ansible.builtin.setup, ansible.builtin.package_facts, ansible.builtin.shell]
+    paths:
+      - ansible/playbooks/aac_gather_facts.yml
+      - ansible/roles/aac_facts_collector
+    stores: host_facts
+    feeds: Stored facts, inventory catalog and drift detection
+
+  - id: windows_host_facts
+    target: Windows hosts
+    source: in_repo
+    how: Nightly facts read with PowerShell, in the same role as the Linux facts.
+    reach: Windows remoting, as the inventory sets it
+    uses: [ansible.windows.win_shell]
+    paths:
+      - ansible/roles/aac_facts_collector/tasks/windows_facts.yml
+    stores: host_facts
+    feeds: Stored facts, inventory catalog and drift detection
+
+  - id: aws_instance_metadata
+    target: AWS EC2 instances
+    source: in_repo
+    how: Instance identity, type and role read from the instance metadata service on the host.
+    reach: SSH, then HTTP on the instance
+    uses: [ansible.builtin.uri]
+    paths:
+      - ansible/roles/aac_facts_collector/tasks/aws_metadata.yml
+    stores: host_facts
+    feeds: Stored facts
+
+  - id: linux_compliance_facts
+    target: Linux hosts
+    source: in_repo
+    how: A compliance fact snapshot from gather_facts, service facts and 36 read-only commands, stored so that policies can be evaluated later without reaching the host.
+    reach: SSH
+    uses: [ansible.builtin.setup, ansible.builtin.service_facts, ansible.builtin.shell]
+    paths:
+      - ansible/tasks/collect_linux_compliance_facts.yml
+      - ansible/playbooks/collect_all_facts.yml
+    stores: compliance_facts
+    feeds: evaluate_stored_facts.yml and the CIS RHEL 9 assessment
+
+  - id: linux_cis_benchmarks
+    target: "Linux hosts: RHEL 8 and 9, Rocky Linux 8, Amazon Linux 2023, Debian 11, Ubuntu 20.04 and 22.04"
+    source: in_repo
+    how: One assessment playbook per benchmark gathers facts, reads configuration files and runs read-only commands, then sends the result to the policy.
+    reach: SSH
+    uses: [ansible.builtin.setup, ansible.builtin.slurp, ansible.builtin.command, ansible.builtin.shell]
+    paths:
+      - ansible/playbooks/cis_rhel8_assessment.yml
+      - ansible/playbooks/cis_rhel9_assessment.yml
+      - ansible/playbooks/cis_rocky_linux_8_assessment.yml
+      - ansible/playbooks/cis_amazon_linux_2023_assessment.yml
+      - ansible/playbooks/cis_debian_11_assessment.yml
+      - ansible/playbooks/cis_ubuntu_20_04_assessment.yml
+      - ansible/playbooks/cis_ubuntu_22_04_assessment.yml
+      - ansible/playbooks/enhanced_cis_fact_collection.yml
+    stores: compliance_results (RHEL 8 and 9, Amazon Linux 2023, Ubuntu 22.04); the other playbooks report only
+    feeds: CIS benchmark policies for each distribution
+
+  - id: linux_stig
+    target: Linux hosts (DISA STIG)
+    source: in_repo
+    how: gather_facts plus 20 read-only commands for the settings the STIG checks.
+    reach: SSH
+    uses: [ansible.builtin.setup, ansible.builtin.shell]
+    paths:
+      - ansible/playbooks/stig_linux_assessment.yml
+      - ansible/tasks/collect_linux_stig_facts.yml
+    stores: compliance_results
+    feeds: DISA STIG Linux policies
+
+  - id: linux_generic_assessment
+    target: Linux hosts
+    source: in_repo
+    how: gather_facts and a small set of commands for the general assessment playbook.
+    reach: SSH
+    uses: [ansible.builtin.setup, ansible.builtin.shell, ansible.builtin.stat]
+    paths:
+      - ansible/playbooks/compliance-assessment.yml
+    stores: compliance_assessments
+    feeds: The policy named when the job is launched
+
+  - id: linux_host_facts_roles
+    target: Linux hosts
+    source: in_repo
+    how: Eleven roles in the aac.host_facts collection, each returning one dictionary (SSH, auditd, PAM, file system, file permissions, firewalld, GRUB, logging, network, services, users). No playbook in this repository calls them yet.
+    reach: SSH
+    uses: [ansible.builtin.slurp, ansible.builtin.stat, ansible.builtin.find, ansible.builtin.shell]
+    paths:
+      - collections/ansible_collections/aac/host_facts
+    stores: none
+    feeds: CIS, STIG and NERC CIP host policies, once a playbook calls the roles
+
+  - id: windows_cis_benchmarks
+    target: Windows Server 2019 and 2022
+    source: in_repo
+    how: Registry values, per-user policy, advanced audit policy (auditpol) and account policy and user rights (secedit), read with PowerShell.
+    reach: Windows remoting, as the inventory sets it
+    uses: [ansible.windows.win_shell]
+    paths:
+      - ansible/playbooks/cis_windows_server_2019_assessment.yml
+      - ansible/playbooks/cis_windows_server_2022_assessment.yml
+    stores: compliance_results (2022); the 2019 playbook reports only
+    feeds: CIS Windows Server 2019 and 2022 policies
+
+  - id: linux_pqc_crypto
+    target: Linux hosts (cryptographic inventory)
+    source: in_repo
+    how: Certificates, SSH host keys and the algorithms in use, read on the host. Only names and algorithms leave the host.
+    reach: SSH
+    uses: [ansible.builtin.shell]
+    paths:
+      - ansible/playbooks/pqc_readiness_assessment.yml
+      - ansible/tasks/collect_pqc_crypto_facts.yml
+    stores: compliance_results
+    feeds: Post-quantum cryptography readiness policy
+
+  - id: linux_baseline_cip_010
+    target: Linux hosts (configuration baseline)
+    source: in_repo
+    how: Packages, running services, listening ports, applied patches and network interfaces, kept as the approved baseline and compared on later runs.
+    reach: SSH
+    uses: [ansible.builtin.setup, ansible.builtin.shell]
+    paths:
+      - ansible/playbooks/cip_010_baseline_capture.yml
+    stores: compliance_results
+    feeds: NERC CIP-010 baseline and drift
+
+  - id: golden_image_files
+    target: Monitored files on a managed host
+    source: in_repo
+    how: The content of each monitored file is read and compared with the approved copy.
+    reach: SSH
+    uses: [ansible.builtin.slurp, ansible.builtin.stat]
+    paths:
+      - ansible/playbooks/golden_image_capture_baseline.yml
+      - ansible/playbooks/golden_image_check.yml
+    stores: golden_image_baselines
+    feeds: Golden image drift check
+
+  - id: patch_assurance
+    target: Linux hosts after a patch
+    source: in_repo
+    how: Package and service facts read after the patch is installed, before the host returns to service.
+    reach: SSH
+    uses: [ansible.builtin.package_facts, ansible.builtin.service_facts]
+    paths:
+      - ansible/playbooks/patch_assurance.yml
+    stores: patch_assurance_results
+    feeds: Patch lifecycle
+
+  - id: crypto_miner_detection
+    target: Linux hosts
+    source: in_repo
+    how: Processes, files and network connections checked with read-only commands for signs of mining software.
+    reach: SSH
+    uses: [ansible.builtin.shell]
+    paths:
+      - ansible/playbooks/crypto_miner_detection_remediation.yml
+    stores: none
+    feeds: Crypto miner detection policy
+
+  # ── Databases ────────────────────────────────────────────────────────────
+  - id: oracle_database_19c
+    target: Oracle Database 19c
+    source: in_repo
+    how: A SQL script run through sqlplus with operating system authentication, plus commands on the database host.
+    reach: SSH to the database host
+    uses: [ansible.builtin.shell, sqlplus]
+    paths:
+      - ansible/playbooks/stig_oracle_database_19c_assessment.yml
+      - ansible/tasks/collect_oracle_db_facts.yml
+    stores: compliance_results
+    feeds: DISA STIG Oracle Database 19c policy
+
+  # ── Software as a service ────────────────────────────────────────────────
+  - id: microsoft_365
+    target: Microsoft 365 tenant
+    source: in_repo
+    how: Sixteen modules in the aac.m365 collection read Entra, Exchange, Defender, Purview, SharePoint, Teams, Intune, Fabric and the admin center through Microsoft Graph and PowerShell.
+    reach: HTTPS to Microsoft Graph, and PowerShell
+    uses: [aac.m365]
+    paths:
+      - collections/ansible_collections/aac/m365
+    stores: compliance_results
+    feeds: CIS Microsoft 365 policy
+
+  # ── Network and storage ──────────────────────────────────────────────────
+  - id: network_device_facts
+    target: Cisco, Juniper, Palo Alto and S3 storage devices; VyOS and pfSense
+    source: in_repo
+    how: Facts read from a REST endpoint for Cisco, Juniper, Palo Alto and S3 storage, and with commands over SSH for VyOS and pfSense.
+    reach: HTTP to a facts endpoint, or SSH
+    uses: [ansible.builtin.uri, ansible.builtin.shell]
+    paths:
+      - ansible/playbooks/aac_gather_network_facts.yml
+    stores: host_facts
+    feeds: Stored facts
+
+  - id: vyos_cis
+    target: VyOS routers
+    source: in_repo
+    how: The running configuration is read as JSON over SSH.
+    reach: SSH
+    uses: [ansible.builtin.shell]
+    paths:
+      - ansible/playbooks/cis_vyos_assessment.yml
+    stores: compliance_results
+    feeds: CIS VyOS policy
+
+  - id: pfsense_cis
+    target: pfSense firewalls
+    source: in_repo
+    how: The firewall configuration is read over SSH.
+    reach: SSH
+    uses: [ansible.builtin.command, ansible.builtin.shell]
+    paths:
+      - ansible/playbooks/cis_pfsense_assessment.yml
+    stores: compliance_results
+    feeds: CIS pfSense policy
+
+  # ── Operational technology ───────────────────────────────────────────────
+  - id: ami_head_end
+    target: Advanced metering infrastructure (head end and meters)
+    source: in_repo
+    how: The assessment document for each utility is read from the head-end API.
+    reach: HTTP to the head-end API
+    uses: [ansible.builtin.uri]
+    paths:
+      - ansible/tasks/ami_compliance_per_utility.yml
+    stores: compliance_results
+    feeds: NIST IR 7628 and AMI device policies
+
+  # ── Platform and estate ──────────────────────────────────────────────────
+  - id: estate_continuity
+    target: Ansible Automation Platform inventories and AWS EC2
+    source: in_repo
+    how: Hosts, last job outcomes and deletions read from the controller API, and instance state read from EC2.
+    reach: HTTPS to the controller API and to AWS
+    uses: [ansible.builtin.uri, amazon.aws.ec2_instance_info]
+    paths:
+      - ansible/playbooks/estate_continuity_check.yml
+    stores: compliance_results
+    feeds: Estate continuity policy
+
+  - id: satellite_content
+    target: Red Hat Satellite
+    source: in_repo
+    how: The content available to a host is read from the Satellite API before a fix is pinned.
+    reach: HTTPS to the Satellite API
+    uses: [ansible.builtin.uri]
+    paths:
+      - ansible/playbooks/satellite_content_precheck.yml
+    stores: none
+    feeds: Remediation planning
+
+  - id: support_status
+    target: Product lifecycle data
+    source: in_repo
+    how: End-of-life dates for the products in the inventory catalog are read from a lifecycle API.
+    reach: HTTPS to the lifecycle API
+    uses: [ansible.builtin.uri]
+    paths:
+      - ansible/playbooks/refresh_support_status.yml
+    stores: product_lifecycle
+    feeds: Technical debt scoring
+
+  # ── Code and supply chain ────────────────────────────────────────────────
+  - id: ansible_content
+    target: Ansible playbooks, before they run
+    source: in_repo
+    how: The playbook is read from the project or from the GitHub API at the commit under review.
+    reach: Local file, or HTTPS to GitHub
+    uses: [ansible.builtin.uri]
+    paths:
+      - ansible/playbooks/aac_comply_validate_ansible.yml
+    stores: none
+    feeds: Ansible content policy
+
+  - id: terraform_plan
+    target: Terraform plans, before they are applied
+    source: in_repo
+    how: The plan JSON is read from the project or from the GitHub API at the commit under review.
+    reach: Local file, or HTTPS to GitHub
+    uses: [ansible.builtin.uri]
+    paths:
+      - ansible/playbooks/aac_comply_validate_terraform.yml
+    stores: none
+    feeds: Terraform plan policy
+
+  - id: supply_chain
+    target: Source repositories
+    source: in_repo
+    how: Branch protection and signature requirements are read from the GitHub API and assembled into the supply chain input.
+    reach: HTTPS to GitHub
+    uses: [ansible.builtin.uri, scripts/supply_chain_facts.py]
+    paths:
+      - ansible/playbooks/supply_chain_assess.yml
+    stores: compliance_results
+    feeds: Supply chain baseline policy
+
+  # ── Events ───────────────────────────────────────────────────────────────
+  - id: windows_event_log
+    target: Windows event logs
+    source: in_repo
+    how: An Event-Driven Ansible source polls the event logs and passes each new event to the rulebook.
+    reach: WinRM
+    uses: [winrm_eventlog event source]
+    paths:
+      - extensions/eda/plugins/event_source/winrm_eventlog.py
+      - collections/ansible_collections/lab/eda
+    stores: none
+    feeds: Event-Driven Ansible rulebooks
+
+  # ── Integrations: another product reads, AAC takes the results ───────────
+  - id: openshift_compliance_operator
+    target: OpenShift clusters
+    source: integration
+    how: The Compliance Operator scans the cluster; AAC reads its ComplianceCheckResult objects and the security-relevant configuration objects.
+    reach: Kubernetes API
+    uses: [kubernetes.core.k8s_info]
+    paths:
+      - ansible/playbooks/capture_ocp_baseline.yml
+      - ansible/playbooks/collate_ocp_nerc_cip.yml
+      - ansible/playbooks/check_ocp_drift.yml
+    stores: compliance_results
+    feeds: NERC CIP controls for OpenShift, baseline and drift
+
+  - id: openscap
+    target: Linux hosts
+    source: integration
+    how: OpenSCAP evaluates a datastream and profile on the host; AAC fetches and parses the XCCDF results.
+    reach: SSH
+    uses: [oscap, scripts/openscap_xccdf_parse.py]
+    paths:
+      - ansible/playbooks/openscap_assess.yml
+      - ansible/roles/aac_oscap_scan
+      - ansible/roles/aac_oscap_ingest
+    stores: compliance_results
+    feeds: Findings by XCCDF rule
+
+  - id: ansible_lockdown_goss
+    target: Linux hosts
+    source: integration
+    how: A goss audit (the format ansible-lockdown ships) runs on the host; AAC parses the JSON output.
+    reach: SSH
+    uses: [goss, scripts/goss_audit_parse.py]
+    paths:
+      - ansible/playbooks/ansible_lockdown_audit.yml
+    stores: compliance_results
+    feeds: Findings by audit test
+
+  - id: kubescape
+    target: Kubernetes manifests and clusters
+    source: integration
+    how: The Kubescape command evaluates manifests or a connected cluster; AAC stores the results.
+    reach: Local command, or the Kubernetes API
+    uses: [kubescape]
+    paths:
+      - ansible/playbooks/kubescape_assess.yml
+    stores: compliance_results
+    feeds: Kubescape controls
+
+  - id: trivy
+    target: Container images, file systems and infrastructure code
+    source: integration
+    how: The Trivy command evaluates the artifact; AAC stores the results.
+    reach: Local command
+    uses: [trivy]
+    paths:
+      - ansible/playbooks/trivy_assess_artifact.yml
+    stores: compliance_results
+    feeds: Trivy checks
+
+  - id: iac_scanner_findings
+    target: Infrastructure code scanned by Checkov or Trivy
+    source: integration
+    how: The scanner's JSON output is read and each finding is recorded.
+    reach: File
+    uses: [scripts/ingest_scanner_findings.py]
+    paths:
+      - ansible/playbooks/ingest_scanner_findings.yml
+    stores: compliance_results
+    feeds: Findings before deployment
+
+  - id: heimdall_data_format
+    target: Any scanner or InSpec profile that produces Heimdall Data Format
+    source: integration
+    how: An HDF file is read and each control result is recorded with its NIST tags.
+    reach: File
+    uses: [scripts/hdf_parse.py]
+    paths:
+      - ansible/playbooks/hdf_ingest.yml
+    stores: compliance_results
+    feeds: Findings by NIST control
+
+# Files that look like collectors by name and are not. Each needs a reason.
+not_collectors:
+  - path: ansible/playbooks/generic_framework_assessment.yml
+    reason: Evaluates an input document the caller supplies; gathers nothing.
+  - path: ansible/playbooks/digital_sovereignty_assessment.yml
+    reason: Evaluates an input file the caller supplies; gathers nothing.
+  - path: ansible/playbooks/iec_62443_assessment.yml
+    reason: Evaluates an input file the caller supplies; gathers nothing.
+  - path: ansible/playbooks/technical_debt_assessment.yml
+    reason: Scores results already stored in the database.
+  - path: ansible/playbooks/nerc_cip_exposure_assessment.yml
+    reason: Ranks findings already stored in the database.
+  - path: ansible/playbooks/export_oscal_assessment.yml
+    reason: Exports stored results.
+  - path: ansible/playbooks/export_sarif_assessment.yml
+    reason: Exports stored results.
+  - path: ansible/playbooks/aac_comply_audit_sweep.yml
+    reason: Evaluates the example playbooks in this repository against the content policy.
+  - path: ansible/playbooks/seed_facts_collection_template.yml
+    reason: Creates the job template that runs the collector.
+  - path: ansible/playbooks/seed_nightly_fact_collection.yml
+    reason: Creates the schedule that runs the collector.
