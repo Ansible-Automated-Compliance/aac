@@ -27,7 +27,7 @@ SUFFIXES = {".sql", ".yml", ".yaml", ".py", ".sh", ".j2"}
 
 CREATE = re.compile(r"CREATE\s+(?:UNLOGGED\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([A-Za-z_][\w.]*)\s*\(", re.I)
 ALTER = re.compile(r"ALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?(?:ONLY\s+)?([A-Za-z_][\w.]*)\s+(ADD\s+COLUMN[^;]*)", re.I | re.S)
-ADD = re.compile(r"ADD\s+COLUMN\s+(?:IF\s+NOT\s+EXISTS\s+)?([A-Za-z_]\w*)\s+([^,;]+)", re.I)
+ADD = re.compile(r"ADD\s+COLUMN\s+(?:IF\s+NOT\s+EXISTS\s+)?([A-Za-z_]\w*)\s+([^,;\"'\n]+)", re.I)
 FUNCTION = re.compile(r"CREATE\s+(?:OR\s+REPLACE\s+)?FUNCTION\s+([A-Za-z_]\w*)", re.I)
 VIEW = re.compile(r"CREATE\s+(?:OR\s+REPLACE\s+)?(?:MATERIALIZED\s+)?VIEW\s+(?:IF\s+NOT\s+EXISTS\s+)?([A-Za-z_]\w*)", re.I)
 USED = re.compile(r"\b(?:INSERT\s+INTO|FROM|JOIN|UPDATE|DELETE\s+FROM)\s+([a-z_][a-z0-9_]{3,})\b", re.I)

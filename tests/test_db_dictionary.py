@@ -61,3 +61,16 @@ def test_a_column_with_two_types_and_an_undefined_table_are_reported(tmp_path):
     page = dd.render(schema)
     assert "| `severity` | `VARCHAR(16)` in two; `VARCHAR(20)` in one |" in page
     assert "| `missing_table` |" in page
+
+
+def test_a_column_added_inside_a_playbook_stops_at_the_end_of_the_statement(tmp_path):
+    schema = _schema(tmp_path, {
+        "ansible/files/a.sql": "CREATE TABLE things (id SERIAL PRIMARY KEY);",
+        "ansible/playbooks/p.yml": (
+            '      query: "ALTER TABLE things ADD COLUMN IF NOT EXISTS is_baseline BOOLEAN DEFAULT false"\n'
+            "    - name: The next task\n"
+            '      query: "SELECT 1"\n'
+        ),
+    })
+    column = schema["tables"]["things"]["columns"]["is_baseline"][0]
+    assert (column["type"], column["rest"]) == ("BOOLEAN", "DEFAULT false")

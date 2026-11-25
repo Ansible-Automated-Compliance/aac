@@ -10,7 +10,7 @@ This page lists every table the compliance database can hold: its columns, their
 | Item | Count |
 |---|---:|
 | PostgreSQL tables | 44 |
-| Columns in those tables | 516 |
+| Columns in those tables | 528 |
 | Views | 15 |
 | Files that define a table or add a column | 20 |
 | Tables in another store | 3 |
@@ -19,15 +19,15 @@ This page lists every table the compliance database can hold: its columns, their
 
 | Type | Columns |
 |---|---:|
-| `VARCHAR(255)` | 60 |
+| `VARCHAR(255)` | 61 |
 | `TIMESTAMPTZ` | 53 |
 | `TEXT` | 49 |
-| `INTEGER` | 44 |
-| `VARCHAR(100)` | 39 |
+| `INTEGER` | 48 |
+| `VARCHAR(100)` | 42 |
 | `VARCHAR(50)` | 38 |
 | `BIGSERIAL` | 27 |
 | `VARCHAR(20)` | 27 |
-| `JSONB` | 24 |
+| `JSONB` | 25 |
 | `BOOLEAN` | 20 |
 | `NUMERIC` | 13 |
 | `TIMESTAMP WITH TIME ZONE` | 12 |
@@ -40,14 +40,14 @@ This page lists every table the compliance database can hold: its columns, their
 | `DECIMAL(8,1)` | 6 |
 | `VARCHAR(40)` | 6 |
 | `TEXT[]` | 4 |
+| `TIMESTAMP` | 4 |
 | `UUID` | 4 |
 | `VARCHAR(12)` | 4 |
 | `VARCHAR(16)` | 4 |
+| `VARCHAR(45)` | 4 |
 | `CHAR(64)` | 3 |
-| `TIMESTAMP` | 3 |
+| `DECIMAL` | 3 |
 | `VARCHAR(10)` | 3 |
-| `VARCHAR(45)` | 3 |
-| `DECIMAL` | 2 |
 | `DECIMAL(8,2)` | 2 |
 | `VARCHAR(120)` | 2 |
 | `VARCHAR(30)` | 2 |
@@ -82,6 +82,7 @@ A column name that means the same thing should have one type everywhere. These d
 | `control_id` | `VARCHAR(50)` in remediation_drafts, remediation_log; `VARCHAR(120)` in compliance_findings |
 | `updated_at` | `TIMESTAMPTZ` in host_registry, remediation_status; `TIMESTAMP WITH TIME ZONE` in framework_catalog |
 | `assessed_at` | `TIMESTAMP WITH TIME ZONE` in technical_debt_summary; `TIMESTAMPTZ` in nerc_cip_exposure |
+| `compliance_percentage` | `DECIMAL` in technical_debt_summary; `DECIMAL(5,2)` in compliance_results |
 | `critical_infrastructure_hours` | `DECIMAL` in technical_debt_summary; `DECIMAL(8,1)` in technical_debt_summary |
 | `effort_hours` | `DECIMAL(6,1)` in technical_debt_items; `NUMERIC` in patch_heatmap_cells |
 | `first_seen` | `TIMESTAMP WITH TIME ZONE` in technical_debt_items; `TIMESTAMPTZ` in compliance_findings |
@@ -241,7 +242,8 @@ Defined in [`migrate_schema_v2.yml`](../../ansible/playbooks/migrate_schema_v2.y
 | `collection_job` | `INTEGER` |   |
 | `schema_version` | `VARCHAR(20)` | DEFAULT '1.0' |
 | `facts` | `JSONB` | NOT NULL |
-| `is_baseline` | `BOOLEAN` | DEFAULT false" - name: Add baseline_label column to compliance_facts community.postgresql.postgresql_query: login_host: "{{ pg_host }}" login_port: "{{ pg_port \| default(5433) }}" login_user: "{{ pg_user }}" login_password: "{{ pg_password }}" login_db: "{{ pg_db }}" query: "ALTER TABLE compliance_facts ADD COLUMN IF NOT EXISTS baseline_label VARCHAR(100)" - name: Add index for baseline lookups community.postgresql.postgresql_query: login_host: "{{ pg_host }}" login_port: "{{ pg_port \| default(5433) }}" login_user: "{{ pg_user }}" login_password: "{{ pg_password }}" login_db: "{{ pg_db }}" query: > CREATE INDEX IF NOT EXISTS idx_facts_baseline ON compliance_facts(hostname |
+| `is_baseline` | `BOOLEAN` | DEFAULT false |
+| `baseline_label` | `VARCHAR(100)` |   |
 
 ### `compliance_findings`
 
@@ -464,7 +466,7 @@ Defined in [`golden_image_schema.sql`](../../ansible/files/golden_image_schema.s
 | `created_at` | `TIMESTAMPTZ` | NOT NULL DEFAULT NOW() |
 | `resolved_at` | `TIMESTAMPTZ` |   |
 | `cve_id` | `VARCHAR(50)` |   |
-| `change_provider` | `VARCHAR(50)` | DEFAULT 'native' |
+| `change_provider` | `VARCHAR(50)` | DEFAULT |
 | `external_ref` | `VARCHAR(100)` |   |
 | `phase` | `VARCHAR(40)` |   |
 | `outcome` | `VARCHAR(40)` |   |
@@ -991,7 +993,18 @@ Defined in [`schema.yml`](../../ansible/roles/aac_compliance_db/tasks/schema.yml
 | `ai_summary` | `TEXT` |   |
 | `ai_roadmap` | `JSONB` |   |
 | `metadata` | `JSONB` |   |
-| `compliant` | `BOOLEAN` | " - "ALTER TABLE compliance_results ADD COLUMN IF NOT EXISTS violations JSONB" - "ALTER TABLE compliance_results ADD COLUMN IF NOT EXISTS metadata JSONB" - "ALTER TABLE compliance_results ADD COLUMN IF NOT EXISTS evaluation_timestamp TIMESTAMP" - "ALTER TABLE compliance_results ALTER COLUMN evaluation_timestamp SET DEFAULT CURRENT_TIMESTAMP" - "ALTER TABLE compliance_results ADD COLUMN IF NOT EXISTS facts_id INTEGER" - \| DO $$ BEGIN IF EXISTS ( SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'compliance_results' AND column_name = 'facts_id' AND data_type = 'bigint' ) THEN ALTER TABLE compliance_results ALTER COLUMN facts_id TYPE INTEGER USING facts_id::INTEGER |
+| `ip_address` | `VARCHAR(45)` |   |
+| `framework` | `VARCHAR(100)` |   |
+| `policy_name` | `VARCHAR(255)` |   |
+| `policy_version` | `VARCHAR(100)` |   |
+| `total_controls` | `INTEGER` |   |
+| `passed_controls` | `INTEGER` |   |
+| `failed_controls` | `INTEGER` |   |
+| `compliance_percentage` | `DECIMAL` | (5 |
+| `compliant` | `BOOLEAN` |   |
+| `violations` | `JSONB` |   |
+| `evaluation_timestamp` | `TIMESTAMP` |   |
+| `facts_id` | `INTEGER` |   |
 
 ## Tables in another store
 
