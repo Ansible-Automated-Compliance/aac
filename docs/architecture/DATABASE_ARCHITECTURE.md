@@ -1,6 +1,6 @@
 # AAC database architecture
 
-**Version:** v1.4
+**Version:** v1.5
 **Date:** 2026-11-24
 **Authors:** Tim Coulter and Claude (Anthropic)
 **Status:** Sections 1 to 3 describe the database as it is in this repository. Sections 4 to 6 are proposals for discussion; nothing in them is built.
@@ -242,6 +242,8 @@ Every connection is opened by the customer's AAC instance. The Portal never conn
 | Portal to AAC (pull) | Customer's AAC | The standards the customer is enrolled in, custom Rego policies, and their versions | What was pulled, its version and signature check, and when it was loaded. Partly built |
 
 The pull exists today for policy. `sync_customer_bundle.yml` fetches the customer's signed policy bundle from the Portal, verifies the signature offline, loads it into a dedicated OPA container and reports back whether it loaded. `customer_frameworks` holds which frameworks are enabled. What is missing is a record in the database of each bundle pulled (version, hash, signature result, time loaded), so that a result can be traced to the exact custom policy that produced it, in the same way `policy_sha` traces it to the library.
+
+**To begin with, every push and pull is triggered.** Each one is a job the customer launches from their AAP, and nothing is forwarded or fetched on a schedule or by an event until the customer chooses to schedule it. The record of pushes and pulls therefore also holds who or what started each one (the AAP job and the user).
 
 Two rules keep this simple:
 
