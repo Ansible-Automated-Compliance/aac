@@ -1,6 +1,6 @@
 # AAC database architecture
 
-**Version:** v1.3
+**Version:** v1.4
 **Date:** 2026-11-24
 **Authors:** Tim Coulter and Claude (Anthropic)
 **Status:** Sections 1 to 3 describe the database as it is in this repository. Sections 4 to 6 are proposals for discussion; nothing in them is built.
@@ -200,6 +200,7 @@ Made by Tim Coulter on 2026-11-24.
 | How are customers separated? | The AAC database is on the customer's site and dedicated to that customer. The Customer Portal separates by tenant | No tenant column is added to the AAC tables. The four tables that have `tenant_id` today (`customer_frameworks`, `remediation_budgets`, `remediation_rates`, `patch_manifest_raw`) keep it; it holds one value and costs nothing, and removing it would be a change for tidiness only. |
 | Does a renamed host keep its history? | Yes | The subject id is the identity; names are kept with their dates (section 4.1) |
 | How does the Customer Portal get data? | By push. The customer's AAC instance forwards what the Portal needs. The Portal never pulls from, or connects to, a customer's database | The database needs no inbound access from outside the customer's network. AAC needs a record of what was forwarded: which data set, when, and whether the Portal accepted it, so a customer can see exactly what left their site. The Portal adds the tenant when it receives the data |
+| What does AAC take from the Portal? | AAC pulls it: the set of standards the customer is enrolled in, custom Rego policies and similar content | Every connection starts from the customer's site (section 9). What is pulled is reference data and policy, never evidence |
 | Where does the database run? | It follows how the customer's Ansible Automation Platform is set up | The AAC database sits with the customer's AAP: same site, same operator, same network boundary. Its availability, backup and access rules follow what the customer already does for AAP, and AAC adds no second operating model |
 | How long are fact snapshots kept? | 13 months in the database, then moved to nearline storage | Section 7 |
 
@@ -230,6 +231,22 @@ It is a small issue, for these reasons:
 - **Nothing runs it.** No playbook, job template or dashboard uses the script. It is mentioned in `README.md` and one operations document.
 
 Recommendation: do not move these tables into the compliance database. The executive view that is in use is the set of Grafana dashboards, which read PostgreSQL. Either point the script at the compliance database for its figures and drop its own store, or retire it. It has not been run for this review, so whether it still works is not known; check that before retiring it.
+
+## 9. What crosses the customer's boundary
+
+Every connection is opened by the customer's AAC instance. The Portal never connects to a customer.
+
+| Direction | Started by | What | In the database |
+|---|---|---|---|
+| AAC to Portal (push) | Customer's AAC | What the Portal needs to show: the data sets the customer chooses to forward | A record of each push: data set, time, and whether the Portal accepted it. Not built |
+| Portal to AAC (pull) | Customer's AAC | The standards the customer is enrolled in, custom Rego policies, and their versions | What was pulled, its version and signature check, and when it was loaded. Partly built |
+
+The pull exists today for policy. `sync_customer_bundle.yml` fetches the customer's signed policy bundle from the Portal, verifies the signature offline, loads it into a dedicated OPA container and reports back whether it loaded. `customer_frameworks` holds which frameworks are enabled. What is missing is a record in the database of each bundle pulled (version, hash, signature result, time loaded), so that a result can be traced to the exact custom policy that produced it, in the same way `policy_sha` traces it to the library.
+
+Two rules keep this simple:
+
+- **Pulled content is reference data.** Standards, controls, the crosswalk and custom policies are loaded and replaced, never edited in the customer's database. The typed control and crosswalk tables in section 4.2 are filled this way.
+- **Evidence only leaves by a recorded push.** Nothing in the evidence or fact tables is readable from outside.
 
 ## Open questions
 
