@@ -199,6 +199,7 @@ Made by Tim Coulter on 2026-11-24.
 |---|---|---|
 | How are customers separated? | The AAC database is on the customer's site and dedicated to that customer. The Customer Portal separates by tenant | No tenant column is added to the AAC tables. The four tables that have `tenant_id` today (`customer_frameworks`, `remediation_budgets`, `remediation_rates`, `patch_manifest_raw`) keep it; it holds one value and costs nothing, and removing it would be a change for tidiness only. The Portal cannot assume it can query a customer's database, so anything it shows comes from what the customer sends, and the Portal adds the tenant when it receives it |
 | Does a renamed host keep its history? | Yes | The subject id is the identity; names are kept with their dates (section 4.1) |
+| Where does the database run? | It follows how the customer's Ansible Automation Platform is set up | The AAC database sits with the customer's AAP: same site, same operator, same network boundary. Its availability, backup and access rules follow what the customer already does for AAP, and AAC adds no second operating model |
 | How long are fact snapshots kept? | 13 months in the database, then moved to nearline storage | Section 7 |
 
 ## 7. Retention of fact snapshots
