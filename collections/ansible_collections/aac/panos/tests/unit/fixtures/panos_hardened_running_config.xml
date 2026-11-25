@@ -282,6 +282,7 @@
                 <block><member>malware</member><member>phishing</member></block>
                 <override><member>command-and-control</member></override>
                 <alert><member>news</member><member>business-and-economy</member></alert>
+                <log-container-page-only>no</log-container-page-only>
                 <log-http-hdr-user-agent>yes</log-http-hdr-user-agent>
                 <log-http-hdr-referer>yes</log-http-hdr-referer>
                 <log-http-hdr-xff>yes</log-http-hdr-xff>
