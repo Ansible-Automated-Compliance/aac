@@ -1,9 +1,9 @@
 # AAC database architecture
 
-**Version:** v1.5
-**Date:** 2026-11-24
+**Version:** v1.6
+**Date:** 2026-11-25
 **Authors:** Tim Coulter and Claude (Anthropic)
-**Status:** Sections 1 to 3 describe the database as it is in this repository. Sections 4 to 6 are proposals for discussion; nothing in them is built.
+**Status:** Sections 1 to 3 describe the database as it is in this repository. Sections 4 to 12 are proposals, section 13 records decisions, and nothing in sections 4 to 12 is built. v1.6 takes in an outside review of v1.5 (section 10); each of its findings was checked against the code before it was accepted.
 
 The column-by-column reference is the [database dictionary](../reference/DATABASE_DICTIONARY.md), which is generated from the code. This page explains the structure, answers whether types and sizes are consistent, and lists what the database would need to hold to cover everything AAC can collect.
 
@@ -17,6 +17,7 @@ The column-by-column reference is the [database dictionary](../reference/DATABAS
 | Are the tables related to each other? | Weakly. There are 12 foreign keys across 44 tables. Most tables are joined by matching the text of `hostname` |
 | Where are the collected facts? | In two JSON columns, `host_facts.facts` and `compliance_facts.facts`. Only installed packages have typed columns |
 | Can every job run on a database built from this repository? | No. Nine tables are read or written by jobs and never created |
+| Is the evidence sealed end to end? | No. The result rows are hash-chained and append-only. The facts they were judged on are not hashed into the chain and can be edited, and the table can be emptied with `TRUNCATE` by its owner (section 10) |
 | Is there a retention rule? | Decided: fact snapshots are kept 13 months, then moved to nearline storage. Not implemented yet |
 
 ## 2. Structure today
@@ -61,7 +62,7 @@ Partly. The table lists each inconsistency found in the 44 tables. The full list
 |---|---|---|
 | Timestamps without a time zone | 3 columns use `TIMESTAMP`: `compliance_results.evaluation_timestamp`, and `captured_at` in the two repository traffic tables | The evidence table is the one that matters. A time with no zone is read differently by a client in another zone, and it sorts wrongly against the `TIMESTAMPTZ` columns it is joined to |
 | Two spellings of one type | `TIMESTAMPTZ` 53 times, `TIMESTAMP WITH TIME ZONE` 12 times | Same type, so no defect. It shows the tables were written at different times without a shared rule |
-| Row identifiers | `BIGSERIAL` in 27 tables, `SERIAL` in 9, none in 8 | `compliance_results.id` is `SERIAL` (32-bit) while `compliance_findings.last_result_id` and `remediation_status.latest_result_id`, which point at it, are `BIGINT`. An append-only table that gets one row per host per framework per run is the one most likely to outgrow 32 bits |
+| Row identifiers | `BIGSERIAL` in 27 tables, `SERIAL` in 9, none in 8 | `compliance_results.id` is `SERIAL` (32-bit) while `compliance_findings.last_result_id` and `remediation_status.latest_result_id`, which point at it, are `BIGINT`. The mismatch is the defect. At today's row rate a 32-bit id lasts for decades (section 12), so this is a tidy-up when the table is next changed, unless control rows were ever written into this table |
 | Severity | `VARCHAR(20)` in 5 tables, `VARCHAR(16)` in 2, `VARCHAR(32)` in 1 | The values are the same words. No constraint lists the allowed values, so "High", "high" and "HIGH" can all be stored |
 | Control id | `VARCHAR(120)` in `compliance_findings`, `VARCHAR(50)` in two remediation tables | A control id that fits in the findings table can be cut off or rejected in the remediation tables |
 | Vulnerability id | `VARCHAR(50)` in 6 tables, `VARCHAR(32)` in 2 | Same risk on a join |
@@ -122,10 +123,11 @@ The proposal is one `subjects` table: a generated id, a type from the list above
 | SaaS tenant settings | CIS Microsoft 365 | JSON | JSON, with a declared schema |
 | Which collector produced a snapshot | Tracing a result to how it was gathered | Job number only (`collection_job`) | Typed: collector id from the collector catalog, collection name and version, and whether the read succeeded |
 | What a collector tried and could not read | Telling "compliant" from "not collected" | Not stored | Typed: one row per item not collected, with the reason |
-| Frameworks | Scoping results | Typed in `framework_catalog` | Keep |
+| Frameworks | Scoping results | Typed in `framework_catalog`, as one key with no version, profile or level | Standard, version, profile and level as separate tables (section 10.3) |
+| The AAC installation | A customer may run several AAPs, each with its own AAC | Not stored | Typed: one generated id per installation, carried in every push and in the evidence chain (section 10.6) |
 | Controls of each framework | Reporting by control, counting coverage | Not in the database. They are in the policy library | Typed: one row per control per framework version, loaded from the library |
 | The crosswalk between standards | Answering "which controls in other standards does this satisfy" | Not in the database. It is in the policy library | Typed: loaded from the library, never edited in the database |
-| Result per control (pass, fail, not applicable, manual) | Auditors ask for passes as well as failures | Failures only, as a JSON list in `compliance_results.violations` | Typed: one current row per subject and control, with the full history kept in the evidence table |
+| Result per control (pass, fail, not applicable, manual) | Auditors ask for passes as well as failures | Failures only, as a JSON list in `compliance_results.violations` | Typed, insert-only rows that record a control's result only when it changes, sealed by a hash held in the parent evidence row (section 10.2). The current state is a view, not an editable table |
 | The evidence value behind a result | Showing what was seen | JSON in `metadata`, not always present | JSON on the result row, with the fact snapshot id it came from |
 | Policy version and commit | Reproducing a result | Typed (`policy_version`, `policy_sha`, `project_sha`) | Keep |
 | Attestations for manual controls | Controls a machine cannot check | In files passed to the job | Typed: who attested, when, for which control and until when |
@@ -167,7 +169,7 @@ A proposal. It applies to new tables at once, and to existing ones as they are n
 | A calendar day | `DATE` | Due dates, end-of-life dates |
 | Names, keys, ids from outside (host, control, vulnerability, ticket) | `TEXT` | No length. Add a `CHECK` only where a real limit exists |
 | A fixed list of values (severity, status, subject type) | `TEXT` with a `CHECK`, or a lookup table | One spelling, lower case |
-| Hashes | `CHAR(64)` for SHA-256 | As the evidence chain does today |
+| Hashes | `CHAR(64)` for SHA-256; `CHAR(40)` for a Git SHA-1 commit | Chain hashes are SHA-256. `policy_sha` and `project_sha` are Git commits and are `VARCHAR(64)` today |
 | Yes or no | `BOOLEAN NOT NULL` | With a default |
 | Counts | `INTEGER`, or `BIGINT` where rows accumulate | |
 | Percentages | `NUMERIC(5,2)` | 0.00 to 100.00 |
@@ -179,30 +181,21 @@ Names: `snake_case`; a time ends in `_at`, a day ends in `_date` or `_on`; a ref
 
 ## 6. Order of work
 
-A proposal, smallest safe step first. Each step is useful by itself and none rewrites history in the evidence table.
+A proposal, revised in v1.6. Integrity comes first, because every later step adds rows that should be sealed from the day they are written.
 
-1. **Keep the dictionary current.** Done in this change: the page is generated and the test fails when the schema and the page differ.
-2. **One name for each connection setting**, and one default port. No schema change. It removes the largest source of difference between reports.
-3. **Retire or repair the jobs that use the nine missing tables.** Decide per job; some are superseded.
-4. **Add the `subjects` table** and a `subject_id` on new rows, beside `hostname`.
-5. **Add the result per control**, which the per-control pass record work already needs.
-6. **Load controls and the crosswalk from the library** into reference tables.
-7. **Add typed tables for services, accounts, ports and certificates**, filled by the existing collectors from what they already gather.
-8. **Record the collector and what it could not read** on each snapshot.
-9. **Correct the type findings in section 3** in one migration per table, when that table is next touched. `compliance_results.id` and `evaluation_timestamp` are the two that should not wait.
-
-## Decisions
-
-Made by Tim Coulter on 2026-11-24.
-
-| Question | Decision | What it means for the design |
-|---|---|---|
-| How are customers separated? | The AAC database is on the customer's site and dedicated to that customer. The Customer Portal separates by tenant | No tenant column is added to the AAC tables. The four tables that have `tenant_id` today (`customer_frameworks`, `remediation_budgets`, `remediation_rates`, `patch_manifest_raw`) keep it; it holds one value and costs nothing, and removing it would be a change for tidiness only. |
-| Does a renamed host keep its history? | Yes | The subject id is the identity; names are kept with their dates (section 4.1) |
-| How does the Customer Portal get data? | By push. The customer's AAC instance forwards what the Portal needs. The Portal never pulls from, or connects to, a customer's database | The database needs no inbound access from outside the customer's network. AAC needs a record of what was forwarded: which data set, when, and whether the Portal accepted it, so a customer can see exactly what left their site. The Portal adds the tenant when it receives the data |
-| What does AAC take from the Portal? | AAC pulls it: the set of standards the customer is enrolled in, custom Rego policies and similar content | Every connection starts from the customer's site (section 9). What is pulled is reference data and policy, never evidence |
-| Where does the database run? | It follows how the customer's Ansible Automation Platform is set up | The AAC database sits with the customer's AAP: same site, same operator, same network boundary. Its availability, backup and access rules follow what the customer already does for AAP, and AAC adds no second operating model |
-| How long are fact snapshots kept? | 13 months in the database, then moved to nearline storage | Section 7 |
+1. **Keep the dictionary current.** Done: the page is generated and the test fails when the schema and the page differ.
+2. **Give the installation an id** (10.6). One row, written once.
+3. **Version the evidence hash format** and record the format on each row (10.4). Nothing else in the evidence table changes until this is in.
+4. **Seal the facts** (10.1): hash each snapshot, carry the hash into the result row and its hash, make the fact tables insert-only.
+5. **Close the truncate gap and move the anchor out of AAP job history** (10.5).
+6. **One name for each connection setting**, and one default port. No schema change.
+7. **Retire or repair the jobs that use the nine missing tables.**
+8. **Add the `subjects` table** and a `subject_id` on new rows, beside `hostname`.
+9. **Add standards, versions, profiles and levels** (10.3), loaded from the library, with the controls and the crosswalk.
+10. **Add the result per control** as sealed, change-only rows (10.2).
+11. **Add typed tables for services, accounts, ports and certificates.**
+12. **Record the collector and what it could not read** on each snapshot.
+13. **Correct the type findings in section 3**, one migration per table. `compliance_results.id` can widen at any time. `evaluation_timestamp` changes only after step 3.
 
 ## 7. Retention of fact snapshots
 
@@ -210,7 +203,7 @@ Fact snapshots (`host_facts`, `compliance_facts`) stay in the database for 13 mo
 
 What the design needs:
 
-- **Partition the two fact tables by month** on `collected_at`. Moving a month out is then detaching one partition, not deleting millions of rows.
+- **Partition the two fact tables by month** on `collected_at`. Moving a month out is then detaching one partition, not deleting millions of rows. A partitioned table's primary key has to include `collected_at`, so the present foreign keys to `compliance_facts(id)` cannot stay as they are, and `fact_changes` uses `ON DELETE SET NULL`, which would blank its history. The links become the snapshot hash (10.1) plus a `fact_archive` catalog (month, file location, row count, hash, export time).
 - **Export before removal.** Each month is written to a file in nearline storage with its row count and a hash, and the export is recorded, so a snapshot can be found and loaded back.
 - **Evidence rows are not part of this.** `compliance_results` is append-only and hash-chained; removing rows from it would break the chain. Results stay, and each keeps the id of the snapshot it was evaluated from.
 - **A result must still be explainable after its snapshot has moved.** `compliance_results.facts_id` points at a snapshot. After 13 months that snapshot is in nearline storage, so the reference has to resolve to the archive record and not fail. The foreign keys from `fact_changes` and `remediation_actions` to `compliance_facts` need the same treatment.
@@ -250,7 +243,164 @@ Two rules keep this simple:
 - **Pulled content is reference data.** Standards, controls, the crosswalk and custom policies are loaded and replaced, never edited in the customer's database. The typed control and crosswalk tables in section 4.2 are filled this way.
 - **Evidence only leaves by a recorded push.** Nothing in the evidence or fact tables is readable from outside.
 
-## Open questions
+## 10. Review of v1.5 and what changed
+
+An outside review (`AAC_Database_Architecture_v1.5_Review.docx`, 2026-11-25) graded v1.5 a B: a sound base that is not yet ready to carry growth, and an A- once its first four items and an installation id are in. It lists 25 items. The five most serious are in the table below and were each checked against the code; all five hold. Section 10.7 gives the disposition of every item.
+
+| # | Finding | Checked against | Result |
+|---|---|---|---|
+| 1 | Facts are not sealed. A result points at its snapshot by id only, and the fact tables can be edited | `evidence_row_canonical()` hashes `facts_id`, an integer. No trigger or grant protects `host_facts` or `compliance_facts` | Holds |
+| 2 | The proposed per-control results sat in an editable "current" table outside the chain | Section 4.2 of v1.5 | Holds. It was a flaw in this document's proposal |
+| 3 | Standards have no version, profile or level, and no record of which version replaces which | `framework_catalog` has one key and no version column. `policy_version` on a result is free text | Holds |
+| 4 | The planned timestamp change would break every existing evidence hash | The hash input includes `to_char(evaluation_timestamp, ...)` on a column with no time zone | Holds |
+| 5 | The anchor outside the database is an AAP job artifact, and a table owner can empty the evidence table | `verify_evidence_chain.yml` publishes the chain head with `set_stats`. The guards are row-level `BEFORE UPDATE OR DELETE` triggers, which `TRUNCATE` does not fire | Holds |
+
+What the review found sound, and which stays as it is: the evidence table refuses edits and deletes, the writer role can only insert, facts are stored before they are evaluated, "not collected" is kept apart from "compliant", and every result records the policy commit.
+
+### 10.1 Seal the facts
+
+Today someone with write access can change a stored snapshot and every result that was judged on it still verifies.
+
+- Each snapshot gets a SHA-256 of its canonical content, computed by the database on insert. `host_facts` has a `checksum` column today, but the collector computes it from Jinja `to_json`, which is not a canonical form, and `compliance_facts` has none.
+- The review proposes hashing `facts::text`. That is stable within one PostgreSQL major version, as the review says. To stay verifiable across an upgrade, either define the canonical form independently of the server (sorted keys, fixed number and string rendering) or record the server version beside the hash and re-prove on upgrade. This needs deciding before the column is added.
+- The result row carries that hash (`facts_sha256`) beside `facts_id`, and the hash goes into the result's own hash. A changed snapshot then breaks the chain at every result that used it.
+- Both fact tables become insert-only, with the same guard the evidence table has. A correction is a new snapshot that supersedes the old one.
+- The 13-month move to nearline storage (section 7) stays possible: the result keeps the hash, so a snapshot loaded back from the archive can be proved to be the one that was judged.
+
+### 10.2 Seal the result per control
+
+- One row per subject, control and change: the control's result, the evidence value, and the evidence row it came from. Insert-only.
+- The parent evidence row carries one hash (`control_set_sha256`) over the full set of control results of that evaluation, and that hash is part of the parent's own hash. Passes are then evidence in the same sense failures are.
+- The hash must cover the full evaluated set, computed when the evaluation is stored, even though only the changed rows are written (below). The review's sketch hashes "the ordered control_results rows" of the result; with change-only storage those rows are only the changes, so the two have to be stated separately: the stored rows are the changes, the hash is over the whole state.
+- "Current state" is a view over the latest row per subject and control. Nothing in it can be edited.
+
+**Store changes, not repeats.** The review estimates about 2.2 billion rows a year at 5,000 systems if every control result is written every day. The arithmetic is 5,000 subjects x 4 frameworks x about 300 controls x 365 days; the 4 and the 300 are the review's assumptions, not measurements (section 12). A control that passed yesterday and passes today needs no new row: the parent evidence row for today already seals the statement "nothing changed", because its control hash equals yesterday's. Rows are written when a result or its evidence value changes, and once per period (for example monthly) as a full restatement, so a reader never has to walk back further than that to rebuild the state.
+
+**Store a snapshot once.** If a new snapshot's hash equals the previous one for that subject, record that it was seen again and when, and do not store the body a second time.
+
+### 10.3 Standards, versions, profiles and levels
+
+One framework key cannot say "CIS RHEL 9 v2.0.0, Level 1, Server", "the STIG release of this quarter" or "PCI DSS 4.0, which replaced 3.2.1".
+
+| Table | One row per | Holds |
+|---|---|---|
+| `standards` | Standard | Key, name, publisher. Example: CIS Red Hat Enterprise Linux 9 Benchmark |
+| `standard_versions` | Published version | Version, published and effective dates, retired date, and the version it replaces |
+| `profiles` | Profile or level within a version | Example: Level 1 Server, Level 2 Workstation, a STIG classification, a NIST baseline (Low, Moderate, High) |
+| `controls` | Control within a version | Control id, title, whether it is checked by machine or attested |
+| `profile_controls` | Control in a profile | Which controls a profile includes |
+| `control_lineage` | Control carried between versions | The control in the new version that continues one in the old, so a finding keeps its history across an upgrade |
+
+An evaluation then records the version and the profile it was judged against, and a customer's enrolment (`customer_frameworks`) names a version and profile, not only a key. All six tables are reference data, loaded from the policy library and from what AAC pulls from the Portal (section 9), never edited in place.
+
+### 10.4 Version the hash format before changing anything it covers
+
+The hash input starts with the text `aac-evidence-v1`, and that is the only version marker; it is fixed in the function, not stored on the row. Changing `evaluation_timestamp` to carry a time zone changes how it is rendered into the hash input, so every existing row would fail verification.
+
+- Add a `canon_version` column, set to 1 on every existing row.
+- Verification picks the canonical form by the row's `canon_version`. Old rows verify with the old form for ever.
+- Version 2 renders every time in UTC, and includes the facts hash (10.1), the control-results hash (10.2) and the installation id (10.6).
+- Only after that is `evaluation_timestamp` converted, with the stored values interpreted as UTC. The zone the existing values were written in must be confirmed first; the column has no zone and the default is the server's local time.
+
+### 10.5 The anchor and the truncate gap
+
+Two gaps, both confirmed.
+
+- **Truncate.** The guards fire per row on update and delete. `TRUNCATE` fires neither. The writer role has `TRUNCATE` revoked, but the table owner does not. Add a statement-level `BEFORE TRUNCATE` trigger that refuses, on the evidence table and on the fact tables. A superuser can still drop a trigger, which is why the anchor below has to be outside the database.
+- **The anchor.** The chain head is published as an AAP job artifact. AAP's job-history cleanup can remove it, and it is not signed. What is described as signed evidence is a hash chain plus that record.
+
+Proposal: a daily checkpoint holding the installation id, the chain head id and hash, the row count and the time, signed with a key held by the customer's AAC. The checkpoint is written to a place the database owner cannot alter (a file store with write-once retention on the customer's site), and it can be pushed to the Portal as a second copy.
+
+The push to the Portal is the customer's choice, in line with section 9: every transfer starts as a job the customer launches or schedules. A checkpoint contains no evidence, only a hash, so it reveals nothing about the estate. A customer who forwards nothing still has the on-site copy.
+
+### 10.6 An id for each installation
+
+A customer can run more than one AAP, each with its own AAC and database. One generated id per installation, created when the database is initialised and never changed:
+
+- it is carried in every push, so the Portal keeps two installations of one customer apart;
+- it is part of the hash input from canonical version 2, so rows cannot be moved from one installation's chain into another's;
+- it is the first part of every checkpoint.
+
+### 10.7 Every review item and what was done with it
+
+"Accepted" means the item is taken into this design. Nothing is built.
+
+| Item | Summary | Checked | Disposition |
+|---|---|---|---|
+| C1 | Facts are not sealed into the chain | Yes, holds | Accepted, 10.1. One point added: the canonical form across PostgreSQL versions |
+| C2 | Per-control results outside the chain | Yes, holds | Accepted, 10.2. One point added: the set hash covers the full state, the stored rows are the changes |
+| H1 | No versions, profiles or supersession | Yes, holds | Accepted, 10.3. The review's `parent_id` on controls is adopted for hierarchy (enhancements, sub-requirements) |
+| H2 | Timestamp change breaks verification | Yes, holds | Accepted, 10.4 |
+| H3 | The anchor is an AAP artifact; `TRUNCATE` is not blocked | Yes, holds | Accepted, 10.5, with a `chain_checkpoints` table. Pushing checkpoints to the Portal stays the customer's choice (section 9) |
+| H4 | No identity for an installation | Yes: nothing stores it | Accepted, 10.6, as an `aac_instance` table with site name and environment. Pushes carry the instance id and a sequence number |
+| H5 | Secrets and personal data in facts; broad read access; TLS | Partly | Accepted in substance, section 11. Two corrections there |
+| H6 | No volume estimate | True of v1.5 | Accepted, section 12 |
+| M1 | Crosswalk has no relationship type or status | The library has authoritative and pending maps | Accepted: `control_mappings` with relationship (equivalent, subset, superset, intersects), status, source and map version. A satisfied result flows only across equivalent or subset links |
+| M2 | Status words differ from the library | Yes. The library uses satisfied, gap, not_applicable, not_evaluated, not_reviewed, not_covered | Accepted: one checked list taken from the library, with "not collected" kept separate from "not reviewed". Section 4.2's "pass, fail" wording is superseded |
+| M3 | Exceptions and attestations need more fields and must be insert-only | Consistent with what is stored today | Accepted. Both change a reported status, so both are evidence, and a result row records the exception or attestation it applied |
+| M4 | Custom bundle traceability | Section 9 identified it | Accepted: `policy_bundles` with source, version, hash, signature result, signer, load time and OPA version, and a bundle id on each result |
+| M5 | De-duplicate facts | Not measured | Accepted in principle, 10.2. Content-addressed storage is the right shape; how much it saves needs a real estate |
+| M6 | Partitioning conflicts with the foreign keys | Yes. `fact_changes` and `remediation_actions` reference `compliance_facts(id)`, and `fact_changes` uses `ON DELETE SET NULL` | Accepted. Section 7 is corrected: the links become the snapshot hash plus a `fact_archive` catalog, not an id that stops resolving |
+| M7 | Evidence retention and legal hold | Nothing defined | Accepted as a requirement. The retention periods the review quotes per framework were not checked here and need a source before they go in a customer document |
+| M8 | Relationships between subjects, and several identifiers per subject | Section 4.1 had one parent and one stable id | Accepted: `subject_edges` for relationships and `subject_identifiers` for serial, MAC, cloud id and the like. It replaces the single stable id in 4.1 |
+| M9 | Versions beyond RPM | `installed_inventory` already has `cpe` and `purl` columns | Accepted for devices, firmware and applications; packages already carry both |
+| M10 | Time source | Evaluation time is the database clock | Accepted: keep the target's collection time and the database time. A timestamp authority on the checkpoint is optional |
+| M11 | Query patterns and rollups for dashboards | Not defined | Accepted. It is the same work as the single query layer in section 4.4 |
+| M12 | The push summary has no schema | Section 9 proposed only the record | Accepted: a versioned contract with instance id, sequence, period, aggregates, checkpoint and its own hash. It belongs to the Portal work |
+| L1 | Status line and numbering out of date | Yes | Fixed in this version |
+| L2 | No evidence rule for backup and restore | True | Accepted: after any restore, verify the chain against the last signed checkpoint before the restore is declared good |
+| L3 | Hash column types are mixed | Yes. `policy_sha` and `project_sha` are `VARCHAR(64)`, chain hashes `CHAR(64)` | Accepted. A Git SHA-1 is 40 characters, so the two are different kinds of value and section 5 now says so |
+| L4 | The urgency on `compliance_results.id` was overstated | Yes. At the review's own figures the 32-bit id lasts decades at today's row rate | Accepted. Section 3 is corrected: widen it when the table is next changed, not as a priority |
+| L5 | Byline should name Grok | No | Not accepted. This document was written with Claude, and the byline says who wrote it. The review is credited here as an outside review |
+
+## 11. Security of the data
+
+From review item H5, checked against the repository.
+
+| Point | What was found | Proposal |
+|---|---|---|
+| Secrets in facts | No redaction step exists in the collectors. The nightly host facts are a chosen set of values, not a dump of everything `gather_facts` returns, which limits the exposure. The compliance facts read configuration files and command output, where a secret can appear | A redaction pass before insert, with a deny-list per schema, and a stored list of what was redacted so the redaction is itself on record |
+| Personal data | Accounts, groups and Microsoft 365 users are stored | Mark those columns and JSON paths in the dictionary. Only aggregates are pushed to the Portal |
+| Read access | `compliance_reader`, which Grafana uses, has `SELECT` on every table and view, including raw facts | Dashboards read views only. A separate auditor role reads raw evidence |
+| Encryption in transit | The review says no TLS setting was found. That is not quite right: `ssl_mode` is set in 17 places, with a default of `prefer`. `prefer` encrypts when the server offers it and does not require or verify it | Require TLS on the server and `verify-full` on clients, with the customer's certificate authority |
+| Encryption at rest | Not addressed by AAC | The customer's storage control, stated as such |
+
+## 12. Size and growth
+
+The figures are the review's working assumptions, not measurements: daily collection, 4 frameworks per subject, about 300 controls per framework, about 30 KB per compressed host snapshot and 15 KB per framework snapshot, 13 months of facts, about 2% of control results changing per day and about 90% of snapshots unchanged from the day before. The arithmetic was checked and is consistent with those assumptions. They should be replaced with counts from a real estate.
+
+| Subjects | Evidence rows a year | Control rows a year, every result | Control rows a year, changes only | Facts for 13 months | Facts with de-duplication |
+|---:|---:|---:|---:|---:|---:|
+| 500 | 0.7 million | 220 million | 4 to 5 million | about 18 GB | about 2 GB |
+| 5,000 | 7.3 million | 2.2 billion | about 45 million | about 180 GB | about 18 GB |
+| 50,000 | 73 million | 22 billion | about 450 million | about 1.8 TB | about 180 GB |
+
+What follows from it:
+
+- The evidence table in its present shape is small at every scale shown.
+- Writing every control result every day is not workable beyond a small estate. Change-only rows with a sealed set hash (10.2) are.
+- The single chain, which serialises writers, is sound at the evidence-row rate and would not be at the control-row rate. Sealing the control set into the parent keeps the chain at the lower rate.
+- Facts are most of the storage. De-duplication and monthly partitions decide whether a large estate fits on ordinary storage.
+- Dashboards should read a daily rollup and a latest-state view, never the history.
+
+## 13. Decisions
+
+Made by Tim Coulter on 2026-11-24.
+
+| Question | Decision | What it means for the design |
+|---|---|---|
+| How are customers separated? | The AAC database is on the customer's site and dedicated to that customer. The Customer Portal separates by tenant | No tenant column is added to the AAC tables. The four tables that have `tenant_id` today (`customer_frameworks`, `remediation_budgets`, `remediation_rates`, `patch_manifest_raw`) keep it; it holds one value and costs nothing, and removing it would be a change for tidiness only. |
+| Does a renamed host keep its history? | Yes | The subject id is the identity; names are kept with their dates (section 4.1) |
+| How does the Customer Portal get data? | By push. The customer's AAC instance forwards what the Portal needs. The Portal never pulls from, or connects to, a customer's database | The database needs no inbound access from outside the customer's network. AAC needs a record of what was forwarded: which data set, when, and whether the Portal accepted it, so a customer can see exactly what left their site. The Portal adds the tenant when it receives the data |
+| What does AAC take from the Portal? | AAC pulls it: the set of standards the customer is enrolled in, custom Rego policies and similar content | Every connection starts from the customer's site (section 9). What is pulled is reference data and policy, never evidence |
+| Where does the database run? | It follows how the customer's Ansible Automation Platform is set up | The AAC database sits with the customer's AAP: same site, same operator, same network boundary. Its availability, backup and access rules follow what the customer already does for AAP, and AAC adds no second operating model |
+| How long are fact snapshots kept? | 13 months in the database, then moved to nearline storage | Section 7 |
+
+## 14. Open questions
 
 - Which nearline store on the customer's site, and who can load a month back? The store is the customer's, so the export has to be a plain file format they can keep without AAC.
 - Executive dashboard script: repoint it at the compliance database, or retire it?
+- What time zone were existing `evaluation_timestamp` values written in? It decides how they convert (10.4).
+- Where is the write-once store for checkpoints on a customer's site, and who holds the signing key?
+- What is the canonical form of a snapshot for hashing, so a hash survives a PostgreSQL upgrade (10.1)?
+- How often is the full restatement of control results written: monthly, or per assessment period?
