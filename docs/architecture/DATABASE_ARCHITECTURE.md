@@ -1,6 +1,6 @@
 # AAC database architecture
 
-**Version:** v1.2
+**Version:** v1.3
 **Date:** 2026-11-24
 **Authors:** Tim Coulter and Claude (Anthropic)
 **Status:** Sections 1 to 3 describe the database as it is in this repository. Sections 4 to 6 are proposals for discussion; nothing in them is built.
@@ -197,8 +197,9 @@ Made by Tim Coulter on 2026-11-24.
 
 | Question | Decision | What it means for the design |
 |---|---|---|
-| How are customers separated? | The AAC database is on the customer's site and dedicated to that customer. The Customer Portal separates by tenant | No tenant column is added to the AAC tables. The four tables that have `tenant_id` today (`customer_frameworks`, `remediation_budgets`, `remediation_rates`, `patch_manifest_raw`) keep it; it holds one value and costs nothing, and removing it would be a change for tidiness only. The Portal cannot assume it can query a customer's database, so anything it shows comes from what the customer sends, and the Portal adds the tenant when it receives it |
+| How are customers separated? | The AAC database is on the customer's site and dedicated to that customer. The Customer Portal separates by tenant | No tenant column is added to the AAC tables. The four tables that have `tenant_id` today (`customer_frameworks`, `remediation_budgets`, `remediation_rates`, `patch_manifest_raw`) keep it; it holds one value and costs nothing, and removing it would be a change for tidiness only. |
 | Does a renamed host keep its history? | Yes | The subject id is the identity; names are kept with their dates (section 4.1) |
+| How does the Customer Portal get data? | By push. The customer's AAC instance forwards what the Portal needs. The Portal never pulls from, or connects to, a customer's database | The database needs no inbound access from outside the customer's network. AAC needs a record of what was forwarded: which data set, when, and whether the Portal accepted it, so a customer can see exactly what left their site. The Portal adds the tenant when it receives the data |
 | Where does the database run? | It follows how the customer's Ansible Automation Platform is set up | The AAC database sits with the customer's AAP: same site, same operator, same network boundary. Its availability, backup and access rules follow what the customer already does for AAP, and AAC adds no second operating model |
 | How long are fact snapshots kept? | 13 months in the database, then moved to nearline storage | Section 7 |
 
