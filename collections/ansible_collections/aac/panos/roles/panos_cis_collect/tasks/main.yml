@@ -1,0 +1,148 @@
+---
+# panos_cis_collect — read one firewall and build the CIS Palo Alto policy input.
+#
+# Result facts:
+#   panos_cis_opa_input  {panos_config: {...}, cis_profile: {level: N}}
+#   panos_device_info    hostname, model, serial, sw_version (empty when not readable)
+#   panos_collection     which of the three API reads succeeded
+#
+# Every API task has no_log: the request carries the API key and the reply to
+# the configuration read carries password hashes and keys. A failure is
+# reported by the tasks that follow, with the HTTP status only.
+
+- name: Stop when no API key was supplied
+  ansible.builtin.assert:
+    that:
+      - panos_api_key is defined
+      - (panos_api_key | string | trim | length) > 0
+    fail_msg: >-
+      panos_api_key is not set. Attach the PAN-OS API key credential to the job
+      template (it injects panos_api_key); do not pass the key on the command line.
+    quiet: true
+  no_log: true
+
+- name: Read the running configuration
+  ansible.builtin.uri:
+    url: "{{ panos_scheme }}://{{ panos_host }}:{{ panos_port }}/api/"
+    method: POST
+    headers:
+      X-PAN-KEY: "{{ panos_api_key }}"
+    body_format: form-urlencoded
+    body:
+      type: op
+      cmd: "<show><config><running></running></config></show>"
+    return_content: true
+    status_code: [200, 400, 401, 403, 500, 502, 503]
+    timeout: "{{ panos_api_timeout | int }}"
+    validate_certs: "{{ panos_validate_certs | bool }}"
+    use_proxy: false
+  register: _panos_config_reply
+  delegate_to: localhost
+  failed_when: false
+  no_log: true
+
+- name: Stop when the running configuration could not be read
+  ansible.builtin.fail:
+    msg: >-
+      The PAN-OS XML API at {{ panos_scheme }}://{{ panos_host }}:{{ panos_port }}/api/ did not return
+      the running configuration (HTTP status {{ _panos_config_reply.status | default('none') }}).
+      Nothing is stored: a result with no configuration behind it would be a misleading 0%.
+      Check that the address is reachable from the execution environment, that the API key is valid
+      and its admin role allows operational requests, and that the certificate is trusted.
+  when: >-
+    (_panos_config_reply.status | default(0)) != 200
+    or 'status="success"' not in (_panos_config_reply.content | default(''))
+
+- name: Read license information
+  ansible.builtin.uri:
+    url: "{{ panos_scheme }}://{{ panos_host }}:{{ panos_port }}/api/"
+    method: POST
+    headers:
+      X-PAN-KEY: "{{ panos_api_key }}"
+    body_format: form-urlencoded
+    body:
+      type: op
+      cmd: "<request><license><info></info></license></request>"
+    return_content: true
+    status_code: [200, 400, 401, 403, 500, 502, 503]
+    timeout: "{{ panos_api_timeout | int }}"
+    validate_certs: "{{ panos_validate_certs | bool }}"
+    use_proxy: false
+  register: _panos_license_reply
+  delegate_to: localhost
+  failed_when: false
+  no_log: true
+
+- name: Read system information
+  ansible.builtin.uri:
+    url: "{{ panos_scheme }}://{{ panos_host }}:{{ panos_port }}/api/"
+    method: POST
+    headers:
+      X-PAN-KEY: "{{ panos_api_key }}"
+    body_format: form-urlencoded
+    body:
+      type: op
+      cmd: "<show><system><info></info></system></show>"
+    return_content: true
+    status_code: [200, 400, 401, 403, 500, 502, 503]
+    timeout: "{{ panos_api_timeout | int }}"
+    validate_certs: "{{ panos_validate_certs | bool }}"
+    use_proxy: false
+  register: _panos_system_reply
+  delegate_to: localhost
+  failed_when: false
+  no_log: true
+
+- name: Record which reads succeeded
+  ansible.builtin.set_fact:
+    panos_collection:
+      running_config: true
+      licenses: >-
+        {{ (_panos_license_reply.status | default(0)) == 200
+           and 'status="success"' in (_panos_license_reply.content | default('')) }}
+      system_info: >-
+        {{ (_panos_system_reply.status | default(0)) == 200
+           and 'status="success"' in (_panos_system_reply.content | default('')) }}
+
+# The license read is a separate command. When it failed the licenses key is
+# left out, so the license-gated recommendations report evidence missing
+# instead of passing as "not licensed".
+- name: Say so when license information was not readable
+  ansible.builtin.debug:
+    msg: >-
+      License information was not readable (HTTP status
+      {{ _panos_license_reply.status | default('none') }}). Recommendations 6.8 and 6.22-6.25
+      will report evidence missing.
+  when: not (panos_collection.licenses | bool)
+
+# One expression, so the profile level reaches the policy as a number: the
+# policy compares it with 1, and a templated "1" would silently select Level 2.
+- name: Build the policy input from the configuration
+  ansible.builtin.set_fact:
+    panos_cis_opa_input: >-
+      {{ {'panos_config': (_panos_config_reply.content
+                           | aac.panos.panos_cis_facts(
+                               licenses_xml=(_panos_license_reply.content if (panos_collection.licenses | bool) else ''),
+                               vsys=panos_vsys,
+                               site=panos_site,
+                               attest=panos_attest)),
+          'cis_profile': {'level': (panos_cis_level | int)}} }}
+    panos_device_info: >-
+      {{ (_panos_system_reply.content | aac.panos.panos_system_info)
+         if (panos_collection.system_info | bool) else {} }}
+
+- name: Stop when the profile level is not 1 or 2
+  ansible.builtin.assert:
+    that:
+      - panos_cis_opa_input.cis_profile.level in [1, 2]
+    fail_msg: "panos_cis_level must be 1 or 2 (got {{ panos_cis_level }})."
+    quiet: true
+
+# The raw replies hold the full configuration, hashes included. Drop them so
+# they cannot be printed or saved by a later task.
+- name: Discard the raw API replies
+  ansible.builtin.set_fact:
+    _panos_config_reply: {}
+    _panos_license_reply: {}
+    _panos_system_reply: {}
+  no_log: true

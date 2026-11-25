@@ -1,0 +1,87 @@
+<config version="11.1.0" urldb="paloaltonetworks">
+  <!-- Simulated PAN-OS running configuration for paloalto-fw-01. Deliberately weak:
+       HTTP management on, no password complexity, SNMP v2c, no HA, an any/any allow
+       rule with no security profiles, no URL filtering, no zone protection, default
+       rules not logged. Addresses are documentation ranges; the hash is not a real one. -->
+  <mgt-config>
+    <users>
+      <entry name="admin">
+        <phash>$5$SIMULATOR$not-a-real-hash</phash>
+        <permissions><role-based><superuser>yes</superuser></role-based></permissions>
+      </entry>
+    </users>
+  </mgt-config>
+  <shared>
+    <log-settings>
+      <syslog>
+        <entry name="syslog-old">
+          <server><entry name="collector"><transport>UDP</transport><port>514</port><server>192.0.2.40</server></entry></server>
+        </entry>
+      </syslog>
+      <system><match-list><entry name="critical-only"><filter>(severity eq critical)</filter><send-syslog><member>syslog-old</member></send-syslog></entry></match-list></system>
+    </log-settings>
+  </shared>
+  <devices>
+    <entry name="localhost.localdomain">
+      <network>
+        <profiles>
+          <interface-management-profile>
+            <entry name="allow-all-mgmt"><http>yes</http><https>yes</https><telnet>yes</telnet><ssh>yes</ssh><ping>yes</ping></entry>
+          </interface-management-profile>
+        </profiles>
+      </network>
+      <deviceconfig>
+        <system>
+          <hostname>paloalto-fw-01</hostname>
+          <service><disable-http>no</disable-http><disable-telnet>yes</disable-telnet></service>
+          <snmp-setting><access-setting><version><v2c><snmp-community-string>simulator-community</snmp-community-string></v2c></version></access-setting></snmp-setting>
+          <ntp-servers><primary-ntp-server><ntp-server-address>192.0.2.123</ntp-server-address></primary-ntp-server></ntp-servers>
+          <update-schedule>
+            <threats><recurring><weekly><day-of-week>wednesday</day-of-week><at>01:02</at><action>download-only</action></weekly></recurring></threats>
+          </update-schedule>
+        </system>
+        <setting>
+          <management><idle-timeout>60</idle-timeout></management>
+        </setting>
+      </deviceconfig>
+      <vsys>
+        <entry name="vsys1">
+          <zone>
+            <entry name="trust"><network><layer3><member>ethernet1/2</member></layer3></network><enable-user-identification>yes</enable-user-identification></entry>
+            <entry name="untrust"><network><layer3><member>ethernet1/1</member></layer3></network><enable-user-identification>yes</enable-user-identification></entry>
+          </zone>
+          <profiles>
+            <virus>
+              <entry name="av-alert-only">
+                <decoder>
+                  <entry name="http"><action>alert</action><wildfire-action>alert</wildfire-action></entry>
+                  <entry name="smtp"><action>alert</action><wildfire-action>alert</wildfire-action></entry>
+                </decoder>
+              </entry>
+            </virus>
+          </profiles>
+          <rulebase>
+            <security>
+              <rules>
+                <entry name="allow-any-any">
+                  <from><member>any</member></from><to><member>any</member></to>
+                  <source><member>any</member></source><destination><member>any</member></destination>
+                  <application><member>any</member></application><service><member>any</member></service>
+                  <action>allow</action>
+                </entry>
+                <entry name="outbound-web">
+                  <from><member>trust</member></from><to><member>untrust</member></to>
+                  <source><member>any</member></source><destination><member>any</member></destination>
+                  <application><member>web-browsing</member><member>ssl</member></application>
+                  <service><member>application-default</member></service>
+                  <action>allow</action>
+                  <profile-setting><profiles><virus><member>av-alert-only</member></virus></profiles></profile-setting>
+                </entry>
+              </rules>
+            </security>
+          </rulebase>
+        </entry>
+      </vsys>
+    </entry>
+  </devices>
+</config>
