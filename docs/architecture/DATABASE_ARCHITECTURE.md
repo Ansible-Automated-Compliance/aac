@@ -1,6 +1,6 @@
 # AAC database architecture
 
-**Version:** v1.0
+**Version:** v1.1
 **Date:** 2026-11-24
 **Authors:** Tim Coulter and Claude (Anthropic)
 **Status:** Sections 1 to 3 describe the database as it is in this repository. Sections 4 to 6 are proposals for discussion; nothing in them is built.
@@ -17,6 +17,7 @@ The column-by-column reference is the [database dictionary](../reference/DATABAS
 | Are the tables related to each other? | Weakly. There are 12 foreign keys across 44 tables. Most tables are joined by matching the text of `hostname` |
 | Where are the collected facts? | In two JSON columns, `host_facts.facts` and `compliance_facts.facts`. Only installed packages have typed columns |
 | Can every job run on a database built from this repository? | No. Nine tables are read or written by jobs and never created |
+| Is there a retention rule? | Decided: fact snapshots are kept 13 months, then moved to nearline storage. Not implemented yet |
 
 ## 2. Structure today
 
@@ -99,6 +100,8 @@ Twenty-one tables identify what a row is about with `hostname`. AAC already coll
 
 The proposal is one `subjects` table: a generated id, a type from the list above, a name, the parent subject where there is one (a database instance belongs to a host), and the source of record. Every other table then refers to the subject id. `hostname` stays as a column for as long as existing reports need it.
 
+**A renamed host keeps its history (decided).** The subject id is therefore the identity and the name is an attribute of it. This needs two things. A `subject_names` table holds each name a subject has had and the dates it applied, so an old report still resolves. And the collector needs something more stable than the name to recognise the same machine: the machine id on Linux, the machine GUID on Windows, the instance id in a cloud, the serial number on a device, the tenant id for a SaaS tenant. Without one of those, a renamed host is indistinguishable from a new one. Today rows are matched on the text of `hostname`, so a rename starts a new history.
+
 ### 4.2 The items
 
 "Typed" means the item has its own columns and can be queried and reported directly. "JSON" means it is inside a JSON document and each report has to know the path to it.
@@ -128,7 +131,7 @@ The proposal is one `subjects` table: a generated id, a type from the list above
 | Attestations for manual controls | Controls a machine cannot check | In files passed to the job | Typed: who attested, when, for which control and until when |
 | Exceptions and accepted risk | Suppressing a known finding with an owner and an expiry | Not stored | Typed |
 | Findings and their lifecycle | Remediation tracking | Typed in `compliance_findings` | Keep |
-| Tenant or customer | Reports per customer | 4 tables | Typed, on the subject. Decide once whether separation stays by database |
+| Tenant or customer | Reports per customer | 4 tables | Decided: one AAC database per customer, so no tenant column is added here. The Customer Portal separates by tenant in its own database |
 | Collection schedule and freshness | Detecting stale data | Derived by query | Derived. A view, not a table |
 
 ### 4.3 Columns or JSON
@@ -188,9 +191,44 @@ A proposal, smallest safe step first. Each step is useful by itself and none rew
 8. **Record the collector and what it could not read** on each snapshot.
 9. **Correct the type findings in section 3** in one migration per table, when that table is next touched. `compliance_results.id` and `evaluation_timestamp` are the two that should not wait.
 
+## Decisions
+
+Made by Tim Coulter on 2026-11-24.
+
+| Question | Decision | What it means for the design |
+|---|---|---|
+| How are customers separated? | The AAC database is per customer. The Customer Portal separates by tenant | No tenant column on the AAC tables. The four tables that have `tenant_id` today (`customer_frameworks`, `remediation_budgets`, `remediation_rates`, `patch_manifest_raw`) are the exception to review. Anything the Portal reads from an AAC database is tagged with the tenant on the Portal side |
+| Does a renamed host keep its history? | Yes | The subject id is the identity; names are kept with their dates (section 4.1) |
+| How long are fact snapshots kept? | 13 months in the database, then moved to nearline storage | Section 7 |
+
+## 7. Retention of fact snapshots
+
+Fact snapshots (`host_facts`, `compliance_facts`) stay in the database for 13 months and are then moved to nearline storage. Nothing implements this today: there is no retention job, and neither table is partitioned.
+
+What the design needs:
+
+- **Partition the two fact tables by month** on `collected_at`. Moving a month out is then detaching one partition, not deleting millions of rows.
+- **Export before removal.** Each month is written to a file in nearline storage with its row count and a hash, and the export is recorded, so a snapshot can be found and loaded back.
+- **Evidence rows are not part of this.** `compliance_results` is append-only and hash-chained; removing rows from it would break the chain. Results stay, and each keeps the id of the snapshot it was evaluated from.
+- **A result must still be explainable after its snapshot has moved.** `compliance_results.facts_id` points at a snapshot. After 13 months that snapshot is in nearline storage, so the reference has to resolve to the archive record and not fail. The foreign keys from `fact_changes` and `remediation_actions` to `compliance_facts` need the same treatment.
+- **Baselines are exempt.** A snapshot marked `is_baseline` is what later runs are compared with, so it stays until it is replaced.
+
+Thirteen months keeps a full year of comparisons plus one month of overlap, which covers a year-over-year report and an annual audit window.
+
+## 8. The executive dashboard tables
+
+`scripts/executive_dashboard.py` creates three tables (`audit_schedule`, `executive_summaries`, `framework_metrics`) in a SQLite file named `compliance_metrics.db`, in whatever directory the script is run from.
+
+It is a small issue, for these reasons:
+
+- **It is a second store of compliance figures.** The script runs `opa eval` itself and saves scores in its own file. It never reads the compliance database, so its numbers can differ from the evidence.
+- **It has none of the protections.** The file is not append-only, not hash-chained, not backed up with the database and not covered by the retention rule above.
+- **Nothing runs it.** No playbook, job template or dashboard uses the script. It is mentioned in `README.md` and one operations document.
+
+Recommendation: do not move these tables into the compliance database. The executive view that is in use is the set of Grafana dashboards, which read PostgreSQL. Either point the script at the compliance database for its figures and drop its own store, or retire it. It has not been run for this review, so whether it still works is not known; check that before retiring it.
+
 ## Open questions
 
-- Does separation between customers stay by database, or does a tenant column go on every table?
-- Should a renamed or rebuilt host keep its history? That decides what identifies a subject.
-- How long are fact snapshots kept? They are the largest rows and there is no retention rule today.
-- Do the SQLite tables behind the executive dashboard move into the compliance database or go away?
+- Should the four tables that carry `tenant_id` keep it, now that the AAC database is per customer?
+- Which nearline store, and who can load a month back?
+- Executive dashboard script: repoint it at the compliance database, or retire it?
