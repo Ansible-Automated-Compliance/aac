@@ -129,7 +129,7 @@ The proposal is one `subjects` table: a generated id, a type from the list above
 | The evidence value behind a result | Showing what was seen | JSON in `metadata`, not always present | JSON on the result row, with the fact snapshot id it came from |
 | Policy version and commit | Reproducing a result | Typed (`policy_version`, `policy_sha`, `project_sha`) | Keep |
 | Attestations for manual controls | Controls a machine cannot check | In files passed to the job | Typed: who attested, when, for which control and until when |
-| Exceptions and accepted risk | Suppressing a known finding with an owner and an expiry | Not stored | Typed |
+| Exceptions and accepted risk | Suppressing a known finding with an owner and an expiry | Partly. `accepted_risk` is a value of `remediation_status.status` and `remediation_actions.action_type`. Who approved it and when it expires are not stored | Typed: approver, reason, expiry |
 | Findings and their lifecycle | Remediation tracking | Typed in `compliance_findings` | Keep |
 | Tenant or customer | Reports per customer | 4 tables | Decided: one AAC database per customer, so no tenant column is added here. The Customer Portal separates by tenant in its own database |
 | Collection schedule and freshness | Detecting stale data | Derived by query | Derived. A view, not a table |
