@@ -1,6 +1,6 @@
 # AAC database architecture
 
-**Version:** v1.1
+**Version:** v1.2
 **Date:** 2026-11-24
 **Authors:** Tim Coulter and Claude (Anthropic)
 **Status:** Sections 1 to 3 describe the database as it is in this repository. Sections 4 to 6 are proposals for discussion; nothing in them is built.
@@ -131,7 +131,7 @@ The proposal is one `subjects` table: a generated id, a type from the list above
 | Attestations for manual controls | Controls a machine cannot check | In files passed to the job | Typed: who attested, when, for which control and until when |
 | Exceptions and accepted risk | Suppressing a known finding with an owner and an expiry | Partly. `accepted_risk` is a value of `remediation_status.status` and `remediation_actions.action_type`. Who approved it and when it expires are not stored | Typed: approver, reason, expiry |
 | Findings and their lifecycle | Remediation tracking | Typed in `compliance_findings` | Keep |
-| Tenant or customer | Reports per customer | 4 tables | Decided: one AAC database per customer, so no tenant column is added here. The Customer Portal separates by tenant in its own database |
+| Tenant or customer | Reports per customer | 4 tables | Decided: the AAC database is on the customer's site and dedicated to that customer, so no tenant column is added here. The Customer Portal separates by tenant in its own database |
 | Collection schedule and freshness | Detecting stale data | Derived by query | Derived. A view, not a table |
 
 ### 4.3 Columns or JSON
@@ -197,7 +197,7 @@ Made by Tim Coulter on 2026-11-24.
 
 | Question | Decision | What it means for the design |
 |---|---|---|
-| How are customers separated? | The AAC database is per customer. The Customer Portal separates by tenant | No tenant column on the AAC tables. The four tables that have `tenant_id` today (`customer_frameworks`, `remediation_budgets`, `remediation_rates`, `patch_manifest_raw`) are the exception to review. Anything the Portal reads from an AAC database is tagged with the tenant on the Portal side |
+| How are customers separated? | The AAC database is on the customer's site and dedicated to that customer. The Customer Portal separates by tenant | No tenant column is added to the AAC tables. The four tables that have `tenant_id` today (`customer_frameworks`, `remediation_budgets`, `remediation_rates`, `patch_manifest_raw`) keep it; it holds one value and costs nothing, and removing it would be a change for tidiness only. The Portal cannot assume it can query a customer's database, so anything it shows comes from what the customer sends, and the Portal adds the tenant when it receives it |
 | Does a renamed host keep its history? | Yes | The subject id is the identity; names are kept with their dates (section 4.1) |
 | How long are fact snapshots kept? | 13 months in the database, then moved to nearline storage | Section 7 |
 
@@ -212,6 +212,8 @@ What the design needs:
 - **Evidence rows are not part of this.** `compliance_results` is append-only and hash-chained; removing rows from it would break the chain. Results stay, and each keeps the id of the snapshot it was evaluated from.
 - **A result must still be explainable after its snapshot has moved.** `compliance_results.facts_id` points at a snapshot. After 13 months that snapshot is in nearline storage, so the reference has to resolve to the archive record and not fail. The foreign keys from `fact_changes` and `remediation_actions` to `compliance_facts` need the same treatment.
 - **Baselines are exempt.** A snapshot marked `is_baseline` is what later runs are compared with, so it stays until it is replaced.
+
+Because the database is on the customer's site, the nearline store is the customer's own storage, and the export job must work without any connection outside their network.
 
 Thirteen months keeps a full year of comparisons plus one month of overlap, which covers a year-over-year report and an annual audit window.
 
@@ -229,6 +231,5 @@ Recommendation: do not move these tables into the compliance database. The execu
 
 ## Open questions
 
-- Should the four tables that carry `tenant_id` keep it, now that the AAC database is per customer?
-- Which nearline store, and who can load a month back?
+- Which nearline store on the customer's site, and who can load a month back? The store is the customer's, so the export has to be a plain file format they can keep without AAC.
 - Executive dashboard script: repoint it at the compliance database, or retire it?
