@@ -1,17 +1,29 @@
 # AAC database architecture
 
-**Version:** v1.7
+**Version:** v1.8
 **Date:** 2026-11-26
 **Authors:** Tim Coulter and Claude (Anthropic)
-**Status:** The goals are proposed for confirmation. Sections 1 to 3 describe the database as it is in this repository. Sections 4 to 12 are proposals, section 13 records decisions, and nothing in sections 4 to 12 is built. v1.6 takes in an outside review of v1.5 (section 10); each of its findings was checked against the code before it was accepted.
+**Status:** Sections 1 to 3 describe the database as it is in this repository. Sections 4 to 12 are proposals, section 13 records decisions, and nothing in sections 4 to 12 is built. v1.6 takes in an outside review of v1.5 (section 10); each of its findings was checked against the code before it was accepted.
 
 The column-by-column reference is the [database dictionary](../reference/DATABASE_DICTIONARY.md), which is generated from the code. This page explains the structure, answers whether types and sizes are consistent, and lists what the database would need to hold to cover everything AAC can collect.
 
 ## Goals
 
-Proposed in v1.7 for confirmation. Earlier versions stated no goals; they described the tables and worked outward.
+Stated in v1.8. Earlier versions gave no goals; they described the tables and worked outward.
 
-**The first goal of this database is evidence of compliance.** A row in it should let a customer show an auditor, without AAC's authors in the room, what was true of a system on a date and how that was established.
+The database has five primary goals. They are not ranked.
+
+| Goal | What it means |
+|---|---|
+| Evidence of compliance | A row lets a customer show an auditor, without AAC's authors in the room, what was true of a system on a date and how that was established |
+| Collect once, judge against any standard | Facts are stored before they are evaluated, so a new or changed standard is answered from what is already held |
+| Reports from one query layer | A report is a query and a format, and never a second copy of the figures |
+| Room for everything that can be collected | Typed columns for what is common to every target, declared JSON for what is specific to a technology |
+| It stays the customer's | On their site, readable without AAC, and nothing leaves except by a recorded push |
+
+The goals depend on each other. An example is retention: moving snapshots to nearline serves storage and the customer's control of their data, and it keeps the evidence goal only because the result carries the snapshot's hash. A design choice should be checked against all five.
+
+### What evidence of compliance requires
 
 For a result to count as evidence, the database has to be able to show all of the following. The right-hand column is the state today.
 
@@ -26,15 +38,6 @@ For a result to count as evidence, the database has to be able to show all of th
 | Has anything been changed since? | A chain that fails if a row, its facts or its control results are altered, and an anchor outside the database | Result rows are chained. Facts and passes are not. The anchor is an AAP artifact (10.5) |
 | Can it be reproduced? | The same facts, policy and standard version give the same result later | Possible in principle. Not once a snapshot has moved to nearline, until the hash is carried (10.1) |
 | Is it still there when asked for? | Retention that matches the standard, and a hold that stops removal | Not defined for evidence |
-
-The other goals follow from the first and must not weaken it:
-
-2. **Collect once, judge against any standard.** Facts are stored before they are evaluated, so a new or changed standard is answered from what is already held.
-3. **Reports from one query layer.** A report is a query and a format, and never a second copy of the figures.
-4. **Room for everything that can be collected**, with typed columns for what is common and declared JSON for what is specific to a technology.
-5. **It stays the customer's.** On their site, readable without AAC, and nothing leaves except by a recorded push.
-
-Where two of these pull against each other, evidence wins. An example is retention: moving snapshots to nearline saves storage, and it is only acceptable because the result keeps the snapshot's hash.
 
 ## 1. Summary
 
